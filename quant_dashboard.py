@@ -137,25 +137,38 @@ hr { border-color: #1e3a5f; }
 # 데이터 함수
 # ══════════════════════════════════════════
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
     from pykrx import stock
+    import time
     end   = datetime.today().strftime('%Y%m%d')
     start = (datetime.today() - timedelta(days=lookback*2)).strftime('%Y%m%d')
-    try:
-        df = stock.get_market_ohlcv(start, end, ticker)
-        rename = {}
-        for c in df.columns:
-            if '시가'  in c: rename[c] = '시가'
-            elif '고가' in c: rename[c] = '고가'
-            elif '저가' in c: rename[c] = '저가'
-            elif '종가' in c: rename[c] = '종가'
-            elif '거래량' in c: rename[c] = '거래량'
-        df = df.rename(columns=rename)[['시가','고가','저가','종가','거래량']]
-        df = df[df['거래량'] > 0].tail(lookback)
-        return df
-    except:
-        return None
+    # 장 미개장일 경우 최근 영업일 탐색
+    for days_back in [0, 1, 2, 3, 4, 7]:
+        try:
+            end_try = (datetime.today() - timedelta(days=days_back)).strftime('%Y%m%d')
+            df = stock.get_market_ohlcv(start, end_try, ticker)
+            if df is None or df.empty:
+                time.sleep(0.3)
+                continue
+            rename = {}
+            for c in df.columns:
+                if '시가'  in c: rename[c] = '시가'
+                elif '고가' in c: rename[c] = '고가'
+                elif '저가' in c: rename[c] = '저가'
+                elif '종가' in c: rename[c] = '종가'
+                elif '거래량' in c: rename[c] = '거래량'
+            df = df.rename(columns=rename)
+            df = df[[c for c in ['시가','고가','저가','종가','거래량'] if c in df.columns]]
+            if len(df.columns) < 5:
+                continue
+            df = df[df['거래량'] > 0].tail(lookback)
+            if len(df) >= 5:
+                return df
+        except Exception:
+            time.sleep(0.5)
+            continue
+    return None
 
 def calc_indicators(df):
     for n in [5, 20, 60, 120]:
@@ -446,11 +459,13 @@ with tab1:
         col.markdown(f"<div style='font-size:10px; color:#475569; text-transform:uppercase; letter-spacing:1px'>{h}</div>", unsafe_allow_html=True)
     st.markdown("<hr style='margin:6px 0; border-color:#1a2535'>", unsafe_allow_html=True)
 
-    for ticker, name in TICKERS:
-        with st.spinner(f'{name} 로딩...'):
-            df = fetch_ohlcv(ticker, lookback)
+    total = len(TICKERS)
+    prog_bar = st.progress(0, text="데이터 로딩 중...")
+    for idx, (ticker, name) in enumerate(TICKERS):
+        prog_bar.progress((idx)/max(total,1), text=f"📡 {name} 수집 중... ({idx+1}/{total})")
+        df = fetch_ohlcv(ticker, lookback)
         if df is None or len(df) < 20:
-            st.error(f"❌ {name} 데이터 없음")
+            st.warning(f"⚠️ {name} 데이터 없음 (장 마감 또는 오류)")
             continue
         df = calc_indicators(df)
         all_data[ticker] = {'name': name, 'df': df}
@@ -493,6 +508,9 @@ with tab1:
             cols[7].markdown(badge_html, unsafe_allow_html=True)
 
         st.markdown("<hr style='margin:4px 0; border-color:#0f1726'>", unsafe_allow_html=True)
+
+    prog_bar.progress(1.0, text="✅ 로딩 완료!")
+    prog_bar.empty()
 
     # 요약 통계
     if all_data:
