@@ -18,7 +18,7 @@ st.set_page_config(
     page_title="퀀트 관제탑",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # ── 스타일 ──
@@ -101,6 +101,33 @@ hr { border-color: #1e3a5f; }
     padding: 10px 0;
     border-bottom: 1px solid #1a2535;
     gap: 12px;
+}
+
+/* ── 모바일 반응형 ── */
+@media (max-width: 768px) {
+    .metric-card { padding: 10px 12px; }
+    .metric-card .value { font-size: 18px; }
+    .metric-card .label { font-size: 10px; }
+    .badge { font-size: 10px; padding: 2px 7px; }
+    .gemini-box { font-size: 13px; padding: 12px 14px; }
+    .stTabs [data-baseweb="tab"] { font-size: 11px; padding: 5px 6px; }
+    h1, h2, h3 { font-size: 16px !important; }
+}
+/* 탭 스타일 */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px; background: #080c18; padding: 4px; border-radius: 8px;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent; border-radius: 6px; color: #6b7fa3; font-weight: 600;
+}
+.stTabs [aria-selected="true"] {
+    background: #1e3a5f !important; color: #e0e6f0 !important;
+}
+/* 버튼 */
+.stButton > button {
+    background: linear-gradient(135deg, #1e3a5f, #2d5a8f);
+    color: #e0e6f0; border: 1px solid #2d5a8f;
+    border-radius: 8px; font-weight: 600;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -408,8 +435,13 @@ with tab1:
     st.markdown("### 관심 종목 현황")
 
     all_data = {}
-    cols_header = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
-    headers = ['종목', '현재가', '등락', 'RSI', 'MA5', 'MA20', '거래량비율', '신호']
+    is_mobile = st.toggle("📱 모바일 뷰", value=False)
+    if is_mobile:
+        cols_header = st.columns([2, 1.5, 1, 2])
+        headers = ['종목', '현재가/등락', 'RSI', '신호']
+    else:
+        cols_header = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
+        headers = ['종목', '현재가', '등락', 'RSI', 'MA5', 'MA20', '거래량비율', '신호']
     for col, h in zip(cols_header, headers):
         col.markdown(f"<div style='font-size:10px; color:#475569; text-transform:uppercase; letter-spacing:1px'>{h}</div>", unsafe_allow_html=True)
     st.markdown("<hr style='margin:6px 0; border-color:#1a2535'>", unsafe_allow_html=True)
@@ -429,23 +461,36 @@ with tab1:
         sigs = get_signal(df)
         chg_color = 'up' if chg > 0 else 'down' if chg < 0 else 'flat'
 
-        cols = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
-        cols[0].markdown(f"<b style='font-size:13px'>{name}</b><br><span style='font-size:10px; color:#475569; font-family:IBM Plex Mono'>{ticker}</span>", unsafe_allow_html=True)
-        cols[1].markdown(f"<span style='font-family:IBM Plex Mono; font-size:13px; font-weight:600'>{l['종가']:,.0f}</span>", unsafe_allow_html=True)
-        cols[2].markdown(f"<span class='{chg_color}' style='font-family:IBM Plex Mono; font-size:13px'>{chg:+.2f}%</span>", unsafe_allow_html=True)
-
         rsi_color = '#ff4d6d' if l['RSI']>=70 else '#4da6ff' if l['RSI']<=30 else '#a0b0c8'
-        cols[3].markdown(f"<span style='color:{rsi_color}; font-family:IBM Plex Mono; font-size:13px'>{l['RSI']:.1f}</span>", unsafe_allow_html=True)
-        cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA5']:,.0f}</span>", unsafe_allow_html=True)
-        cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA20']:,.0f}</span>", unsafe_allow_html=True)
-
         vol_color = '#ff4d6d' if volr >= 200 else '#8899bb'
-        cols[6].markdown(f"<span style='color:{vol_color}; font-family:IBM Plex Mono; font-size:12px'>{volr:.0f}%</span>", unsafe_allow_html=True)
-
         badge_html = ''
         for sig_text, sig_type in sigs:
             badge_html += f'<span class="badge badge-{sig_type}">{sig_text}</span>'
-        cols[7].markdown(badge_html, unsafe_allow_html=True)
+
+        if is_mobile:
+            cols = st.columns([2, 1.5, 1, 2])
+            cols[0].markdown(
+                f"<b style='font-size:13px'>{name}</b><br>"
+                f"<span style='font-size:10px; color:#475569'>{ticker}</span>",
+                unsafe_allow_html=True)
+            cols[1].markdown(
+                f"<span style='font-family:IBM Plex Mono; font-size:14px; font-weight:700'>{l['종가']:,.0f}</span><br>"
+                f"<span class='{chg_color}' style='font-size:12px'>{chg:+.2f}%</span>",
+                unsafe_allow_html=True)
+            cols[2].markdown(
+                f"<span style='color:{rsi_color}; font-family:IBM Plex Mono; font-size:15px; font-weight:700'>{l['RSI']:.1f}</span>",
+                unsafe_allow_html=True)
+            cols[3].markdown(badge_html, unsafe_allow_html=True)
+        else:
+            cols = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
+            cols[0].markdown(f"<b style='font-size:13px'>{name}</b><br><span style='font-size:10px; color:#475569; font-family:IBM Plex Mono'>{ticker}</span>", unsafe_allow_html=True)
+            cols[1].markdown(f"<span style='font-family:IBM Plex Mono; font-size:13px; font-weight:600'>{l['종가']:,.0f}</span>", unsafe_allow_html=True)
+            cols[2].markdown(f"<span class='{chg_color}' style='font-family:IBM Plex Mono; font-size:13px'>{chg:+.2f}%</span>", unsafe_allow_html=True)
+            cols[3].markdown(f"<span style='color:{rsi_color}; font-family:IBM Plex Mono; font-size:13px'>{l['RSI']:.1f}</span>", unsafe_allow_html=True)
+            cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA5']:,.0f}</span>", unsafe_allow_html=True)
+            cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA20']:,.0f}</span>", unsafe_allow_html=True)
+            cols[6].markdown(f"<span style='color:{vol_color}; font-family:IBM Plex Mono; font-size:12px'>{volr:.0f}%</span>", unsafe_allow_html=True)
+            cols[7].markdown(badge_html, unsafe_allow_html=True)
 
         st.markdown("<hr style='margin:4px 0; border-color:#0f1726'>", unsafe_allow_html=True)
 
