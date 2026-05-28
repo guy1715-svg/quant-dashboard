@@ -155,6 +155,20 @@ def calc_indicators(df):
     # 52주 고저
     df['52W_high'] = df['고가'].rolling(min(252, len(df))).max()
     df['52W_low']  = df['저가'].rolling(min(252, len(df))).min()
+    # OBV (On Balance Volume)
+    obv = [0]
+    for i in range(1, len(df)):
+        if df['종가'].iloc[i] > df['종가'].iloc[i-1]:
+            obv.append(obv[-1] + df['거래량'].iloc[i])
+        elif df['종가'].iloc[i] < df['종가'].iloc[i-1]:
+            obv.append(obv[-1] - df['거래량'].iloc[i])
+        else:
+            obv.append(obv[-1])
+    df['OBV'] = obv
+    df['OBV_MA'] = df['OBV'].rolling(9).mean()
+    # 지지/저항선 자동 감지 (최근 20일 고저점)
+    df['지지선'] = df['저가'].rolling(20).min()
+    df['저항선'] = df['고가'].rolling(20).max()
     return df
 
 def get_signal(df):
@@ -203,14 +217,15 @@ def build_prompt(df, name, ticker):
 # 차트 함수
 # ══════════════════════════════════════════
 
-def make_chart(df, name):
+def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=5, cols=1,
         shared_xaxes=True,
-        row_heights=[0.5, 0.15, 0.18, 0.17],
-        vertical_spacing=0.02
+        row_heights=[0.42, 0.12, 0.15, 0.15, 0.16],
+        vertical_spacing=0.02,
+        subplot_titles=('', '거래량', 'MACD', 'RSI', 'OBV')
     )
-    # 캔들
+    # ── 캔들 ──
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['시가'], high=df['고가'],
         low=df['저가'], close=df['종가'],
@@ -219,53 +234,97 @@ def make_chart(df, name):
         name='캔들', showlegend=False
     ), row=1, col=1)
 
-    # 이평선
-    colors = {'MA5':'#ffd166','MA20':'#06d6a0','MA60':'#a78bfa','MA120':'#38bdf8'}
-    for ma, c in colors.items():
+    # ── 이평선 ──
+    ma_colors = {'MA5':'#ffd166','MA20':'#06d6a0','MA60':'#a78bfa','MA120':'#38bdf8'}
+    for ma, c in ma_colors.items():
         if ma in df.columns:
             fig.add_trace(go.Scatter(x=df.index, y=df[ma], line=dict(color=c, width=1.2),
                                      name=ma, opacity=0.85), row=1, col=1)
-    # BB
-    fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], line=dict(color='#475569', width=0.8, dash='dash'),
+    # ── 볼린저밴드 ──
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'],
+                             line=dict(color='#475569', width=0.8, dash='dash'),
                              name='BB상단', showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], line=dict(color='#475569', width=0.8, dash='dash'),
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'],
+                             line=dict(color='#475569', width=0.8, dash='dash'),
                              fill='tonexty', fillcolor='rgba(71,85,105,0.08)',
                              name='BB하단', showlegend=False), row=1, col=1)
 
-    # 거래량
+    # ── 지지/저항선 ──
+    if '지지선' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['지지선'],
+                                 line=dict(color='#4dff91', width=0.8, dash='dot'),
+                                 name='지지선', opacity=0.6), row=1, col=1)
+    if '저항선' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['저항선'],
+                                 line=dict(color='#ff6b6b', width=0.8, dash='dot'),
+                                 name='저항선', opacity=0.6), row=1, col=1)
+
+    # ── 매수/손절/목표가 라인 ──
+    last_x = df.index[-1]
+    if entry:
+        fig.add_hline(y=entry, line_color='#ffd166', line_width=1.5,
+                      annotation_text=f'매수 {entry:,.0f}', annotation_position='right',
+                      annotation_font_color='#ffd166', row=1, col=1)
+    if stoploss:
+        fig.add_hline(y=stoploss, line_color='#ff4d6d', line_width=1.5, line_dash='dash',
+                      annotation_text=f'손절 {stoploss:,.0f} (-7%)', annotation_position='right',
+                      annotation_font_color='#ff4d6d', row=1, col=1)
+    if target1:
+        fig.add_hline(y=target1, line_color='#4dff91', line_width=1.5,
+                      annotation_text=f'1차목표 {target1:,.0f}', annotation_position='right',
+                      annotation_font_color='#4dff91', row=1, col=1)
+    if target2:
+        fig.add_hline(y=target2, line_color='#06d6a0', line_width=1.2, line_dash='dash',
+                      annotation_text=f'2차목표 {target2:,.0f}', annotation_position='right',
+                      annotation_font_color='#06d6a0', row=1, col=1)
+
+    # ── 거래량 ──
     colors_vol = ['#ff4d6d' if df['종가'].iloc[i] >= df['시가'].iloc[i] else '#4da6ff'
                   for i in range(len(df))]
     fig.add_trace(go.Bar(x=df.index, y=df['거래량'], marker_color=colors_vol,
                          opacity=0.7, name='거래량', showlegend=False), row=2, col=1)
 
-    # MACD
+    # ── MACD ──
     hist_colors = ['#ff4d6d' if v >= 0 else '#4da6ff' for v in df['MACD_hist']]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], marker_color=hist_colors,
                          opacity=0.6, name='히스토그램', showlegend=False), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#38bdf8', width=1.2),
-                             name='MACD'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], line=dict(color='#f472b6', width=1.2),
-                             name='Signal'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
+                             line=dict(color='#38bdf8', width=1.2), name='MACD'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'],
+                             line=dict(color='#f472b6', width=1.2), name='Signal'), row=3, col=1)
+    fig.add_hline(y=0, line_color='#2d3a55', line_width=0.5, row=3, col=1)
 
-    # RSI
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#a78bfa', width=1.5),
+    # ── RSI ──
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'],
+                             line=dict(color='#a78bfa', width=1.5),
                              name='RSI', showlegend=False), row=4, col=1)
     fig.add_hline(y=70, line_dash='dash', line_color='#ff4d6d', line_width=0.8, row=4, col=1)
     fig.add_hline(y=30, line_dash='dash', line_color='#4da6ff', line_width=0.8, row=4, col=1)
     fig.add_hrect(y0=70, y1=100, fillcolor='rgba(255,77,109,0.05)', line_width=0, row=4, col=1)
     fig.add_hrect(y0=0,  y1=30,  fillcolor='rgba(77,166,255,0.05)', line_width=0, row=4, col=1)
 
+    # ── OBV ──
+    if 'OBV' in df.columns:
+        obv_color = '#4dff91' if df['OBV'].iloc[-1] > df['OBV'].iloc[-2] else '#ff6b6b'
+        fig.add_trace(go.Scatter(x=df.index, y=df['OBV'],
+                                 line=dict(color=obv_color, width=1.3),
+                                 name='OBV', showlegend=False), row=5, col=1)
+        if 'OBV_MA' in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df['OBV_MA'],
+                                     line=dict(color='#ffd166', width=1.0, dash='dash'),
+                                     name='OBV MA9', showlegend=False), row=5, col=1)
+
     fig.update_layout(
         title=dict(text=f'<b>{name}</b>', font=dict(size=16, color='#e0e6f0'), x=0.01),
         paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
         font=dict(color='#8899bb', size=11),
         xaxis_rangeslider_visible=False,
-        height=680,
+        height=820,
         legend=dict(orientation='h', y=1.02, x=0, font=dict(size=10),
                     bgcolor='rgba(0,0,0,0)', bordercolor='rgba(0,0,0,0)'),
-        margin=dict(l=10, r=10, t=50, b=10),
+        margin=dict(l=10, r=80, t=50, b=10),
     )
-    for i in range(1, 5):
+    for i in range(1, 6):
         fig.update_xaxes(gridcolor='#1a2535', row=i, col=1, showgrid=True)
         fig.update_yaxes(gridcolor='#1a2535', row=i, col=1, showgrid=True,
                          tickfont=dict(family='IBM Plex Mono', size=10))
@@ -439,8 +498,41 @@ with tab2:
         vol_c = 'up' if l['거래량_비율']>=200 else 'flat'
         m6.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value {vol_c}'>{l['거래량_비율']:.0f}%</div></div>", unsafe_allow_html=True)
 
+        # ── 매수/손절/목표가 입력 ──
+        st.markdown("### 🎯 매수 전략 라인")
+        lc1, lc2, lc3, lc4 = st.columns(4)
+        entry_price   = lc1.number_input("매수가 (원)", value=0, step=100,
+                                          help="입력하면 차트에 황금색 선으로 표시")
+        stop_price    = lc2.number_input("손절가 (원, -7% 자동계산)",
+                                          value=int(l['종가']*0.93) if entry_price==0 else int(entry_price*0.93),
+                                          step=100)
+        target1_price = lc3.number_input("1차 목표가 (원)", value=0, step=100)
+        target2_price = lc4.number_input("2차 목표가 (원)", value=0, step=100)
+
+        # R:R 자동 계산
+        if entry_price > 0 and stop_price > 0 and target1_price > 0:
+            risk   = entry_price - stop_price
+            reward = target1_price - entry_price
+            rr     = round(reward/risk, 2) if risk > 0 else 0
+            rr_color = '#4dff91' if rr >= 2.0 else '#ff4d6d'
+            rr_text  = '✅ 진입 가능' if rr >= 2.0 else '❌ R:R 부족 (2.0 미만 기각)'
+            st.markdown(
+                f"<div class='metric-card' style='display:inline-block; padding:10px 20px'>"
+                f"<span style='color:#6b7fa3; font-size:11px'>R:R 비율</span> "
+                f"<span style='color:{rr_color}; font-size:20px; font-weight:700; font-family:IBM Plex Mono'> {rr}</span> "
+                f"<span style='color:{rr_color}; font-size:13px'>{rr_text}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
         # 차트
-        fig = make_chart(sel_df, sel_name)
+        fig = make_chart(
+            sel_df, sel_name,
+            entry    = entry_price   if entry_price   > 0 else None,
+            stoploss = stop_price    if stop_price     > 0 else None,
+            target1  = target1_price if target1_price  > 0 else None,
+            target2  = target2_price if target2_price  > 0 else None,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # 이평선 상태 테이블
