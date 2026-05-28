@@ -339,7 +339,7 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab1, tab2, tab3 = st.tabs(["📊 현황판", "📈 차트 분석", "🤖 Gemini 분석"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너"])
 
 
 # ══════════════════════════════════════════
@@ -493,6 +493,190 @@ with tab3:
                                         unsafe_allow_html=True)
                         except Exception as e:
                             st.error(f"오류: {e}")
+
+
+# ══════════════════════════════════════════
+# 탭 4: 추천 스캐너
+# ══════════════════════════════════════════
+with tab4:
+    st.markdown("### 🔍 주도 종목 자동 스캐너")
+    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:16px'>거래대금 상위 종목 중 조건 충족 종목을 자동 발굴합니다.</div>", unsafe_allow_html=True)
+
+    # 스캔 조건 설정
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown("**📋 스캔 대상**")
+        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ"])
+        top_n = st.slider("거래대금 상위 N종목", 20, 200, 50)
+    with col_b:
+        st.markdown("**🎯 필터 조건**")
+        use_rsi     = st.checkbox("RSI 과매도 (≤35)", value=True)
+        use_vol     = st.checkbox("거래량 폭발 (≥150%)", value=True)
+        use_macd    = st.checkbox("MACD 골든크로스", value=False)
+        use_bb      = st.checkbox("BB 하단 근접 (≤25%)", value=False)
+        use_align   = st.checkbox("정배열 (MA5>MA20>MA60)", value=False)
+    with col_c:
+        st.markdown("**⚙️ 추가 설정**")
+        min_price   = st.number_input("최소 주가 (원)", value=5000, step=1000)
+        max_price   = st.number_input("최대 주가 (원)", value=2000000, step=10000)
+        use_gemini_scan = st.checkbox("Gemini 최종 분석 포함", value=False)
+
+    scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
+
+    if scan_btn:
+        from pykrx import stock as krx
+
+        # 대상 종목 수집
+        today = datetime.today().strftime('%Y%m%d')
+        prev  = (datetime.today() - timedelta(days=5)).strftime('%Y%m%d')
+
+        with st.spinner('거래대금 상위 종목 수집 중...'):
+            try:
+                tickers_kospi  = []
+                tickers_kosdaq = []
+
+                if market_type in ["KOSPI", "KOSPI+KOSDAQ"]:
+                    df_val = krx.get_market_trading_volume_by_ticker(today, market="KOSPI")
+                    if df_val.empty:
+                        df_val = krx.get_market_trading_volume_by_ticker(prev, market="KOSPI")
+                    tickers_kospi = list(df_val.index[:top_n])
+
+                if market_type in ["KOSDAQ", "KOSPI+KOSDAQ"]:
+                    df_val2 = krx.get_market_trading_volume_by_ticker(today, market="KOSDAQ")
+                    if df_val2.empty:
+                        df_val2 = krx.get_market_trading_volume_by_ticker(prev, market="KOSDAQ")
+                    tickers_kosdaq = list(df_val2.index[:top_n])
+
+                scan_tickers = tickers_kospi + tickers_kosdaq
+                st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
+            except Exception as e:
+                st.error(f"종목 수집 오류: {e}")
+                scan_tickers = []
+
+        if scan_tickers:
+            # 종목명 가져오기
+            try:
+                name_map_k = krx.get_market_ticker_name(today, market="KOSPI") if market_type in ["KOSPI","KOSPI+KOSDAQ"] else {}
+                name_map_q = krx.get_market_ticker_name(today, market="KOSDAQ") if market_type in ["KOSDAQ","KOSPI+KOSDAQ"] else {}
+                name_map = {**name_map_k, **name_map_q}
+            except:
+                name_map = {}
+
+            passed = []
+            progress = st.progress(0)
+            status_text = st.empty()
+
+            for idx, ticker in enumerate(scan_tickers):
+                progress.progress((idx+1)/len(scan_tickers))
+                name = name_map.get(ticker, ticker)
+                status_text.markdown(f"<span style='font-size:12px; color:#6b7fa3'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+
+                try:
+                    df = fetch_ohlcv(ticker, 60)
+                    if df is None or len(df) < 20: continue
+
+                    l = df.iloc[-1]
+                    # 가격 필터
+                    if l['종가'] < min_price or l['종가'] > max_price: continue
+
+                    df = calc_indicators(df)
+                    l  = df.iloc[-1]
+                    p  = df.iloc[-2]
+
+                    volr = l['거래량']/df['거래량'].tail(20).mean()*100
+                    bb_r = l['BB_upper']-l['BB_lower']
+                    bb_p = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
+
+                    score = 0
+                    reasons = []
+
+                    if use_rsi and l['RSI'] <= 35:
+                        score += 2; reasons.append(f"📉RSI {l['RSI']:.1f}")
+                    if use_vol and volr >= 150:
+                        score += 2; reasons.append(f"🔥거래량{volr:.0f}%")
+                    if use_macd and l['MACD'] > l['Signal'] and p['MACD'] <= p['Signal']:
+                        score += 3; reasons.append("⚡골든크로스")
+                    if use_bb and bb_p <= 25:
+                        score += 2; reasons.append(f"📊BB하단{bb_p}%")
+                    if use_align and l['종가'] > l['MA5'] > l['MA20'] > l['MA60']:
+                        score += 2; reasons.append("✅정배열")
+
+                    if score > 0:
+                        chg = (l['종가']/p['종가']-1)*100
+                        passed.append({
+                            'ticker': ticker,
+                            'name': name,
+                            '현재가': l['종가'],
+                            '등락(%)': chg,
+                            'RSI': l['RSI'],
+                            '거래량비율': volr,
+                            'BB위치': bb_p,
+                            'score': score,
+                            'reasons': reasons,
+                            'df': df
+                        })
+                except:
+                    continue
+
+            progress.empty()
+            status_text.empty()
+
+            # 점수순 정렬
+            passed = sorted(passed, key=lambda x: x['score'], reverse=True)
+
+            if not passed:
+                st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
+            else:
+                st.success(f"✅ {len(passed)}개 종목 발굴 완료!")
+                st.markdown("---")
+
+                # 결과 출력
+                for item in passed:
+                    chg_color = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
+                    badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
+
+                    with st.expander(
+                        f"⭐{'★'*min(item['score'],5)}  {item['name']} ({item['ticker']})  "
+                        f"{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%",
+                        expanded=(item == passed[0])
+                    ):
+                        c1, c2, c3, c4, c5 = st.columns(5)
+                        c1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{item['현재가']:,.0f}</div></div>", unsafe_allow_html=True)
+                        c2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value' style='color:{chg_color}'>{item['등락(%)']: +.2f}%</div></div>", unsafe_allow_html=True)
+                        rsi_c = '#4da6ff' if item['RSI']<=35 else '#ff4d6d' if item['RSI']>=70 else '#a0b0c8'
+                        c3.markdown(f"<div class='metric-card'><div class='label'>RSI</div><div class='value' style='color:{rsi_c}'>{item['RSI']:.1f}</div></div>", unsafe_allow_html=True)
+                        c4.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{item['거래량비율']:.0f}%</div></div>", unsafe_allow_html=True)
+                        c5.markdown(f"<div class='metric-card'><div class='label'>선정 점수</div><div class='value up'>{item['score']}점</div></div>", unsafe_allow_html=True)
+
+                        st.markdown(f"**선정 이유:** {badge_html}", unsafe_allow_html=True)
+
+                        # 미니 차트
+                        mini_df = item['df']
+                        fig = make_chart(mini_df, item['name'])
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # Gemini 분석
+                        if use_gemini_scan and gemini_key:
+                            if st.button(f"🤖 {item['name']} Gemini 분석", key=f"scan_gem_{item['ticker']}"):
+                                import google.generativeai as genai
+                                genai.configure(api_key=gemini_key)
+                                gmodel = genai.GenerativeModel(model_name)
+                                SYSTEM = (
+                                    'You are a Korean stock quantitative analysis AI. '
+                                    'Always respond in Korean. '
+                                    'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
+                                    'No entry 09:00-09:30 KST / No averaging down'
+                                )
+                                prompt = build_prompt(item['df'], item['name'], item['ticker'])
+                                with st.spinner('분석 중...'):
+                                    try:
+                                        res = gmodel.generate_content(SYSTEM + '\n\n' + prompt)
+                                        st.markdown(f"<div class='gemini-box'>{res.text}</div>", unsafe_allow_html=True)
+                                    except Exception as e:
+                                        st.error(f"오류: {e}")
+
+                        # 관심종목 추가 안내
+                        st.markdown(f"<div style='font-size:12px; color:#475569; margin-top:8px'>💡 관심종목에 추가하려면 사이드바에 <code>{item['ticker']},{item['name']}</code> 입력</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; font-size:11px; color:#2d3a55; font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
