@@ -784,7 +784,7 @@ with tab4:
                     ):
                         c1, c2, c3, c4, c5 = st.columns(5)
                         c1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{item['현재가']:,.0f}</div></div>", unsafe_allow_html=True)
-                        c2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value' style='color:{chg_color}'>{item['등락(%)']: +.2f}%</div></div>", unsafe_allow_html=True)
+                        c2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value' style='color:{chg_color}'>{item['등락(%)']:+.2f}%</div></div>", unsafe_allow_html=True)
                         rsi_c = '#4da6ff' if item['RSI']<=35 else '#ff4d6d' if item['RSI']>=70 else '#a0b0c8'
                         c3.markdown(f"<div class='metric-card'><div class='label'>RSI</div><div class='value' style='color:{rsi_c}'>{item['RSI']:.1f}</div></div>", unsafe_allow_html=True)
                         c4.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{item['거래량비율']:.0f}%</div></div>", unsafe_allow_html=True)
