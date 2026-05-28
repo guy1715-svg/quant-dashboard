@@ -139,34 +139,26 @@ hr { border-color: #1e3a5f; }
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
-    from pykrx import stock
-    import time
-    end   = datetime.today().strftime('%Y%m%d')
-    start = (datetime.today() - timedelta(days=lookback*2)).strftime('%Y%m%d')
-    # 장 미개장일 경우 최근 영업일 탐색
-    for days_back in [0, 1, 2, 3, 4, 7]:
+    import yfinance as yf
+    # 한국 종목: 종목코드 + .KS (코스피) 또는 .KQ (코스닥)
+    end   = datetime.today()
+    start = end - timedelta(days=lookback*2)
+    # KS 먼저 시도, 실패 시 KQ
+    for suffix in ['.KS', '.KQ']:
         try:
-            end_try = (datetime.today() - timedelta(days=days_back)).strftime('%Y%m%d')
-            df = stock.get_market_ohlcv(start, end_try, ticker)
+            yt = yf.Ticker(ticker + suffix)
+            df = yt.history(start=start, end=end, interval='1d')
             if df is None or df.empty:
-                time.sleep(0.3)
                 continue
-            rename = {}
-            for c in df.columns:
-                if '시가'  in c: rename[c] = '시가'
-                elif '고가' in c: rename[c] = '고가'
-                elif '저가' in c: rename[c] = '저가'
-                elif '종가' in c: rename[c] = '종가'
-                elif '거래량' in c: rename[c] = '거래량'
-            df = df.rename(columns=rename)
-            df = df[[c for c in ['시가','고가','저가','종가','거래량'] if c in df.columns]]
-            if len(df.columns) < 5:
-                continue
+            df = df.rename(columns={
+                'Open':'시가', 'High':'고가', 'Low':'저가',
+                'Close':'종가', 'Volume':'거래량'
+            })
+            df = df[['시가','고가','저가','종가','거래량']]
             df = df[df['거래량'] > 0].tail(lookback)
             if len(df) >= 5:
                 return df
         except Exception:
-            time.sleep(0.5)
             continue
     return None
 
@@ -679,43 +671,38 @@ with tab4:
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
 
     if scan_btn:
-        from pykrx import stock as krx
+        # 스캐너: 사용자가 직접 입력한 종목 + 기본 주요 종목 스캔
+        # (Streamlit Cloud 환경에서는 pykrx 전체 종목 스캔 불가)
+        DEFAULT_SCAN = [
+            ("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),
+            ("035420","NAVER"),("035720","카카오"),("012450","한화에어로스페이스"),
+            ("329180","HD현대중공업"),("015760","한국전력"),("034730","SK"),
+            ("051910","LG화학"),("028260","삼성물산"),("003670","포스코퓨처엠"),
+            ("247540","에코프로비엠"),("086520","에코프로"),("006400","삼성SDI"),
+            ("207940","삼성바이오로직스"),("068270","셀트리온"),("096770","SK이노베이션"),
+            ("011200","HMM"),("010130","고려아연"),("000270","기아"),("005380","현대차"),
+            ("066570","LG전자"),("316140","우리금융지주"),("055550","신한지주"),
+            ("105560","KB금융"),("032830","삼성생명"),("017670","SK텔레콤"),
+            ("030200","KT"),("018260","삼성에스디에스"),
+        ]
+        # 사용자 관심종목도 스캔에 포함
+        extra = [(t,n) for t,n in TICKERS if (t,n) not in DEFAULT_SCAN]
+        scan_list = DEFAULT_SCAN + extra
+        # 시장 필터
+        if market_type == "KOSPI":
+            scan_list = scan_list[:20]
+        elif market_type == "KOSDAQ":
+            scan_list = [("042700","한미반도체"),("086520","에코프로"),
+                         ("247540","에코프로비엠"),("003670","포스코퓨처엠")] + extra
+        scan_list = scan_list[:top_n]
+        scan_tickers = [t for t,n in scan_list]
+        name_map = {t:n for t,n in scan_list}
 
-        # 대상 종목 수집
-        today = datetime.today().strftime('%Y%m%d')
-        prev  = (datetime.today() - timedelta(days=5)).strftime('%Y%m%d')
-
-        with st.spinner('거래대금 상위 종목 수집 중...'):
-            try:
-                tickers_kospi  = []
-                tickers_kosdaq = []
-
-                if market_type in ["KOSPI", "KOSPI+KOSDAQ"]:
-                    df_val = krx.get_market_trading_volume_by_ticker(today, market="KOSPI")
-                    if df_val.empty:
-                        df_val = krx.get_market_trading_volume_by_ticker(prev, market="KOSPI")
-                    tickers_kospi = list(df_val.index[:top_n])
-
-                if market_type in ["KOSDAQ", "KOSPI+KOSDAQ"]:
-                    df_val2 = krx.get_market_trading_volume_by_ticker(today, market="KOSDAQ")
-                    if df_val2.empty:
-                        df_val2 = krx.get_market_trading_volume_by_ticker(prev, market="KOSDAQ")
-                    tickers_kosdaq = list(df_val2.index[:top_n])
-
-                scan_tickers = tickers_kospi + tickers_kosdaq
-                st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
-            except Exception as e:
-                st.error(f"종목 수집 오류: {e}")
-                scan_tickers = []
+        with st.spinner(f'종목 스캔 준비 중... ({len(scan_tickers)}종목)'):
+            st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
 
         if scan_tickers:
-            # 종목명 가져오기
-            try:
-                name_map_k = krx.get_market_ticker_name(today, market="KOSPI") if market_type in ["KOSPI","KOSPI+KOSDAQ"] else {}
-                name_map_q = krx.get_market_ticker_name(today, market="KOSDAQ") if market_type in ["KOSDAQ","KOSPI+KOSDAQ"] else {}
-                name_map = {**name_map_k, **name_map_q}
-            except:
-                name_map = {}
+            pass  # 아래에서 처리
 
             passed = []
             progress = st.progress(0)
