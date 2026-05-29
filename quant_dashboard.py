@@ -1073,25 +1073,15 @@ with tab4:
                                     except Exception as e:
                                         st.error(f"오류: {e}")
 
-                        # 관심종목 추가 안내
-                        # 원클릭 관심종목 추가
-                        cur_tickers = [l.split(',')[0].strip()
-                                       for l in st.session_state.watchlist.split('\n')
-                                       if ',' in l]
-                        # ── 원클릭 관심종목 추가 ──
-                        cur_lines   = [l.strip() for l in st.session_state.watchlist.split('\n') if ',' in l]
-                        cur_tickers = [l.split(',')[0].strip() for l in cur_lines]
-
+                        # ── 관심종목 추가 (파일 기반) ──
+                        wl_cur = load_watchlist()
+                        cur_tickers = [l.split(',')[0].strip() for l in wl_cur.split('\n') if ',' in l]
                         if item['ticker'] in cur_tickers:
-                            st.success(f"✅ {item['name']} — 이미 관심종목에 있습니다")
+                            st.markdown("<div style='color:#4dff91; font-size:13px'>✅ 관심종목 관리 탭에서 확인</div>", unsafe_allow_html=True)
                         else:
-                            btn_label = f"⭐ [{item['name']}] 관심종목 추가"
-                            if st.button(btn_label, key=f"add_{item['ticker']}", use_container_width=True):
-                                # session_state 직접 수정
-                                new_line = f"{item['ticker']},{item['name']}"
-                                st.session_state.watchlist = st.session_state.watchlist.strip() + f"\n{new_line}"
-                                st.success(f"✅ {item['name']} 추가 완료! 사이드바와 현황판에 반영됩니다.")
-                                import time; time.sleep(0.8)
+                            if st.button(f"⭐ 관심종목 추가", key=f"add_{item['ticker']}", use_container_width=True):
+                                save_watchlist(wl_cur.strip() + f"\n{item['ticker']},{item['name']}")
+                                st.success(f"✅ {item['name']} 추가! 관심종목 관리 탭에서 확인하세요.")
                                 st.rerun()
 
 # ══════════════════════════════════════════
