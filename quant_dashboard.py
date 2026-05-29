@@ -32,6 +32,8 @@ if 'watchlist' not in st.session_state:
     )
 if 'watchlist_updated' not in st.session_state:
     st.session_state.watchlist_updated = False
+if 'passed' not in st.session_state:
+    st.session_state.passed = []
 
 def add_to_watchlist(ticker, name):
     """관심종목에 원클릭 추가"""
@@ -469,7 +471,7 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab0, tab1, tab2, tab3, tab4 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너"])
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너", "⭐ 관심종목 관리"])
 
 
 
@@ -1006,6 +1008,8 @@ with tab4:
 
             # 점수순 정렬
             passed = sorted(passed, key=lambda x: x['score'], reverse=True)
+            # session_state에 저장 (관심종목 관리 탭에서 사용)
+            st.session_state.passed = [{k:v for k,v in p.items() if k != 'df'} | {'df': p['df']} for p in passed]
 
             if not passed:
                 st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
@@ -1078,6 +1082,93 @@ with tab4:
                                 st.success(f"✅ {item['name']} 추가 완료! 사이드바와 현황판에 반영됩니다.")
                                 import time; time.sleep(0.8)
                                 st.rerun()
+
+# ══════════════════════════════════════════
+# 탭 5: 관심종목 관리
+# ══════════════════════════════════════════
+with tab5:
+    st.markdown("### ⭐ 관심종목 관리")
+    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:16px'>여기서 추가/삭제하면 현황판·차트 탭에 바로 반영됩니다.</div>", unsafe_allow_html=True)
+
+    # 현재 목록
+    cur_lines = [l.strip() for l in st.session_state.watchlist.split('\n') if ',' in l.strip()]
+    cur_tickers_mgr = [l.split(',')[0].strip() for l in cur_lines]
+
+    st.markdown("#### 현재 관심종목")
+
+    # 종목별 삭제 버튼
+    to_delete = None
+    for i, line in enumerate(cur_lines):
+        parts = line.split(',')
+        if len(parts) < 2: continue
+        t, n = parts[0].strip(), parts[1].strip()
+        col_name, col_del = st.columns([4, 1])
+        col_name.markdown(
+            f"<div style='padding:8px 12px; background:#111827; border-radius:8px; "
+            f"border:1px solid #1e3a5f; font-size:14px'>"
+            f"<b>{n}</b> <span style='color:#475569; font-size:12px; font-family:IBM Plex Mono'>({t})</span></div>",
+            unsafe_allow_html=True
+        )
+        if col_del.button("🗑️ 삭제", key=f"del_{t}_{i}"):
+            to_delete = line
+
+    if to_delete:
+        new_lines = [l for l in cur_lines if l != to_delete]
+        st.session_state.watchlist = '\n'.join(new_lines)
+        st.rerun()
+
+    st.markdown("---")
+
+    # 직접 추가
+    st.markdown("#### 종목 직접 추가")
+    col_t, col_n, col_add = st.columns([1.5, 2, 1])
+    new_ticker = col_t.text_input("종목코드", placeholder="005930", key="new_ticker_input")
+    new_name   = col_n.text_input("종목명",   placeholder="삼성전자", key="new_name_input")
+    col_add.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if col_add.button("➕ 추가", key="manual_add", use_container_width=True):
+        if new_ticker and new_name:
+            if new_ticker.strip() not in cur_tickers_mgr:
+                st.session_state.watchlist = (
+                    st.session_state.watchlist.strip() + f"\n{new_ticker.strip()},{new_name.strip()}"
+                )
+                st.success(f"✅ {new_name} 추가 완료!")
+                st.rerun()
+            else:
+                st.warning("이미 등록된 종목입니다.")
+        else:
+            st.warning("종목코드와 종목명을 모두 입력해주세요.")
+
+    st.markdown("---")
+
+    # 스캐너 추천 종목 빠른 추가
+    if 'passed' in st.session_state and st.session_state.passed:
+        st.markdown("#### 🔍 스캐너 추천 종목 추가")
+        for item in st.session_state.passed:
+            if item['ticker'] not in cur_tickers_mgr:
+                col_i, col_b = st.columns([4, 1])
+                chg_c = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
+                badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
+                col_i.markdown(
+                    f"<div style='padding:8px 12px; background:#111827; border-radius:8px; border:1px solid #1e3a5f'>"
+                    f"<b>{item['name']}</b> <span style='color:#475569; font-size:12px'>({item['ticker']})</span> "
+                    f"<span style='color:{chg_c}'>{item['등락(%)']:+.2f}%</span> {badge_html}</div>",
+                    unsafe_allow_html=True
+                )
+                if col_b.button("⭐ 추가", key=f"mgr_add_{item['ticker']}"):
+                    st.session_state.watchlist = (
+                        st.session_state.watchlist.strip() + f"\n{item['ticker']},{item['name']}"
+                    )
+                    st.rerun()
+            else:
+                col_i, col_b = st.columns([4, 1])
+                col_i.markdown(
+                    f"<div style='padding:8px 12px; background:#0a1a0a; border-radius:8px; border:1px solid #2d6644'>"
+                    f"<b>{item['name']}</b> <span style='color:#4dff91; font-size:12px'>✅ 추가됨</span></div>",
+                    unsafe_allow_html=True
+                )
+                col_b.markdown("")
+    else:
+        st.info("💡 추천 스캐너 탭에서 먼저 스캔을 실행하면 여기서 바로 추가할 수 있습니다.")
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; font-size:11px; color:#2d3a55; font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
