@@ -1079,7 +1079,7 @@ with tab4:
                         if item['ticker'] in cur_tickers:
                             st.markdown("<div style='color:#4dff91; font-size:13px'>✅ 관심종목 관리 탭에서 확인</div>", unsafe_allow_html=True)
                         else:
-                            if st.button(f"⭐ 관심종목 추가", key=f"add_{item['ticker']}", use_container_width=True):
+                            if st.button(f"⭐ 관심종목 추가", key=f"tab4_add_{item['ticker']}", use_container_width=True):
                                 save_watchlist(wl_cur.strip() + f"\n{item['ticker']},{item['name']}")
                                 st.success(f"✅ {item['name']} 추가! 관심종목 관리 탭에서 확인하세요.")
                                 st.rerun()
@@ -1109,7 +1109,7 @@ with tab5:
             f"<b>{nm}</b> <code style='color:#475569'>{tk}</code></div>",
             unsafe_allow_html=True
         )
-        if c2.button("삭제", key=f"del2_{tk}"):
+        if c2.button("🗑️ 삭제", key=f"tab5_del_{tk}"):
             new_lines = [l for l in wl_lines if not l.startswith(tk+',')]
             save_watchlist('\n'.join(new_lines))
             st.success(f"🗑️ {nm} 삭제!")
@@ -1122,7 +1122,7 @@ with tab5:
     c1, c2 = st.columns(2)
     inp_code = c1.text_input("종목코드 (6자리)", placeholder="005930")
     inp_name = c2.text_input("종목명", placeholder="삼성전자")
-    if st.button("✅ 추가하기", use_container_width=True):
+    if st.button("✅ 추가하기", key="tab5_manual_add", use_container_width=True):
         if inp_code and inp_name:
             if inp_code.strip() not in wl_dict:
                 save_watchlist(wl_text.strip() + f"\n{inp_code.strip()},{inp_name.strip()}")
@@ -1154,7 +1154,7 @@ with tab5:
                 unsafe_allow_html=True
             )
             if not already:
-                if c2.button("추가", key=f"sadd_{tk}"):
+                if c2.button("⭐ 추가", key=f"tab5_add_{tk}"):
                     save_watchlist(load_watchlist().strip() + f"\n{tk},{nm}")
                     st.success(f"✅ {nm} 추가!")
                     st.rerun()
