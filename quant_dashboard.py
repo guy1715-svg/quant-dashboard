@@ -108,6 +108,8 @@ def remove_ticker(ticker):
 # session_state 초기화
 if 'passed' not in st.session_state:
     st.session_state.passed = []
+if '_keep_passed' not in st.session_state:
+    st.session_state._keep_passed = False
 if 'watchlist_data' not in st.session_state:
     st.session_state.watchlist_data = DEFAULT_WATCHLIST
 
@@ -1017,7 +1019,13 @@ with tab4:
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
 
+    # 추가 버튼으로 인한 rerun 시 passed 유지
+    if st.session_state._keep_passed:
+        st.session_state._keep_passed = False
+        # passed 유지된 채로 계속 진행
+
     if scan_btn:
+        st.session_state.passed = []  # 새 스캔 시에만 초기화
         # 스캐너: 사용자가 직접 입력한 종목 + 기본 주요 종목 스캔
         # (Streamlit Cloud 환경에서는 pykrx 전체 종목 스캔 불가)
         DEFAULT_SCAN = [
@@ -1127,16 +1135,19 @@ with tab4:
             _sc_wl   = st.session_state.get('watchlist_data', None) or load_watchlist()
             _sc_ids  = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
 
-            # 추가 버튼 — 사이드바 방식과 동일하게 (rerun 없이)
+            # 추가 버튼 콜백 — passed 보존
             def _scan_add(tk, nm):
                 try:
                     _ws = get_gsheet()
                     _ws.append_row([tk, nm])
-                    _new = _sc_wl.strip() + f"\n{tk},{nm}"
+                    _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
+                    _new = _cur.strip() + f"\n{tk},{nm}"
                     st.session_state.watchlist_data = _new
                     load_watchlist.clear()
+                    # passed 유지 (초기화 방지)
+                    st.session_state._keep_passed = True
                 except Exception as _e:
-                    st.error(f"추가 오류: {_e}")
+                    pass
 
             for item in st.session_state.passed:
                 chg_color = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
