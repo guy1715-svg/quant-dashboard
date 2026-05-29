@@ -137,7 +137,7 @@ hr { border-color: #1e3a5f; }
 # 데이터 함수
 # ══════════════════════════════════════════
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
     import yfinance as yf
     # 한국 종목: 종목코드 + .KS (코스피) 또는 .KQ (코스닥)
@@ -388,9 +388,12 @@ with st.sidebar:
         "models/gemini-3.1-pro-preview",
     ])
 
-    refresh = st.button("🔄 데이터 새로고침", use_container_width=True)
+    st.markdown(f"<div style='font-size:10px; color:#475569; text-align:center'>마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
+    refresh = st.button("🔄 강제 새로고침", use_container_width=True)
     if refresh:
         st.cache_data.clear()
+        st.success("캐시 초기화 완료!")
+        import time; time.sleep(0.5)
         st.rerun()
 
     st.markdown("---")
@@ -430,8 +433,210 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab1, tab2, tab3, tab4 = st.tabs(["📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너"])
+tab0, tab1, tab2, tab3, tab4 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너"])
 
+
+
+# ══════════════════════════════════════════
+# 탭 0: 시장 지수
+# ══════════════════════════════════════════
+with tab0:
+    st.markdown("### 🌏 시장 지수 & 투자자 동향")
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def fetch_index_data():
+        import yfinance as yf
+        indices = {
+            "코스피": "^KS11",
+            "코스닥": "^KQ11",
+            "코스피200선물": "KSF24.KS",
+            "S&P500": "^GSPC",
+            "나스닥": "^IXIC",
+            "달러/원": "KRW=X",
+            "공포탐욕(VIX)": "^VIX",
+        }
+        result = {}
+        for name, symbol in indices.items():
+            try:
+                t = yf.Ticker(symbol)
+                hist = t.history(period="5d", interval="1d")
+                if hist.empty: continue
+                cur  = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2] if len(hist)>=2 else cur
+                chg  = (cur/prev-1)*100
+                result[name] = {'현재': cur, '등락': chg, '심볼': symbol}
+            except:
+                continue
+        return result
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def fetch_investor_data():
+        """외인/기관/개인 투자자 동향 — pykrx"""
+        try:
+            from pykrx import stock
+            today = datetime.today().strftime('%Y%m%d')
+            start = (datetime.today() - timedelta(days=10)).strftime('%Y%m%d')
+            # 코스피 투자자별 거래대금
+            df = stock.get_market_trading_value_by_date(start, today, "KOSPI")
+            if df.empty:
+                return None
+            df.index = pd.to_datetime(df.index)
+            return df.tail(5)
+        except:
+            return None
+
+    with st.spinner("지수 데이터 로딩 중..."):
+        idx_data    = fetch_index_data()
+        inv_data    = fetch_investor_data()
+
+    # ── 지수 카드 ──
+    st.markdown("#### 📈 주요 지수")
+    if idx_data:
+        # 1행: 국내
+        domestic = ["코스피","코스닥","코스피200선물"]
+        cols_d = st.columns(3)
+        for i, name in enumerate(domestic):
+            if name in idx_data:
+                d = idx_data[name]
+                chg_c = '#ff4d6d' if d['등락']>0 else '#4da6ff'
+                arrow = '▲' if d['등락']>0 else '▼'
+                # 지수/환율 포맷
+                if name == "달러/원":
+                    val_str = f"{d['현재']:,.2f}"
+                elif name in ["공포탐욕(VIX)"]:
+                    val_str = f"{d['현재']:.2f}"
+                else:
+                    val_str = f"{d['현재']:,.2f}"
+                cols_d[i].markdown(
+                    f"<div class='metric-card'>"
+                    f"<div class='label'>{name}</div>"
+                    f"<div class='value flat' style='font-size:20px'>{val_str}</div>"
+                    f"<div style='color:{chg_c}; font-size:14px; font-family:IBM Plex Mono; margin-top:4px'>"
+                    f"{arrow} {abs(d['등락']):.2f}%</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+        # 2행: 해외 + 매크로
+        global_names = ["S&P500","나스닥","달러/원","공포탐욕(VIX)"]
+        cols_g = st.columns(4)
+        for i, name in enumerate(global_names):
+            if name in idx_data:
+                d = idx_data[name]
+                chg_c = '#ff4d6d' if d['등락']>0 else '#4da6ff'
+                # VIX는 오를수록 위험 — 색상 반전
+                if name == "공포탐욕(VIX)":
+                    chg_c = '#ff4d6d' if d['등락']>0 else '#4dff91'
+                arrow = '▲' if d['등락']>0 else '▼'
+                val_str = f"{d['현재']:,.2f}"
+                cols_g[i].markdown(
+                    f"<div class='metric-card'>"
+                    f"<div class='label'>{name}</div>"
+                    f"<div class='value flat' style='font-size:20px'>{val_str}</div>"
+                    f"<div style='color:{chg_c}; font-size:14px; font-family:IBM Plex Mono; margin-top:4px'>"
+                    f"{arrow} {abs(d['등락']):.2f}%</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+    else:
+        st.warning("지수 데이터 로딩 실패")
+
+    st.markdown("---")
+
+    # ── 투자자 동향 ──
+    st.markdown("#### 👥 코스피 투자자별 순매수 (최근 5거래일)")
+    if inv_data is not None and not inv_data.empty:
+        try:
+            # 컬럼 정리
+            inv_show = inv_data.copy()
+            col_map = {}
+            for c in inv_show.columns:
+                if '외국인' in c or '외인' in c: col_map[c] = '외국인'
+                elif '기관' in c and '합계' in c: col_map[c] = '기관합계'
+                elif '개인' in c: col_map[c] = '개인'
+                elif '기관' in c and '계' not in c: col_map[c] = c
+            inv_show = inv_show.rename(columns=col_map)
+            keep_cols = [c for c in ['외국인','기관합계','개인'] if c in inv_show.columns]
+            if keep_cols:
+                inv_show = inv_show[keep_cols]
+                inv_show.index = inv_show.index.strftime('%m/%d')
+
+                # 차트
+                fig_inv = go.Figure()
+                colors_inv = {'외국인':'#4da6ff','기관합계':'#ffd166','개인':'#ff4d6d'}
+                for col in inv_show.columns:
+                    c = colors_inv.get(col, '#a78bfa')
+                    fig_inv.add_trace(go.Bar(
+                        name=col,
+                        x=inv_show.index,
+                        y=inv_show[col]/1e8,  # 억원 단위
+                        marker_color=c,
+                        opacity=0.85
+                    ))
+                fig_inv.update_layout(
+                    barmode='group',
+                    paper_bgcolor='#0a0e1a',
+                    plot_bgcolor='#0f1726',
+                    font=dict(color='#8899bb', size=11),
+                    height=300,
+                    margin=dict(l=10,r=10,t=20,b=10),
+                    legend=dict(orientation='h', y=1.1),
+                    yaxis=dict(title='억원', gridcolor='#1a2535'),
+                    xaxis=dict(gridcolor='#1a2535'),
+                )
+                fig_inv.add_hline(y=0, line_color='#475569', line_width=0.8)
+                st.plotly_chart(fig_inv, use_container_width=True)
+
+                # 수치 테이블
+                st.markdown("**수치 (억원)**")
+                inv_disp = (inv_show/1e8).round(0).astype(int)
+                st.dataframe(
+                    inv_disp.style.applymap(
+                        lambda v: 'color: #ff4d6d' if v > 0 else 'color: #4da6ff'
+                    ),
+                    use_container_width=True
+                )
+        except Exception as e:
+            st.warning(f"투자자 데이터 표시 오류: {e}")
+    else:
+        st.info("💡 투자자 순매수 데이터는 장 마감 후 업데이트됩니다.")
+
+    # ── 코스피 지수 차트 ──
+    st.markdown("---")
+    st.markdown("#### 📊 코스피 최근 60일 차트")
+    try:
+        import yfinance as yf
+        kospi_hist = yf.Ticker("^KS11").history(period="3mo", interval="1d")
+        if not kospi_hist.empty:
+            fig_k = go.Figure()
+            colors_k = ['#ff4d6d' if kospi_hist['Close'].iloc[i] >= kospi_hist['Open'].iloc[i]
+                        else '#4da6ff' for i in range(len(kospi_hist))]
+            fig_k.add_trace(go.Candlestick(
+                x=kospi_hist.index,
+                open=kospi_hist['Open'], high=kospi_hist['High'],
+                low=kospi_hist['Low'], close=kospi_hist['Close'],
+                increasing_line_color='#ff4d6d', decreasing_line_color='#4da6ff',
+                increasing_fillcolor='#ff4d6d', decreasing_fillcolor='#4da6ff',
+                name='코스피', showlegend=False
+            ))
+            # 20일 이평선
+            ma20 = kospi_hist['Close'].rolling(20).mean()
+            fig_k.add_trace(go.Scatter(
+                x=kospi_hist.index, y=ma20,
+                line=dict(color='#06d6a0', width=1.5), name='MA20'
+            ))
+            fig_k.update_layout(
+                paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
+                font=dict(color='#8899bb', size=11),
+                xaxis_rangeslider_visible=False,
+                height=350,
+                margin=dict(l=10,r=10,t=20,b=10),
+                xaxis=dict(gridcolor='#1a2535'),
+                yaxis=dict(gridcolor='#1a2535'),
+            )
+            st.plotly_chart(fig_k, use_container_width=True)
+    except Exception as e:
+        st.warning(f"코스피 차트 오류: {e}")
 
 # ══════════════════════════════════════════
 # 탭 1: 현황판
