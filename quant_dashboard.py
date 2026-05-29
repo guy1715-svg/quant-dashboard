@@ -28,8 +28,9 @@ from google.oauth2.service_account import Credentials
 
 DEFAULT_WATCHLIST = "042700,한미반도체\n005930,삼성전자\n000660,SK하이닉스\n012450,한화에어로스페이스\n329180,HD현대중공업"
 
+@st.cache_resource
 def get_gsheet():
-    """Google Sheets 연결"""
+    """Google Sheets 연결 (캐시 — 연결 1회만)"""
     creds_dict = dict(st.secrets["gcp_service_account"])
     scopes = [
         "https://spreadsheets.google.com/feeds",
@@ -40,23 +41,36 @@ def get_gsheet():
     sh = gc.open_by_key(st.secrets["SHEET_ID"])
     return sh.sheet1
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_watchlist():
-    """Google Sheets에서 관심종목 로드 (5초 캐시)"""
+    """Google Sheets에서 관심종목 로드 (30초 캐시)"""
     try:
         ws = get_gsheet()
         data = ws.get_all_values()
         if data:
-            return "\n".join([",".join(row) for row in data if len(row) >= 2])
-    except:
+            result = "\n".join([",".join(row) for row in data if len(row) >= 2])
+            st.session_state.watchlist_data = result
+            return result
+    except Exception as e:
         pass
+    # Sheets 실패 시 session_state 폴백
     if 'watchlist_data' in st.session_state:
         return st.session_state.watchlist_data
     return DEFAULT_WATCHLIST
 
+def get_watchlist_fast():
+    """session_state 우선 반환 (Sheets 호출 최소화)"""
+    if 'watchlist_data' in st.session_state:
+        return st.session_state.watchlist_data
+    return load_watchlist()
+
 def save_watchlist(text):
-    """Google Sheets에 관심종목 저장"""
+    """관심종목 저장 — session_state 즉시 + Sheets 백그라운드"""
+    # 1. session_state 즉시 업데이트 (화면 즉시 반영)
     st.session_state.watchlist_data = text
+    # 2. 캐시 클리어
+    load_watchlist.clear()
+    # 3. Google Sheets 저장
     try:
         ws = get_gsheet()
         ws.clear()
@@ -68,9 +82,7 @@ def save_watchlist(text):
         if rows:
             ws.update(rows, "A1")
     except Exception as e:
-        st.warning(f"Sheets 저장 오류: {e}")
-    # 저장 후 캐시 즉시 클리어
-    load_watchlist.clear()
+        st.warning(f"Sheets 저장 오류 (로컬엔 저장됨): {e}")
 
 def get_watchlist_tickers():
     wl = load_watchlist()
@@ -499,7 +511,16 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-# ── 종목 파싱 — 파일 기준 (항상 최신값) ──
+# ── 종목 파싱 — session_state 우선 ──
+def get_watchlist_tickers():
+    wl = get_watchlist_fast()
+    result = []
+    for line in wl.strip().split("\n"):
+        parts = line.strip().split(",", 1)
+        if len(parts) == 2:
+            result.append((parts[0].strip(), parts[1].strip()))
+    return result
+
 TICKERS = get_watchlist_tickers()
 
 
