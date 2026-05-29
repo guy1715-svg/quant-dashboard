@@ -1205,12 +1205,8 @@ with tab5:
 
     st.divider()
 
-    # ── 직접 추가 — st.form 사용 ──
+    # ── 직접 추가 ──
     st.markdown("#### ➕ 직접 추가")
-
-    # form 제출 결과를 session_state로 전달
-    if 'add_result' not in st.session_state:
-        st.session_state.add_result = None
 
     with st.form("add_ticker_form", clear_on_submit=True):
         _fc, _fn = st.columns(2)
@@ -1218,24 +1214,30 @@ with tab5:
         _f_name = _fn.text_input("종목명",   placeholder="삼성전자")
         _submitted = st.form_submit_button("✅ 추가", use_container_width=True)
         if _submitted:
+            st.write(f"DEBUG: 코드={_f_code}, 이름={_f_name}")
             if _f_code and _f_name:
-                if _f_code.strip() not in _tids:
-                    add_ticker(_f_code.strip(), _f_name.strip())
-                    st.session_state.add_result = ("success", f"✅ {_f_name} 추가 완료!")
+                _cur_wl = load_watchlist()
+                _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
+                st.write(f"DEBUG: 현재종목={_cur_ids}")
+                if _f_code.strip() not in _cur_ids:
+                    try:
+                        _new_wl = _cur_wl.strip() + f"\n{_f_code.strip()},{_f_name.strip()}"
+                        st.write(f"DEBUG: 저장시도={_new_wl}")
+                        save_watchlist(_new_wl)
+                        st.write("DEBUG: 저장완료")
+                        st.session_state.watchlist_data = _new_wl
+                    except Exception as _e:
+                        st.error(f"저장 오류: {_e}")
                 else:
-                    st.session_state.add_result = ("warning", "이미 등록된 종목입니다.")
+                    st.warning("이미 등록된 종목입니다.")
             else:
-                st.session_state.add_result = ("warning", "종목코드와 종목명을 모두 입력해주세요.")
+                st.warning("종목코드와 종목명을 모두 입력해주세요.")
 
-    # form 밖에서 결과 표시 + rerun
-    if st.session_state.add_result:
-        _res_type, _res_msg = st.session_state.add_result
-        st.session_state.add_result = None
-        if _res_type == "success":
-            st.success(_res_msg)
+    # form 밖 rerun
+    if 'watchlist_data' in st.session_state:
+        _chk = [l.split(",")[0].strip() for l in st.session_state.watchlist_data.split("\n") if "," in l]
+        if set(_chk) != set(_tids):
             st.rerun()
-        else:
-            st.warning(_res_msg)
 
     st.divider()
 
