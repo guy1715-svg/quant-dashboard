@@ -110,6 +110,8 @@ if 'passed' not in st.session_state:
     st.session_state.passed = []
 if '_keep_passed' not in st.session_state:
     st.session_state._keep_passed = False
+if 'scan_done' not in st.session_state:
+    st.session_state.scan_done = False
 if 'watchlist_data' not in st.session_state:
     st.session_state.watchlist_data = DEFAULT_WATCHLIST
 
@@ -1019,13 +1021,13 @@ with tab4:
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
 
-    # 추가 버튼으로 인한 rerun 시 passed 유지
     if st.session_state._keep_passed:
         st.session_state._keep_passed = False
-        # passed 유지된 채로 계속 진행
 
     if scan_btn:
-        st.session_state.passed = []  # 새 스캔 시에만 초기화
+        # 새 스캔 시에만 초기화
+        st.session_state.passed = []
+        st.session_state.scan_done = False
         # 스캐너: 사용자가 직접 입력한 종목 + 기본 주요 종목 스캔
         # (Streamlit Cloud 환경에서는 pykrx 전체 종목 스캔 불가)
         DEFAULT_SCAN = [
@@ -1120,8 +1122,9 @@ with tab4:
 
             # 점수순 정렬
             passed = sorted(passed, key=lambda x: x['score'], reverse=True)
-            # session_state에 저장 (df 제외)
-            st.session_state.passed = [{k:v for k,v in p.items() if k != 'df'} for p in passed]
+            # df 포함 전체 저장 — rerun 후에도 차트 유지
+            st.session_state.passed = passed
+            st.session_state.scan_done = True
 
             if not passed:
                 st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
