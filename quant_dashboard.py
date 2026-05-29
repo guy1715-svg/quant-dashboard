@@ -411,6 +411,10 @@ with st.sidebar:
         st.session_state.watchlist = ticker_input
         st.session_state.watchlist_updated = False
 
+    # 현재 등록된 종목 수 표시
+    n = len([l for l in st.session_state.watchlist.split('\n') if ',' in l.strip()])
+    st.markdown(f"<div style='font-size:11px; color:#4dff91'>✅ 총 {n}개 종목 등록됨</div>", unsafe_allow_html=True)
+
     lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
 
     model_name = st.selectbox("Gemini 모델", [
@@ -1059,25 +1063,21 @@ with tab4:
                         cur_tickers = [l.split(',')[0].strip()
                                        for l in st.session_state.watchlist.split('\n')
                                        if ',' in l]
+                        # ── 원클릭 관심종목 추가 ──
+                        cur_lines   = [l.strip() for l in st.session_state.watchlist.split('\n') if ',' in l]
+                        cur_tickers = [l.split(',')[0].strip() for l in cur_lines]
+
                         if item['ticker'] in cur_tickers:
-                            st.markdown(
-                                "<div style='background:#1a3a2a; border:1px solid #2d6644; border-radius:8px; "
-                                "padding:8px 14px; font-size:13px; color:#4dff91; margin-top:8px'>"
-                                "✅ 관심종목에 추가됨</div>",
-                                unsafe_allow_html=True
-                            )
+                            st.success(f"✅ {item['name']} — 이미 관심종목에 있습니다")
                         else:
-                            add_key = f"add_{item['ticker']}"
-                            if st.button(
-                                f"⭐ 관심종목 추가 — {item['name']} ({item['ticker']})",
-                                key=add_key,
-                                use_container_width=True,
-                                type="primary"
-                            ):
-                                added = add_to_watchlist(item['ticker'], item['name'])
-                                if added:
-                                    st.toast(f"⭐ {item['name']} 추가 완료!", icon="✅")
-                                    st.rerun()
+                            btn_label = f"⭐ [{item['name']}] 관심종목 추가"
+                            if st.button(btn_label, key=f"add_{item['ticker']}", use_container_width=True):
+                                # session_state 직접 수정
+                                new_line = f"{item['ticker']},{item['name']}"
+                                st.session_state.watchlist = st.session_state.watchlist.strip() + f"\n{new_line}"
+                                st.success(f"✅ {item['name']} 추가 완료! 사이드바와 현황판에 반영됩니다.")
+                                import time; time.sleep(0.8)
+                                st.rerun()
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; font-size:11px; color:#2d3a55; font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
