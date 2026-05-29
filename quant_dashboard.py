@@ -66,21 +66,21 @@ def get_watchlist_fast():
     return load_watchlist()
 
 def save_watchlist(text):
-    """관심종목 저장"""
-    # 1. session_state 즉시 업데이트
+    """관심종목 전체 저장 (삭제 시 사용)"""
     st.session_state.watchlist_data = text
-    # 2. 캐시 클리어
     load_watchlist.clear()
-    # 3. Google Sheets 저장 — 오류 노출
-    ws = get_gsheet()
-    ws.clear()
-    rows = []
-    for line in text.strip().split("\n"):
-        parts = line.strip().split(",", 1)
-        if len(parts) == 2:
-            rows.append(parts)
-    if rows:
-        ws.update(rows, "A1")
+    try:
+        ws = get_gsheet()
+        ws.clear()
+        rows = []
+        for line in text.strip().split("\n"):
+            parts = line.strip().split(",", 1)
+            if len(parts) == 2:
+                rows.append(parts)
+        if rows:
+            ws.update("A1", rows)
+    except Exception as e:
+        st.warning(f"Sheets 저장 오류: {e}")
 
 def get_watchlist_tickers():
     wl = load_watchlist()
@@ -1230,20 +1230,15 @@ with tab5:
         _name = st.session_state.form_name.strip()
         st.session_state.form_code = ''
         st.session_state.form_name = ''
-        st.info(f"처리 중: {_code}, {_name}")
         try:
             _cur_wl  = load_watchlist()
-            st.info(f"현재 목록: {_cur_wl[:50]}")
             _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
             if _code not in _cur_ids:
-                _new_wl = _cur_wl.strip() + f"\n{_code},{_name}"
-                st.info(f"저장 시도: {_new_wl}")
+                # append_rows 방식으로 변경 (clear 없이 한 줄만 추가)
                 ws = get_gsheet()
-                st.info(f"Sheets 연결: {ws}")
-                ws.clear()
-                rows = [[p.strip() for p in l.split(",",1)] for l in _new_wl.strip().split("\n") if "," in l]
-                st.info(f"저장할 rows: {rows}")
-                ws.update(rows, "A1")
+                ws.append_row([_code, _name])
+                # session_state 업데이트
+                _new_wl = _cur_wl.strip() + f"\n{_code},{_name}"
                 st.session_state.watchlist_data = _new_wl
                 load_watchlist.clear()
                 st.success(f"✅ {_name} 추가 완료!")
