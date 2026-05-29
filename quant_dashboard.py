@@ -1100,52 +1100,48 @@ with tab4:
 with tab5:
     st.markdown("### ⭐ 관심종목 관리")
 
-    # ── 버튼 동작 테스트 ──
-    st.markdown("#### 🔧 버튼 동작 확인")
-    if 'test_count' not in st.session_state:
-        st.session_state.test_count = 0
-    if st.button("🔴 테스트 버튼 (클릭해보세요)", key="test_btn"):
-        st.session_state.test_count += 1
-    st.write(f"버튼 클릭 횟수: {st.session_state.test_count}")
-    st.markdown("---")
+    # ── 현재 목록 읽기 ──
+    wl_text = load_watchlist()
+    wl_lines = [l.strip() for l in wl_text.split('\n') if ',' in l.strip()]
+    wl_dict  = {}
+    for l in wl_lines:
+        p = l.split(',')
+        if len(p) == 2:
+            wl_dict[p[0].strip()] = p[1].strip()
 
-    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:16px'>추가/삭제하면 현황판·차트 탭에 즉시 반영됩니다.</div>", unsafe_allow_html=True)
-
-    mgr_tickers = get_watchlist_tickers()
-    mgr_ticker_ids = [t for t,n in mgr_tickers]
-
-    # ── 현재 목록 + 삭제 ──
-    st.markdown("#### 📋 현재 관심종목")
-    for t, n in mgr_tickers:
-        col_name, col_del = st.columns([4, 1])
-        col_name.markdown(
-            f"<div style='padding:10px 14px; background:#111827; border-radius:8px; "
-            f"border:1px solid #1e3a5f; font-size:14px; margin-bottom:6px'>"
-            f"<b>{n}</b> <span style='color:#475569; font-size:12px; font-family:IBM Plex Mono'>({t})</span></div>",
+    # ── 현재 목록 표시 + 삭제 ──
+    st.markdown(f"#### 현재 등록 종목 ({len(wl_dict)}개)")
+    for tk, nm in list(wl_dict.items()):
+        c1, c2 = st.columns([5, 1])
+        c1.markdown(
+            f"<div style='padding:10px; background:#111827; border-radius:8px; "
+            f"border:1px solid #1e3a5f; margin-bottom:6px'>"
+            f"<b>{nm}</b> <code style='color:#475569'>{tk}</code></div>",
             unsafe_allow_html=True
         )
-        if col_del.button("🗑️", key=f"del_{t}", help=f"{n} 삭제"):
-            remove_ticker(t)
-            st.success(f"🗑️ {n} 삭제됨")
+        if c2.button("삭제", key=f"del2_{tk}"):
+            new_lines = [l for l in wl_lines if not l.startswith(tk+',')]
+            save_watchlist('\n'.join(new_lines))
+            st.success(f"🗑️ {nm} 삭제!")
             st.rerun()
 
     st.markdown("---")
 
     # ── 직접 추가 ──
     st.markdown("#### ➕ 종목 직접 추가")
-    col_t, col_n, col_add = st.columns([1.5, 2, 1])
-    new_ticker = col_t.text_input("종목코드", placeholder="005930")
-    new_name   = col_n.text_input("종목명",   placeholder="삼성전자")
-    col_add.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    if col_add.button("➕ 추가", use_container_width=True):
-        if new_ticker and new_name:
-            if add_ticker(new_ticker.strip(), new_name.strip()):
-                st.success(f"✅ {new_name} 추가 완료!")
+    c1, c2 = st.columns(2)
+    inp_code = c1.text_input("종목코드 (6자리)", placeholder="005930")
+    inp_name = c2.text_input("종목명", placeholder="삼성전자")
+    if st.button("✅ 추가하기", use_container_width=True):
+        if inp_code and inp_name:
+            if inp_code.strip() not in wl_dict:
+                save_watchlist(wl_text.strip() + f"\n{inp_code.strip()},{inp_name.strip()}")
+                st.success(f"✅ {inp_name} 추가 완료!")
                 st.rerun()
             else:
                 st.warning("이미 등록된 종목입니다.")
         else:
-            st.warning("종목코드와 종목명을 모두 입력해주세요.")
+            st.warning("종목코드와 종목명을 입력해주세요.")
 
     st.markdown("---")
 
@@ -1153,27 +1149,24 @@ with tab5:
     st.markdown("#### 🔍 스캐너 추천 종목")
     if st.session_state.passed:
         for item in st.session_state.passed:
-            col_i, col_b = st.columns([4, 1])
-            chg_c = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
-            badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
-            is_added = item['ticker'] in mgr_ticker_ids
-            bg = '#0a1a0a' if is_added else '#111827'
-            border = '#2d6644' if is_added else '#1e3a5f'
-            col_i.markdown(
-                f"<div style='padding:10px 14px; background:{bg}; border-radius:8px; "
-                f"border:1px solid {border}; margin-bottom:6px'>"
-                f"<b>{item['name']}</b> "
-                f"<span style='color:#475569; font-size:12px'>({item['ticker']})</span> "
-                f"<span style='color:{chg_c}'>{item['등락(%)']:+.2f}%</span> "
-                f"{badge_html}"
-                f"{'&nbsp;&nbsp;<span style="color:#4dff91">✅ 추가됨</span>' if is_added else ''}"
-                f"</div>",
+            tk  = item['ticker']
+            nm  = item['name']
+            chg = item['등락(%)']
+            chg_c = '#ff4d6d' if chg > 0 else '#4da6ff'
+            already = tk in wl_dict
+            c1, c2 = st.columns([5, 1])
+            c1.markdown(
+                f"<div style='padding:10px; background:{'#0a1a0a' if already else '#111827'}; "
+                f"border-radius:8px; border:1px solid {'#2d6644' if already else '#1e3a5f'}; margin-bottom:6px'>"
+                f"<b>{nm}</b> <code style='color:#475569'>{tk}</code> "
+                f"<span style='color:{chg_c}'>{chg:+.2f}%</span>"
+                f"{'  ✅ 추가됨' if already else ''}</div>",
                 unsafe_allow_html=True
             )
-            if not is_added:
-                if col_b.button("⭐ 추가", key=f"scan_add_{item['ticker']}"):
-                    add_ticker(item['ticker'], item['name'])
-                    st.success(f"✅ {item['name']} 추가됨!")
+            if not already:
+                if c2.button("추가", key=f"sadd_{tk}"):
+                    save_watchlist(load_watchlist().strip() + f"\n{tk},{nm}")
+                    st.success(f"✅ {nm} 추가!")
                     st.rerun()
     else:
         st.info("💡 추천 스캐너 탭에서 먼저 스캔을 실행해주세요.")
