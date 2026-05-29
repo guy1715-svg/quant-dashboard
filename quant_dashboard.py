@@ -1117,65 +1117,79 @@ with tab4:
 
             if not passed:
                 st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
-            else:
-                st.success(f"✅ {len(passed)}개 종목 발굴 완료!")
-                st.markdown("---")
 
-                # 결과 출력
-                for item in passed:
-                    chg_color = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
-                    badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
+        # ── 스캔 결과는 session_state에서 항상 표시 (버튼 클릭해도 유지) ──
+        if st.session_state.passed:
+            st.success(f"✅ {len(st.session_state.passed)}개 종목 발굴!")
+            st.markdown("---")
 
-                    with st.expander(
-                        f"⭐{'★'*min(item['score'],5)}  {item['name']} ({item['ticker']})  "
-                        f"{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%",
-                        expanded=(item == passed[0])
-                    ):
-                        c1, c2, c3, c4, c5 = st.columns(5)
-                        c1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{item['현재가']:,.0f}</div></div>", unsafe_allow_html=True)
-                        c2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value' style='color:{chg_color}'>{item['등락(%)']:+.2f}%</div></div>", unsafe_allow_html=True)
-                        rsi_c = '#4da6ff' if item['RSI']<=35 else '#ff4d6d' if item['RSI']>=70 else '#a0b0c8'
-                        c3.markdown(f"<div class='metric-card'><div class='label'>RSI</div><div class='value' style='color:{rsi_c}'>{item['RSI']:.1f}</div></div>", unsafe_allow_html=True)
-                        c4.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{item['거래량비율']:.0f}%</div></div>", unsafe_allow_html=True)
-                        c5.markdown(f"<div class='metric-card'><div class='label'>선정 점수</div><div class='value up'>{item['score']}점</div></div>", unsafe_allow_html=True)
+            # 현재 관심종목 목록
+            _sc_wl   = st.session_state.get('watchlist_data', None) or load_watchlist()
+            _sc_ids  = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
 
-                        st.markdown(f"**선정 이유:** {badge_html}", unsafe_allow_html=True)
+            # 추가 버튼 — 사이드바 방식과 동일하게 (rerun 없이)
+            def _scan_add(tk, nm):
+                try:
+                    _ws = get_gsheet()
+                    _ws.append_row([tk, nm])
+                    _new = _sc_wl.strip() + f"\n{tk},{nm}"
+                    st.session_state.watchlist_data = _new
+                    load_watchlist.clear()
+                except Exception as _e:
+                    st.error(f"추가 오류: {_e}")
 
-                        # 미니 차트
-                        mini_df = item['df']
-                        fig = make_chart(mini_df, item['name'])
-                        st.plotly_chart(fig, use_container_width=True)
+            for item in st.session_state.passed:
+                chg_color = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
+                badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
+                _is_added = item['ticker'] in _sc_ids
 
-                        # Gemini 분석
-                        if use_gemini_scan and gemini_key:
-                            if st.button(f"🤖 {item['name']} Gemini 분석", key=f"scan_gem_{item['ticker']}"):
-                                import google.generativeai as genai
-                                genai.configure(api_key=gemini_key)
-                                gmodel = genai.GenerativeModel(model_name)
-                                SYSTEM = (
-                                    'You are a Korean stock quantitative analysis AI. '
-                                    'Always respond in Korean. '
-                                    'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
-                                    'No entry 09:00-09:30 KST / No averaging down'
-                                )
-                                prompt = build_prompt(item['df'], item['name'], item['ticker'])
-                                with st.spinner('분석 중...'):
-                                    try:
-                                        res = gmodel.generate_content(SYSTEM + '\n\n' + prompt)
-                                        st.markdown(f"<div class='gemini-box'>{res.text}</div>", unsafe_allow_html=True)
-                                    except Exception as e:
-                                        st.error(f"오류: {e}")
+                with st.expander(
+                    f"{'✅' if _is_added else '⭐'}  {item['name']} ({item['ticker']})  "
+                    f"{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%",
+                    expanded=False
+                ):
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    c1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{item['현재가']:,.0f}</div></div>", unsafe_allow_html=True)
+                    c2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value' style='color:{chg_color}'>{item['등락(%)']:+.2f}%</div></div>", unsafe_allow_html=True)
+                    rsi_c = '#4da6ff' if item['RSI']<=35 else '#ff4d6d' if item['RSI']>=70 else '#a0b0c8'
+                    c3.markdown(f"<div class='metric-card'><div class='label'>RSI</div><div class='value' style='color:{rsi_c}'>{item['RSI']:.1f}</div></div>", unsafe_allow_html=True)
+                    c4.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{item['거래량비율']:.0f}%</div></div>", unsafe_allow_html=True)
+                    c5.markdown(f"<div class='metric-card'><div class='label'>점수</div><div class='value up'>{item['score']}점</div></div>", unsafe_allow_html=True)
+                    st.markdown(f"**선정 이유:** {badge_html}", unsafe_allow_html=True)
 
-                        # ── 관심종목 추가 (파일 기반) ──
-                        wl_cur = load_watchlist()
-                        cur_tickers = [l.split(',')[0].strip() for l in wl_cur.split('\n') if ',' in l]
-                        if item['ticker'] in cur_tickers:
-                            st.markdown("<div style='color:#4dff91; font-size:13px'>✅ 관심종목 관리 탭에서 확인</div>", unsafe_allow_html=True)
-                        else:
-                            if st.button(f"⭐ 관심종목 추가", key=f"tab4_add_{item['ticker']}", use_container_width=True):
-                                save_watchlist(wl_cur.strip() + f"\n{item['ticker']},{item['name']}")
-                                st.success(f"✅ {item['name']} 추가! 관심종목 관리 탭에서 확인하세요.")
-                                st.rerun()
+                    # 관심종목 추가 — on_click 콜백 방식 (rerun 안 함)
+                    if _is_added:
+                        st.markdown("<div style='color:#4dff91; font-size:13px; padding:8px'>✅ 이미 관심종목에 추가됨</div>", unsafe_allow_html=True)
+                    else:
+                        st.button(
+                            f"⭐ 사이드바에 추가 — {item['name']}",
+                            key=f"sc_add_{item['ticker']}",
+                            on_click=_scan_add,
+                            args=(item['ticker'], item['name']),
+                            use_container_width=True
+                        )
+
+                    # Gemini 분석
+                    if use_gemini_scan and gemini_key:
+                        if st.button(f"🤖 Gemini 분석", key=f"scan_gem_{item['ticker']}"):
+                            import google.generativeai as genai
+                            genai.configure(api_key=gemini_key)
+                            gmodel = genai.GenerativeModel(model_name)
+                            SYSTEM = (
+                                'You are a Korean stock quantitative analysis AI. '
+                                'Always respond in Korean. '
+                                'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
+                                'No entry 09:00-09:30 KST / No averaging down'
+                            )
+                            prompt = build_prompt(item.get('df', None) or
+                                                  fetch_ohlcv(item['ticker'], 60),
+                                                  item['name'], item['ticker'])
+                            with st.spinner('분석 중...'):
+                                try:
+                                    res = gmodel.generate_content(SYSTEM + '\n\n' + prompt)
+                                    st.markdown(f"<div class='gemini-box'>{res.text}</div>", unsafe_allow_html=True)
+                                except Exception as e:
+                                    st.error(f"오류: {e}")
 
 # ══════════════════════════════════════════
 # 탭 5: 관심종목 관리
