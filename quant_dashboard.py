@@ -49,11 +49,12 @@ def load_watchlist():
         data = ws.get_all_values()
         if data:
             result = "\n".join([",".join(row) for row in data if len(row) >= 2])
-            st.session_state.watchlist_data = result
             return result
+        else:
+            # Sheets 비어있으면 DEFAULT 반환 후 Sheets에 저장
+            return DEFAULT_WATCHLIST
     except Exception as e:
         pass
-    # Sheets 실패 시 session_state 폴백
     if 'watchlist_data' in st.session_state:
         return st.session_state.watchlist_data
     return DEFAULT_WATCHLIST
@@ -65,24 +66,21 @@ def get_watchlist_fast():
     return load_watchlist()
 
 def save_watchlist(text):
-    """관심종목 저장 — session_state 즉시 + Sheets 백그라운드"""
-    # 1. session_state 즉시 업데이트 (화면 즉시 반영)
+    """관심종목 저장"""
+    # 1. session_state 즉시 업데이트
     st.session_state.watchlist_data = text
     # 2. 캐시 클리어
     load_watchlist.clear()
-    # 3. Google Sheets 저장
-    try:
-        ws = get_gsheet()
-        ws.clear()
-        rows = []
-        for line in text.strip().split("\n"):
-            parts = line.strip().split(",", 1)
-            if len(parts) == 2:
-                rows.append(parts)
-        if rows:
-            ws.update(rows, "A1")
-    except Exception as e:
-        st.warning(f"Sheets 저장 오류 (로컬엔 저장됨): {e}")
+    # 3. Google Sheets 저장 — 오류 노출
+    ws = get_gsheet()
+    ws.clear()
+    rows = []
+    for line in text.strip().split("\n"):
+        parts = line.strip().split(",", 1)
+        if len(parts) == 2:
+            rows.append(parts)
+    if rows:
+        ws.update(rows, "A1")
 
 def get_watchlist_tickers():
     wl = load_watchlist()
