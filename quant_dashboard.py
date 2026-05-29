@@ -1188,6 +1188,11 @@ with tab5:
 
     # ── 직접 추가 — st.form 사용 ──
     st.markdown("#### ➕ 직접 추가")
+
+    # form 제출 결과를 session_state로 전달
+    if 'add_result' not in st.session_state:
+        st.session_state.add_result = None
+
     with st.form("add_ticker_form", clear_on_submit=True):
         _fc, _fn = st.columns(2)
         _f_code = _fc.text_input("종목코드", placeholder="005930")
@@ -1197,12 +1202,21 @@ with tab5:
             if _f_code and _f_name:
                 if _f_code.strip() not in _tids:
                     add_ticker(_f_code.strip(), _f_name.strip())
-                    st.success(f"✅ {_f_name} 추가 완료!")
-                    st.rerun()
+                    st.session_state.add_result = ("success", f"✅ {_f_name} 추가 완료!")
                 else:
-                    st.warning("이미 등록된 종목입니다.")
+                    st.session_state.add_result = ("warning", "이미 등록된 종목입니다.")
             else:
-                st.warning("종목코드와 종목명을 모두 입력해주세요.")
+                st.session_state.add_result = ("warning", "종목코드와 종목명을 모두 입력해주세요.")
+
+    # form 밖에서 결과 표시 + rerun
+    if st.session_state.add_result:
+        _res_type, _res_msg = st.session_state.add_result
+        st.session_state.add_result = None
+        if _res_type == "success":
+            st.success(_res_msg)
+            st.rerun()
+        else:
+            st.warning(_res_msg)
 
     st.divider()
 
