@@ -1089,77 +1089,80 @@ with tab4:
 # ══════════════════════════════════════════
 with tab5:
     st.markdown("### ⭐ 관심종목 관리")
+    st.caption("추가/삭제 후 현황판 탭으로 이동하면 바로 반영됩니다.")
 
-    # ── 현재 목록 읽기 ──
-    wl_text = load_watchlist()
-    wl_lines = [l.strip() for l in wl_text.split('\n') if ',' in l.strip()]
-    wl_dict  = {}
-    for l in wl_lines:
-        p = l.split(',')
-        if len(p) == 2:
-            wl_dict[p[0].strip()] = p[1].strip()
+    # 항상 파일에서 새로 읽기
+    _wl = load_watchlist()
+    _lines = [l.strip() for l in _wl.split("\n") if "," in l.strip()]
+    _pairs = []
+    for _l in _lines:
+        _p = _l.split(",", 1)
+        if len(_p) == 2:
+            _pairs.append((_p[0].strip(), _p[1].strip()))
+    _ticker_ids = [t for t, n in _pairs]
 
-    # ── 현재 목록 표시 + 삭제 ──
-    st.markdown(f"#### 현재 등록 종목 ({len(wl_dict)}개)")
-    for tk, nm in list(wl_dict.items()):
-        c1, c2 = st.columns([5, 1])
-        c1.markdown(
-            f"<div style='padding:10px; background:#111827; border-radius:8px; "
+    # ── 현재 종목 목록 ──
+    st.markdown(f"#### 📋 현재 종목 ({len(_pairs)}개)")
+    for _tk, _nm in _pairs:
+        _ca, _cb = st.columns([5, 1])
+        _ca.markdown(
+            f"<div style='padding:10px; background:#111827; border-radius:8px;"
             f"border:1px solid #1e3a5f; margin-bottom:6px'>"
-            f"<b>{nm}</b> <code style='color:#475569'>{tk}</code></div>",
+            f"<b>{_nm}</b>&nbsp;&nbsp;<code style='color:#475569;font-size:11px'>{_tk}</code></div>",
             unsafe_allow_html=True
         )
-        if c2.button("🗑️ 삭제", key=f"tab5_del_{tk}"):
-            new_lines = [l for l in wl_lines if not l.startswith(tk+',')]
-            save_watchlist('\n'.join(new_lines))
-            st.success(f"🗑️ {nm} 삭제!")
+        _del_key = f"D_{_tk}"
+        if _cb.button("삭제", key=_del_key):
+            _new = [_l for _l in _lines if not _l.startswith(_tk + ",")]
+            save_watchlist("\n".join(_new))
             st.rerun()
 
-    st.markdown("---")
+    st.divider()
 
     # ── 직접 추가 ──
-    st.markdown("#### ➕ 종목 직접 추가")
-    c1, c2 = st.columns(2)
-    inp_code = c1.text_input("종목코드 (6자리)", placeholder="005930")
-    inp_name = c2.text_input("종목명", placeholder="삼성전자")
-    if st.button("✅ 추가하기", key="tab5_manual_add", use_container_width=True):
-        if inp_code and inp_name:
-            if inp_code.strip() not in wl_dict:
-                save_watchlist(wl_text.strip() + f"\n{inp_code.strip()},{inp_name.strip()}")
-                st.success(f"✅ {inp_name} 추가 완료!")
+    st.markdown("#### ➕ 직접 추가")
+    _ic, _in = st.columns(2)
+    _code = _ic.text_input("종목코드", placeholder="005930", key="inp_code")
+    _name = _in.text_input("종목명",   placeholder="삼성전자", key="inp_name")
+    if st.button("✅ 추가", key="A_manual", use_container_width=True):
+        if _code and _name:
+            if _code.strip() not in _ticker_ids:
+                save_watchlist(_wl.strip() + f"\n{_code.strip()},{_name.strip()}")
+                st.success(f"✅ {_name} 추가!")
                 st.rerun()
             else:
-                st.warning("이미 등록된 종목입니다.")
+                st.warning("이미 있는 종목입니다.")
         else:
-            st.warning("종목코드와 종목명을 입력해주세요.")
+            st.warning("코드와 이름을 모두 입력하세요.")
 
-    st.markdown("---")
+    st.divider()
 
-    # ── 스캐너 추천 종목 ──
+    # ── 스캐너 추천 ──
     st.markdown("#### 🔍 스캐너 추천 종목")
     if st.session_state.passed:
-        for item in st.session_state.passed:
-            tk  = item['ticker']
-            nm  = item['name']
-            chg = item['등락(%)']
-            chg_c = '#ff4d6d' if chg > 0 else '#4da6ff'
-            already = tk in wl_dict
-            c1, c2 = st.columns([5, 1])
-            c1.markdown(
-                f"<div style='padding:10px; background:{'#0a1a0a' if already else '#111827'}; "
-                f"border-radius:8px; border:1px solid {'#2d6644' if already else '#1e3a5f'}; margin-bottom:6px'>"
-                f"<b>{nm}</b> <code style='color:#475569'>{tk}</code> "
-                f"<span style='color:{chg_c}'>{chg:+.2f}%</span>"
-                f"{'  ✅ 추가됨' if already else ''}</div>",
+        for _item in st.session_state.passed:
+            _tk2 = _item["ticker"]
+            _nm2 = _item["name"]
+            _chg = _item["등락(%)"]
+            _cc  = "#ff4d6d" if _chg > 0 else "#4da6ff"
+            _done = _tk2 in _ticker_ids
+            _ra, _rb = st.columns([5, 1])
+            _ra.markdown(
+                f"<div style='padding:10px; background:{'#0a1a0a' if _done else '#111827'};"
+                f"border-radius:8px; border:1px solid {'#2d6644' if _done else '#1e3a5f'}; margin-bottom:6px'>"
+                f"<b>{_nm2}</b>&nbsp;<code style='color:#475569;font-size:11px'>{_tk2}</code>&nbsp;"
+                f"<span style='color:{_cc}'>{_chg:+.2f}%</span>"
+                f"{'&nbsp;✅' if _done else ''}</div>",
                 unsafe_allow_html=True
             )
-            if not already:
-                if c2.button("⭐ 추가", key=f"tab5_add_{tk}"):
-                    save_watchlist(load_watchlist().strip() + f"\n{tk},{nm}")
-                    st.success(f"✅ {nm} 추가!")
+            if not _done:
+                _add_key = f"A_{_tk2}"
+                if _rb.button("추가", key=_add_key):
+                    save_watchlist(load_watchlist().strip() + f"\n{_tk2},{_nm2}")
+                    st.success(f"✅ {_nm2} 추가!")
                     st.rerun()
     else:
-        st.info("💡 추천 스캐너 탭에서 먼저 스캔을 실행해주세요.")
+        st.info("추천 스캐너 탭에서 먼저 스캔을 실행해주세요.")
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; font-size:11px; color:#2d3a55; font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
