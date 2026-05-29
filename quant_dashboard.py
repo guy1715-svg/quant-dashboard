@@ -466,14 +466,15 @@ with st.sidebar:
                                 help="aistudio.google.com에서 발급")
 
     st.markdown("### 📋 관심 종목")
-    wl_now = load_watchlist()
+    # session_state 우선 — 추가/삭제 즉시 반영
+    wl_now = st.session_state.get('watchlist_data', None) or load_watchlist()
     ticker_input = st.text_area(
         "종목코드,종목명 (한 줄에 하나)",
         value=wl_now,
         height=160,
         key="ticker_textarea"
     )
-    # 사용자가 직접 수정한 경우 파일에 저장
+    # 사용자가 직접 수정한 경우 저장
     if ticker_input != wl_now:
         save_watchlist(ticker_input)
 
@@ -511,7 +512,7 @@ with st.sidebar:
 
 # ── 종목 파싱 — session_state 우선 ──
 def get_watchlist_tickers():
-    wl = get_watchlist_fast()
+    wl = st.session_state.get('watchlist_data', None) or load_watchlist()
     result = []
     for line in wl.strip().split("\n"):
         parts = line.strip().split(",", 1)
@@ -1229,18 +1230,30 @@ with tab5:
         _name = st.session_state.form_name.strip()
         st.session_state.form_code = ''
         st.session_state.form_name = ''
-        _cur_wl  = load_watchlist()
-        _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
-        if _code not in _cur_ids:
-            try:
+        st.info(f"처리 중: {_code}, {_name}")
+        try:
+            _cur_wl  = load_watchlist()
+            st.info(f"현재 목록: {_cur_wl[:50]}")
+            _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
+            if _code not in _cur_ids:
                 _new_wl = _cur_wl.strip() + f"\n{_code},{_name}"
-                save_watchlist(_new_wl)
+                st.info(f"저장 시도: {_new_wl}")
+                ws = get_gsheet()
+                st.info(f"Sheets 연결: {ws}")
+                ws.clear()
+                rows = [[p.strip() for p in l.split(",",1)] for l in _new_wl.strip().split("\n") if "," in l]
+                st.info(f"저장할 rows: {rows}")
+                ws.update(rows, "A1")
+                st.session_state.watchlist_data = _new_wl
+                load_watchlist.clear()
                 st.success(f"✅ {_name} 추가 완료!")
                 st.rerun()
-            except Exception as _e:
-                st.error(f"저장 오류: {_e}")
-        else:
-            st.warning("이미 등록된 종목입니다.")
+            else:
+                st.warning("이미 등록된 종목입니다.")
+        except Exception as _e:
+            import traceback
+            st.error(f"오류: {_e}")
+            st.code(traceback.format_exc())
 
     st.divider()
 
