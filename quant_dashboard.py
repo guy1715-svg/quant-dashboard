@@ -21,6 +21,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# ── session_state 초기화 ──
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = (
+        "042700,한미반도체\n"
+        "005930,삼성전자\n"
+        "000660,SK하이닉스\n"
+        "012450,한화에어로스페이스\n"
+        "329180,HD현대중공업"
+    )
+
+def add_to_watchlist(ticker, name):
+    """관심종목에 원클릭 추가"""
+    current = st.session_state.watchlist
+    lines   = [l.strip() for l in current.strip().split('\n') if l.strip()]
+    tickers = [l.split(',')[0].strip() for l in lines if ',' in l]
+    if ticker not in tickers:
+        st.session_state.watchlist = current.strip() + f"\n{ticker},{name}"
+        return True
+    return False
+
 # ── 스타일 ──
 st.markdown("""
 <style>
@@ -376,8 +396,15 @@ with st.sidebar:
                                 help="aistudio.google.com에서 발급")
 
     st.markdown("### 📋 관심 종목")
-    default_tickers = "042700,한미반도체\n005930,삼성전자\n000660,SK하이닉스\n012450,한화에어로스페이스\n329180,HD현대중공업"
-    ticker_input = st.text_area("종목코드,종목명 (한 줄에 하나)", value=default_tickers, height=160)
+    ticker_input = st.text_area(
+        "종목코드,종목명 (한 줄에 하나)",
+        value=st.session_state.watchlist,
+        height=160,
+        key="ticker_textarea"
+    )
+    # 텍스트 변경 시 session_state 동기화
+    if ticker_input != st.session_state.watchlist:
+        st.session_state.watchlist = ticker_input
 
     lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
 
@@ -1023,7 +1050,23 @@ with tab4:
                                         st.error(f"오류: {e}")
 
                         # 관심종목 추가 안내
-                        st.markdown(f"<div style='font-size:12px; color:#475569; margin-top:8px'>💡 관심종목에 추가하려면 사이드바에 <code>{item['ticker']},{item['name']}</code> 입력</div>", unsafe_allow_html=True)
+                        # 원클릭 관심종목 추가
+                        cur_tickers = [l.split(',')[0].strip()
+                                       for l in st.session_state.watchlist.split('\n')
+                                       if ',' in l]
+                        if item['ticker'] in cur_tickers:
+                            st.markdown(
+                                "<div style='font-size:12px; color:#4dff91; margin-top:8px'>✅ 이미 관심종목에 추가됨</div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            if st.button(f"⭐ 관심종목 추가 ({item['name']})",
+                                         key=f"add_{item['ticker']}",
+                                         use_container_width=True):
+                                added = add_to_watchlist(item['ticker'], item['name'])
+                                if added:
+                                    st.success(f"✅ {item['name']} 관심종목에 추가됐습니다! 현황판 탭에서 확인하세요.")
+                                    st.rerun()
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; font-size:11px; color:#2d3a55; font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
