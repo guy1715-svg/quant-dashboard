@@ -1134,6 +1134,31 @@ with tab5:
     st.markdown("### ⭐ 관심종목 관리")
     st.caption("추가/삭제 후 현황판 탭으로 이동하면 즉시 반영됩니다.")
 
+    # ── 연결 상태 디버그 ──
+    with st.expander("🔧 연결 상태 확인", expanded=True):
+        try:
+            _sheet_id = st.secrets["SHEET_ID"]
+            st.success(f"✅ SHEET_ID 확인: {_sheet_id[:20]}...")
+        except Exception as e:
+            st.error(f"❌ SHEET_ID 없음: {e}")
+
+        try:
+            _sa = st.secrets["gcp_service_account"]
+            st.success(f"✅ 서비스 계정 확인: {_sa['client_email']}")
+        except Exception as e:
+            st.error(f"❌ 서비스 계정 없음: {e}")
+
+        try:
+            _ws = get_gsheet()
+            if _ws:
+                st.success("✅ Google Sheets 연결 성공!")
+                _test = _ws.get_all_values()
+                st.write(f"현재 데이터: {_test}")
+            else:
+                st.error("❌ Google Sheets 연결 실패 (None 반환)")
+        except Exception as e:
+            st.error(f"❌ Sheets 오류: {e}")
+
     # 항상 최신 데이터 로드
     _wl    = load_watchlist()
     _lines = [l.strip() for l in _wl.split("\n") if "," in l.strip()]
