@@ -28,9 +28,8 @@ from google.oauth2.service_account import Credentials
 
 DEFAULT_WATCHLIST = "042700,한미반도체\n005930,삼성전자\n000660,SK하이닉스\n012450,한화에어로스페이스\n329180,HD현대중공업"
 
-@st.cache_resource
 def get_gsheet():
-    """Google Sheets 연결 (캐시)"""
+    """Google Sheets 연결"""
     creds_dict = dict(st.secrets["gcp_service_account"])
     scopes = [
         "https://spreadsheets.google.com/feeds",
@@ -41,38 +40,37 @@ def get_gsheet():
     sh = gc.open_by_key(st.secrets["SHEET_ID"])
     return sh.sheet1
 
+@st.cache_data(ttl=5, show_spinner=False)
 def load_watchlist():
-    """Google Sheets에서 관심종목 로드"""
-    ws = get_gsheet()
-    if ws:
-        try:
-            data = ws.get_all_values()
-            if data:
-                return "\n".join([",".join(row) for row in data if len(row) >= 2])
-        except:
-            pass
-    # Sheets 연결 실패 시 session_state 폴백
+    """Google Sheets에서 관심종목 로드 (5초 캐시)"""
+    try:
+        ws = get_gsheet()
+        data = ws.get_all_values()
+        if data:
+            return "\n".join([",".join(row) for row in data if len(row) >= 2])
+    except:
+        pass
     if 'watchlist_data' in st.session_state:
         return st.session_state.watchlist_data
     return DEFAULT_WATCHLIST
 
 def save_watchlist(text):
     """Google Sheets에 관심종목 저장"""
-    # session_state에도 항상 저장 (빠른 반영용)
     st.session_state.watchlist_data = text
-    ws = get_gsheet()
-    if ws:
-        try:
-            ws.clear()
-            rows = []
-            for line in text.strip().split("\n"):
-                parts = line.strip().split(",", 1)
-                if len(parts) == 2:
-                    rows.append(parts)
-            if rows:
-                ws.update(rows, "A1")
-        except Exception as e:
-            st.warning(f"Sheets 저장 오류: {e}")
+    try:
+        ws = get_gsheet()
+        ws.clear()
+        rows = []
+        for line in text.strip().split("\n"):
+            parts = line.strip().split(",", 1)
+            if len(parts) == 2:
+                rows.append(parts)
+        if rows:
+            ws.update(rows, "A1")
+    except Exception as e:
+        st.warning(f"Sheets 저장 오류: {e}")
+    # 저장 후 캐시 즉시 클리어
+    load_watchlist.clear()
 
 def get_watchlist_tickers():
     wl = load_watchlist()
