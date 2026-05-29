@@ -466,20 +466,55 @@ with st.sidebar:
                                 help="aistudio.google.com에서 발급")
 
     st.markdown("### 📋 관심 종목")
-    # session_state 우선 — 추가/삭제 즉시 반영
-    wl_now = st.session_state.get('watchlist_data', None) or load_watchlist()
-    ticker_input = st.text_area(
-        "종목코드,종목명 (한 줄에 하나)",
-        value=wl_now,
-        height=160,
-        key="ticker_textarea"
-    )
-    # 사용자가 직접 수정한 경우 저장
-    if ticker_input != wl_now:
-        save_watchlist(ticker_input)
 
-    n = len([l for l in load_watchlist().split('\n') if ',' in l.strip()])
-    st.markdown(f"<div style='font-size:11px; color:#4dff91'>✅ 총 {n}개 종목 등록됨</div>", unsafe_allow_html=True)
+    # 현재 목록 표시 + 삭제
+    _sb_wl    = st.session_state.get('watchlist_data', None) or load_watchlist()
+    _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
+    _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
+
+    for _t, _n in _sb_pairs:
+        _t = _t.strip(); _n = _n.strip()
+        _sc1, _sc2 = st.columns([3, 1])
+        _sc1.markdown(f"<div style='font-size:12px; padding:4px 0'><b>{_n}</b><br><span style='color:#475569; font-size:10px'>{_t}</span></div>", unsafe_allow_html=True)
+        if _sc2.button("✕", key=f"sb_del_{_t}"):
+            _new_lines = [l for l in _sb_lines if not l.startswith(_t + ",")]
+            _new_wl = "\n".join(_new_lines)
+            st.session_state.watchlist_data = _new_wl
+            try:
+                _ws = get_gsheet()
+                _ws.clear()
+                _rows = [[p.strip() for p in l.split(",",1)] for l in _new_lines]
+                if _rows:
+                    _ws.update("A1", _rows)
+                load_watchlist.clear()
+            except Exception as _e:
+                st.warning(f"저장 오류: {_e}")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("**➕ 종목 추가**")
+    _sb_code = st.text_input("종목코드", placeholder="005930", key="sb_code")
+    _sb_name = st.text_input("종목명",   placeholder="삼성전자", key="sb_name")
+    if st.button("추가", key="sb_add", use_container_width=True):
+        if _sb_code and _sb_name:
+            _cur_ids = [p[0].strip() for p in _sb_pairs]
+            if _sb_code.strip() not in _cur_ids:
+                try:
+                    _ws = get_gsheet()
+                    _ws.append_row([_sb_code.strip(), _sb_name.strip()])
+                    _new_wl = _sb_wl.strip() + f"\n{_sb_code.strip()},{_sb_name.strip()}"
+                    st.session_state.watchlist_data = _new_wl
+                    load_watchlist.clear()
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"오류: {_e}")
+            else:
+                st.warning("이미 있는 종목")
+        else:
+            st.warning("코드와 이름 입력")
+
+    n = len(_sb_pairs)
+    st.markdown(f"<div style='font-size:11px; color:#4dff91'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
 
     lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
 
