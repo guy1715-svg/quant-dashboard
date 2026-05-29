@@ -1099,6 +1099,16 @@ with tab4:
 # ══════════════════════════════════════════
 with tab5:
     st.markdown("### ⭐ 관심종목 관리")
+
+    # ── 버튼 동작 테스트 ──
+    st.markdown("#### 🔧 버튼 동작 확인")
+    if 'test_count' not in st.session_state:
+        st.session_state.test_count = 0
+    if st.button("🔴 테스트 버튼 (클릭해보세요)", key="test_btn"):
+        st.session_state.test_count += 1
+    st.write(f"버튼 클릭 횟수: {st.session_state.test_count}")
+    st.markdown("---")
+
     st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:16px'>추가/삭제하면 현황판·차트 탭에 즉시 반영됩니다.</div>", unsafe_allow_html=True)
 
     mgr_tickers = get_watchlist_tickers()
