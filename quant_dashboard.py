@@ -30,6 +30,8 @@ if 'watchlist' not in st.session_state:
         "012450,한화에어로스페이스\n"
         "329180,HD현대중공업"
     )
+if 'watchlist_updated' not in st.session_state:
+    st.session_state.watchlist_updated = False
 
 def add_to_watchlist(ticker, name):
     """관심종목에 원클릭 추가"""
@@ -37,7 +39,9 @@ def add_to_watchlist(ticker, name):
     lines   = [l.strip() for l in current.strip().split('\n') if l.strip()]
     tickers = [l.split(',')[0].strip() for l in lines if ',' in l]
     if ticker not in tickers:
-        st.session_state.watchlist = current.strip() + f"\n{ticker},{name}"
+        new_val = current.strip() + f"\n{ticker},{name}"
+        st.session_state.watchlist    = new_val
+        st.session_state.watchlist_updated = True
         return True
     return False
 
@@ -402,9 +406,10 @@ with st.sidebar:
         height=160,
         key="ticker_textarea"
     )
-    # 텍스트 변경 시 session_state 동기화
+    # 사용자가 직접 수정한 경우 session_state 동기화
     if ticker_input != st.session_state.watchlist:
         st.session_state.watchlist = ticker_input
+        st.session_state.watchlist_updated = False
 
     lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
 
@@ -435,9 +440,9 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-# ── 종목 파싱 ──
+# ── 종목 파싱 — session_state 기준 (항상 최신값) ──
 TICKERS = []
-for line in ticker_input.strip().split('\n'):
+for line in st.session_state.watchlist.strip().split('\n'):
     parts = line.strip().split(',')
     if len(parts) == 2:
         TICKERS.append((parts[0].strip(), parts[1].strip()))
@@ -1056,16 +1061,22 @@ with tab4:
                                        if ',' in l]
                         if item['ticker'] in cur_tickers:
                             st.markdown(
-                                "<div style='font-size:12px; color:#4dff91; margin-top:8px'>✅ 이미 관심종목에 추가됨</div>",
+                                "<div style='background:#1a3a2a; border:1px solid #2d6644; border-radius:8px; "
+                                "padding:8px 14px; font-size:13px; color:#4dff91; margin-top:8px'>"
+                                "✅ 관심종목에 추가됨</div>",
                                 unsafe_allow_html=True
                             )
                         else:
-                            if st.button(f"⭐ 관심종목 추가 ({item['name']})",
-                                         key=f"add_{item['ticker']}",
-                                         use_container_width=True):
+                            add_key = f"add_{item['ticker']}"
+                            if st.button(
+                                f"⭐ 관심종목 추가 — {item['name']} ({item['ticker']})",
+                                key=add_key,
+                                use_container_width=True,
+                                type="primary"
+                            ):
                                 added = add_to_watchlist(item['ticker'], item['name'])
                                 if added:
-                                    st.success(f"✅ {item['name']} 관심종목에 추가됐습니다! 현황판 탭에서 확인하세요.")
+                                    st.toast(f"⭐ {item['name']} 추가 완료!", icon="✅")
                                     st.rerun()
 
 st.markdown("---")
