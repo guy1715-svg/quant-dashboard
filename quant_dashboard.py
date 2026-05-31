@@ -1304,33 +1304,39 @@ with tab4:
             if not passed:
                 st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
 
-        # ── 스캔 결과는 session_state에서 항상 표시 (버튼 클릭해도 유지) ──
+        # ── 스캔 결과 항상 표시 ──
         if st.session_state.passed:
+            _sc_wl  = st.session_state.get('watchlist_data', None) or load_watchlist()
+            _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
+            _new_items = [i for i in st.session_state.passed if i['ticker'] not in _sc_ids]
+            _added_items = [i for i in st.session_state.passed if i['ticker'] in _sc_ids]
+
             st.success(f"✅ {len(st.session_state.passed)}개 종목 발굴!")
+
+            # ── 일괄 추가 버튼 ──
+            if _new_items:
+                if st.button(f"⭐ 발굴 종목 전체 추가 ({len(_new_items)}개)", use_container_width=True, type="primary"):
+                    try:
+                        _ws = get_gsheet()
+                        _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
+                        for _item in _new_items:
+                            _ws.append_row([_item['ticker'], _item['name']])
+                            _cur = _cur.strip() + f"\n{_item['ticker']},{_item['name']}"
+                        st.session_state.watchlist_data = _cur
+                        load_watchlist.clear()
+                        st.success(f"✅ {len(_new_items)}개 종목 사이드바에 추가 완료!")
+                    except Exception as _e:
+                        st.error(f"추가 오류: {_e}")
+            else:
+                st.info("✅ 발굴된 종목이 모두 관심종목에 추가되어 있습니다.")
+
             st.markdown("---")
 
-            # 현재 관심종목 목록
-            _sc_wl   = st.session_state.get('watchlist_data', None) or load_watchlist()
-            _sc_ids  = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
-
-            # 추가 버튼 콜백 — passed 보존
-            def _scan_add(tk, nm):
-                try:
-                    _ws = get_gsheet()
-                    _ws.append_row([tk, nm])
-                    _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
-                    _new = _cur.strip() + f"\n{tk},{nm}"
-                    st.session_state.watchlist_data = _new
-                    load_watchlist.clear()
-                    # passed 유지 (초기화 방지)
-                    st.session_state._keep_passed = True
-                except Exception as _e:
-                    pass
-
+            # ── 종목별 상세 ──
             for item in st.session_state.passed:
+                _is_added = item['ticker'] in _sc_ids
                 chg_color = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
                 badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
-                _is_added = item['ticker'] in _sc_ids
 
                 with st.expander(
                     f"{'✅' if _is_added else '⭐'}  {item['name']} ({item['ticker']})  "
@@ -1346,39 +1352,61 @@ with tab4:
                     c5.markdown(f"<div class='metric-card'><div class='label'>점수</div><div class='value up'>{item['score']}점</div></div>", unsafe_allow_html=True)
                     st.markdown(f"**선정 이유:** {badge_html}", unsafe_allow_html=True)
 
-                    # 관심종목 추가 — on_click 콜백 방식 (rerun 안 함)
                     if _is_added:
-                        st.markdown("<div style='color:#4dff91; font-size:13px; padding:8px'>✅ 이미 관심종목에 추가됨</div>", unsafe_allow_html=True)
+                        st.markdown("<div style='color:#4dff91; font-size:13px; padding:6px 0'>✅ 이미 관심종목에 추가됨</div>", unsafe_allow_html=True)
                     else:
-                        st.button(
-                            f"⭐ 사이드바에 추가 — {item['name']}",
-                            key=f"sc_add_{item['ticker']}",
-                            on_click=_scan_add,
-                            args=(item['ticker'], item['name']),
-                            use_container_width=True
-                        )
+                        # 개별 추가 — form 방식
+                        with st.form(f"add_form_{item['ticker']}"):
+                            _fs = st.form_submit_button(f"⭐ {item['name']} 관심종목 추가", use_container_width=True)
+                            if _fs:
+                                st.session_state[f"add_pending_{item['ticker']}"] = item['name']
 
                     # Gemini 분석
                     if use_gemini_scan and gemini_key:
-                        if st.button(f"🤖 Gemini 분석", key=f"scan_gem_{item['ticker']}"):
-                            import google.generativeai as genai
-                            genai.configure(api_key=gemini_key)
-                            gmodel = genai.GenerativeModel(model_name)
-                            SYSTEM = (
-                                'You are a Korean stock quantitative analysis AI. '
-                                'Always respond in Korean. '
-                                'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
-                                'No entry 09:00-09:30 KST / No averaging down'
-                            )
-                            prompt = build_prompt(item.get('df', None) or
-                                                  fetch_ohlcv(item['ticker'], 60),
-                                                  item['name'], item['ticker'])
+                        with st.form(f"gemini_form_{item['ticker']}"):
+                            _gs = st.form_submit_button(f"🤖 Gemini 분석", use_container_width=True)
+                            if _gs:
+                                st.session_state[f"gemini_pending_{item['ticker']}"] = True
+
+                    # Gemini 결과 표시
+                    if st.session_state.get(f"gemini_pending_{item['ticker']}", False):
+                        import google.generativeai as genai
+                        genai.configure(api_key=gemini_key)
+                        gmodel = genai.GenerativeModel(model_name)
+                        SYSTEM = ('You are a Korean stock quant AI. Always respond in Korean. '
+                                  'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down')
+                        _df = item.get('df', fetch_ohlcv(item['ticker'], 60))
+                        if _df is not None:
+                            prompt = build_prompt(_df, item['name'], item['ticker'])
                             with st.spinner('분석 중...'):
                                 try:
                                     res = gmodel.generate_content(SYSTEM + '\n\n' + prompt)
                                     st.markdown(f"<div class='gemini-box'>{res.text}</div>", unsafe_allow_html=True)
                                 except Exception as e:
                                     st.error(f"오류: {e}")
+
+            # form 제출 후 처리 (expander 밖)
+            _added_any = False
+            for item in st.session_state.passed:
+                _pkey = f"add_pending_{item['ticker']}"
+                if st.session_state.get(_pkey):
+                    _nm = st.session_state.pop(_pkey)
+                    try:
+                        _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
+                        _cur_ids = [l.split(',')[0].strip() for l in _cur.split('\n') if ',' in l]
+                        if item['ticker'] not in _cur_ids:
+                            _ws = get_gsheet()
+                            _ws.append_row([item['ticker'], _nm])
+                            _new = _cur.strip() + f"\n{item['ticker']},{_nm}"
+                            st.session_state.watchlist_data = _new
+                            load_watchlist.clear()
+                            _added_any = True
+                            st.success(f"✅ {_nm} 추가 완료!")
+                    except Exception as _e:
+                        st.error(f"추가 오류: {_e}")
+            if _added_any:
+                st.rerun()
+
 
 # ══════════════════════════════════════════
 # 탭 5: 관심종목 관리
