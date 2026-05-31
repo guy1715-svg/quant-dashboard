@@ -998,7 +998,64 @@ with tab3:
 # ══════════════════════════════════════════
 with tab4:
     st.markdown("### 🔍 주도 종목 자동 스캐너")
-    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:16px'>거래대금 상위 종목 중 조건 충족 종목을 자동 발굴합니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:12px'>거래대금 상위 종목 중 조건 충족 종목을 자동 발굴합니다.</div>", unsafe_allow_html=True)
+
+    # 상황별 추천 조건 가이드
+    with st.expander("📖 상황별 추천 필터 조건 가이드", expanded=False):
+        gc1, gc2, gc3 = st.columns(3)
+        gc1.markdown("""
+<div class='metric-card'>
+<div class='label'>📉 반등 매매</div>
+<div style='font-size:13px; margin-top:8px; line-height:2'>
+많이 빠진 종목의 반등을 노릴 때<br>
+✅ RSI 과매도<br>
+✅ 거래량 폭발<br>
+□ MACD 골든크로스<br>
+□ BB 하단 근접<br>
+□ 정배열
+</div>
+<div style='font-size:11px; color:#4da6ff; margin-top:8px'>
+💡 낙폭 과대 종목 중 거래량으로<br>세력 진입 확인
+</div>
+</div>""", unsafe_allow_html=True)
+
+        gc2.markdown("""
+<div class='metric-card'>
+<div class='label'>📈 추세 매매</div>
+<div style='font-size:13px; margin-top:8px; line-height:2'>
+이미 상승 중인 종목을 탈 때<br>
+□ RSI 과매도<br>
+✅ 거래량 폭발<br>
+✅ MACD 골든크로스<br>
+□ BB 하단 근접<br>
+✅ 정배열
+</div>
+<div style='font-size:11px; color:#4dff91; margin-top:8px'>
+💡 상승 추세 확인 후 눌림목<br>진입 타이밍 포착
+</div>
+</div>""", unsafe_allow_html=True)
+
+        gc3.markdown("""
+<div class='metric-card'>
+<div class='label'>🎯 바닥 확인 매수</div>
+<div style='font-size:13px; margin-top:8px; line-height:2'>
+바닥 다지고 전환 신호 시<br>
+□ RSI 과매도<br>
+✅ 거래량 폭발<br>
+✅ MACD 골든크로스<br>
+✅ BB 하단 근접<br>
+□ 정배열
+</div>
+<div style='font-size:11px; color:#ffd166; margin-top:8px'>
+💡 BB 하단 + MACD 전환 =<br>가장 강력한 바닥 신호
+</div>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown("""
+<div style='background:#0f1726; border-left:3px solid #ff4d6d; padding:10px 14px; border-radius:0 8px 8px 0; font-size:12px; margin-top:8px'>
+⚠️ <b>주의</b>: 조건을 많이 체크할수록 AND 조건이라 결과가 줄어듭니다.<br>
+정배열(상승중) + RSI 과매도(많이 빠짐)는 서로 반대 의미라 동시 체크 시 결과가 거의 없습니다.
+</div>""", unsafe_allow_html=True)
 
     # 스캔 조건 설정
     col_a, col_b, col_c = st.columns(3)
@@ -1067,16 +1124,75 @@ with tab4:
             ("064350","현대로템"),("214150","클래시스"),
         ]
         SP500_TOP = [
+            # 기술
             ("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),
             ("GOOGL","Alphabet"),("AMZN","Amazon"),("META","Meta"),
-            ("TSLA","Tesla"),("AVGO","Broadcom"),("JPM","JPMorgan"),
-            ("LLY","Eli Lilly"),("V","Visa"),("MA","Mastercard"),
-            ("UNH","UnitedHealth"),("XOM","ExxonMobil"),("PG","P&G"),
-            ("COST","Costco"),("HD","Home Depot"),("WMT","Walmart"),
-            ("NFLX","Netflix"),("AMD","AMD"),("INTC","Intel"),
-            ("QCOM","Qualcomm"),("MU","Micron"),("NOW","ServiceNow"),
-            ("CRM","Salesforce"),("PLTR","Palantir"),("ARM","ARM"),
-            ("MSTR","MicroStrategy"),("COIN","Coinbase"),("SMCI","Super Micro"),
+            ("TSLA","Tesla"),("AVGO","Broadcom"),("AMD","AMD"),
+            ("INTC","Intel"),("QCOM","Qualcomm"),("MU","Micron"),
+            ("NOW","ServiceNow"),("CRM","Salesforce"),("PLTR","Palantir"),
+            ("ARM","ARM"),("SMCI","Super Micro"),("ORCL","Oracle"),
+            ("CSCO","Cisco"),("IBM","IBM"),("TXN","Texas Instruments"),
+            ("AMAT","Applied Materials"),("LRCX","Lam Research"),
+            ("KLAC","KLA Corp"),("ADI","Analog Devices"),
+            ("MRVL","Marvell"),("MPWR","Monolithic Power"),
+            ("ON","ON Semiconductor"),("NXPI","NXP Semi"),
+            ("STX","Seagate"),("WDC","Western Digital"),
+            ("HPQ","HP Inc"),("HPE","HP Enterprise"),("DELL","Dell"),
+            ("ACN","Accenture"),("INTU","Intuit"),("ADP","ADP"),
+            ("ADBE","Adobe"),("ANSS","Ansys"),("CDNS","Cadence"),
+            ("SNPS","Synopsys"),("FTNT","Fortinet"),("PANW","Palo Alto"),
+            ("CRWD","CrowdStrike"),("ZS","Zscaler"),("OKTA","Okta"),
+            ("SNOW","Snowflake"),("DDOG","Datadog"),("MDB","MongoDB"),
+            ("NET","Cloudflare"),("TEAM","Atlassian"),("HUBS","HubSpot"),
+            # 금융
+            ("JPM","JPMorgan"),("BAC","Bank of America"),("WFC","Wells Fargo"),
+            ("GS","Goldman Sachs"),("MS","Morgan Stanley"),("C","Citigroup"),
+            ("BLK","BlackRock"),("SCHW","Charles Schwab"),("AXP","Amex"),
+            ("V","Visa"),("MA","Mastercard"),("PYPL","PayPal"),
+            ("COF","Capital One"),("USB","US Bancorp"),("TFC","Truist"),
+            ("PNC","PNC Financial"),("MTB","M&T Bank"),("FITB","Fifth Third"),
+            ("KEY","KeyCorp"),("RF","Regions Financial"),
+            # 헬스케어
+            ("UNH","UnitedHealth"),("LLY","Eli Lilly"),("JNJ","J&J"),
+            ("PFE","Pfizer"),("MRK","Merck"),("ABBV","AbbVie"),
+            ("ABT","Abbott"),("TMO","Thermo Fisher"),("DHR","Danaher"),
+            ("BMY","Bristol Myers"),("AMGN","Amgen"),("GILD","Gilead"),
+            ("BIIB","Biogen"),("VRTX","Vertex"),("REGN","Regeneron"),
+            ("ISRG","Intuitive Surgical"),("SYK","Stryker"),("MDT","Medtronic"),
+            ("BSX","Boston Scientific"),("EW","Edwards Life"),
+            # 소비재
+            ("WMT","Walmart"),("COST","Costco"),("HD","Home Depot"),
+            ("LOW","Lowe's"),("TGT","Target"),("AMZN","Amazon"),
+            ("MCD","McDonald's"),("SBUX","Starbucks"),("YUM","Yum Brands"),
+            ("NKE","Nike"),("PG","P&G"),("KO","Coca-Cola"),
+            ("PEP","PepsiCo"),("PM","Philip Morris"),("MO","Altria"),
+            ("CL","Colgate"),("EL","Estee Lauder"),("ULTA","Ulta Beauty"),
+            # 에너지
+            ("XOM","ExxonMobil"),("CVX","Chevron"),("COP","ConocoPhillips"),
+            ("SLB","SLB"),("EOG","EOG Resources"),("PXD","Pioneer Natural"),
+            ("MPC","Marathon Petroleum"),("VLO","Valero"),("PSX","Phillips 66"),
+            # 산업
+            ("BA","Boeing"),("CAT","Caterpillar"),("DE","John Deere"),
+            ("HON","Honeywell"),("GE","GE"),("MMM","3M"),
+            ("RTX","Raytheon"),("LMT","Lockheed Martin"),("NOC","Northrop"),
+            ("GD","General Dynamics"),("UPS","UPS"),("FDX","FedEx"),
+            ("WM","Waste Management"),("RSG","Republic Services"),
+            # 통신/미디어
+            ("NFLX","Netflix"),("DIS","Disney"),("CMCSA","Comcast"),
+            ("T","AT&T"),("VZ","Verizon"),("TMUS","T-Mobile"),
+            ("CHTR","Charter"),("PARA","Paramount"),("WBD","Warner Bros"),
+            # 부동산/유틸리티
+            ("NEE","NextEra Energy"),("DUK","Duke Energy"),("SO","Southern"),
+            ("D","Dominion"),("AEP","AEP"),("EXC","Exelon"),
+            ("PLD","Prologis"),("AMT","American Tower"),("CCI","Crown Castle"),
+            ("EQIX","Equinix"),("PSA","Public Storage"),("AVB","AvalonBay"),
+            # 기타 주목 종목
+            ("MSTR","MicroStrategy"),("COIN","Coinbase"),("MELI","MercadoLibre"),
+            ("SE","Sea Limited"),("BABA","Alibaba"),("JD","JD.com"),
+            ("SHOP","Shopify"),("SQ","Block"),("AFRM","Affirm"),
+            ("RBLX","Roblox"),("UBER","Uber"),("LYFT","Lyft"),
+            ("ABNB","Airbnb"),("DASH","DoorDash"),("PINS","Pinterest"),
+            ("SNAP","Snap"),("ROKU","Roku"),("TTD","Trade Desk"),
         ]
 
         extra = [(t,n) for t,n in TICKERS]
