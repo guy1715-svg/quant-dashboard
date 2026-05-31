@@ -1261,7 +1261,7 @@ with tab5:
             unsafe_allow_html=True
         )
         _cb.button(
-            "삭제", key=f"D_{_tk}",
+            "삭제", key=f"t5_del_{_tk}",
             on_click=_do_delete, args=(_tk,)
         )
 
