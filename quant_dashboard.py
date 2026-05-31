@@ -1323,19 +1323,18 @@ with tab4:
                 ):
                     try:
                         _ws  = get_gsheet()
+                        # 사이드바와 동일한 방식
                         _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
-                        _cnt = 0
                         for _it in _new_items:
                             _ws.append_row([_it['ticker'], _it['name']])
                             _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
-                            _cnt += 1
                         st.session_state.watchlist_data = _cur
                         load_watchlist.clear()
-                        st.session_state._keep_passed = True
-                        st.success(f"✅ {_cnt}개 추가 완료!")
                         st.rerun()
                     except Exception as _e:
+                        import traceback
                         st.error(f"추가 오류: {_e}")
+                        st.code(traceback.format_exc())
                 _col_info.markdown(
                     "<div style='padding:8px; font-size:12px; color:#6b7fa3'>"
                     "사이드바에 없는 종목만 추가됩니다.</div>",
