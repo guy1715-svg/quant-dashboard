@@ -65,6 +65,27 @@ def get_watchlist_fast():
         return st.session_state.watchlist_data
     return load_watchlist()
 
+def clean_sheet_duplicates():
+    """Sheets 중복 데이터 제거"""
+    try:
+        ws   = get_gsheet()
+        data = ws.get_all_values()
+        seen = set()
+        clean = []
+        for row in data:
+            if row and row[0].strip() not in seen:
+                seen.add(row[0].strip())
+                clean.append(row)
+        ws.clear()
+        if clean:
+            ws.update("A1", clean)
+        result = "\n".join([",".join(r) for r in clean if len(r)>=2])
+        st.session_state.watchlist_data = result
+        load_watchlist.clear()
+        return result
+    except Exception as e:
+        return None
+
 def save_watchlist(text):
     """관심종목 전체 저장 (삭제 시 사용)"""
     st.session_state.watchlist_data = text
@@ -471,8 +492,10 @@ with st.sidebar:
 
     st.markdown("### 📋 관심 종목")
 
-    # 현재 목록 표시 + 삭제
-    _sb_wl    = st.session_state.get('watchlist_data', None) or load_watchlist()
+    # 현재 목록 — session_state 우선 (캐시 무관 즉시 반영)
+    _sb_wl = st.session_state.get('watchlist_data') or load_watchlist()
+    if not _sb_wl:
+        _sb_wl = load_watchlist()
     _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
     _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
 
@@ -1322,14 +1345,23 @@ with tab4:
                     type="primary"
                 ):
                     try:
-                        _ws  = get_gsheet()
-                        # 사이드바와 동일한 방식
-                        _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
+                        _ws = get_gsheet()
+                        # Sheets 현재 데이터 다시 읽어서 중복 방지
+                        _sheet_data = _ws.get_all_values()
+                        _sheet_ids  = [r[0].strip() for r in _sheet_data if r]
+                        _cur = "\n".join([",".join(r) for r in _sheet_data if len(r)>=2])
+                        _added = 0
                         for _it in _new_items:
-                            _ws.append_row([_it['ticker'], _it['name']])
-                            _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
+                            if _it['ticker'] not in _sheet_ids:
+                                _ws.append_row([_it['ticker'], _it['name']])
+                                _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
+                                _sheet_ids.append(_it['ticker'])
+                                _added += 1
+                        # session_state 즉시 업데이트
                         st.session_state.watchlist_data = _cur
                         load_watchlist.clear()
+                        st.session_state._keep_passed = True
+                        st.success(f"✅ {_added}개 추가 완료! 사이드바가 업데이트됩니다.")
                         st.rerun()
                     except Exception as _e:
                         import traceback
