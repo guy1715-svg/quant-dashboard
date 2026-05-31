@@ -1312,10 +1312,11 @@ with tab4:
 
             st.success(f"✅ {len(st.session_state.passed)}개 종목 발굴!")
 
-            # ── 전체 일괄 추가 ──
+            # ── 전체 일괄 추가 버튼 ──
             if _new_items:
-                if st.button(
-                    f"⭐ 발굴 종목 전체 추가 ({len(_new_items)}개)",
+                _col_add, _col_info = st.columns([2, 3])
+                if _col_add.button(
+                    f"⭐ 전체 {len(_new_items)}개 사이드바 추가",
                     key="bulk_add_btn",
                     use_container_width=True,
                     type="primary"
@@ -1323,123 +1324,55 @@ with tab4:
                     try:
                         _ws  = get_gsheet()
                         _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
+                        _cnt = 0
                         for _it in _new_items:
                             _ws.append_row([_it['ticker'], _it['name']])
                             _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
+                            _cnt += 1
                         st.session_state.watchlist_data = _cur
                         load_watchlist.clear()
                         st.session_state._keep_passed = True
-                        st.success(f"✅ {len(_new_items)}개 추가 완료! 사이드바 확인하세요.")
+                        st.success(f"✅ {_cnt}개 추가 완료!")
                         st.rerun()
                     except Exception as _e:
                         st.error(f"추가 오류: {_e}")
+                _col_info.markdown(
+                    "<div style='padding:8px; font-size:12px; color:#6b7fa3'>"
+                    "사이드바에 없는 종목만 추가됩니다.</div>",
+                    unsafe_allow_html=True
+                )
             else:
-                st.info("✅ 발굴된 종목이 모두 이미 추가되어 있습니다.")
+                st.info("✅ 발굴된 종목이 모두 이미 사이드바에 있습니다.")
 
             st.markdown("---")
 
-            # ── 종목 카드 (expander 없이 단순 카드) ──
+            # ── 종목 카드 (읽기 전용 — 버튼 없음) ──
             for _si, item in enumerate(st.session_state.passed):
                 _is_added  = item['ticker'] in _sc_ids
                 chg_color  = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
                 badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
 
-                # 카드 헤더
                 st.markdown(
                     f"<div style='background:#111827; border:1px solid {'#2d6644' if _is_added else '#1e3a5f'}; "
-                    f"border-radius:10px; padding:14px 18px; margin-bottom:8px'>"
-                    f"<div style='display:flex; justify-content:space-between; align-items:center'>"
+                    f"border-radius:10px; padding:14px 18px; margin-bottom:12px'>"
+                    f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:8px'>"
                     f"<span style='font-size:15px; font-weight:700'>{'✅' if _is_added else '⭐'} {item['name']} "
-                    f"<span style='color:#475569; font-size:12px'>({item['ticker']})</span></span>"
-                    f"<span style='color:{chg_color}; font-family:IBM Plex Mono'>{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%</span>"
+                    f"<span style='color:#475569; font-size:12px; font-family:IBM Plex Mono'>({item['ticker']})</span></span>"
+                    f"<span style='color:{chg_color}; font-family:IBM Plex Mono; font-weight:700'>"
+                    f"{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%</span>"
                     f"</div>"
-                    f"<div style='margin-top:8px'>{badge_html} "
-                    f"<span style='color:#ffd166; font-size:12px'>점수: {item['score']}점</span></div>"
+                    f"<div style='display:flex; gap:16px; margin-bottom:8px'>"
+                    f"<span style='font-size:13px; color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{item['현재가']:,.0f}</b></span>"
+                    f"<span style='font-size:13px; color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{item['RSI']:.1f}</b></span>"
+                    f"<span style='font-size:13px; color:#a0b0c8'>거래량 <b style='color:#e0e6f0'>{item['거래량비율']:.0f}%</b></span>"
+                    f"<span style='font-size:13px; color:#ffd166'>점수 <b>{item['score']}점</b></span>"
+                    f"</div>"
+                    f"<div>{badge_html} "
+                    f"{'<span style="color:#4dff91; font-size:12px">✅ 사이드바 추가됨</span>' if _is_added else ''}"
+                    f"</div>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
-
-                # 지표 카드
-                _mc1, _mc2, _mc3, _mc4 = st.columns(4)
-                _mc1.metric("현재가", f"{item['현재가']:,.0f}")
-                _mc2.metric("RSI", f"{item['RSI']:.1f}")
-                _mc3.metric("거래량비율", f"{item['거래량비율']:.0f}%")
-                _mc4.metric("점수", f"{item['score']}점")
-
-                # 버튼 행
-                _bc1, _bc2, _bc3 = st.columns(3)
-
-                # 개별 추가 버튼
-                if not _is_added:
-                    if _bc1.button(
-                        f"⭐ 추가",
-                        key=f"ind_add_{_si}_{item['ticker']}",
-                        use_container_width=True
-                    ):
-                        try:
-                            _ws  = get_gsheet()
-                            _cur = st.session_state.get('watchlist_data', None) or load_watchlist()
-                            _ws.append_row([item['ticker'], item['name']])
-                            _new = _cur.strip() + f"\n{item['ticker']},{item['name']}"
-                            st.session_state.watchlist_data = _new
-                            load_watchlist.clear()
-                            st.session_state._keep_passed = True
-                            st.rerun()
-                        except Exception as _e:
-                            st.error(f"추가 오류: {_e}")
-                else:
-                    _bc1.markdown("<div style='color:#4dff91; padding:8px 0; font-size:13px'>✅ 추가됨</div>", unsafe_allow_html=True)
-
-                # 차트 보기 토글
-                _chart_key = f"show_chart_{_si}_{item['ticker']}"
-                if _chart_key not in st.session_state:
-                    st.session_state[_chart_key] = False
-                if _bc2.button("📈 차트", key=f"chart_btn_{_si}_{item['ticker']}", use_container_width=True):
-                    st.session_state[_chart_key] = not st.session_state[_chart_key]
-                    st.session_state._keep_passed = True
-
-                # Gemini 분석 토글
-                _gem_key = f"show_gem_{_si}_{item['ticker']}"
-                if _gem_key not in st.session_state:
-                    st.session_state[_gem_key] = False
-                if use_gemini_scan and gemini_key:
-                    if _bc3.button("🤖 Gemini", key=f"gem_btn_{_si}_{item['ticker']}", use_container_width=True):
-                        st.session_state[_gem_key] = not st.session_state[_gem_key]
-                        st.session_state._keep_passed = True
-
-                # 차트 표시
-                if st.session_state.get(_chart_key, False):
-                    _df = item.get('df')
-                    if _df is not None and not _df.empty:
-                        try:
-                            _df = calc_indicators(_df)
-                            fig = make_chart(_df, item['name'])
-                            st.plotly_chart(fig, use_container_width=True)
-                        except:
-                            st.warning("차트 표시 오류")
-
-                # Gemini 분석 표시
-                if st.session_state.get(_gem_key, False) and use_gemini_scan and gemini_key:
-                    _gem_result_key = f"gem_result_{item['ticker']}"
-                    if _gem_result_key not in st.session_state:
-                        import google.generativeai as genai
-                        genai.configure(api_key=gemini_key)
-                        gmodel = genai.GenerativeModel(model_name)
-                        SYSTEM = ('You are a Korean stock quant AI. Always respond in Korean. '
-                                  'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down')
-                        _df = item.get('df', fetch_ohlcv(item['ticker'], 60))
-                        if _df is not None:
-                            prompt = build_prompt(_df, item['name'], item['ticker'])
-                            with st.spinner('Gemini 분석 중...'):
-                                try:
-                                    res = gmodel.generate_content(SYSTEM + '\n\n' + prompt)
-                                    st.session_state[_gem_result_key] = res.text
-                                except Exception as e:
-                                    st.session_state[_gem_result_key] = f"오류: {e}"
-                    if _gem_result_key in st.session_state:
-                        st.markdown(f"<div class='gemini-box'>{st.session_state[_gem_result_key]}</div>", unsafe_allow_html=True)
-
-                st.markdown("<hr style='border-color:#1a2535; margin:12px 0'>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════
