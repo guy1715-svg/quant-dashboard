@@ -1084,6 +1084,8 @@ with tab4:
             step=100 if _is_us else 10000
         )
         use_gemini_scan = st.checkbox("Gemini 최종 분석 포함", value=False)
+        min_score = st.slider("최소 선정 점수", 1, 10, 4,
+                              help="높을수록 조건 많이 충족한 종목만 표시")
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
 
@@ -1273,7 +1275,7 @@ with tab4:
                     if use_align and l['종가'] > l['MA5'] > l['MA20'] > l['MA60']:
                         score += 2; reasons.append("✅정배열")
 
-                    if score > 0:
+                    if score >= min_score:
                         chg = (l['종가']/p['종가']-1)*100
                         passed.append({
                             'ticker': ticker,
