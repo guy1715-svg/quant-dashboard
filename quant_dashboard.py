@@ -1004,8 +1004,8 @@ with tab4:
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         st.markdown("**📋 스캔 대상**")
-        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ"])
-        top_n = st.slider("거래대금 상위 N종목", 20, 200, 50)
+        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"])
+        top_n = st.slider("상위 N종목", 20, 200, 50)
     with col_b:
         st.markdown("**🎯 필터 조건**")
         use_rsi     = st.checkbox("RSI 과매도 (≤35)", value=True)
@@ -1015,8 +1015,8 @@ with tab4:
         use_align   = st.checkbox("정배열 (MA5>MA20>MA60)", value=False)
     with col_c:
         st.markdown("**⚙️ 추가 설정**")
-        min_price   = st.number_input("최소 주가 (원)", value=5000, step=1000)
-        max_price   = st.number_input("최대 주가 (원)", value=2000000, step=10000)
+        min_price   = st.number_input("최소 주가 (원/$)", value=5000, step=1000)
+        max_price   = st.number_input("최대 주가 (원/$)", value=2000000, step=10000)
         use_gemini_scan = st.checkbox("Gemini 최종 분석 포함", value=False)
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
@@ -1025,32 +1025,63 @@ with tab4:
         st.session_state._keep_passed = False
 
     if scan_btn:
-        # 새 스캔 시에만 초기화
         st.session_state.passed = []
         st.session_state.scan_done = False
-        # 스캐너: 사용자가 직접 입력한 종목 + 기본 주요 종목 스캔
-        # (Streamlit Cloud 환경에서는 pykrx 전체 종목 스캔 불가)
-        DEFAULT_SCAN = [
-            ("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),
+
+        # ── 종목 리스트 구성 ──
+        KOSPI_200 = [
+            ("005930","삼성전자"),("000660","SK하이닉스"),("005380","현대차"),
+            ("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),
             ("035420","NAVER"),("035720","카카오"),("012450","한화에어로스페이스"),
             ("329180","HD현대중공업"),("015760","한국전력"),("034730","SK"),
-            ("051910","LG화학"),("028260","삼성물산"),("003670","포스코퓨처엠"),
-            ("247540","에코프로비엠"),("086520","에코프로"),("006400","삼성SDI"),
-            ("207940","삼성바이오로직스"),("068270","셀트리온"),("096770","SK이노베이션"),
-            ("011200","HMM"),("010130","고려아연"),("000270","기아"),("005380","현대차"),
+            ("028260","삼성물산"),("003670","포스코퓨처엠"),("247540","에코프로비엠"),
+            ("086520","에코프로"),("207940","삼성바이오로직스"),("068270","셀트리온"),
+            ("096770","SK이노베이션"),("011200","HMM"),("010130","고려아연"),
             ("066570","LG전자"),("316140","우리금융지주"),("055550","신한지주"),
             ("105560","KB금융"),("032830","삼성생명"),("017670","SK텔레콤"),
-            ("030200","KT"),("018260","삼성에스디에스"),
+            ("030200","KT"),("018260","삼성에스디에스"),("042700","한미반도체"),
+            ("009150","삼성전기"),("010950","S-Oil"),("011070","LG이노텍"),
+            ("034220","LG디스플레이"),("024110","기업은행"),("000810","삼성화재"),
+            ("088350","한화생명"),("139480","이마트"),("097950","CJ제일제당"),
+            ("011780","금호석유"),("009540","HD한국조선해양"),("000100","유한양행"),
+            ("032640","LG유플러스"),("003550","LG"),("011170","롯데케미칼"),
+            ("004020","현대제철"),("010140","삼성중공업"),("005490","POSCO홀딩스"),
+            ("028670","팬오션"),("001040","CJ"),
         ]
-        # 사용자 관심종목도 스캔에 포함
-        extra = [(t,n) for t,n in TICKERS if (t,n) not in DEFAULT_SCAN]
-        scan_list = DEFAULT_SCAN + extra
-        # 시장 필터
+        KOSDAQ_100 = [
+            ("042700","한미반도체"),("086520","에코프로"),("247540","에코프로비엠"),
+            ("003670","포스코퓨처엠"),("196170","알테오젠"),("091990","셀트리온헬스케어"),
+            ("263750","펄어비스"),("112040","위메이드"),("357780","솔브레인"),
+            ("058470","리노공업"),("095340","ISC"),("122870","와이지엔터테인먼트"),
+            ("036930","주성엔지니어링"),("039030","이오테크닉스"),("240810","원익IPS"),
+            ("035900","JYP엔터테인먼트"),("041510","에스엠"),("067160","아프리카TV"),
+            ("064350","현대로템"),("214150","클래시스"),
+        ]
+        SP500_TOP = [
+            ("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),
+            ("GOOGL","Alphabet"),("AMZN","Amazon"),("META","Meta"),
+            ("TSLA","Tesla"),("AVGO","Broadcom"),("JPM","JPMorgan"),
+            ("LLY","Eli Lilly"),("V","Visa"),("MA","Mastercard"),
+            ("UNH","UnitedHealth"),("XOM","ExxonMobil"),("PG","P&G"),
+            ("COST","Costco"),("HD","Home Depot"),("WMT","Walmart"),
+            ("NFLX","Netflix"),("AMD","AMD"),("INTC","Intel"),
+            ("QCOM","Qualcomm"),("MU","Micron"),("NOW","ServiceNow"),
+            ("CRM","Salesforce"),("PLTR","Palantir"),("ARM","ARM"),
+            ("MSTR","MicroStrategy"),("COIN","Coinbase"),("SMCI","Super Micro"),
+        ]
+
+        extra = [(t,n) for t,n in TICKERS]
+
         if market_type == "KOSPI":
-            scan_list = scan_list[:20]
+            scan_list = KOSPI_200 + [x for x in extra if x not in KOSPI_200]
         elif market_type == "KOSDAQ":
-            scan_list = [("042700","한미반도체"),("086520","에코프로"),
-                         ("247540","에코프로비엠"),("003670","포스코퓨처엠")] + extra
+            scan_list = KOSDAQ_100 + [x for x in extra if x not in KOSDAQ_100]
+        elif market_type == "KOSPI+KOSDAQ":
+            scan_list = KOSPI_200 + [x for x in KOSDAQ_100 if x not in KOSPI_200]
+            scan_list += [x for x in extra if x not in scan_list]
+        else:  # 미국 S&P500
+            scan_list = SP500_TOP + [x for x in extra if x not in SP500_TOP]
+
         scan_list = scan_list[:top_n]
         scan_tickers = [t for t,n in scan_list]
         name_map = {t:n for t,n in scan_list}
@@ -1071,7 +1102,19 @@ with tab4:
                 status_text.markdown(f"<span style='font-size:12px; color:#6b7fa3'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
                 try:
-                    df = fetch_ohlcv(ticker, 60)
+                    # 미국 종목은 suffix 없이 직접 조회
+                    if market_type == "미국(S&P500)":
+                        import yfinance as yf
+                        _yt = yf.Ticker(ticker)
+                        _hist = _yt.history(period="3mo", interval="1d")
+                        if _hist.empty:
+                            continue
+                        df = _hist.rename(columns={
+                            'Open':'시가','High':'고가','Low':'저가',
+                            'Close':'종가','Volume':'거래량'
+                        })[['시가','고가','저가','종가','거래량']].tail(60)
+                    else:
+                        df = fetch_ohlcv(ticker, 60)
                     if df is None or len(df) < 20: continue
 
                     l = df.iloc[-1]
