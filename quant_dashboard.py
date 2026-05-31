@@ -1015,8 +1015,17 @@ with tab4:
         use_align   = st.checkbox("정배열 (MA5>MA20>MA60)", value=False)
     with col_c:
         st.markdown("**⚙️ 추가 설정**")
-        min_price   = st.number_input("최소 주가 (원/$)", value=5000, step=1000)
-        max_price   = st.number_input("최대 주가 (원/$)", value=2000000, step=10000)
+        _is_us = market_type == "미국(S&P500)"
+        min_price = st.number_input(
+            "최소 주가 (원/$)",
+            value=1 if _is_us else 5000,
+            step=1 if _is_us else 1000
+        )
+        max_price = st.number_input(
+            "최대 주가 (원/$)",
+            value=100000 if _is_us else 2000000,
+            step=100 if _is_us else 10000
+        )
         use_gemini_scan = st.checkbox("Gemini 최종 분석 포함", value=False)
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
@@ -1104,22 +1113,27 @@ with tab4:
                 try:
                     # 미국 종목은 suffix 없이 직접 조회
                     if market_type == "미국(S&P500)":
-                        import yfinance as yf
-                        _yt = yf.Ticker(ticker)
-                        _hist = _yt.history(period="3mo", interval="1d")
-                        if _hist.empty:
+                        try:
+                            import yfinance as yf
+                            _yt   = yf.Ticker(ticker)
+                            _hist = _yt.history(period="6mo", interval="1d")
+                            if _hist is None or _hist.empty:
+                                continue
+                            df = _hist.rename(columns={
+                                'Open':'시가','High':'고가','Low':'저가',
+                                'Close':'종가','Volume':'거래량'
+                            })[['시가','고가','저가','종가','거래량']].tail(60)
+                            df = df[df['거래량'] > 0]
+                        except:
                             continue
-                        df = _hist.rename(columns={
-                            'Open':'시가','High':'고가','Low':'저가',
-                            'Close':'종가','Volume':'거래량'
-                        })[['시가','고가','저가','종가','거래량']].tail(60)
                     else:
                         df = fetch_ohlcv(ticker, 60)
                     if df is None or len(df) < 20: continue
 
                     l = df.iloc[-1]
-                    # 가격 필터
-                    if l['종가'] < min_price or l['종가'] > max_price: continue
+                    # 가격 필터 (미국은 달러 기준)
+                    _price = l['종가']
+                    if _price < min_price or _price > max_price: continue
 
                     df = calc_indicators(df)
                     l  = df.iloc[-1]
