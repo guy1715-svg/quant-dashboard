@@ -1251,7 +1251,7 @@ with tab5:
         remove_ticker(tk)
 
     st.markdown(f"#### 📋 현재 종목 ({len(_pairs)}개)")
-    for _tk, _nm in _pairs:
+    for _idx, (_tk, _nm) in enumerate(_pairs):
         _ca, _cb = st.columns([5, 1])
         _ca.markdown(
             f"<div style='padding:10px; background:#111827; border-radius:8px;"
@@ -1261,7 +1261,7 @@ with tab5:
             unsafe_allow_html=True
         )
         _cb.button(
-            "삭제", key=f"t5_del_{_tk}",
+            "삭제", key=f"t5_del_{_idx}_{_tk}",
             on_click=_do_delete, args=(_tk,)
         )
 
@@ -1322,7 +1322,7 @@ with tab5:
         add_ticker(tk, nm)
 
     if st.session_state.passed:
-        for _item in st.session_state.passed:
+        for _idx2, _item in enumerate(st.session_state.passed):
             _tk2  = _item["ticker"]
             _nm2  = _item["name"]
             _chg  = _item["등락(%)"]
