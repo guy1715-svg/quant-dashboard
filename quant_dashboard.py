@@ -1848,6 +1848,10 @@ with tab6:
         _passive = _df_etf[_df_etf['상태']!='활성']
         _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
 
+        # 현재 관심종목 목록
+        _etf_wl_now  = st.session_state.get('watchlist_data') or load_watchlist()
+        _etf_wl_ids  = [l.split(',')[0].strip() for l in _etf_wl_now.split('\n') if ',' in l]
+
         for _i, row in _ranked.iterrows():
             _is_top  = (_i == 0 and row['상태'] == '활성')
             _is_dead = (row['상태'] != '활성')
@@ -1859,10 +1863,11 @@ with tab6:
             _rank    = '🥇' if _is_top else f"{_i+1}위"
             _tag     = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">100% 스위칭 타겟</span>' if _is_top else ''
             _dead_tag= ' <span style="color:#475569;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
+            _already = row['종목코드'] in _etf_wl_ids
 
             st.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
-                f"padding:14px 18px;margin-bottom:8px;opacity:{_op}'>"
+                f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
                 f"<span style='color:#475569;font-size:11px'> ({row['종목코드']})</span>"
@@ -1876,6 +1881,24 @@ with tab6:
                 f"</div></div>",
                 unsafe_allow_html=True
             )
+
+            # 관심종목 추가 버튼
+            _eb1, _eb2 = st.columns([1, 4])
+            if _already:
+                _eb1.markdown("<div style='color:#4dff91;font-size:12px;padding:4px 0'>✅ 추가됨</div>", unsafe_allow_html=True)
+            else:
+                if _eb1.button("⭐ 추가", key=f"etf_add_{_i}_{row['종목코드']}"):
+                    try:
+                        _ws_etf = get_gsheet()
+                        _ws_etf.append_row([row['종목코드'], row['ETF명']])
+                        _new_wl = _etf_wl_now.strip() + f"\n{row['종목코드']},{row['ETF명']}"
+                        st.session_state.watchlist_data = _new_wl
+                        load_watchlist.clear()
+                        st.success(f"✅ {row['ETF명']} 관심종목 추가!")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"추가 오류: {_e}")
+            st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
         st.markdown("---")
         st.caption("ADX ≥ 25: 강한 추세 / Z-Score 높을수록 상대 강도 우위 / 1위 ETF 집중 스위칭 권고")
