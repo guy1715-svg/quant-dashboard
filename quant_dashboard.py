@@ -1916,37 +1916,35 @@ with tab7:
     st.markdown("### 📝 페이퍼 트레이딩 (모의투자)")
     st.caption("실제 자금 없이 V8.9 전략을 검증합니다. 슬리피지·수수료·세금 자동 반영.")
 
-    # 계좌 로드
-    _acc = load_account()
+    _acc       = load_account()
     _total_val = calc_portfolio_value(_acc)
+    _pnl       = _total_val - _acc['initial']
+    _pnl_pct   = (_pnl / _acc['initial'] * 100) if _acc['initial'] > 0 else 0
+    _mdd       = ((_acc['trough'] - _acc['peak']) / _acc['peak'] * 100) if _acc['peak'] > 0 else 0
 
-    # ── 1. 가상 계좌 현황 ──
+    # ── 1. 계좌 현황 ──
     st.markdown("#### 💰 가상 계좌 현황")
-    _pnl     = _total_val - _acc['initial']
-    _pnl_pct = (_pnl / _acc['initial'] * 100) if _acc['initial'] > 0 else 0
-    _mdd     = ((_acc['trough'] - _acc['peak']) / _acc['peak'] * 100) if _acc['peak'] > 0 else 0
-
     _pa1, _pa2, _pa3, _pa4, _pa5 = st.columns(5)
     _pa1.markdown(f"<div class='metric-card'><div class='label'>초기자본</div><div class='value flat'>{_acc['initial']:,.0f}원</div></div>", unsafe_allow_html=True)
     _pa2.markdown(f"<div class='metric-card'><div class='label'>현금잔고</div><div class='value flat'>{_acc['cash']:,.0f}원</div></div>", unsafe_allow_html=True)
     _pa3.markdown(f"<div class='metric-card'><div class='label'>총평가금액</div><div class='value flat'>{_total_val:,.0f}원</div></div>", unsafe_allow_html=True)
     _pnl_c = 'up' if _pnl >= 0 else 'down'
-    _pa4.markdown(f"<div class='metric-card'><div class='label'>총손익</div><div class='value {_pnl_c}'>{_pnl:+,.0f}원 ({_pnl_pct:+.2f}%)</div></div>", unsafe_allow_html=True)
-    _pa5.markdown(f"<div class='metric-card'><div class='label'>최대낙폭(MDD)</div><div class='value {'down' if _mdd < -5 else 'flat'}'>{_mdd:.2f}%</div></div>", unsafe_allow_html=True)
+    _pa4.markdown(f"<div class='metric-card'><div class='label'>총손익</div><div class='value {_pnl_c}'>{_pnl:+,.0f}원<br>({_pnl_pct:+.2f}%)</div></div>", unsafe_allow_html=True)
+    _mdd_c = 'down' if _mdd < -5 else 'flat'
+    _pa5.markdown(f"<div class='metric-card'><div class='label'>MDD</div><div class='value {_mdd_c}'>{_mdd:.2f}%</div></div>", unsafe_allow_html=True)
 
     if _mdd < -10:
-        st.error(f"🚨 MDD 경고! 최대낙폭 {_mdd:.2f}% — 포지션 점검 필요")
+        st.error(f"🚨 MDD 경고! {_mdd:.2f}% — 포지션 즉시 점검 필요")
     elif _mdd < -5:
         st.warning(f"⚠️ MDD 주의 {_mdd:.2f}%")
 
-    # 초기자본 설정
-    with st.expander("⚙️ 초기자본 재설정"):
-        _new_capital = st.number_input("초기자본 (원)", value=int(_acc['initial']), step=1000000)
-        if st.button("💾 초기화 (모든 거래 리셋)", key="reset_account"):
-            _new_acc = {'initial':_new_capital,'cash':_new_capital,
-                        'positions':[],'peak':_new_capital,'trough':_new_capital}
+    # 초기화
+    with st.expander("⚙️ 가상 계좌 설정"):
+        _new_cap = st.number_input("초기자본 (원)", value=int(_acc['initial']), step=1000000, min_value=1000000)
+        if st.button("🔄 계좌 초기화 (전체 리셋)", key="reset_account"):
+            _new_acc = {'initial':_new_cap,'cash':_new_cap,'positions':[],'peak':_new_cap,'trough':_new_cap}
             save_account(_new_acc)
-            st.success(f"✅ 가상 계좌 {_new_capital:,.0f}원으로 초기화!")
+            st.success(f"✅ {_new_cap:,.0f}원으로 초기화!")
             st.rerun()
 
     st.divider()
@@ -1954,120 +1952,132 @@ with tab7:
     # ── 2. 보유 포지션 ──
     st.markdown("#### 📊 보유 포지션")
     if not _acc['positions']:
-        st.info("보유 포지션 없음. 아래에서 가상 매수를 실행하세요.")
+        st.info("💡 보유 포지션 없음. 아래 가상 매수를 실행해보세요.")
     else:
-        for _pos in _acc['positions']:
+        for _pi, _pos in enumerate(_acc['positions']):
             try:
                 _cur_df = fetch_ohlcv(_pos['ticker'], 5)
-                _cur_p  = _cur_df['종가'].iloc[-1] if _cur_df is not None and not _cur_df.empty else _pos['avg_price']
+                _cur_p  = float(_cur_df['종가'].iloc[-1]) if _cur_df is not None and not _cur_df.empty else float(_pos['avg_price'])
             except:
-                _cur_p = _pos['avg_price']
+                _cur_p = float(_pos['avg_price'])
 
-            _pos_val  = _cur_p * _pos['qty']
-            _pos_pnl  = (_cur_p - _pos['avg_price']) * _pos['qty']
-            _pos_pct  = (_cur_p / _pos['avg_price'] - 1) * 100
-            _pc       = 'up' if _pos_pnl >= 0 else 'down'
-            _kill     = _pos['avg_price'] * 0.93  # -7% 킬스위치
-
+            _pos_val = _cur_p * _pos['qty']
+            _pos_pnl = (_cur_p - _pos['avg_price']) * _pos['qty']
+            _pos_pct = (_cur_p / _pos['avg_price'] - 1) * 100
+            _pc      = 'up' if _pos_pnl >= 0 else 'down'
+            _kill    = _pos['avg_price'] * 0.93
             _kill_alert = _cur_p <= _kill
-            _border_c   = '#ff4d6d' if _kill_alert else '#1e3a5f'
 
             st.markdown(
-                f"<div style='background:#111827;border:1px solid {_border_c};border-radius:10px;padding:14px;margin-bottom:8px'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                f"<b style='font-size:15px'>{_pos['name']} ({_pos['ticker']})</b>"
-                f"<span class='{_pc}'>{_pos_pct:+.2f}%</span></div>"
-                f"<div style='display:flex;gap:16px;margin-top:8px;font-size:13px;color:#a0b0c8'>"
-                f"<span>수량 <b style='color:#e0e6f0'>{_pos['qty']:,}</b></span>"
-                f"<span>평단 <b style='color:#e0e6f0'>{_pos['avg_price']:,.0f}</b></span>"
-                f"<span>현재 <b style='color:#e0e6f0'>{_cur_p:,.0f}</b></span>"
-                f"<span>평가 <b style='color:#e0e6f0'>{_pos_val:,.0f}원</b></span>"
-                f"<span>손익 <b class='{_pc}'>{_pos_pnl:+,.0f}원</b></span>"
-                f"<span style='color:#ff4d6d'>킬스위치 {_kill:,.0f}</span>"
+                f"<div style='background:#111827;border:2px solid {'#ff4d6d' if _kill_alert else '#1e3a5f'};border-radius:10px;padding:14px;margin-bottom:8px'>"
+                f"<div style='display:flex;justify-content:space-between'>"
+                f"<b style='font-size:15px'>{_pos['name']} <span style='color:#475569;font-size:12px'>({_pos['ticker']})</span></b>"
+                f"<span class='{_pc}' style='font-size:16px;font-weight:700'>{_pos_pct:+.2f}%</span></div>"
+                f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px'>"
+                f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>수량</div><div style='font-weight:700'>{_pos['qty']:,}주</div></div>"
+                f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평단가</div><div style='font-weight:700'>{_pos['avg_price']:,.0f}원</div></div>"
+                f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>현재가</div><div style='font-weight:700'>{_cur_p:,.0f}원</div></div>"
+                f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평가금액</div><div style='font-weight:700'>{_pos_val:,.0f}원</div></div>"
+                f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평가손익</div><div class='{_pc}' style='font-weight:700'>{_pos_pnl:+,.0f}원</div></div>"
                 f"</div>"
-                f"{'<div style="color:#ff4d6d;font-weight:700;margin-top:6px">🚨 킬스위치 발동 구간! 즉각 매도 검토</div>' if _kill_alert else ''}"
+                f"<div style='margin-top:8px;font-size:12px;color:#ff4d6d'>킬스위치 기준: {_kill:,.0f}원 (-7%)"
+                f"{'  🚨 킬스위치 발동! 즉각 매도 검토' if _kill_alert else ''}</div>"
                 f"</div>",
                 unsafe_allow_html=True
             )
 
-            # 가상 매도 버튼
-            _sell_c1, _sell_c2, _sell_c3 = st.columns(3)
-            _sell_qty = _sell_c1.number_input("매도 수량", min_value=1,
-                max_value=_pos['qty'], value=_pos['qty'], key=f"sell_qty_{_pos['ticker']}")
-            if _sell_c2.button(f"📤 {_pos['name']} 가상 매도", key=f"sell_{_pos['ticker']}"):
-                _net_p  = calc_slippage(_cur_p, False, is_korean_ticker(_pos['ticker']))
+            _sc1, _sc2, _sc3 = st.columns([1, 1, 3])
+            _sell_qty = _sc1.number_input("매도수량", min_value=1, max_value=_pos['qty'],
+                                           value=_pos['qty'], key=f"sq_{_pi}_{_pos['ticker']}")
+            if _sc2.button("📤 가상 매도", key=f"sell_{_pi}_{_pos['ticker']}", use_container_width=True):
+                _net_p    = calc_slippage(_cur_p, False, is_korean_ticker(_pos['ticker']))
                 _proceeds = _net_p * _sell_qty
                 _acc['cash'] += _proceeds
                 if _sell_qty >= _pos['qty']:
                     _acc['positions'] = [p for p in _acc['positions'] if p['ticker'] != _pos['ticker']]
                 else:
                     _pos['qty'] -= _sell_qty
-                _total_now = calc_portfolio_value(_acc)
-                _acc['peak']   = max(_acc['peak'], _total_now)
-                _acc['trough'] = min(_acc['trough'], _total_now)
+                _tv_now = calc_portfolio_value(_acc)
+                _acc['peak']   = max(_acc['peak'], _tv_now)
+                _acc['trough'] = min(_acc['trough'], _tv_now)
                 save_account(_acc)
-                log_trade(_pos['ticker'], _pos['name'], "매도", _sell_qty, _cur_p, _net_p,
-                          _acc['cash'], _total_now, memo=f"슬리피지 반영 매도")
-                st.success(f"✅ {_pos['name']} {_sell_qty}주 가상 매도 @ {_net_p:,.0f}원 (세금+수수료 차감)")
+                log_trade(_pos['ticker'], _pos['name'], "매도", _sell_qty,
+                          _cur_p, _net_p, _acc['cash'], _tv_now)
+                st.success(f"✅ {_pos['name']} {_sell_qty}주 매도 @ {_net_p:,.0f}원 (세금+수수료 차감)")
                 st.rerun()
 
     st.divider()
 
     # ── 3. 가상 매수 ──
     st.markdown("#### 📥 가상 매수 실행")
-    _buy_cols = st.columns([2, 1, 1, 1, 1])
-    _buy_ticker = _buy_cols[0].selectbox("종목 선택", [f"{n} ({t})" for t,n in TICKERS], key="buy_ticker_sel")
-    _bt = _buy_ticker.split('(')[-1].replace(')','').strip()
-    if not is_korean_ticker(_bt):
-        _bt = _buy_ticker.split(' ')[0].strip()
 
-    # 현재가 조회
+    _bc1, _bc2 = st.columns([2, 3])
+    _buy_ticker_sel = _bc1.selectbox("종목 선택",
+        [f"{n} ({t})" for t,n in TICKERS], key="buy_ticker_sel")
+    _bt = _buy_ticker_sel.split('(')[-1].replace(')','').strip()
+    if not is_korean_ticker(_bt):
+        _bt = _buy_ticker_sel.split(' ')[0].strip()
+    _bn = dict([(t,n) for t,n in TICKERS]).get(_bt, _bt)
+
+    # 현재가 자동 로드
     try:
         _buy_df  = fetch_ohlcv(_bt, 5)
-        _buy_cur = _buy_df['종가'].iloc[-1] if _buy_df is not None and not _buy_df.empty else 0
+        _buy_cur = float(_buy_df['종가'].iloc[-1]) if _buy_df is not None and not _buy_df.empty else 0
     except:
         _buy_cur = 0
 
-    _buy_price = _buy_cols[1].number_input("매수가", value=int(_buy_cur), step=100, key="buy_price_inp")
-    _buy_qty   = _buy_cols[2].number_input("수량", min_value=1, value=1, key="buy_qty_inp")
-    _ai_score  = _buy_cols[3].number_input("5AI점수", min_value=-5, max_value=5, value=0, key="buy_ai")
-    _buy_total = _buy_price * _buy_qty
-    _buy_cols[4].markdown(f"<div style='padding-top:28px;font-size:13px'>필요금액<br><b>{_buy_total:,.0f}원</b></div>", unsafe_allow_html=True)
+    _bc2.markdown(
+        f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:28px'>"
+        f"현재가: <b style='font-size:18px;color:#ffd166'>{_buy_cur:,.0f}원</b> | "
+        f"현금잔고: <b style='color:#4dff91'>{_acc['cash']:,.0f}원</b></div>",
+        unsafe_allow_html=True
+    )
 
-    _buy_memo = st.text_input("매수 근거 메모 (진입 이유)", placeholder="예: BB하단 반등, 골든크로스 확인", key="buy_memo")
+    _brow1, _brow2, _brow3, _brow4 = st.columns(4)
+    _buy_price = _brow1.number_input("매수가 (원)", value=int(_buy_cur) if _buy_cur > 0 else 1,
+                                      step=100, min_value=1, key="buy_price_inp")
+    _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=1, key="buy_qty_inp")
+    _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
+    _buy_total = _buy_price * _buy_qty
+    _net_buy_preview = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
+    _brow4.markdown(
+        f"<div style='padding-top:28px'>"
+        f"필요금액: <b>{_buy_total:,.0f}원</b><br>"
+        f"<span style='font-size:11px;color:#6b7fa3'>슬리피지 반영: {_net_buy_preview:,.0f}원/주</span></div>",
+        unsafe_allow_html=True
+    )
+
+    _buy_memo = st.text_input("매수 근거 (Why)", placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
+
+    _cash_ok = _acc['cash'] >= _buy_total
+    if not _cash_ok:
+        st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
 
     if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
-                 type="primary", disabled=(_acc['cash'] < _buy_total or _buy_price <= 0)):
-        _net_buy = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
-        _cost    = _net_buy * _buy_qty
-        if _acc['cash'] >= _cost:
-            _acc['cash'] -= _cost
-            _pos_exist = get_position(_acc, _bt)
-            _buy_name  = dict(TICKERS).get(_bt, _bt)
-            if _pos_exist:
-                # 불타기 — 평단 재계산
-                _old_val = _pos_exist['avg_price'] * _pos_exist['qty']
-                _new_val = _net_buy * _buy_qty
-                _pos_exist['qty']       += _buy_qty
-                _pos_exist['avg_price']  = round((_old_val + _new_val) / _pos_exist['qty'])
-            else:
-                _acc['positions'].append({
-                    'ticker':    _bt,
-                    'name':      _buy_name,
-                    'qty':       _buy_qty,
-                    'avg_price': _net_buy,
-                    'entry_date': str(pd.Timestamp.now())[:10]
-                })
-            _total_now = calc_portfolio_value(_acc)
-            _acc['peak']   = max(_acc['peak'], _total_now)
-            _acc['trough'] = min(_acc['trough'], _total_now)
-            save_account(_acc)
-            log_trade(_bt, _buy_name, "매수", _buy_qty, _buy_price, _net_buy,
-                      _acc['cash'], _total_now, ai_score=_ai_score, memo=_buy_memo)
-            st.success(f"✅ {_buy_name} {_buy_qty}주 @ {_net_buy:,.0f}원 체결 (슬리피지+수수료 반영)")
-            st.rerun()
+                 type="primary", disabled=not _cash_ok):
+        _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
+        _cost  = _net_b * _buy_qty
+        _acc['cash'] -= _cost
+        _pos_exist = get_position(_acc, _bt)
+        if _pos_exist:
+            _old_v = _pos_exist['avg_price'] * _pos_exist['qty']
+            _new_v = _net_b * _buy_qty
+            _pos_exist['qty']      += _buy_qty
+            _pos_exist['avg_price'] = round((_old_v + _new_v) / _pos_exist['qty'])
         else:
-            st.error("❌ 현금 잔고 부족")
+            _acc['positions'].append({
+                'ticker': _bt, 'name': _bn,
+                'qty': _buy_qty, 'avg_price': _net_b,
+                'entry_date': str(pd.Timestamp.now())[:10]
+            })
+        _tv_now = calc_portfolio_value(_acc)
+        _acc['peak']   = max(_acc['peak'], _tv_now)
+        _acc['trough'] = min(_acc['trough'], _tv_now)
+        save_account(_acc)
+        log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
+                  _acc['cash'], _tv_now, ai_score=_ai_score, memo=_buy_memo)
+        st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
+        st.rerun()
 
     st.divider()
 
@@ -2076,48 +2086,51 @@ with tab7:
     try:
         _log_ws   = get_trading_sheet()
         _log_data = _log_ws.get_all_values() if _log_ws else []
+
         if len(_log_data) > 1:
             _log_df = pd.DataFrame(_log_data[1:], columns=_log_data[0])
-            _log_df['날짜']   = pd.to_datetime(_log_df['날짜'])
+            _log_df['날짜']     = pd.to_datetime(_log_df['날짜'], errors='coerce')
             _log_df['평가금액'] = pd.to_numeric(_log_df['평가금액'], errors='coerce')
-            _log_df = _log_df.dropna(subset=['평가금액']).sort_values('날짜')
+            _log_df = _log_df.dropna(subset=['날짜','평가금액']).sort_values('날짜')
 
             if not _log_df.empty:
-                # 누적 수익률
-                _log_df['수익률'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
+                _log_df['수익률(%)'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
 
-                # 벤치마크 (코스피)
+                # 벤치마크 비교
                 import yfinance as yf
-                _start_date = _log_df['날짜'].min()
-                _bm = yf.Ticker("^KS11").history(start=_start_date, interval="1d")
-                if not _bm.empty:
-                    _bm_ret = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
-                    _bm_ret.name = '코스피 수익률(%)'
-                    _portfolio = _log_df.set_index('날짜')['수익률']
-                    _portfolio.name = '내 포트폴리오(%)'
-                    _compare = pd.concat([_portfolio, _bm_ret], axis=1).fillna(method='ffill')
-                    st.line_chart(_compare)
-                else:
-                    st.line_chart(_log_df.set_index('날짜')['수익률'])
+                _start_bm = _log_df['날짜'].min()
+                try:
+                    _bm   = yf.Ticker("^KS11").history(start=_start_bm, interval="1d")
+                    _bm_r = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
+                    _bm_r.index = pd.to_datetime(_bm_r.index).tz_localize(None)
+                    _port = _log_df.set_index('날짜')['수익률(%)']
+                    _port.index = pd.to_datetime(_port.index).tz_localize(None)
+                    _cmp  = pd.DataFrame({'내 포트폴리오(%)': _port, '코스피(%)': _bm_r})
+                    _cmp  = _cmp.fillna(method='ffill').dropna()
+                    st.line_chart(_cmp)
+                except:
+                    st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
 
-                # MDD 계산
-                _cummax = _log_df['평가금액'].cummax()
-                _drawdown = (_log_df['평가금액'] - _cummax) / _cummax * 100
-                _mdd_val  = _drawdown.min()
-                if _mdd_val < -10:
-                    st.error(f"🚨 최대낙폭(MDD): {_mdd_val:.2f}% — 위험 구간")
-                elif _mdd_val < -5:
-                    st.warning(f"⚠️ 최대낙폭(MDD): {_mdd_val:.2f}%")
-                else:
-                    st.success(f"✅ 최대낙폭(MDD): {_mdd_val:.2f}%")
+                # MDD
+                _cm  = _log_df['평가금액'].cummax()
+                _dd  = (_log_df['평가금액'] - _cm) / _cm * 100
+                _mdd_v = _dd.min()
+                _mc1, _mc2, _mc3 = st.columns(3)
+                _mc1.metric("최대낙폭(MDD)", f"{_mdd_v:.2f}%")
+                _mc2.metric("총 거래 횟수", f"{len(_log_df)}회")
+                _mc3.metric("최종 수익률", f"{_log_df['수익률(%)'].iloc[-1]:+.2f}%")
 
                 # 거래 일지
-                st.markdown("#### 📋 거래 일지")
-                st.dataframe(_log_df[['날짜','종목명','매매','수량','순체결가','손익','메모']].tail(20)
-                             if '손익' in _log_df.columns else _log_df.tail(20),
-                             use_container_width=True)
+                st.markdown("##### 📋 거래 일지")
+                _show_cols = [c for c in ['날짜','종목명','매매','수량','순체결가','평가금액','5AI점수','메모'] if c in _log_df.columns]
+                st.dataframe(_log_df[_show_cols].tail(20), use_container_width=True)
         else:
-            st.info("아직 거래 기록이 없습니다. 가상 매수를 실행해보세요.")
+            st.info("아직 거래 기록이 없습니다. 가상 매수를 실행해보세요!")
+            # 샘플 차트
+            _sample = pd.DataFrame({'내 포트폴리오(%)': [0,1.2,0.8,2.1,1.5,3.2,2.8],
+                                     '코스피(%)':       [0,0.5,0.3,1.1,0.9,1.8,1.5]})
+            st.markdown("*(샘플 차트 — 거래 실행 후 실제 데이터로 교체됩니다)*")
+            st.line_chart(_sample)
     except Exception as _e:
         st.warning(f"성과 분석 로드 오류: {_e}")
 
