@@ -598,6 +598,21 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 # ── 종목 파싱 — session_state 우선 ──
+def is_korean_ticker(ticker):
+    """한국 종목 여부 (숫자 6자리)"""
+    return ticker.isdigit() and len(ticker) == 6
+
+def get_currency(ticker):
+    """종목 통화 단위"""
+    return "원" if is_korean_ticker(ticker) else "$"
+
+def format_price(price, ticker):
+    """가격 포맷 (한국: 원, 미국: 달러)"""
+    if is_korean_ticker(ticker):
+        return f"{price:,.0f}원"
+    else:
+        return f"${price:,.2f}"
+
 def get_watchlist_tickers():
     wl = st.session_state.get('watchlist_data', None) or load_watchlist()
     result = []
@@ -971,9 +986,21 @@ with tab2:
     if not all_data:
         st.info("현황판 탭을 먼저 열어서 데이터를 로드해주세요.")
     else:
-        selected = st.selectbox("종목 선택", [f"{name} ({ticker})" for ticker, name in TICKERS if ticker in all_data])
+        def _display_name(ticker, name):
+            """영문 종목은 티커(이름) 형식으로 표시"""
+            if is_korean_ticker(ticker):
+                return f"{name} ({ticker})"
+            else:
+                return f"{ticker} ({name})"
+
+        selected = st.selectbox("종목 선택",
+            [_display_name(ticker, name) for ticker, name in TICKERS if ticker in all_data])
+        # 티커 추출
         sel_ticker = selected.split('(')[-1].replace(')', '').strip()
-        sel_name   = all_data[sel_ticker]['name']
+        if not is_korean_ticker(sel_ticker):
+            # 미국 종목: "AVGO (Broadcom)" → ticker=AVGO
+            sel_ticker = selected.split(' ')[0].strip()
+        sel_name = all_data[sel_ticker]['name']
         sel_df     = all_data[sel_ticker]['df']
 
         # 핵심 지표 카드
@@ -985,7 +1012,9 @@ with tab2:
 
         m1,m2,m3,m4,m5,m6 = st.columns(6)
         chg_color = 'up' if chg>0 else 'down'
-        m1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{l['종가']:,.0f}</div></div>", unsafe_allow_html=True)
+        _cur_unit = get_currency(sel_ticker)
+        _cur_fmt  = format_price(l['종가'], sel_ticker)
+        m1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{_cur_fmt}</div></div>", unsafe_allow_html=True)
         m2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value {chg_color}'>{chg:+.2f}%</div></div>", unsafe_allow_html=True)
         rsi_c = 'up' if l['RSI']>=70 else 'down' if l['RSI']<=30 else 'flat'
         m3.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value {rsi_c}'>{l['RSI']:.1f}</div></div>", unsafe_allow_html=True)
@@ -996,14 +1025,17 @@ with tab2:
 
         # ── 매수/손절/목표가 입력 ──
         st.markdown("### 🎯 매수 전략 라인")
+        _unit    = get_currency(sel_ticker)
+        _step    = 100 if is_korean_ticker(sel_ticker) else 1
+        _fmt     = "%.0f" if is_korean_ticker(sel_ticker) else "%.2f"
         lc1, lc2, lc3, lc4 = st.columns(4)
-        entry_price   = lc1.number_input("매수가 (원)", value=0, step=100,
+        entry_price   = lc1.number_input(f"매수가 ({_unit})", value=0, step=_step,
                                           help="입력하면 차트에 황금색 선으로 표시")
-        stop_price    = lc2.number_input("손절가 (원, -7% 자동계산)",
-                                          value=int(l['종가']*0.93) if entry_price==0 else int(entry_price*0.93),
-                                          step=100)
-        target1_price = lc3.number_input("1차 목표가 (원)", value=0, step=100)
-        target2_price = lc4.number_input("2차 목표가 (원)", value=0, step=100)
+        _stop_default = int(l['종가']*0.93) if entry_price==0 else int(entry_price*0.93)
+        stop_price    = lc2.number_input(f"손절가 ({_unit}, -7% 자동계산)",
+                                          value=_stop_default, step=_step)
+        target1_price = lc3.number_input(f"1차 목표가 ({_unit})", value=0, step=_step)
+        target2_price = lc4.number_input(f"2차 목표가 ({_unit})", value=0, step=_step)
 
         # R:R 자동 계산
         if entry_price > 0 and stop_price > 0 and target1_price > 0:
@@ -1039,9 +1071,10 @@ with tab2:
             diff = round((l['종가']/val-1)*100, 2) if val > 0 else 0
             status = '위' if l['종가'] > val else '아래'
             c = 'up' if l['종가'] > val else 'down'
+            _val_fmt = format_price(val, sel_ticker)
             ma_cols[i].markdown(
                 f"<div class='metric-card'><div class='label'>{label}선</div>"
-                f"<div class='value flat' style='font-size:16px'>{val:,.0f}</div>"
+                f"<div class='value flat' style='font-size:16px'>{_val_fmt}</div>"
                 f"<div style='font-size:12px; margin-top:4px' class='{c}'>현재가 {status} ({diff:+.1f}%)</div></div>",
                 unsafe_allow_html=True)
 
