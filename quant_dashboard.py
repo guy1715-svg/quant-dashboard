@@ -255,26 +255,44 @@ hr { border-color: #1e3a5f; }
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
     import yfinance as yf
-    # 한국 종목: 종목코드 + .KS (코스피) 또는 .KQ (코스닥)
     end   = datetime.today()
     start = end - timedelta(days=lookback*2)
-    # KS 먼저 시도, 실패 시 KQ
-    for suffix in ['.KS', '.KQ']:
-        try:
-            yt = yf.Ticker(ticker + suffix)
-            df = yt.history(start=start, end=end, interval='1d')
-            if df is None or df.empty:
+
+    # 한국 종목 여부 판단 (숫자 6자리)
+    is_korean = ticker.isdigit() and len(ticker) == 6
+
+    if is_korean:
+        # 한국 종목 — KS, KQ 순으로 시도
+        for suffix in ['.KS', '.KQ']:
+            try:
+                yt = yf.Ticker(ticker + suffix)
+                df = yt.history(start=start, end=end, interval='1d')
+                if df is None or df.empty:
+                    continue
+                df = df.rename(columns={
+                    'Open':'시가','High':'고가','Low':'저가',
+                    'Close':'종가','Volume':'거래량'
+                })[['시가','고가','저가','종가','거래량']]
+                df = df[df['거래량'] > 0].tail(lookback)
+                if len(df) >= 5:
+                    return df
+            except:
                 continue
-            df = df.rename(columns={
-                'Open':'시가', 'High':'고가', 'Low':'저가',
-                'Close':'종가', 'Volume':'거래량'
-            })
-            df = df[['시가','고가','저가','종가','거래량']]
-            df = df[df['거래량'] > 0].tail(lookback)
-            if len(df) >= 5:
-                return df
-        except Exception:
-            continue
+    else:
+        # 미국 종목 — suffix 없이 직접 조회
+        try:
+            yt = yf.Ticker(ticker)
+            df = yt.history(start=start, end=end, interval='1d')
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    'Open':'시가','High':'고가','Low':'저가',
+                    'Close':'종가','Volume':'거래량'
+                })[['시가','고가','저가','종가','거래량']]
+                df = df[df['거래량'] > 0].tail(lookback)
+                if len(df) >= 5:
+                    return df
+        except:
+            pass
     return None
 
 def calc_indicators(df):
