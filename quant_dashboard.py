@@ -878,8 +878,7 @@ with tab1:
         prog_bar.progress((idx)/max(total,1), text=f"📡 {name} 수집 중... ({idx+1}/{total})")
         df = fetch_ohlcv(ticker, lookback)
         if df is None or len(df) < 20:
-            st.warning(f"⚠️ {name} 데이터 없음 (장 마감 또는 오류)")
-            continue
+            continue  # 데이터 없는 종목 조용히 스킵
         df = calc_indicators(df)
         all_data[ticker] = {'name': name, 'df': df}
 
