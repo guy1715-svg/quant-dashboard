@@ -10,6 +10,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -42,6 +43,145 @@ def get_gsheet():
     return sh.sheet1
 
 @st.cache_data(ttl=30, show_spinner=False)
+# ══════════════════════════════════════════
+# 페이퍼 트레이딩 백엔드
+# ══════════════════════════════════════════
+
+def get_trading_sheet():
+    """거래 일지 시트 (Sheet2)"""
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc    = gspread.authorize(creds)
+        sh    = gc.open_by_key(st.secrets["SHEET_ID"])
+        # Sheet2 없으면 생성
+        try:
+            ws = sh.worksheet("trading_log")
+        except:
+            ws = sh.add_worksheet("trading_log", rows=1000, cols=20)
+            ws.append_row(["날짜","시간","종목코드","종목명","매매","수량",
+                           "체결단가","수수료","슬리피지","순체결가",
+                           "잔고","평가금액","5AI점수","ADX","Z-Score","메모"])
+        return ws
+    except Exception as e:
+        return None
+
+def get_account_sheet():
+    """가상 계좌 시트 (Sheet3)"""
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc    = gspread.authorize(creds)
+        sh    = gc.open_by_key(st.secrets["SHEET_ID"])
+        try:
+            ws = sh.worksheet("account")
+        except:
+            ws = sh.add_worksheet("account", rows=100, cols=10)
+            ws.append_row(["초기자본","현금잔고","보유종목JSON","최고자산","최저자산"])
+            ws.append_row([10000000, 10000000, "[]", 10000000, 10000000])
+        return ws
+    except:
+        return None
+
+def load_account():
+    """가상 계좌 로드"""
+    if 'paper_account' in st.session_state:
+        return st.session_state.paper_account
+    try:
+        ws   = get_account_sheet()
+        data = ws.get_all_values()
+        if len(data) >= 2:
+            row = data[1]
+            acc = {
+                'initial':    float(row[0]),
+                'cash':       float(row[1]),
+                'positions':  json.loads(row[2]) if row[2] else [],
+                'peak':       float(row[3]),
+                'trough':     float(row[4]),
+            }
+            st.session_state.paper_account = acc
+            return acc
+    except:
+        pass
+    default = {'initial':10000000,'cash':10000000,'positions':[],'peak':10000000,'trough':10000000}
+    st.session_state.paper_account = default
+    return default
+
+def save_account(acc):
+    """가상 계좌 저장"""
+    st.session_state.paper_account = acc
+    try:
+        ws = get_account_sheet()
+        ws.update("A2:E2", [[
+            acc['initial'], acc['cash'],
+            json.dumps(acc['positions'], ensure_ascii=False),
+            acc['peak'], acc['trough']
+        ]])
+    except:
+        pass
+
+def calc_slippage(price, is_buy, is_korean=True):
+    """슬리피지 + 수수료 + 세금 계산"""
+    commission = 0.00015   # 증권사 수수료 0.015%
+    slippage   = 0.001     # 슬리피지 0.1%
+    tax        = 0.0018 if (not is_buy and is_korean) else 0  # 매도세 0.18% (한국)
+    total_cost = commission + slippage + tax
+    if is_buy:
+        return round(price * (1 + total_cost))   # 매수: 단가 올라감
+    else:
+        return round(price * (1 - total_cost))   # 매도: 단가 내려감
+
+def log_trade(ticker, name, action, qty, price, net_price, cash_after,
+              eval_total, ai_score=0, adx=0, zscore=0, memo=""):
+    """거래 일지 기록"""
+    try:
+        from datetime import datetime as _dt
+        now  = _dt.now()
+        ws   = get_trading_sheet()
+        if ws:
+            ws.append_row([
+                now.strftime('%Y-%m-%d'),
+                now.strftime('%H:%M:%S'),
+                ticker, name, action, qty,
+                price, round(price*0.00015), round(price*0.001),
+                net_price, cash_after, eval_total,
+                ai_score, adx, zscore, memo
+            ])
+    except:
+        pass
+
+def get_position(acc, ticker):
+    """보유 포지션 조회"""
+    for p in acc['positions']:
+        if p['ticker'] == ticker:
+            return p
+    return None
+
+def calc_portfolio_value(acc):
+    """총 평가금액 계산"""
+    total = acc['cash']
+    for pos in acc['positions']:
+        try:
+            df = fetch_ohlcv(pos['ticker'], 5)
+            if df is not None and not df.empty:
+                cur_price = df['종가'].iloc[-1]
+                total += cur_price * pos['qty']
+            else:
+                total += pos['avg_price'] * pos['qty']
+        except:
+            total += pos['avg_price'] * pos['qty']
+    return total
+
 def load_watchlist():
     """Google Sheets에서 관심종목 로드 (30초 캐시)"""
     try:
@@ -642,7 +782,7 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너", "⭐ 관심종목 관리", "🔄 ETF 로테이션"])
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너", "⭐ 관심종목 관리", "🔄 ETF 로테이션", "📝 페이퍼 트레이딩"])
 
 
 
@@ -1655,129 +1795,6 @@ with tab5:
 # ══════════════════════════════════════════
 with tab6:
     st.markdown("### 🔄 ADX/Z-Score 기반 7대 ETF 로테이션 랭킹판")
-    st.caption("ADX 25 미만은 추세 없음으로 탈락 처리. 1위 ETF에 100% 스위칭 권고.")
-
-    ETF_LIST = [
-        ("069500",  "KODEX 200",       "KS"),
-        ("133690",  "TIGER 나스닥100", "KS"),
-        ("091160",  "KODEX 반도체",    "KS"),
-        ("464690",  "KODEX 조선",      "KS"),
-        ("455050",  "PLUS K방산",      "KS"),
-        ("459580",  "KODEX AI전력핵심","KS"),
-        ("411060",  "ACE KRX금현물",   "KS"),
-    ]
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_etf_data():
-        import yfinance as yf
-        import numpy as np
-        results = []
-        for ticker, name, mkt in ETF_LIST:
-            try:
-                _sym = f"{ticker}.KS" if mkt == "KS" else ticker
-                _df  = yf.Ticker(_sym).history(period="6mo", interval="1d")
-                if _df is None or len(_df) < 30:
-                    continue
-                _df = _df.rename(columns={'Open':'시가','High':'고가','Low':'저가',
-                                           'Close':'종가','Volume':'거래량'})
-
-                # ADX(14) 계산
-                _hi = _df['고가']; _lo = _df['저가']; _cl = _df['종가']
-                _tr = pd.DataFrame({
-                    'hl': _hi - _lo,
-                    'hc': (_hi - _cl.shift()).abs(),
-                    'lc': (_lo - _cl.shift()).abs()
-                }).max(axis=1)
-                _atr  = _tr.rolling(14).mean()
-                _pdm  = (_hi.diff().clip(lower=0))
-                _ndm  = (-_lo.diff().clip(upper=0))
-                _pdi  = 100 * _pdm.rolling(14).mean() / _atr.replace(0, np.nan)
-                _ndi  = 100 * _ndm.rolling(14).mean() / _atr.replace(0, np.nan)
-                _dx   = (100 * (_pdi - _ndi).abs() / (_pdi + _ndi).replace(0, np.nan))
-                _adx  = _dx.rolling(14).mean().iloc[-1]
-
-                # Z-Score (20일)
-                _ret  = _cl.pct_change()
-                _mean = _ret.rolling(20).mean().iloc[-1]
-                _std  = _ret.rolling(20).std().iloc[-1]
-                _zscore = (_ret.iloc[-1] - _mean) / _std if _std > 0 else 0
-
-                # 현재가 등락
-                _cur  = _cl.iloc[-1]
-                _prev = _cl.iloc[-2]
-                _chg  = (_cur/_prev - 1) * 100
-
-                results.append({
-                    '종목코드': ticker,
-                    'ETF명':   name,
-                    '현재가':  round(_cur, 0),
-                    '등락(%)': round(_chg, 2),
-                    'ADX':     round(_adx, 1),
-                    'Z-Score': round(_zscore, 2),
-                    '상태':    '활성' if _adx >= 25 else '탈락',
-                })
-            except Exception as _e:
-                results.append({
-                    '종목코드': ticker, 'ETF명': name,
-                    '현재가': 0, '등락(%)': 0,
-                    'ADX': 0, 'Z-Score': 0, '상태': '오류'
-                })
-        return results
-
-    with st.spinner("ETF 데이터 로딩 중..."):
-        _etf_data = fetch_etf_data()
-
-    if _etf_data:
-        _df_etf = pd.DataFrame(_etf_data)
-        # 활성 종목만 Z-Score 기준 정렬
-        _active  = _df_etf[_df_etf['상태']=='활성'].sort_values('Z-Score', ascending=False)
-        _passive = _df_etf[_df_etf['상태']!='활성']
-        _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
-        _ranked.insert(0, '순위', range(1, len(_ranked)+1))
-
-        # 카드 형식 출력
-        for _i, row in _ranked.iterrows():
-            _is_top   = _i == 0 and row['상태'] == '활성'
-            _is_dead  = row['상태'] != '활성'
-            _bg       = '#1a1400' if _is_top else '#0d0d0d' if _is_dead else '#111827'
-            _border   = '#ffd166' if _is_top else '#2d3a55' if _is_dead else '#1e3a5f'
-            _opacity  = '0.4' if _is_dead else '1.0'
-            _chg_c    = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
-            _adx_c    = '#4dff91' if row['ADX'] >= 25 else '#ff4d6d'
-
-            st.markdown(
-                f"<div style='background:{_bg}; border:1px solid {_border}; "
-                f"border-radius:10px; padding:14px 18px; margin-bottom:8px; opacity:{_opacity}'>"
-                f"<div style='display:flex; justify-content:space-between; align-items:center'>"
-                f"<div>"
-                f"{'🥇 ' if _is_top else str(row['순위'])+'위 '}"
-                f"<b style='font-size:15px'>{row['ETF명']}</b> "
-                f"<span style='color:#475569; font-size:11px'>({row['종목코드']})</span>"
-                f"{'  <span style="background:#ffd166; color:#000; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700">100% 스위칭 타겟</span>' if _is_top else ''}"
-                f"{'  <span style="color:#475569; font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''}"
-                f"</div>"
-                f"<span style='color:{_chg_c}; font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
-                f"</div>"
-                f"<div style='display:flex; gap:20px; margin-top:8px'>"
-                f"<span style='font-size:13px; color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{row['현재가']:,.0f}</b></span>"
-                f"<span style='font-size:13px; color:#a0b0c8'>ADX <b style='color:{_adx_c}'>{row['ADX']}</b></span>"
-                f"<span style='font-size:13px; color:#a0b0c8'>Z-Score <b style='color:#e0e6f0'>{row['Z-Score']:+.2f}</b></span>"
-                f"</div>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-
-        st.markdown("---")
-        st.caption("ADX ≥ 25: 강한 추세 존재 / Z-Score 높을수록 상대 강도 우위 / 1위 ETF에 집중 스위칭 권고")
-        if st.button("🔄 ETF 데이터 새로고침", key="etf_refresh"):
-            fetch_etf_data.clear()
-            st.rerun()
-
-# ══════════════════════════════════════════
-# 탭 6: ETF 로테이션 랭킹판
-# ══════════════════════════════════════════
-with tab6:
-    st.markdown("### 🔄 ADX/Z-Score 기반 7대 ETF 로테이션 랭킹판")
     st.caption("ADX 25 미만은 추세 없음으로 탈락. 1위 ETF에 100% 스위칭 권고.")
 
     ETF_LIST = [
@@ -1865,6 +1882,218 @@ with tab6:
         if st.button("🔄 ETF 새로고침", key="etf_refresh2"):
             fetch_etf_data.clear()
             st.rerun()
+
+# ══════════════════════════════════════════
+# 탭 7: 페이퍼 트레이딩
+# ══════════════════════════════════════════
+with tab7:
+    st.markdown("### 📝 페이퍼 트레이딩 (모의투자)")
+    st.caption("실제 자금 없이 V8.9 전략을 검증합니다. 슬리피지·수수료·세금 자동 반영.")
+
+    # 계좌 로드
+    _acc = load_account()
+    _total_val = calc_portfolio_value(_acc)
+
+    # ── 1. 가상 계좌 현황 ──
+    st.markdown("#### 💰 가상 계좌 현황")
+    _pnl     = _total_val - _acc['initial']
+    _pnl_pct = (_pnl / _acc['initial'] * 100) if _acc['initial'] > 0 else 0
+    _mdd     = ((_acc['trough'] - _acc['peak']) / _acc['peak'] * 100) if _acc['peak'] > 0 else 0
+
+    _pa1, _pa2, _pa3, _pa4, _pa5 = st.columns(5)
+    _pa1.markdown(f"<div class='metric-card'><div class='label'>초기자본</div><div class='value flat'>{_acc['initial']:,.0f}원</div></div>", unsafe_allow_html=True)
+    _pa2.markdown(f"<div class='metric-card'><div class='label'>현금잔고</div><div class='value flat'>{_acc['cash']:,.0f}원</div></div>", unsafe_allow_html=True)
+    _pa3.markdown(f"<div class='metric-card'><div class='label'>총평가금액</div><div class='value flat'>{_total_val:,.0f}원</div></div>", unsafe_allow_html=True)
+    _pnl_c = 'up' if _pnl >= 0 else 'down'
+    _pa4.markdown(f"<div class='metric-card'><div class='label'>총손익</div><div class='value {_pnl_c}'>{_pnl:+,.0f}원 ({_pnl_pct:+.2f}%)</div></div>", unsafe_allow_html=True)
+    _pa5.markdown(f"<div class='metric-card'><div class='label'>최대낙폭(MDD)</div><div class='value {'down' if _mdd < -5 else 'flat'}'>{_mdd:.2f}%</div></div>", unsafe_allow_html=True)
+
+    if _mdd < -10:
+        st.error(f"🚨 MDD 경고! 최대낙폭 {_mdd:.2f}% — 포지션 점검 필요")
+    elif _mdd < -5:
+        st.warning(f"⚠️ MDD 주의 {_mdd:.2f}%")
+
+    # 초기자본 설정
+    with st.expander("⚙️ 초기자본 재설정"):
+        _new_capital = st.number_input("초기자본 (원)", value=int(_acc['initial']), step=1000000)
+        if st.button("💾 초기화 (모든 거래 리셋)", key="reset_account"):
+            _new_acc = {'initial':_new_capital,'cash':_new_capital,
+                        'positions':[],'peak':_new_capital,'trough':_new_capital}
+            save_account(_new_acc)
+            st.success(f"✅ 가상 계좌 {_new_capital:,.0f}원으로 초기화!")
+            st.rerun()
+
+    st.divider()
+
+    # ── 2. 보유 포지션 ──
+    st.markdown("#### 📊 보유 포지션")
+    if not _acc['positions']:
+        st.info("보유 포지션 없음. 아래에서 가상 매수를 실행하세요.")
+    else:
+        for _pos in _acc['positions']:
+            try:
+                _cur_df = fetch_ohlcv(_pos['ticker'], 5)
+                _cur_p  = _cur_df['종가'].iloc[-1] if _cur_df is not None and not _cur_df.empty else _pos['avg_price']
+            except:
+                _cur_p = _pos['avg_price']
+
+            _pos_val  = _cur_p * _pos['qty']
+            _pos_pnl  = (_cur_p - _pos['avg_price']) * _pos['qty']
+            _pos_pct  = (_cur_p / _pos['avg_price'] - 1) * 100
+            _pc       = 'up' if _pos_pnl >= 0 else 'down'
+            _kill     = _pos['avg_price'] * 0.93  # -7% 킬스위치
+
+            _kill_alert = _cur_p <= _kill
+            _border_c   = '#ff4d6d' if _kill_alert else '#1e3a5f'
+
+            st.markdown(
+                f"<div style='background:#111827;border:1px solid {_border_c};border-radius:10px;padding:14px;margin-bottom:8px'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<b style='font-size:15px'>{_pos['name']} ({_pos['ticker']})</b>"
+                f"<span class='{_pc}'>{_pos_pct:+.2f}%</span></div>"
+                f"<div style='display:flex;gap:16px;margin-top:8px;font-size:13px;color:#a0b0c8'>"
+                f"<span>수량 <b style='color:#e0e6f0'>{_pos['qty']:,}</b></span>"
+                f"<span>평단 <b style='color:#e0e6f0'>{_pos['avg_price']:,.0f}</b></span>"
+                f"<span>현재 <b style='color:#e0e6f0'>{_cur_p:,.0f}</b></span>"
+                f"<span>평가 <b style='color:#e0e6f0'>{_pos_val:,.0f}원</b></span>"
+                f"<span>손익 <b class='{_pc}'>{_pos_pnl:+,.0f}원</b></span>"
+                f"<span style='color:#ff4d6d'>킬스위치 {_kill:,.0f}</span>"
+                f"</div>"
+                f"{'<div style="color:#ff4d6d;font-weight:700;margin-top:6px">🚨 킬스위치 발동 구간! 즉각 매도 검토</div>' if _kill_alert else ''}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # 가상 매도 버튼
+            _sell_c1, _sell_c2, _sell_c3 = st.columns(3)
+            _sell_qty = _sell_c1.number_input("매도 수량", min_value=1,
+                max_value=_pos['qty'], value=_pos['qty'], key=f"sell_qty_{_pos['ticker']}")
+            if _sell_c2.button(f"📤 {_pos['name']} 가상 매도", key=f"sell_{_pos['ticker']}"):
+                _net_p  = calc_slippage(_cur_p, False, is_korean_ticker(_pos['ticker']))
+                _proceeds = _net_p * _sell_qty
+                _acc['cash'] += _proceeds
+                if _sell_qty >= _pos['qty']:
+                    _acc['positions'] = [p for p in _acc['positions'] if p['ticker'] != _pos['ticker']]
+                else:
+                    _pos['qty'] -= _sell_qty
+                _total_now = calc_portfolio_value(_acc)
+                _acc['peak']   = max(_acc['peak'], _total_now)
+                _acc['trough'] = min(_acc['trough'], _total_now)
+                save_account(_acc)
+                log_trade(_pos['ticker'], _pos['name'], "매도", _sell_qty, _cur_p, _net_p,
+                          _acc['cash'], _total_now, memo=f"슬리피지 반영 매도")
+                st.success(f"✅ {_pos['name']} {_sell_qty}주 가상 매도 @ {_net_p:,.0f}원 (세금+수수료 차감)")
+                st.rerun()
+
+    st.divider()
+
+    # ── 3. 가상 매수 ──
+    st.markdown("#### 📥 가상 매수 실행")
+    _buy_cols = st.columns([2, 1, 1, 1, 1])
+    _buy_ticker = _buy_cols[0].selectbox("종목 선택", [f"{n} ({t})" for t,n in TICKERS], key="buy_ticker_sel")
+    _bt = _buy_ticker.split('(')[-1].replace(')','').strip()
+    if not is_korean_ticker(_bt):
+        _bt = _buy_ticker.split(' ')[0].strip()
+
+    # 현재가 조회
+    try:
+        _buy_df  = fetch_ohlcv(_bt, 5)
+        _buy_cur = _buy_df['종가'].iloc[-1] if _buy_df is not None and not _buy_df.empty else 0
+    except:
+        _buy_cur = 0
+
+    _buy_price = _buy_cols[1].number_input("매수가", value=int(_buy_cur), step=100, key="buy_price_inp")
+    _buy_qty   = _buy_cols[2].number_input("수량", min_value=1, value=1, key="buy_qty_inp")
+    _ai_score  = _buy_cols[3].number_input("5AI점수", min_value=-5, max_value=5, value=0, key="buy_ai")
+    _buy_total = _buy_price * _buy_qty
+    _buy_cols[4].markdown(f"<div style='padding-top:28px;font-size:13px'>필요금액<br><b>{_buy_total:,.0f}원</b></div>", unsafe_allow_html=True)
+
+    _buy_memo = st.text_input("매수 근거 메모 (진입 이유)", placeholder="예: BB하단 반등, 골든크로스 확인", key="buy_memo")
+
+    if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
+                 type="primary", disabled=(_acc['cash'] < _buy_total or _buy_price <= 0)):
+        _net_buy = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
+        _cost    = _net_buy * _buy_qty
+        if _acc['cash'] >= _cost:
+            _acc['cash'] -= _cost
+            _pos_exist = get_position(_acc, _bt)
+            _buy_name  = dict(TICKERS).get(_bt, _bt)
+            if _pos_exist:
+                # 불타기 — 평단 재계산
+                _old_val = _pos_exist['avg_price'] * _pos_exist['qty']
+                _new_val = _net_buy * _buy_qty
+                _pos_exist['qty']       += _buy_qty
+                _pos_exist['avg_price']  = round((_old_val + _new_val) / _pos_exist['qty'])
+            else:
+                _acc['positions'].append({
+                    'ticker':    _bt,
+                    'name':      _buy_name,
+                    'qty':       _buy_qty,
+                    'avg_price': _net_buy,
+                    'entry_date': str(pd.Timestamp.now())[:10]
+                })
+            _total_now = calc_portfolio_value(_acc)
+            _acc['peak']   = max(_acc['peak'], _total_now)
+            _acc['trough'] = min(_acc['trough'], _total_now)
+            save_account(_acc)
+            log_trade(_bt, _buy_name, "매수", _buy_qty, _buy_price, _net_buy,
+                      _acc['cash'], _total_now, ai_score=_ai_score, memo=_buy_memo)
+            st.success(f"✅ {_buy_name} {_buy_qty}주 @ {_net_buy:,.0f}원 체결 (슬리피지+수수료 반영)")
+            st.rerun()
+        else:
+            st.error("❌ 현금 잔고 부족")
+
+    st.divider()
+
+    # ── 4. 성과 분석 ──
+    st.markdown("#### 📈 성과 분석 (vs 벤치마크)")
+    try:
+        _log_ws   = get_trading_sheet()
+        _log_data = _log_ws.get_all_values() if _log_ws else []
+        if len(_log_data) > 1:
+            _log_df = pd.DataFrame(_log_data[1:], columns=_log_data[0])
+            _log_df['날짜']   = pd.to_datetime(_log_df['날짜'])
+            _log_df['평가금액'] = pd.to_numeric(_log_df['평가금액'], errors='coerce')
+            _log_df = _log_df.dropna(subset=['평가금액']).sort_values('날짜')
+
+            if not _log_df.empty:
+                # 누적 수익률
+                _log_df['수익률'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
+
+                # 벤치마크 (코스피)
+                import yfinance as yf
+                _start_date = _log_df['날짜'].min()
+                _bm = yf.Ticker("^KS11").history(start=_start_date, interval="1d")
+                if not _bm.empty:
+                    _bm_ret = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
+                    _bm_ret.name = '코스피 수익률(%)'
+                    _portfolio = _log_df.set_index('날짜')['수익률']
+                    _portfolio.name = '내 포트폴리오(%)'
+                    _compare = pd.concat([_portfolio, _bm_ret], axis=1).fillna(method='ffill')
+                    st.line_chart(_compare)
+                else:
+                    st.line_chart(_log_df.set_index('날짜')['수익률'])
+
+                # MDD 계산
+                _cummax = _log_df['평가금액'].cummax()
+                _drawdown = (_log_df['평가금액'] - _cummax) / _cummax * 100
+                _mdd_val  = _drawdown.min()
+                if _mdd_val < -10:
+                    st.error(f"🚨 최대낙폭(MDD): {_mdd_val:.2f}% — 위험 구간")
+                elif _mdd_val < -5:
+                    st.warning(f"⚠️ 최대낙폭(MDD): {_mdd_val:.2f}%")
+                else:
+                    st.success(f"✅ 최대낙폭(MDD): {_mdd_val:.2f}%")
+
+                # 거래 일지
+                st.markdown("#### 📋 거래 일지")
+                st.dataframe(_log_df[['날짜','종목명','매매','수량','순체결가','손익','메모']].tail(20)
+                             if '손익' in _log_df.columns else _log_df.tail(20),
+                             use_container_width=True)
+        else:
+            st.info("아직 거래 기록이 없습니다. 가상 매수를 실행해보세요.")
+    except Exception as _e:
+        st.warning(f"성과 분석 로드 오류: {_e}")
 
 st.markdown("---")
 st.markdown("<div style='text-align:center;font-size:11px;color:#2d3a55;font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
