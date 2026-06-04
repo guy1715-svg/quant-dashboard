@@ -1812,7 +1812,7 @@ with tab6:
 
         st.markdown("---")
         st.caption("ADX ≥ 25: 강한 추세 / Z-Score 높을수록 상대 강도 우위 / 1위 ETF 집중 스위칭 권고")
-        if st.button("🔄 ETF 새로고침", key="etf_refresh"):
+        if st.button("🔄 ETF 새로고침", key="etf_refresh2"):
             fetch_etf_data.clear()
             st.rerun()
 
