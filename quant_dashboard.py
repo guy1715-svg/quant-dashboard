@@ -1893,7 +1893,10 @@ with tab6:
                         _ws_etf.append_row([row['종목코드'], row['ETF명']])
                         _new_wl = _etf_wl_now.strip() + f"\n{row['종목코드']},{row['ETF명']}"
                         st.session_state.watchlist_data = _new_wl
-                        load_watchlist.clear()
+                        try:
+                            load_watchlist.clear()
+                        except:
+                            pass
                         st.success(f"✅ {row['ETF명']} 관심종목 추가!")
                         st.rerun()
                     except Exception as _e:
