@@ -1617,31 +1617,190 @@ with tab4:
 
             st.markdown("---")
 
-            # ── 종목 카드 (읽기 전용 — 버튼 없음) ──
-            for _si, item in enumerate(st.session_state.passed):
-                _is_added  = item['ticker'] in _sc_ids
-                chg_color  = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
-                badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
+            # ── 종목 선택 → 통합 분석 ──
+            st.markdown("#### 🔍 종목 선택 → 즉시 통합 분석")
 
+            # 종목 선택 라디오 버튼
+            _scan_names = [f"{'✅' if item['ticker'] in _sc_ids else '⭐'} {item['name']} ({item['ticker']}) | {item['등락(%)']:+.2f}% | {item['score']}점"
+                           for item in st.session_state.passed]
+            _selected_scan = st.radio("분석할 종목 선택", _scan_names, key="scan_radio")
+            _sel_idx = _scan_names.index(_selected_scan)
+            _sel_item = st.session_state.passed[_sel_idx]
+
+            st.markdown("---")
+
+            # ── 선택 종목 요약 카드 ──
+            _is_added  = _sel_item['ticker'] in _sc_ids
+            _chg_c     = '#ff4d6d' if _sel_item['등락(%)'] > 0 else '#4da6ff'
+            _badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in _sel_item['reasons']])
+
+            st.markdown(
+                f"<div style='background:#111827;border:2px solid {'#2d6644' if _is_added else '#ffd166'};"
+                f"border-radius:12px;padding:16px 20px;margin-bottom:12px'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<span style='font-size:18px;font-weight:700'>{'✅' if _is_added else '⭐'} {_sel_item['name']}"
+                f" <span style='color:#475569;font-size:13px'>({_sel_item['ticker']})</span></span>"
+                f"<span style='color:{_chg_c};font-size:18px;font-weight:700;font-family:IBM Plex Mono'>"
+                f"{'▲' if _sel_item['등락(%)']>0 else '▼'} {abs(_sel_item['등락(%)']):+.2f}%</span>"
+                f"</div>"
+                f"<div style='display:flex;gap:20px;margin-top:10px'>"
+                f"<span style='color:#a0b0c8'>현재가 <b style='color:#e0e6f0;font-size:16px'>{_sel_item['현재가']:,.0f}</b></span>"
+                f"<span style='color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{_sel_item['RSI']:.1f}</b></span>"
+                f"<span style='color:#a0b0c8'>거래량 <b style='color:#e0e6f0'>{_sel_item['거래량비율']:.0f}%</b></span>"
+                f"<span style='color:#ffd166;font-weight:700'>{_sel_item['score']}점</span>"
+                f"</div>"
+                f"<div style='margin-top:8px'>{_badge_html}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # ── 액션 버튼 행 ──
+            _ab1, _ab2, _ab3, _ab4 = st.columns(4)
+
+            # 관심종목 추가
+            if _is_added:
+                _ab1.markdown("<div style='color:#4dff91;padding:8px;font-size:13px'>✅ 이미 추가됨</div>", unsafe_allow_html=True)
+            else:
+                if _ab1.button("⭐ 관심종목 추가", key="scan_quick_add", use_container_width=True):
+                    try:
+                        _ws_q = get_gsheet()
+                        _ws_q.append_row([_sel_item['ticker'], _sel_item['name']])
+                        _cur_wl2 = st.session_state.get('watchlist_data') or load_watchlist()
+                        st.session_state.watchlist_data = _cur_wl2.strip() + f"\n{_sel_item['ticker']},{_sel_item['name']}"
+                        try: load_watchlist.clear()
+                        except: pass
+                        st.session_state._keep_passed = True
+                        st.success(f"✅ {_sel_item['name']} 추가!")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"추가 오류: {_e}")
+
+            # 차트 토글
+            _chart_show_key = f"scan_chart_{_sel_item['ticker']}"
+            if _chart_show_key not in st.session_state:
+                st.session_state[_chart_show_key] = False
+            if _ab2.button(
+                "📈 차트 닫기" if st.session_state[_chart_show_key] else "📈 차트 보기",
+                key="scan_chart_btn", use_container_width=True
+            ):
+                st.session_state[_chart_show_key] = not st.session_state[_chart_show_key]
+                st.session_state._keep_passed = True
+
+            # Gemini 분석 토글
+            _gem_show_key = f"scan_gem_{_sel_item['ticker']}"
+            if _gem_show_key not in st.session_state:
+                st.session_state[_gem_show_key] = False
+            if _ab3.button(
+                "🤖 분석 닫기" if st.session_state[_gem_show_key] else "🤖 Gemini 분석",
+                key="scan_gem_btn", use_container_width=True,
+                disabled=not gemini_key
+            ):
+                st.session_state[_gem_show_key] = not st.session_state[_gem_show_key]
+                st.session_state._keep_passed = True
+
+            # 페이퍼 트레이딩 바로 매수
+            if _ab4.button("📝 모의매수", key="scan_paper_buy", use_container_width=True):
+                st.session_state['paper_prefill'] = _sel_item['ticker']
+                st.session_state._keep_passed = True
+                st.info("💡 페이퍼 트레이딩 탭으로 이동해서 매수하세요!")
+
+            # ── 차트 표시 ──
+            if st.session_state.get(_chart_show_key, False):
+                _scan_df = _sel_item.get('df')
+                if _scan_df is not None and not _scan_df.empty:
+                    try:
+                        _scan_df = calc_indicators(_scan_df)
+                        _fig_scan = make_chart(_scan_df, _sel_item['name'])
+                        st.plotly_chart(_fig_scan, use_container_width=True)
+
+                        # 핵심 지표 표시
+                        _sl = _scan_df.iloc[-1]
+                        _sp = _scan_df.iloc[-2]
+                        _sm1, _sm2, _sm3, _sm4, _sm5 = st.columns(5)
+                        _sm1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{_sl['종가']:,.0f}</div></div>", unsafe_allow_html=True)
+                        _rsi_c2 = '#ff4d6d' if _sl['RSI']>=70 else '#4da6ff' if _sl['RSI']<=30 else '#a0b0c8'
+                        _sm2.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value' style='color:{_rsi_c2}'>{_sl['RSI']:.1f}</div></div>", unsafe_allow_html=True)
+                        _macd_st = '골든크로스' if _sl['MACD']>_sl['Signal'] and _sp['MACD']<=_sp['Signal'] else 'MACD>' if _sl['MACD']>_sl['Signal'] else 'MACD<'
+                        _sm3.markdown(f"<div class='metric-card'><div class='label'>MACD</div><div class='value flat' style='font-size:13px'>{_macd_st}</div></div>", unsafe_allow_html=True)
+                        _bb_r2 = _sl['BB_upper']-_sl['BB_lower']
+                        _bb_p2 = round((_sl['종가']-_sl['BB_lower'])/_bb_r2*100,1) if _bb_r2>0 else 50
+                        _sm4.markdown(f"<div class='metric-card'><div class='label'>BB위치</div><div class='value flat'>{_bb_p2}%</div></div>", unsafe_allow_html=True)
+                        _vol_r2 = _sl['거래량']/_scan_df['거래량'].tail(20).mean()*100
+                        _sm5.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{_vol_r2:.0f}%</div></div>", unsafe_allow_html=True)
+
+                        # R:R 자동 계산
+                        _entry = _sl['종가']
+                        _stop  = _entry * 0.93
+                        _target1 = _sl.get('저항선', _entry * 1.14) if '저항선' in _scan_df.columns else _entry * 1.14
+                        _rr = (_target1 - _entry) / (_entry - _stop) if _entry > _stop else 0
+                        _rr_c = '#4dff91' if _rr >= 2 else '#ff4d6d'
+                        st.markdown(
+                            f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:8px'>"
+                            f"💡 <b>자동 전략 계산</b> (현재가 기준) | "
+                            f"매수가: <b>{_entry:,.0f}</b> | "
+                            f"손절가: <b style='color:#ff4d6d'>{_stop:,.0f} (-7%)</b> | "
+                            f"목표가: <b style='color:#4dff91'>{_target1:,.0f}</b> | "
+                            f"R:R: <b style='color:{_rr_c}'>{_rr:.1f}</b>"
+                            f"{'  ✅ 진입 가능' if _rr>=2 else '  ❌ R:R 부족'}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    except Exception as _e:
+                        st.warning(f"차트 오류: {_e}")
+
+            # ── Gemini 분석 표시 ──
+            if st.session_state.get(_gem_show_key, False) and gemini_key:
+                _gem_cache_key = f"gem_cache_{_sel_item['ticker']}"
+                if _gem_cache_key not in st.session_state:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    _gmodel = genai.GenerativeModel(model_name)
+                    _GSYS = (
+                        'You are a Korean stock quantitative analysis AI. '
+                        'Always respond in Korean. '
+                        'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
+                        'No entry 09:00-09:30 KST / No averaging down. '
+                        'Be concise and actionable.'
+                    )
+                    _scan_df2 = _sel_item.get('df')
+                    if _scan_df2 is None or _scan_df2.empty:
+                        _scan_df2 = fetch_ohlcv(_sel_item['ticker'], 60)
+                    if _scan_df2 is not None:
+                        _prompt = build_prompt(_scan_df2, _sel_item['name'], _sel_item['ticker'])
+                        with st.spinner(f"🤖 {_sel_item['name']} Gemini 분석 중..."):
+                            try:
+                                _res = _gmodel.generate_content(_GSYS + '\n\n' + _prompt)
+                                st.session_state[_gem_cache_key] = _res.text
+                                st.session_state._keep_passed = True
+                            except Exception as _e:
+                                st.session_state[_gem_cache_key] = f"분석 오류: {_e}"
+
+                if _gem_cache_key in st.session_state:
+                    st.markdown(
+                        f"<div class='gemini-box'>{st.session_state[_gem_cache_key]}</div>",
+                        unsafe_allow_html=True
+                    )
+                    if st.button("🔄 분석 재실행", key="gem_rerun_btn"):
+                        del st.session_state[_gem_cache_key]
+                        st.session_state._keep_passed = True
+                        st.rerun()
+
+            st.markdown("---")
+
+            # 전체 종목 목록 (미니 요약)
+            st.markdown("##### 📋 발굴 종목 전체 목록")
+            for _si, item in enumerate(st.session_state.passed):
+                _is_add2  = item['ticker'] in _sc_ids
+                _chg_c2   = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
+                _bdg = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
                 st.markdown(
-                    f"<div style='background:#111827; border:1px solid {'#2d6644' if _is_added else '#1e3a5f'}; "
-                    f"border-radius:10px; padding:14px 18px; margin-bottom:12px'>"
-                    f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:8px'>"
-                    f"<span style='font-size:15px; font-weight:700'>{'✅' if _is_added else '⭐'} {item['name']} "
-                    f"<span style='color:#475569; font-size:12px; font-family:IBM Plex Mono'>({item['ticker']})</span></span>"
-                    f"<span style='color:{chg_color}; font-family:IBM Plex Mono; font-weight:700'>"
-                    f"{'▲' if item['등락(%)']>0 else '▼'} {abs(item['등락(%)']):+.2f}%</span>"
-                    f"</div>"
-                    f"<div style='display:flex; gap:16px; margin-bottom:8px'>"
-                    f"<span style='font-size:13px; color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{item['현재가']:,.0f}</b></span>"
-                    f"<span style='font-size:13px; color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{item['RSI']:.1f}</b></span>"
-                    f"<span style='font-size:13px; color:#a0b0c8'>거래량 <b style='color:#e0e6f0'>{item['거래량비율']:.0f}%</b></span>"
-                    f"<span style='font-size:13px; color:#ffd166'>점수 <b>{item['score']}점</b></span>"
-                    f"</div>"
-                    f"<div>{badge_html} "
-                    f"{'<span style="color:#4dff91; font-size:12px">✅ 사이드바 추가됨</span>' if _is_added else ''}"
-                    f"</div>"
-                    f"</div>",
+                    f"<div style='background:#0a0e1a;border:1px solid {'#2d6644' if _is_add2 else '#1a2535'};"
+                    f"border-radius:8px;padding:10px 14px;margin-bottom:4px;cursor:pointer'>"
+                    f"{'✅' if _is_add2 else '⭐'} <b>{item['name']}</b> "
+                    f"<span style='color:#475569;font-size:11px'>({item['ticker']})</span> "
+                    f"<span style='color:{_chg_c2}'>{item['등락(%)']:+.2f}%</span> "
+                    f"<span style='color:#ffd166;font-size:12px'>{item['score']}점</span> "
+                    f"{_bdg}</div>",
                     unsafe_allow_html=True
                 )
 
