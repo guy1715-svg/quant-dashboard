@@ -1645,10 +1645,15 @@ with tab4:
     with _sc_col3:
         st.markdown("**⚙️ 추가 설정**")
         _is_us = market_type == "미국(S&P500)"
-        min_price = st.number_input("최소 주가", value=1 if _is_us else 5000,
-                                     step=1 if _is_us else 1000, key="f_minp")
-        max_price = st.number_input("최대 주가", value=100000 if _is_us else 2000000,
-                                     step=100 if _is_us else 10000, key="f_maxp")
+        st.caption("💡 미국 선택 시 달러 기준 자동 적용")
+        min_price = st.number_input(
+            f"최소 주가({'$' if _is_us else '원'})",
+            value=1 if _is_us else 5000,
+            step=1 if _is_us else 1000, key="f_minp")
+        max_price = st.number_input(
+            f"최대 주가({'$' if _is_us else '원'})",
+            value=100000 if _is_us else 2000000,
+            step=100 if _is_us else 10000, key="f_maxp")
         use_gemini_scan = st.checkbox("Gemini 분석 포함", value=False, key="f_gemini")
 
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
@@ -1787,11 +1792,16 @@ with tab4:
 
         prog.empty(); status.empty()
         passed = sorted(passed, key=lambda x: x['score'], reverse=True)
-        st.session_state.passed     = passed
-        st.session_state.scan_done  = True
+        st.session_state.passed    = passed
+        st.session_state.scan_done = True
+
+        if not passed:
+            st.warning(f"⚠️ 조건 충족 종목 없음 — 최소점수({min_score}점)를 낮추거나 조건을 완화하세요.")
+        else:
+            st.success(f"✅ {len(passed)}개 종목 발굴!")
 
     # ── 결과 표시 ──
-    if st.session_state.passed:
+    if st.session_state.get('scan_done') and st.session_state.passed:
         _sc_wl  = st.session_state.get('watchlist_data') or load_watchlist()
         _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
         _p_list = st.session_state.passed
