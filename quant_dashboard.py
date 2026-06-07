@@ -29,7 +29,162 @@ from google.oauth2.service_account import Credentials
 
 DEFAULT_WATCHLIST = "042700,한미반도체\n005930,삼성전자\n000660,SK하이닉스\n012450,한화에어로스페이스\n329180,HD현대중공업"
 
+# ══════════════════════════════════════════
+# KIS API 연동 (한국투자증권)
+# ══════════════════════════════════════════
+import requests as _requests
+
 @st.cache_resource
+
+def kis_get_token():
+    """KIS API 접근 토큰 발급 (캐시)"""
+    if 'kis_token' in st.session_state:
+        # 만료 시간 확인 (6시간)
+        import time
+        if time.time() - st.session_state.get('kis_token_time', 0) < 21600:
+            return st.session_state.kis_token
+    try:
+        _key    = st.secrets["KIS_APP_KEY"]
+        _secret = st.secrets["KIS_APP_SECRET"]
+        _mode   = st.secrets.get("KIS_MODE", "real")
+        _url    = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
+        _res    = _requests.post(_url, json={
+            "grant_type": "client_credentials",
+            "appkey":     _key,
+            "appsecret":  _secret
+        }, timeout=10)
+        _token = _res.json().get("access_token")
+        if _token:
+            import time
+            st.session_state.kis_token      = _token
+            st.session_state.kis_token_time = time.time()
+            return _token
+    except Exception as _e:
+        pass
+    return None
+
+def kis_get_price(ticker):
+    """KIS API 실시간 현재가 조회"""
+    try:
+        _token  = kis_get_token()
+        if not _token: return None
+        _key    = st.secrets["KIS_APP_KEY"]
+        _secret = st.secrets["KIS_APP_SECRET"]
+        _url    = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price"
+        _res    = _requests.get(_url, headers={
+            "authorization": f"Bearer {_token}",
+            "appkey":        _key,
+            "appsecret":     _secret,
+            "tr_id":         "FHKST01010100",
+        }, params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}, timeout=5)
+        _data = _res.json().get("output", {})
+        if _data:
+            return {
+                "현재가":    int(_data.get("stck_prpr", 0)),
+                "전일대비":  int(_data.get("prdy_vrss", 0)),
+                "등락률":    float(_data.get("prdy_ctrt", 0)),
+                "거래량":    int(_data.get("acml_vol", 0)),
+                "고가":      int(_data.get("stck_hgpr", 0)),
+                "저가":      int(_data.get("stck_lwpr", 0)),
+                "시가":      int(_data.get("stck_oprc", 0)),
+                "52주고가":  int(_data.get("d250_hgpr", 0)),
+                "52주저가":  int(_data.get("d250_lwpr", 0)),
+                "PER":       float(_data.get("per", 0)),
+                "PBR":       float(_data.get("pbr", 0)),
+            }
+    except Exception as _e:
+        pass
+    return None
+
+def kis_get_balance():
+    """KIS API 실제 잔고 조회"""
+    try:
+        _token  = kis_get_token()
+        if not _token: return None
+        _key    = st.secrets["KIS_APP_KEY"]
+        _secret = st.secrets["KIS_APP_SECRET"]
+        _acc_no = st.secrets["KIS_ACCOUNT_NO"]
+        _acc_pd = st.secrets.get("KIS_ACCOUNT_PD", "01")
+        _url    = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/trading/inquire-balance"
+        _res    = _requests.get(_url, headers={
+            "authorization": f"Bearer {_token}",
+            "appkey":        _key,
+            "appsecret":     _secret,
+            "tr_id":         "TTTC8434R",
+        }, params={
+            "CANO":            _acc_no,
+            "ACNT_PRDT_CD":    _acc_pd,
+            "AFHR_FLPR_YN":    "N",
+            "OFL_YN":          "",
+            "INQR_DVSN":       "02",
+            "UNPR_DVSN":       "01",
+            "FUND_STTL_ICLD_YN":"N",
+            "FNCG_AMT_AUTO_RDPT_YN":"N",
+            "PRCS_DVSN":       "01",
+            "CTX_AREA_FK100":  "",
+            "CTX_AREA_NK100":  ""
+        }, timeout=10)
+        _d = _res.json()
+        _holdings = []
+        for _h in _d.get("output1", []):
+            if int(_h.get("hldg_qty", 0)) > 0:
+                _holdings.append({
+                    "종목코드": _h.get("pdno"),
+                    "종목명":   _h.get("prdt_name"),
+                    "수량":     int(_h.get("hldg_qty", 0)),
+                    "평단가":   int(float(_h.get("pchs_avg_pric", 0))),
+                    "현재가":   int(_h.get("prpr", 0)),
+                    "평가손익": int(_h.get("evlu_pfls_amt", 0)),
+                    "수익률":   float(_h.get("evlu_pfls_rt", 0)),
+                    "평가금액": int(_h.get("evlu_amt", 0)),
+                })
+        _summary = _d.get("output2", [{}])[0] if _d.get("output2") else {}
+        return {
+            "holdings": _holdings,
+            "현금":      int(float(_summary.get("dnca_tot_amt", 0))),
+            "총평가":    int(float(_summary.get("tot_evlu_amt", 0))),
+            "총손익":    int(float(_summary.get("evlu_pfls_smtl_amt", 0))),
+            "수익률":    float(_summary.get("tot_evlu_pfls_rt", 0)),
+        }
+    except Exception as _e:
+        return None
+
+def kis_get_investor(ticker):
+    """외인/기관 순매수 조회"""
+    try:
+        _token  = kis_get_token()
+        if not _token: return None
+        _key    = st.secrets["KIS_APP_KEY"]
+        _secret = st.secrets["KIS_APP_SECRET"]
+        _url    = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-investor"
+        _res    = _requests.get(_url, headers={
+            "authorization": f"Bearer {_token}",
+            "appkey":        _key,
+            "appsecret":     _secret,
+            "tr_id":         "FHKST01010900",
+        }, params={
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd":         ticker
+        }, timeout=5)
+        _out = _res.json().get("output", [])
+        if _out:
+            _latest = _out[0]
+            return {
+                "외인순매수":  int(_latest.get("frgn_ntby_qty", 0)),
+                "기관순매수":  int(_latest.get("orgn_ntby_qty", 0)),
+                "개인순매수":  int(_latest.get("prsn_ntby_qty", 0)),
+            }
+    except:
+        pass
+    return None
+
+def kis_available():
+    """KIS API 사용 가능 여부 확인"""
+    try:
+        return all(k in st.secrets for k in ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"])
+    except:
+        return False
+
 def get_gsheet():
     """Google Sheets 연결 (캐시 — 연결 1회만)"""
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -1011,6 +1166,59 @@ with tab0:
 with tab1:
     st.markdown("### 관심 종목 현황")
 
+    # ── KIS 실시간 연동 ──
+    if kis_available():
+        with st.expander("📡 KIS 실시간 계좌 현황", expanded=True):
+            _kis_col1, _kis_col2 = st.columns([1, 1])
+
+            with _kis_col1:
+                st.markdown("**💰 실제 계좌 잔고**")
+                with st.spinner("잔고 조회 중..."):
+                    _bal = kis_get_balance()
+                if _bal:
+                    _bc1, _bc2, _bc3 = st.columns(3)
+                    _bc1.markdown(f"<div class='metric-card'><div class='label'>현금</div><div class='value flat'>{_bal['현금']:,.0f}원</div></div>", unsafe_allow_html=True)
+                    _bc2.markdown(f"<div class='metric-card'><div class='label'>총평가</div><div class='value flat'>{_bal['총평가']:,.0f}원</div></div>", unsafe_allow_html=True)
+                    _pnl_c2 = 'up' if _bal['총손익'] >= 0 else 'down'
+                    _bc3.markdown(f"<div class='metric-card'><div class='label'>총손익</div><div class='value {_pnl_c2}'>{_bal['총손익']:+,.0f}원<br>({_bal['수익률']:+.2f}%)</div></div>", unsafe_allow_html=True)
+
+                    if _bal['holdings']:
+                        st.markdown("**보유 종목**")
+                        for _h in _bal['holdings']:
+                            _hc = 'up' if _h['수익률'] >= 0 else 'down'
+                            _kill_warn = _h['수익률'] <= -6.5
+                            st.markdown(
+                                f"<div style='background:#111827;border:1px solid {'#ff4d6d' if _kill_warn else '#1e3a5f'};border-radius:8px;padding:10px;margin-bottom:6px'>"
+                                f"<b>{_h['종목명']}</b> <span style='color:#475569;font-size:11px'>({_h['종목코드']})</span>"
+                                f"{'  🚨 킬스위치 임박!' if _kill_warn else ''}<br>"
+                                f"<span style='font-size:12px;color:#a0b0c8'>"
+                                f"수량 {_h['수량']:,}주 | 평단 {_h['평단가']:,.0f} | 현재 {_h['현재가']:,.0f} | "
+                                f"<span class='{_hc}'>{_h['수익률']:+.2f}% ({_h['평가손익']:+,.0f}원)</span>"
+                                f"</span></div>",
+                                unsafe_allow_html=True
+                            )
+                else:
+                    st.warning("잔고 조회 실패 — API 키 확인 필요")
+
+            with _kis_col2:
+                st.markdown("**📡 관심종목 실시간 현재가**")
+                for _t, _n in TICKERS[:5]:  # 상위 5개만
+                    if is_korean_ticker(_t):
+                        _price_data = kis_get_price(_t)
+                        if _price_data:
+                            _pc = 'up' if _price_data['등락률'] >= 0 else 'down'
+                            st.markdown(
+                                f"<div style='display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a2535'>"
+                                f"<span><b>{_n}</b> <span style='color:#475569;font-size:11px'>({_t})</span></span>"
+                                f"<span class='{_pc}' style='font-family:IBM Plex Mono'>"
+                                f"{_price_data['현재가']:,.0f}원 ({_price_data['등락률']:+.2f}%)</span>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+
+            if st.button("🔄 실시간 갱신", key="kis_refresh"):
+                st.rerun()
+
     # ── 5. 10:30 룰 서킷 브레이커 ──
     from datetime import datetime as _dt
     _now_kst = _dt.utcnow()  # UTC 기준 (KST = UTC+9)
@@ -1160,8 +1368,15 @@ with tab2:
         m1,m2,m3,m4,m5,m6 = st.columns(6)
         chg_color = 'up' if chg>0 else 'down'
         _cur_unit = get_currency(sel_ticker)
-        _cur_fmt  = format_price(l['종가'], sel_ticker)
-        m1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{_cur_fmt}</div></div>", unsafe_allow_html=True)
+        # KIS 실시간 현재가 우선 사용
+        _kis_price = None
+        if kis_available() and is_korean_ticker(sel_ticker):
+            _kis_price = kis_get_price(sel_ticker)
+        _display_price = _kis_price['현재가'] if _kis_price else l['종가']
+        _display_chg   = _kis_price['등락률'] if _kis_price else chg
+        _kis_badge     = " <span style='font-size:10px;color:#4dff91'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#475569'>● 지연</span>"
+        _cur_fmt  = format_price(_display_price, sel_ticker)
+        m1.markdown(f"<div class='metric-card'><div class='label'>현재가{_kis_badge}</div><div class='value flat'>{_cur_fmt}</div></div>", unsafe_allow_html=True)
         m2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value {chg_color}'>{chg:+.2f}%</div></div>", unsafe_allow_html=True)
         rsi_c = 'up' if l['RSI']>=70 else 'down' if l['RSI']<=30 else 'flat'
         m3.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value {rsi_c}'>{l['RSI']:.1f}</div></div>", unsafe_allow_html=True)

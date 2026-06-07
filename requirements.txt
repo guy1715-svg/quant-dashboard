@@ -6,3 +6,4 @@ google-generativeai
 yfinance
 gspread
 google-auth
+requests
