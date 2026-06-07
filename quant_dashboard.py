@@ -1177,20 +1177,6 @@ with tab1:
     st.markdown("### 관심 종목 현황")
 
     # ── KIS 실시간 연동 ──
-    _kis_found, _kis_missing = kis_debug_info()
-
-    # Secrets 전체 키 목록 디버그
-    with st.expander("🔧 Secrets 디버그 (문제 해결용)", expanded=False):
-        try:
-            _all_keys = list(st.secrets.keys())
-            st.write(f"등록된 Secrets 키 목록: {_all_keys}")
-            st.write(f"KIS 키 발견: {_kis_found}")
-            st.write(f"KIS 키 누락: {_kis_missing}")
-        except Exception as _de:
-            st.error(f"Secrets 읽기 오류: {_de}")
-
-    if _kis_missing:
-        st.warning(f"⚠️ KIS API 미등록 키: {_kis_missing} — Streamlit Secrets 확인 필요")
     if kis_available():
         with st.expander("📡 KIS 실시간 계좌 현황", expanded=True):
             _kis_col1, _kis_col2 = st.columns([1, 1])
