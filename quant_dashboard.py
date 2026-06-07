@@ -181,9 +181,19 @@ def kis_get_investor(ticker):
 def kis_available():
     """KIS API 사용 가능 여부 확인"""
     try:
-        return all(k in st.secrets for k in ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"])
+        _keys = ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"]
+        return all(k in st.secrets for k in _keys)
     except:
         return False
+
+def kis_debug_info():
+    """KIS 키 등록 현황 확인"""
+    try:
+        _found = [k for k in ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO","KIS_ACCOUNT_PD","KIS_MODE"] if k in st.secrets]
+        _missing = [k for k in ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"] if k not in st.secrets]
+        return _found, _missing
+    except Exception as _e:
+        return [], [str(_e)]
 
 def get_gsheet():
     """Google Sheets 연결 (캐시 — 연결 1회만)"""
@@ -1167,6 +1177,9 @@ with tab1:
     st.markdown("### 관심 종목 현황")
 
     # ── KIS 실시간 연동 ──
+    _kis_found, _kis_missing = kis_debug_info()
+    if _kis_missing:
+        st.warning(f"⚠️ KIS API 미등록 키: {_kis_missing} — Streamlit Secrets 확인 필요")
     if kis_available():
         with st.expander("📡 KIS 실시간 계좌 현황", expanded=True):
             _kis_col1, _kis_col2 = st.columns([1, 1])
