@@ -694,6 +694,70 @@ def build_prompt(df, name, ticker):
 # 차트 함수
 # ══════════════════════════════════════════
 
+def calc_entry_point(df, preset=None):
+    """
+    프리셋별 진입 타점 자동 계산
+    반환: (entry, stoploss, target1, target2, reason)
+    """
+    l   = df.iloc[-1]
+    cur = l['종가']
+
+    # 지지/저항 계산
+    recent_low  = df['저가'].tail(20).min()
+    recent_high = df['고가'].tail(20).max()
+    support  = l.get('지지선', recent_low)  if '지지선' in df.columns else recent_low
+    resist   = l.get('저항선', recent_high) if '저항선' in df.columns else recent_high
+    bb_lower = l['BB_lower']
+    bb_mid   = (l['BB_upper'] + l['BB_lower']) / 2
+    ma20     = l['MA20']
+    ma5      = l['MA5']
+
+    if preset == 'bounce' or preset is None and l['RSI'] <= 35:
+        # 반등매매: BB하단 또는 지지선 중 높은 값 → 매수 타점
+        entry    = round(max(bb_lower, support) * 1.005)   # 지지선 살짝 위
+        stoploss = round(min(bb_lower, support) * 0.97)    # 지지선 아래 3%
+        target1  = round(bb_mid)                           # BB중간선
+        target2  = round(resist)                           # 저항선
+        reason   = f"BB하단({bb_lower:,.0f}) + 지지선({support:,.0f}) 기준"
+
+    elif preset == 'trend':
+        # 추세매매: MA20 눌림목 → MA5가 MA20 위에서 눌림 후 반등
+        entry    = round(max(ma20, ma5) * 1.003)           # MA20 살짝 위
+        stoploss = round(ma20 * 0.97)                      # MA20 아래 3%
+        target1  = round(resist)                           # 저항선
+        target2  = round(resist * 1.08)                    # 저항선+8%
+        reason   = f"MA20({ma20:,.0f}) 눌림목 기준"
+
+    elif preset == 'bottom':
+        # 바닥확인: BB하단 + MACD 골든크로스 지점
+        entry    = round(bb_lower * 1.005)                 # BB하단 살짝 위
+        stoploss = round(recent_low * 0.97)                # 최근 저점 아래
+        target1  = round(bb_mid)                           # BB중간선
+        target2  = round(l['BB_upper'])                    # BB상단
+        reason   = f"BB하단({bb_lower:,.0f}) + MACD 전환 기준"
+
+    else:
+        # 기본: 현재가 기준
+        entry    = round(cur)
+        stoploss = round(cur * 0.93)
+        target1  = round(resist) if resist > cur else round(cur * 1.10)
+        target2  = round(cur * 1.20)
+        reason   = "현재가 기준"
+
+    # R:R 계산
+    risk   = entry - stoploss
+    reward = target1 - entry
+    rr     = round(reward / risk, 2) if risk > 0 else 0
+
+    return {
+        'entry':    entry,
+        'stoploss': stoploss,
+        'target1':  target1,
+        'target2':  target2,
+        'reason':   reason,
+        'rr':       rr,
+    }
+
 def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     import pandas as pd
 
