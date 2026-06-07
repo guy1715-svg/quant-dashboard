@@ -221,15 +221,22 @@ def clean_sheet_duplicates():
             ws.update("A1", clean)
         result = "\n".join([",".join(r) for r in clean if len(r)>=2])
         st.session_state.watchlist_data = result
-        load_watchlist.clear()
+        safe_clear_cache()
         return result
     except Exception as e:
         return None
 
+def safe_clear_cache():
+    """load_watchlist 캐시 안전하게 클리어"""
+    try:
+        safe_clear_cache()
+    except Exception:
+        pass
+
 def save_watchlist(text):
     """관심종목 전체 저장 (삭제 시 사용)"""
     st.session_state.watchlist_data = text
-    load_watchlist.clear()
+    safe_clear_cache()
     try:
         ws = get_gsheet()
         ws.clear()
@@ -678,7 +685,7 @@ with st.sidebar:
                 _rows = [[p.strip() for p in l.split(",",1)] for l in _new_lines]
                 if _rows:
                     _ws.update("A1", _rows)
-                load_watchlist.clear()
+                safe_clear_cache()
             except Exception as _e:
                 st.warning(f"저장 오류: {_e}")
             st.rerun()
@@ -696,7 +703,7 @@ with st.sidebar:
                     _ws.append_row([_sb_code.strip(), _sb_name.strip()])
                     _new_wl = _sb_wl.strip() + f"\n{_sb_code.strip()},{_sb_name.strip()}"
                     st.session_state.watchlist_data = _new_wl
-                    load_watchlist.clear()
+                    safe_clear_cache()
                     st.rerun()
                 except Exception as _e:
                     st.error(f"오류: {_e}")
@@ -1599,7 +1606,7 @@ with tab4:
                                 _added += 1
                         # session_state 즉시 업데이트
                         st.session_state.watchlist_data = _cur
-                        load_watchlist.clear()
+                        safe_clear_cache()
                         st.session_state._keep_passed = True
                         st.success(f"✅ {_added}개 추가 완료! 사이드바가 업데이트됩니다.")
                         st.rerun()
@@ -1667,7 +1674,7 @@ with tab4:
                         _ws_q.append_row([_sel_item['ticker'], _sel_item['name']])
                         _cur_wl2 = st.session_state.get('watchlist_data') or load_watchlist()
                         st.session_state.watchlist_data = _cur_wl2.strip() + f"\n{_sel_item['ticker']},{_sel_item['name']}"
-                        try: load_watchlist.clear()
+                        try: safe_clear_cache()
                         except: pass
                         st.session_state._keep_passed = True
                         st.success(f"✅ {_sel_item['name']} 추가!")
@@ -1903,7 +1910,7 @@ with tab5:
                 # session_state 업데이트
                 _new_wl = _cur_wl.strip() + f"\n{_code},{_name}"
                 st.session_state.watchlist_data = _new_wl
-                load_watchlist.clear()
+                safe_clear_cache()
                 st.success(f"✅ {_name} 추가 완료!")
                 st.rerun()
             else:
@@ -2057,7 +2064,7 @@ with tab6:
                         _new_wl = _etf_wl_now.strip() + f"\n{row['종목코드']},{row['ETF명']}"
                         st.session_state.watchlist_data = _new_wl
                         try:
-                            load_watchlist.clear()
+                            safe_clear_cache()
                         except:
                             pass
                         st.success(f"✅ {row['ETF명']} 관심종목 추가!")
