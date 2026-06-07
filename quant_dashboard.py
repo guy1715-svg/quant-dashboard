@@ -954,13 +954,97 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너", "⭐ 관심종목 관리", "🔄 ETF 로테이션", "📝 페이퍼 트레이딩"])
+tab_home, tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🏠 메인", "🌏 시장", "📊 현황판", "📈 차트+분석", "🤖 Gemini", "🔍 스캐너", "⭐ 관심종목", "🔄 ETF", "📝 페이퍼"])
 
 
 
 # ══════════════════════════════════════════
 # 탭 0: 시장 지수
 # ══════════════════════════════════════════
+with tab_home:
+    st.markdown("### 🏠 오늘의 퀀트 관제탑")
+
+    # 시장 요약
+    import yfinance as _yf2
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _get_market():
+        _r = {}
+        for _n, _s in [("코스피","^KS11"),("코스닥","^KQ11"),("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
+            try:
+                _h = _yf2.Ticker(_s).history(period="2d",interval="1d")
+                if len(_h)>=2:
+                    _c = _h['Close'].iloc[-1]; _p = _h['Close'].iloc[-2]
+                    _r[_n] = {'현재':_c,'등락':(_c/_p-1)*100}
+            except: pass
+        return _r
+
+    _mkt2 = _get_market()
+    if _mkt2:
+        _cols_m = st.columns(len(_mkt2))
+        for _i_m, (_nm_m, _d_m) in enumerate(_mkt2.items()):
+            _up = _d_m['등락'] > 0
+            _cc_m = 'up' if (_up and _nm_m != 'VIX') or (not _up and _nm_m == 'VIX') else 'down'
+            _cols_m[_i_m].markdown(
+                f"<div class='metric-card'><div class='label'>{_nm_m}</div>"
+                f"<div class='value flat' style='font-size:16px'>{_d_m['현재']:,.2f}</div>"
+                f"<div class='{_cc_m}'>{'▲' if _up else '▼'}{abs(_d_m['등락']):.2f}%</div></div>",
+                unsafe_allow_html=True)
+
+    # 환율 경고
+    if _mkt2.get('달러/원',{}).get('현재',0) >= 1500:
+        st.error("🚨 환율 1,500원 돌파! 미국 주식 신규 진입 자제")
+    elif _mkt2.get('달러/원',{}).get('현재',0) >= 1450:
+        st.warning("⚠️ 환율 1,450원 이상 — 환차손 주의")
+
+    st.divider()
+
+    # 10:30 매매 가능 여부
+    from datetime import datetime as _dt_h
+    _kh = (_dt_h.utcnow().hour + 9) % 24
+    _km = _dt_h.utcnow().minute
+    if (9 <= _kh < 10) or (_kh == 10 and _km <= 30):
+        st.error("🔒 09:00~10:30 진입 금지 구간")
+    elif 9 <= _kh < 16:
+        st.success("✅ 진입 가능 구간 (장중)")
+    else:
+        st.info("💤 장 외 시간")
+
+    st.divider()
+
+    # 관심종목 현황 요약
+    st.markdown("#### 📊 관심종목 현황")
+    _wl_home = st.session_state.get('watchlist_data') or load_watchlist()
+    _tickers_home = [(l.split(',')[0].strip(), l.split(',')[1].strip())
+                     for l in _wl_home.split('\n') if ',' in l]
+
+    for _th, _nh in _tickers_home:
+        try:
+            _df_h = fetch_ohlcv(_th, 30)
+            if _df_h is None or len(_df_h) < 5: continue
+            _df_h = calc_indicators(_df_h)
+            _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
+            _chgh = (_lh['종가']/_ph['종가']-1)*100
+            _cch  = '#ff4d6d' if _chgh>0 else '#4da6ff'
+            _sigh = get_signal(_df_h)
+            _bdgh = ' '.join([f"<span class='badge badge-{s[1]}'>{s[0]}</span>" for s in _sigh])
+            _rsi_ch = '#ff4d6d' if _lh['RSI']>=70 else '#4da6ff' if _lh['RSI']<=30 else '#6b7fa3'
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                f"padding:8px 12px;background:#111827;border-radius:8px;margin-bottom:4px;border:1px solid #1e3a5f'>"
+                f"<span><b>{_nh}</b> <span style='color:#475569;font-size:11px'>({_th})</span></span>"
+                f"<span style='display:flex;gap:10px;align-items:center'>"
+                f"<span style='font-family:IBM Plex Mono'>{format_price(_lh['종가'],_th)}</span>"
+                f"<span style='color:{_cch}'>{_chgh:+.2f}%</span>"
+                f"<span style='color:{_rsi_ch};font-size:12px'>RSI {_lh['RSI']:.0f}</span>"
+                f"{_bdgh}</span></div>",
+                unsafe_allow_html=True)
+        except: pass
+
+    st.divider()
+    if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
 with tab0:
     st.markdown("### 🌏 시장 지수 & 투자자 동향")
 
