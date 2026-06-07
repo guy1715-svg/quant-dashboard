@@ -954,207 +954,14 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-tab_main, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🏠 메인", "📈 차트+분석", "🔍 스캐너", "🔄 ETF 로테이션", "⭐ 관심종목", "📝 페이퍼 트레이딩", "⚙️ 더보기"])
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🌏 시장 지수", "📊 현황판", "📈 차트 분석", "🤖 Gemini 분석", "🔍 추천 스캐너", "⭐ 관심종목 관리", "🔄 ETF 로테이션", "📝 페이퍼 트레이딩"])
 
 
-
-# ══════════════════════════════════════════
-# 메인 탭 — 한눈에 보기
-# ══════════════════════════════════════════
-with tab_main:
-
-    # ── 시장 신호 요약 ──
-    st.markdown("### 🚦 오늘 시장 현황")
-
-    @st.cache_data(ttl=300, show_spinner=False)
-    def fetch_market_summary():
-        import yfinance as yf
-        _res = {}
-        _indices = {"코스피":"^KS11","코스닥":"^KQ11","나스닥":"^IXIC","S&P500":"^GSPC","달러/원":"KRW=X","VIX":"^VIX"}
-        for _name, _sym in _indices.items():
-            try:
-                _h = yf.Ticker(_sym).history(period="2d",interval="1d")
-                if len(_h) >= 2:
-                    _cur  = _h['Close'].iloc[-1]
-                    _prev = _h['Close'].iloc[-2]
-                    _chg  = (_cur/_prev-1)*100
-                    _res[_name] = {'현재': _cur, '등락': _chg}
-            except:
-                pass
-        return _res
-
-    with st.spinner("시장 데이터 로딩..."):
-        _mkt = fetch_market_summary()
-
-    if _mkt:
-        _mc = st.columns(len(_mkt))
-        for _i, (_nm, _d) in enumerate(_mkt.items()):
-            _cc = 'up' if _d['등락']>0 else 'down'
-            _arrow = '▲' if _d['등락']>0 else '▼'
-            # VIX는 반전
-            if _nm == "VIX":
-                _cc = 'down' if _d['등락']>0 else 'up'
-            _fmt = f"{_d['현재']:,.2f}" if _nm in ["달러/원","VIX","S&P500","나스닥"] else f"{_d['현재']:,.2f}"
-            _mc[_i].markdown(
-                f"<div class='metric-card'>"
-                f"<div class='label'>{_nm}</div>"
-                f"<div class='value flat' style='font-size:17px'>{_fmt}</div>"
-                f"<div class='{_cc}' style='font-size:13px'>{_arrow}{abs(_d['등락']):.2f}%</div>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-
-    # 환율 경고
-    try:
-        if _mkt.get("달러/원",{}).get('현재',0) >= 1500:
-            st.error("🚨 환율 1,500원 돌파! 미국 주식 신규 진입 자제")
-        elif _mkt.get("달러/원",{}).get('현재',0) >= 1450:
-            st.warning("⚠️ 환율 1,450원 이상 — 환차손 주의")
-    except:
-        pass
-
-    st.divider()
-
-    # ── 관심종목 현황 요약 ──
-    _main_c1, _main_c2 = st.columns([3, 2])
-
-    with _main_c1:
-        st.markdown("#### 📊 관심종목 현황")
-        if all_data:
-            for _t, _n in TICKERS:
-                if _t not in all_data: continue
-                _df_m  = all_data[_t]['df']
-                _lm    = _df_m.iloc[-1]
-                _pm    = _df_m.iloc[-2]
-                _chgm  = (_lm['종가']/_pm['종가']-1)*100
-                _cc    = '#ff4d6d' if _chgm>0 else '#4da6ff'
-                _sigs  = get_signal(_df_m)
-                _badge = ' '.join([f"<span class='badge badge-{s[1]}'>{s[0]}</span>" for s in _sigs])
-                _rsi_c = '#ff4d6d' if _lm['RSI']>=70 else '#4da6ff' if _lm['RSI']<=30 else '#6b7fa3'
-                st.markdown(
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                    f"padding:8px 12px;background:#111827;border-radius:8px;margin-bottom:4px;"
-                    f"border:1px solid #1e3a5f'>"
-                    f"<span><b>{_n}</b> <span style='color:#475569;font-size:11px'>({_t})</span></span>"
-                    f"<span style='display:flex;gap:12px;align-items:center'>"
-                    f"<span style='font-family:IBM Plex Mono;font-size:13px'>{format_price(_lm['종가'],_t)}</span>"
-                    f"<span style='color:{_cc};font-size:13px'>{_chgm:+.2f}%</span>"
-                    f"<span style='color:{_rsi_c};font-size:12px'>RSI {_lm['RSI']:.0f}</span>"
-                    f"{_badge}"
-                    f"</span></div>",
-                    unsafe_allow_html=True
-                )
-        else:
-            with st.spinner("데이터 로딩 중..."):
-                for ticker, name in TICKERS:
-                    df = fetch_ohlcv(ticker, lookback)
-                    if df is None or len(df) < 20:
-                        import yfinance as yf
-                        try:
-                            _yt = yf.Ticker(ticker)
-                            _h  = _yt.history(period="3mo", interval="1d")
-                            if not _h.empty:
-                                df = _h.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(lookback)
-                        except:
-                            pass
-                    if df is None or len(df) < 20: continue
-                    df = calc_indicators(df)
-                    all_data[ticker] = {'name': name, 'df': df}
-            st.rerun()
-
-    with _main_c2:
-        st.markdown("#### 🔄 ETF 1위 (로테이션)")
-        try:
-            _etf_cached = fetch_etf_data()
-            if _etf_cached:
-                _etf_df_m  = pd.DataFrame(_etf_cached)
-                _etf_active = _etf_df_m[_etf_df_m['상태']=='활성'].sort_values('Z-Score',ascending=False)
-                if not _etf_active.empty:
-                    _top_etf = _etf_active.iloc[0]
-                    _etf_cc  = '#ff4d6d' if _top_etf['등락(%)']>0 else '#4da6ff'
-                    st.markdown(
-                        f"<div style='background:#1a1400;border:2px solid #ffd166;border-radius:12px;padding:16px'>"
-                        f"<div style='font-size:11px;color:#ffd166;margin-bottom:4px'>🥇 100% 스위칭 타겟</div>"
-                        f"<div style='font-size:18px;font-weight:700'>{_top_etf['ETF명']}</div>"
-                        f"<div style='font-size:12px;color:#475569'>({_top_etf['종목코드']})</div>"
-                        f"<div style='display:flex;gap:12px;margin-top:8px'>"
-                        f"<span style='color:{_etf_cc}'>{_top_etf['등락(%)']:+.2f}%</span>"
-                        f"<span style='color:#a0b0c8'>ADX <b style='color:#4dff91'>{_top_etf['ADX']}</b></span>"
-                        f"<span style='color:#a0b0c8'>Z <b style='color:#e0e6f0'>{_top_etf['Z-Score']:+.2f}</b></span>"
-                        f"</div></div>",
-                        unsafe_allow_html=True
-                    )
-                    # 나머지 ETF 순위
-                    st.markdown("<div style='margin-top:8px'>", unsafe_allow_html=True)
-                    for _i_e, _row_e in _etf_active.iloc[1:4].iterrows():
-                        _ecc = '#ff4d6d' if _row_e['등락(%)']>0 else '#4da6ff'
-                        st.markdown(
-                            f"<div style='display:flex;justify-content:space-between;padding:6px 8px;"
-                            f"border-bottom:1px solid #1a2535;font-size:12px'>"
-                            f"<span>{_i_e+1}위 {_row_e['ETF명']}</span>"
-                            f"<span style='color:{_ecc}'>{_row_e['등락(%)']:+.2f}%</span>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-        except:
-            st.info("ETF 데이터 로딩 중...")
-
-        st.divider()
-
-        # 10:30 룰 상태
-        st.markdown("#### ⏰ 매매 가능 여부")
-        from datetime import datetime as _dt2
-        _now2    = _dt2.utcnow()
-        _kst_h2  = (_now2.hour + 9) % 24
-        _kst_m2  = _now2.minute
-        _in_win2 = (9 <= _kst_h2 < 10) or (_kst_h2 == 10 and _kst_m2 <= 30)
-        if _in_win2:
-            st.error("🔒 09:00~10:30 진입 금지 구간")
-        else:
-            st.success("✅ 진입 가능 구간")
-
-    st.divider()
-
-    # ── 오늘의 신호 종목 (빠른 스캔) ──
-    st.markdown("#### ⚡ 오늘의 신호 종목")
-    if all_data:
-        _signal_items = []
-        for _t, _n in TICKERS:
-            if _t not in all_data: continue
-            _df_s  = all_data[_t]['df']
-            _ls    = _df_s.iloc[-1]
-            _ps    = _df_s.iloc[-2]
-            _sigs_s = get_signal(_df_s)
-            _strong = [s for s in _sigs_s if s[1] in ['buy']]
-            if _strong:
-                _chg_s = (_ls['종가']/_ps['종가']-1)*100
-                _signal_items.append((_t, _n, _ls, _chg_s, _strong))
-
-        if _signal_items:
-            _sig_cols = st.columns(min(len(_signal_items), 4))
-            for _i_s, (_t_s, _n_s, _ls_s, _chg_s, _sigs_s) in enumerate(_signal_items[:4]):
-                _cc_s = '#ff4d6d' if _chg_s>0 else '#4da6ff'
-                _badge_s = ' '.join([f"<span class='badge badge-buy'>{s[0]}</span>" for s in _sigs_s])
-                _sig_cols[_i_s].markdown(
-                    f"<div class='metric-card'>"
-                    f"<div class='label'>{_n_s}</div>"
-                    f"<div class='value flat' style='font-size:15px'>{format_price(_ls_s['종가'],_t_s)}</div>"
-                    f"<div style='color:{_cc_s};font-size:13px'>{_chg_s:+.2f}%</div>"
-                    f"<div style='margin-top:6px'>{_badge_s}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.info("현재 강한 매수 신호 종목 없음")
-
-    if st.button("🔄 전체 새로고침", key="main_refresh", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
 
 # ══════════════════════════════════════════
 # 탭 0: 시장 지수
 # ══════════════════════════════════════════
-with tab7:
+with tab0:
     st.markdown("### 🌏 시장 지수 & 투자자 동향")
 
     # ── 환율 경고 배너 ──
@@ -1364,9 +1171,9 @@ with tab7:
         st.warning(f"코스피 차트 오류: {e}")
 
 # ══════════════════════════════════════════
-# 탭 1: 현황판 (더보기로 이동)
+# 탭 1: 현황판
 # ══════════════════════════════════════════
-with tab7:
+with tab1:
     st.markdown("### 관심 종목 현황")
 
     # ── KIS 실시간 연동 ──
@@ -1538,134 +1345,9 @@ with tab7:
 
 
 # ══════════════════════════════════════════
-# 탭 2: 차트 + Gemini 통합 분석
+# 탭 2: 차트 분석
 # ══════════════════════════════════════════
 with tab2:
-    st.markdown("### 📈 차트 + Gemini 통합 분석")
-    st.caption("종목 선택 → 차트와 AI 분석을 한 화면에서")
-
-    if not all_data:
-        st.info("메인 탭을 먼저 열어서 데이터를 로드해주세요.")
-    else:
-        # 종목 선택
-        def _display_name2(ticker, name):
-            return f"{name} ({ticker})" if is_korean_ticker(ticker) else f"{ticker} ({name})"
-
-        _sel2 = st.selectbox("종목 선택",
-            [_display_name2(t, n) for t, n in TICKERS if t in all_data],
-            key="integrated_ticker")
-        _sel_t2 = _sel2.split('(')[-1].replace(')','').strip()
-        if not is_korean_ticker(_sel_t2):
-            _sel_t2 = _sel2.split(' ')[0].strip()
-        _sel_n2   = all_data[_sel_t2]['name']
-        _sel_df2  = all_data[_sel_t2]['df']
-        _l2       = _sel_df2.iloc[-1]
-        _p2       = _sel_df2.iloc[-2]
-        _chg2     = (_l2['종가']/_p2['종가']-1)*100
-
-        # 핵심 지표 카드
-        _chg_c2 = 'up' if _chg2>0 else 'down'
-        _m1,_m2,_m3,_m4,_m5,_m6 = st.columns(6)
-        _cur_fmt2 = format_price(_l2['종가'], _sel_t2)
-        _m1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{_cur_fmt2}</div></div>", unsafe_allow_html=True)
-        _m2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value {_chg_c2}'>{_chg2:+.2f}%</div></div>", unsafe_allow_html=True)
-        _rsi_c2 = '#ff4d6d' if _l2['RSI']>=70 else '#4da6ff' if _l2['RSI']<=30 else '#a0b0c8'
-        _m3.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value' style='color:{_rsi_c2}'>{_l2['RSI']:.1f}</div></div>", unsafe_allow_html=True)
-        _bb_r2 = _l2['BB_upper']-_l2['BB_lower']
-        _bb_p2 = round((_l2['종가']-_l2['BB_lower'])/_bb_r2*100,1) if _bb_r2>0 else 50
-        _m4.markdown(f"<div class='metric-card'><div class='label'>BB위치</div><div class='value flat'>{_bb_p2}%</div></div>", unsafe_allow_html=True)
-        _52w_p2 = round((_l2['종가']-_l2['52W_low'])/(_l2['52W_high']-_l2['52W_low'])*100,1) if (_l2['52W_high']-_l2['52W_low'])>0 else 50
-        _m5.markdown(f"<div class='metric-card'><div class='label'>52주위치</div><div class='value flat'>{_52w_p2}%</div></div>", unsafe_allow_html=True)
-        _vol_r2 = _l2['거래량']/_sel_df2['거래량'].tail(20).mean()*100
-        _vol_c2 = 'up' if _vol_r2>=200 else 'flat'
-        _m6.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value {_vol_c2}'>{_vol_r2:.0f}%</div></div>", unsafe_allow_html=True)
-
-        # 매수 전략 라인
-        st.markdown("#### 🎯 전략 라인")
-        _unit2 = get_currency(_sel_t2)
-        _step2 = 100 if is_korean_ticker(_sel_t2) else 1
-        _lc1,_lc2,_lc3,_lc4 = st.columns(4)
-        _entry2   = _lc1.number_input(f"매수가({_unit2})", value=int(_l2['종가']), step=_step2, key="int_entry")
-        _stop2    = _lc2.number_input(f"손절가({_unit2})", value=int(_entry2*0.93), step=_step2, key="int_stop")
-        _target12 = _lc3.number_input(f"1차목표({_unit2})", value=0, step=_step2, key="int_t1")
-        _target22 = _lc4.number_input(f"2차목표({_unit2})", value=0, step=_step2, key="int_t2")
-
-        if _entry2 > 0 and _stop2 > 0 and _target12 > 0:
-            _risk2   = _entry2 - _stop2
-            _reward2 = _target12 - _entry2
-            _rr2     = round(_reward2/_risk2, 2) if _risk2 > 0 else 0
-            _rr_c2   = '#4dff91' if _rr2 >= 2 else '#ff4d6d'
-            st.markdown(
-                f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:10px;'>"
-                f"R:R = <b style='color:{_rr_c2};font-size:20px'>{_rr2}</b>"
-                f"{'  ✅ 진입 가능' if _rr2>=2 else '  ❌ R:R 부족 (2.0 미만 기각)'}"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-
-        # 차트
-        _fig2 = make_chart(
-            _sel_df2, _sel_n2,
-            entry    = _entry2    if _entry2    > 0 else None,
-            stoploss = _stop2     if _stop2     > 0 else None,
-            target1  = _target12  if _target12  > 0 else None,
-            target2  = _target22  if _target22  > 0 else None,
-        )
-        st.plotly_chart(_fig2, use_container_width=True)
-
-        # 이평선 현황
-        st.markdown("#### 📐 이평선 현황")
-        _ma_cols2 = st.columns(4)
-        for _i2, (_ma2, _lbl2) in enumerate([('MA5','5일'),('MA20','20일'),('MA60','60일'),('MA120','120일')]):
-            _val2  = _l2[_ma2]
-            _diff2 = round((_l2['종가']/_val2-1)*100,2) if _val2>0 else 0
-            _stat2 = '위' if _l2['종가']>_val2 else '아래'
-            _c2    = 'up' if _l2['종가']>_val2 else 'down'
-            _vfmt2 = format_price(_val2, _sel_t2)
-            _ma_cols2[_i2].markdown(
-                f"<div class='metric-card'><div class='label'>{_lbl2}선</div>"
-                f"<div class='value flat' style='font-size:15px'>{_vfmt2}</div>"
-                f"<div style='font-size:12px;margin-top:4px' class='{_c2}'>현재가 {_stat2} ({_diff2:+.1f}%)</div></div>",
-                unsafe_allow_html=True)
-
-        st.divider()
-
-        # Gemini 분석 — 바로 실행
-        st.markdown("#### 🤖 Gemini AI 분석")
-        if not gemini_key:
-            st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
-        else:
-            _gem_key2 = f"integrated_gem_{_sel_t2}"
-            _col_gem1, _col_gem2 = st.columns([1, 4])
-            if _col_gem1.button("🤖 분석 실행", key="integrated_gem_btn", use_container_width=True):
-                if _gem_key2 in st.session_state:
-                    del st.session_state[_gem_key2]
-            if _col_gem2.button("🔄 재분석", key="integrated_gem_rerun", use_container_width=True):
-                if _gem_key2 in st.session_state:
-                    del st.session_state[_gem_key2]
-
-            if _gem_key2 not in st.session_state:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                _gm2   = genai.GenerativeModel(model_name)
-                _sys2  = ('You are a Korean stock quant AI. Always respond in Korean. '
-                          'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.')
-                _prm2  = build_prompt(_sel_df2, _sel_n2, _sel_t2)
-                with st.spinner(f"🤖 {_sel_n2} 분석 중..."):
-                    try:
-                        _res2 = _gm2.generate_content(_sys2 + '\n\n' + _prm2)
-                        st.session_state[_gem_key2] = _res2.text
-                    except Exception as _e2:
-                        st.session_state[_gem_key2] = f"분석 오류: {_e2}"
-
-            if _gem_key2 in st.session_state:
-                st.markdown(
-                    f"<div class='gemini-box'>{st.session_state[_gem_key2]}</div>",
-                    unsafe_allow_html=True
-                )
-
-with tab5:
-    st.markdown("### ⭐ 관심종목 관리")
     if not all_data:
         st.info("현황판 탭을 먼저 열어서 데이터를 로드해주세요.")
     else:
@@ -1770,9 +1452,9 @@ with tab5:
 
 
 # ══════════════════════════════════════════
-# 탭 3: Gemini 분석 (더보기)
+# 탭 3: Gemini 분석
 # ══════════════════════════════════════════
-with tab7:
+with tab3:
     if not gemini_key:
         st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
     elif not all_data:
@@ -1809,7 +1491,7 @@ with tab7:
 # ══════════════════════════════════════════
 # 탭 4: 추천 스캐너
 # ══════════════════════════════════════════
-with tab3:
+with tab4:
     st.markdown("### 🔍 주도 종목 자동 스캐너")
     st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:12px'>거래대금 상위 종목 중 조건 충족 종목을 자동 발굴합니다.</div>", unsafe_allow_html=True)
 
@@ -2500,9 +2182,9 @@ with tab5:
         st.info("💡 추천 스캐너 탭에서 먼저 스캔을 실행해주세요.")
 
 # ══════════════════════════════════════════
-# 탭 4: ETF 로테이션 랭킹판
+# 탭 6: ETF 로테이션 랭킹판
 # ══════════════════════════════════════════
-with tab4:
+with tab6:
     st.markdown("### 🔄 ADX/Z-Score 기반 7대 ETF 로테이션 랭킹판")
     st.caption("ADX 25 미만은 추세 없음으로 탈락. 1위 ETF에 100% 스위칭 권고.")
 
@@ -2623,9 +2305,9 @@ with tab4:
             st.rerun()
 
 # ══════════════════════════════════════════
-# 탭 6: 페이퍼 트레이딩
+# 탭 7: 페이퍼 트레이딩
 # ══════════════════════════════════════════
-with tab6:
+with tab7:
     st.markdown("### 📝 페이퍼 트레이딩 (모의투자)")
     st.caption("실제 자금 없이 V8.9 전략을 검증합니다. 슬리피지·수수료·세금 자동 반영.")
 
