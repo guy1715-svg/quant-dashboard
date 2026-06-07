@@ -738,15 +738,16 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     _cur_price = df['종가'].iloc[-1]
     _prev_price = df['종가'].iloc[-2]
     _cur_color = '#ff4d6d' if _cur_price >= _prev_price else '#4da6ff'
-    fig.add_hline(
-        y=_cur_price,
-        line_color=_cur_color, line_width=1.0, line_dash='dot',
-        annotation_text=f'현재가 {_cur_price:,.0f}',
-        annotation_position='right',
-        annotation_font_color=_cur_color,
-        annotation_font_size=11,
-        row=1, col=1
-    )
+    # 현재가 — scatter로 마지막 점에 표시
+    fig.add_trace(go.Scatter(
+        x=[_idx[-1]], y=[_cur_price],
+        mode='markers+text',
+        marker=dict(color=_cur_color, size=8, symbol='circle'),
+        text=[f' ◀ 현재가 {_cur_price:,.0f}'],
+        textposition='middle right',
+        textfont=dict(color=_cur_color, size=11),
+        name='현재가', showlegend=False
+    ), row=1, col=1)
 
     # ── 이평선 ──
     ma_colors = {'MA5':'#ffd166','MA20':'#06d6a0','MA60':'#a78bfa','MA120':'#38bdf8'}
@@ -849,7 +850,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         height=820,
         legend=dict(orientation='h', y=1.02, x=0, font=dict(size=10),
                     bgcolor='rgba(0,0,0,0)', bordercolor='rgba(0,0,0,0)'),
-        margin=dict(l=10, r=120, t=50, b=30),
+        margin=dict(l=10, r=160, t=50, b=30),
     )
 
     # ── Y축 오른쪽 + X축 날짜 포맷 ──
@@ -1977,12 +1978,14 @@ with tab4:
         if _gem_key_s not in st.session_state:
             st.session_state[_gem_key_s] = False
         if _ab3.button(
-            "🤖 분석 닫기" if st.session_state[_gem_key_s] else "🤖 Gemini",
+            "🤖 분석 닫기" if st.session_state[_gem_key_s] else "🤖 Gemini 정밀분석",
             key="scan_gem_toggle", use_container_width=True,
-            disabled=not gemini_key
         ):
-            st.session_state[_gem_key_s] = not st.session_state[_gem_key_s]
-            st.session_state._keep_passed = True
+            if not gemini_key:
+                st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
+            else:
+                st.session_state[_gem_key_s] = not st.session_state[_gem_key_s]
+                st.session_state._keep_passed = True
 
         # 차트
         if st.session_state.get(_chart_key_s, False):
@@ -2022,29 +2025,54 @@ with tab4:
                 except Exception as _e:
                     st.warning(f"차트 오류: {_e}")
 
-        # Gemini
+        # Gemini 정밀분석
         if st.session_state.get(_gem_key_s, False) and gemini_key:
             _gcache = f"gem_cache_{_sel_scan_item['ticker']}"
+            st.markdown("#### 🤖 Gemini 정밀분석")
+            st.markdown(
+                f"<div style='background:#0a1a2a;border:1px solid #1e3a5f;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;color:#6b7fa3'>"
+                f"분석 대상: <b style='color:#e0e6f0'>{_sel_scan_item['name']}</b> | "
+                f"현재가: <b style='color:#ffd166'>{_sel_scan_item['현재가']:,.0f}원</b> | "
+                f"RSI: <b>{_sel_scan_item['RSI']:.1f}</b> | "
+                f"점수: <b style='color:#ffd166'>{_sel_scan_item['score']}점</b>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
             if _gcache not in st.session_state:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_key)
-                _gm = genai.GenerativeModel(model_name)
-                _sys = 'You are a Korean stock quant AI. Always respond in Korean. Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.'
-                _df_g = _sel_scan_item.get('df', fetch_ohlcv(_sel_scan_item['ticker'], 60))
+                _gm   = genai.GenerativeModel(model_name)
+                _sys  = (
+                    'You are a Korean stock quantitative analysis AI. Always respond in Korean. '
+                    'Provide: 1)시장상황 2)기술적분석 3)매수전략(진입가/손절가/목표가/R:R) '
+                    '4)리스크 5)결론(매수/관망/회피). '
+                    'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.'
+                )
+                _df_g = _sel_scan_item.get('df') or fetch_ohlcv(_sel_scan_item['ticker'], 60)
                 if _df_g is not None:
-                    with st.spinner("🤖 분석 중..."):
+                    with st.spinner(f"🤖 {_sel_scan_item['name']} 정밀분석 중..."):
                         try:
-                            _res_g = _gm.generate_content(_sys + '\n\n' + build_prompt(_df_g, _sel_scan_item['name'], _sel_scan_item['ticker']))
+                            _res_g = _gm.generate_content(
+                                _sys + '\n\n' + build_prompt(_df_g, _sel_scan_item['name'], _sel_scan_item['ticker'])
+                            )
                             st.session_state[_gcache] = _res_g.text
                             st.session_state._keep_passed = True
                         except Exception as _eg:
-                            st.session_state[_gcache] = f"오류: {_eg}"
+                            st.session_state[_gcache] = f"분석 오류: {_eg}"
+
             if _gcache in st.session_state:
-                st.markdown(f"<div class='gemini-box'>{st.session_state[_gcache]}</div>", unsafe_allow_html=True)
-                if st.button("🔄 재분석", key="scan_gem_rerun"):
+                st.markdown(
+                    f"<div class='gemini-box'>{st.session_state[_gcache]}</div>",
+                    unsafe_allow_html=True
+                )
+                _rr1, _rr2 = st.columns(2)
+                if _rr1.button("🔄 재분석", key="scan_gem_rerun"):
                     del st.session_state[_gcache]
                     st.session_state._keep_passed = True
                     st.rerun()
+                if _rr2.button("📝 페이퍼 매수로 이동", key="scan_to_paper"):
+                    st.session_state['paper_prefill'] = _sel_scan_item['ticker']
+                    st.info("💡 페이퍼 트레이딩 탭에서 매수하세요!")
 
 with tab5:
     st.markdown("### ⭐ 관심종목 관리")
