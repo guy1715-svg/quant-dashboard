@@ -1577,96 +1577,81 @@ with tab3:
 # ══════════════════════════════════════════
 with tab4:
     st.markdown("### 🔍 주도 종목 자동 스캐너")
-    st.markdown("<div style='font-size:13px; color:#6b7fa3; margin-bottom:12px'>거래대금 상위 종목 중 조건 충족 종목을 자동 발굴합니다.</div>", unsafe_allow_html=True)
 
-    # 상황별 추천 조건 가이드
-    with st.expander("📖 상황별 추천 필터 조건 가이드", expanded=False):
-        gc1, gc2, gc3 = st.columns(3)
-        gc1.markdown("""
-<div class='metric-card'>
-<div class='label'>📉 반등 매매</div>
-<div style='font-size:13px; margin-top:8px; line-height:2'>
-많이 빠진 종목의 반등을 노릴 때<br>
-✅ RSI 과매도<br>
-✅ 거래량 폭발<br>
-□ MACD 골든크로스<br>
-□ BB 하단 근접<br>
-□ 정배열
-</div>
-<div style='font-size:11px; color:#4da6ff; margin-top:8px'>
-💡 낙폭 과대 종목 중 거래량으로<br>세력 진입 확인
-</div>
-</div>""", unsafe_allow_html=True)
+    # ── 프리셋 버튼 ──
+    st.markdown("#### ⚡ 전략 프리셋")
+    _pr1, _pr2, _pr3, _pr4 = st.columns(4)
 
-        gc2.markdown("""
-<div class='metric-card'>
-<div class='label'>📈 추세 매매</div>
-<div style='font-size:13px; margin-top:8px; line-height:2'>
-이미 상승 중인 종목을 탈 때<br>
-□ RSI 과매도<br>
-✅ 거래량 폭발<br>
-✅ MACD 골든크로스<br>
-□ BB 하단 근접<br>
-✅ 정배열
-</div>
-<div style='font-size:11px; color:#4dff91; margin-top:8px'>
-💡 상승 추세 확인 후 눌림목<br>진입 타이밍 포착
-</div>
-</div>""", unsafe_allow_html=True)
+    if 'scan_preset' not in st.session_state:
+        st.session_state.scan_preset = None
 
-        gc3.markdown("""
-<div class='metric-card'>
-<div class='label'>🎯 바닥 확인 매수</div>
-<div style='font-size:13px; margin-top:8px; line-height:2'>
-바닥 다지고 전환 신호 시<br>
-□ RSI 과매도<br>
-✅ 거래량 폭발<br>
-✅ MACD 골든크로스<br>
-✅ BB 하단 근접<br>
-□ 정배열
-</div>
-<div style='font-size:11px; color:#ffd166; margin-top:8px'>
-💡 BB 하단 + MACD 전환 =<br>가장 강력한 바닥 신호
-</div>
-</div>""", unsafe_allow_html=True)
+    if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
+                   type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
+        st.session_state.scan_preset = "bounce"
+        st.rerun()
+    if _pr2.button("📈 추세매매", key="preset_trend", use_container_width=True,
+                   type="primary" if st.session_state.scan_preset=="trend" else "secondary"):
+        st.session_state.scan_preset = "trend"
+        st.rerun()
+    if _pr3.button("🎯 바닥확인", key="preset_bottom", use_container_width=True,
+                   type="primary" if st.session_state.scan_preset=="bottom" else "secondary"):
+        st.session_state.scan_preset = "bottom"
+        st.rerun()
+    if _pr4.button("⚙️ 직접설정", key="preset_custom", use_container_width=True,
+                   type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
+        st.session_state.scan_preset = "custom"
+        st.rerun()
 
-        st.markdown("""
-<div style='background:#0f1726; border-left:3px solid #ff4d6d; padding:10px 14px; border-radius:0 8px 8px 0; font-size:12px; margin-top:8px'>
-⚠️ <b>주의</b>: 조건을 많이 체크할수록 AND 조건이라 결과가 줄어듭니다.<br>
-정배열(상승중) + RSI 과매도(많이 빠짐)는 서로 반대 의미라 동시 체크 시 결과가 거의 없습니다.
-</div>""", unsafe_allow_html=True)
+    # 프리셋 설명
+    _preset_desc = {
+        "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발 (많이 빠진 종목의 반등)",
+        "trend":  "📈 추세매매 — 거래량 폭발 + MACD 골든크로스 + 정배열 (상승 추세 탑승)",
+        "bottom": "🎯 바닥확인 — 거래량 폭발 + MACD 골든크로스 + BB 하단 (바닥 전환)",
+        "custom": "⚙️ 직접설정 — 조건을 직접 선택",
+    }
+    if st.session_state.scan_preset:
+        st.info(_preset_desc[st.session_state.scan_preset])
 
-    # 스캔 조건 설정
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
+    st.divider()
+
+    # ── 스캔 설정 ──
+    _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
+    with _sc_col1:
         st.markdown("**📋 스캔 대상**")
-        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"])
-        top_n = st.slider("상위 N종목", 20, 200, 50)
-    with col_b:
+        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="scanner_market")
+        top_n = st.slider("상위 N종목", 20, 200, 50, key="scanner_topn")
+        min_score = st.slider("최소 점수", 1, 10, 4, key="scanner_minscore",
+                              help="높을수록 조건 많이 충족한 종목만")
+
+    with _sc_col2:
         st.markdown("**🎯 필터 조건**")
-        use_rsi     = st.checkbox("RSI 과매도 (≤35)", value=True)
-        use_vol     = st.checkbox("거래량 폭발 (≥150%)", value=True)
-        use_macd    = st.checkbox("MACD 골든크로스", value=False)
-        use_bb      = st.checkbox("BB 하단 근접 (≤25%)", value=False)
-        use_align   = st.checkbox("정배열 (MA5>MA20>MA60)", value=False)
-    with col_c:
+        _preset = st.session_state.scan_preset
+
+        # 프리셋에 따라 기본값 설정
+        _def_rsi   = _preset in ["bounce", "bottom"] if _preset else True
+        _def_vol   = True
+        _def_macd  = _preset in ["trend", "bottom"] if _preset else False
+        _def_bb    = _preset == "bottom" if _preset else False
+        _def_align = _preset == "trend" if _preset else False
+
+        _disabled = _preset != "custom" and _preset is not None
+
+        use_rsi   = st.checkbox("RSI 과매도 (≤35)", value=_def_rsi,   disabled=_disabled, key="f_rsi")
+        use_vol   = st.checkbox("거래량 폭발 (≥150%)", value=_def_vol, disabled=_disabled, key="f_vol")
+        use_macd  = st.checkbox("MACD 골든크로스", value=_def_macd,   disabled=_disabled, key="f_macd")
+        use_bb    = st.checkbox("BB 하단 근접 (≤25%)", value=_def_bb, disabled=_disabled, key="f_bb")
+        use_align = st.checkbox("정배열 (MA5>MA20>MA60)", value=_def_align, disabled=_disabled, key="f_align")
+
+    with _sc_col3:
         st.markdown("**⚙️ 추가 설정**")
         _is_us = market_type == "미국(S&P500)"
-        min_price = st.number_input(
-            "최소 주가 (원/$)",
-            value=1 if _is_us else 5000,
-            step=1 if _is_us else 1000
-        )
-        max_price = st.number_input(
-            "최대 주가 (원/$)",
-            value=100000 if _is_us else 2000000,
-            step=100 if _is_us else 10000
-        )
-        use_gemini_scan = st.checkbox("Gemini 최종 분석 포함", value=False)
-        min_score = st.slider("최소 선정 점수", 1, 10, 4,
-                              help="높을수록 조건 많이 충족한 종목만 표시")
+        min_price = st.number_input("최소 주가", value=1 if _is_us else 5000,
+                                     step=1 if _is_us else 1000, key="f_minp")
+        max_price = st.number_input("최대 주가", value=100000 if _is_us else 2000000,
+                                     step=100 if _is_us else 10000, key="f_maxp")
+        use_gemini_scan = st.checkbox("Gemini 분석 포함", value=False, key="f_gemini")
 
-    scan_btn = st.button("🚀 스캔 시작", use_container_width=True)
+    scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
 
     if st.session_state._keep_passed:
         st.session_state._keep_passed = False
@@ -1675,8 +1660,8 @@ with tab4:
         st.session_state.passed = []
         st.session_state.scan_done = False
 
-        # ── 종목 리스트 구성 ──
-        KOSPI_200 = [
+        # 종목 리스트
+        KOSPI_LIST = [
             ("005930","삼성전자"),("000660","SK하이닉스"),("005380","현대차"),
             ("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),
             ("035420","NAVER"),("035720","카카오"),("012450","한화에어로스페이스"),
@@ -1684,446 +1669,299 @@ with tab4:
             ("028260","삼성물산"),("003670","포스코퓨처엠"),("247540","에코프로비엠"),
             ("086520","에코프로"),("207940","삼성바이오로직스"),("068270","셀트리온"),
             ("096770","SK이노베이션"),("011200","HMM"),("010130","고려아연"),
-            ("066570","LG전자"),("316140","우리금융지주"),("055550","신한지주"),
-            ("105560","KB금융"),("032830","삼성생명"),("017670","SK텔레콤"),
-            ("030200","KT"),("018260","삼성에스디에스"),("042700","한미반도체"),
-            ("009150","삼성전기"),("010950","S-Oil"),("011070","LG이노텍"),
-            ("034220","LG디스플레이"),("024110","기업은행"),("000810","삼성화재"),
-            ("088350","한화생명"),("139480","이마트"),("097950","CJ제일제당"),
-            ("011780","금호석유"),("009540","HD한국조선해양"),("000100","유한양행"),
-            ("032640","LG유플러스"),("003550","LG"),("011170","롯데케미칼"),
+            ("066570","LG전자"),("055550","신한지주"),("105560","KB금융"),
+            ("042700","한미반도체"),("009150","삼성전기"),("034220","LG디스플레이"),
+            ("024110","기업은행"),("032640","LG유플러스"),("003550","LG"),
             ("004020","현대제철"),("010140","삼성중공업"),("005490","POSCO홀딩스"),
-            ("028670","팬오션"),("001040","CJ"),
+            ("001040","CJ"),("017670","SK텔레콤"),("030200","KT"),
+            ("316140","우리금융지주"),("032830","삼성생명"),("011780","금호석유"),
+            ("009540","HD한국조선해양"),("000100","유한양행"),("028670","팬오션"),
+            ("018260","삼성에스디에스"),("064350","현대로템"),("000810","삼성화재"),
+            ("088350","한화생명"),("139480","이마트"),("097950","CJ제일제당"),
+            ("011070","LG이노텍"),("010950","S-Oil"),
         ]
-        KOSDAQ_100 = [
+        KOSDAQ_LIST = [
             ("042700","한미반도체"),("086520","에코프로"),("247540","에코프로비엠"),
-            ("003670","포스코퓨처엠"),("196170","알테오젠"),("091990","셀트리온헬스케어"),
-            ("263750","펄어비스"),("112040","위메이드"),("357780","솔브레인"),
-            ("058470","리노공업"),("095340","ISC"),("122870","와이지엔터테인먼트"),
+            ("003670","포스코퓨처엠"),("196170","알테오젠"),("263750","펄어비스"),
+            ("357780","솔브레인"),("058470","리노공업"),("095340","ISC"),
             ("036930","주성엔지니어링"),("039030","이오테크닉스"),("240810","원익IPS"),
             ("035900","JYP엔터테인먼트"),("041510","에스엠"),("067160","아프리카TV"),
-            ("064350","현대로템"),("214150","클래시스"),
+            ("064350","현대로템"),("214150","클래시스"),("112040","위메이드"),
+            ("122870","와이지엔터테인먼트"),("091990","셀트리온헬스케어"),
         ]
-        SP500_TOP = [
-            # 기술
+        SP500_LIST = [
             ("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),
             ("GOOGL","Alphabet"),("AMZN","Amazon"),("META","Meta"),
             ("TSLA","Tesla"),("AVGO","Broadcom"),("AMD","AMD"),
             ("INTC","Intel"),("QCOM","Qualcomm"),("MU","Micron"),
             ("NOW","ServiceNow"),("CRM","Salesforce"),("PLTR","Palantir"),
-            ("ARM","ARM"),("SMCI","Super Micro"),("ORCL","Oracle"),
-            ("CSCO","Cisco"),("IBM","IBM"),("TXN","Texas Instruments"),
-            ("AMAT","Applied Materials"),("LRCX","Lam Research"),
-            ("KLAC","KLA Corp"),("ADI","Analog Devices"),
-            ("MRVL","Marvell"),("MPWR","Monolithic Power"),
-            ("ON","ON Semiconductor"),("NXPI","NXP Semi"),
-            ("STX","Seagate"),("WDC","Western Digital"),
-            ("HPQ","HP Inc"),("HPE","HP Enterprise"),("DELL","Dell"),
-            ("ACN","Accenture"),("INTU","Intuit"),("ADP","ADP"),
-            ("ADBE","Adobe"),("ANSS","Ansys"),("CDNS","Cadence"),
-            ("SNPS","Synopsys"),("FTNT","Fortinet"),("PANW","Palo Alto"),
-            ("CRWD","CrowdStrike"),("ZS","Zscaler"),("OKTA","Okta"),
-            ("SNOW","Snowflake"),("DDOG","Datadog"),("MDB","MongoDB"),
-            ("NET","Cloudflare"),("TEAM","Atlassian"),("HUBS","HubSpot"),
-            # 금융
-            ("JPM","JPMorgan"),("BAC","Bank of America"),("WFC","Wells Fargo"),
-            ("GS","Goldman Sachs"),("MS","Morgan Stanley"),("C","Citigroup"),
-            ("BLK","BlackRock"),("SCHW","Charles Schwab"),("AXP","Amex"),
+            ("ORCL","Oracle"),("CSCO","Cisco"),("AMAT","Applied Materials"),
+            ("JPM","JPMorgan"),("BAC","Bank of America"),("GS","Goldman Sachs"),
             ("V","Visa"),("MA","Mastercard"),("PYPL","PayPal"),
-            ("COF","Capital One"),("USB","US Bancorp"),("TFC","Truist"),
-            ("PNC","PNC Financial"),("MTB","M&T Bank"),("FITB","Fifth Third"),
-            ("KEY","KeyCorp"),("RF","Regions Financial"),
-            # 헬스케어
             ("UNH","UnitedHealth"),("LLY","Eli Lilly"),("JNJ","J&J"),
             ("PFE","Pfizer"),("MRK","Merck"),("ABBV","AbbVie"),
-            ("ABT","Abbott"),("TMO","Thermo Fisher"),("DHR","Danaher"),
-            ("BMY","Bristol Myers"),("AMGN","Amgen"),("GILD","Gilead"),
-            ("BIIB","Biogen"),("VRTX","Vertex"),("REGN","Regeneron"),
-            ("ISRG","Intuitive Surgical"),("SYK","Stryker"),("MDT","Medtronic"),
-            ("BSX","Boston Scientific"),("EW","Edwards Life"),
-            # 소비재
             ("WMT","Walmart"),("COST","Costco"),("HD","Home Depot"),
-            ("LOW","Lowe's"),("TGT","Target"),("AMZN","Amazon"),
-            ("MCD","McDonald's"),("SBUX","Starbucks"),("YUM","Yum Brands"),
-            ("NKE","Nike"),("PG","P&G"),("KO","Coca-Cola"),
-            ("PEP","PepsiCo"),("PM","Philip Morris"),("MO","Altria"),
-            ("CL","Colgate"),("EL","Estee Lauder"),("ULTA","Ulta Beauty"),
-            # 에너지
+            ("MCD","McDonald's"),("SBUX","Starbucks"),("NKE","Nike"),
             ("XOM","ExxonMobil"),("CVX","Chevron"),("COP","ConocoPhillips"),
-            ("SLB","SLB"),("EOG","EOG Resources"),("PXD","Pioneer Natural"),
-            ("MPC","Marathon Petroleum"),("VLO","Valero"),("PSX","Phillips 66"),
-            # 산업
-            ("BA","Boeing"),("CAT","Caterpillar"),("DE","John Deere"),
-            ("HON","Honeywell"),("GE","GE"),("MMM","3M"),
-            ("RTX","Raytheon"),("LMT","Lockheed Martin"),("NOC","Northrop"),
-            ("GD","General Dynamics"),("UPS","UPS"),("FDX","FedEx"),
-            ("WM","Waste Management"),("RSG","Republic Services"),
-            # 통신/미디어
-            ("NFLX","Netflix"),("DIS","Disney"),("CMCSA","Comcast"),
-            ("T","AT&T"),("VZ","Verizon"),("TMUS","T-Mobile"),
-            ("CHTR","Charter"),("PARA","Paramount"),("WBD","Warner Bros"),
-            # 부동산/유틸리티
-            ("NEE","NextEra Energy"),("DUK","Duke Energy"),("SO","Southern"),
-            ("D","Dominion"),("AEP","AEP"),("EXC","Exelon"),
-            ("PLD","Prologis"),("AMT","American Tower"),("CCI","Crown Castle"),
-            ("EQIX","Equinix"),("PSA","Public Storage"),("AVB","AvalonBay"),
-            # 기타 주목 종목
-            ("MSTR","MicroStrategy"),("COIN","Coinbase"),("MELI","MercadoLibre"),
-            ("SE","Sea Limited"),("BABA","Alibaba"),("JD","JD.com"),
-            ("SHOP","Shopify"),("SQ","Block"),("AFRM","Affirm"),
-            ("RBLX","Roblox"),("UBER","Uber"),("LYFT","Lyft"),
-            ("ABNB","Airbnb"),("DASH","DoorDash"),("PINS","Pinterest"),
-            ("SNAP","Snap"),("ROKU","Roku"),("TTD","Trade Desk"),
+            ("BA","Boeing"),("CAT","Caterpillar"),("LMT","Lockheed Martin"),
+            ("NFLX","Netflix"),("DIS","Disney"),("COIN","Coinbase"),
+            ("MSTR","MicroStrategy"),("UBER","Uber"),("ABNB","Airbnb"),
+            ("SHOP","Shopify"),("SNOW","Snowflake"),
         ]
 
         extra = [(t,n) for t,n in TICKERS]
-
         if market_type == "KOSPI":
-            scan_list = KOSPI_200 + [x for x in extra if x not in KOSPI_200]
+            scan_list = KOSPI_LIST + [x for x in extra if x not in KOSPI_LIST]
         elif market_type == "KOSDAQ":
-            scan_list = KOSDAQ_100 + [x for x in extra if x not in KOSDAQ_100]
+            scan_list = KOSDAQ_LIST + [x for x in extra if x not in KOSDAQ_LIST]
         elif market_type == "KOSPI+KOSDAQ":
-            scan_list = KOSPI_200 + [x for x in KOSDAQ_100 if x not in KOSPI_200]
+            scan_list = KOSPI_LIST + [x for x in KOSDAQ_LIST if x not in KOSPI_LIST]
             scan_list += [x for x in extra if x not in scan_list]
-        else:  # 미국 S&P500
-            scan_list = SP500_TOP + [x for x in extra if x not in SP500_TOP]
+        else:
+            scan_list = SP500_LIST + [x for x in extra if x not in SP500_LIST]
 
-        scan_list = scan_list[:top_n]
+        scan_list   = scan_list[:top_n]
         scan_tickers = [t for t,n in scan_list]
-        name_map = {t:n for t,n in scan_list}
+        name_map     = {t:n for t,n in scan_list}
 
-        with st.spinner(f'종목 스캔 준비 중... ({len(scan_tickers)}종목)'):
-            st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
+        st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
 
-        if scan_tickers:
-            pass  # 아래에서 처리
+        passed = []
+        prog   = st.progress(0)
+        status = st.empty()
 
-            passed = []
-            progress = st.progress(0)
-            status_text = st.empty()
+        for idx, ticker in enumerate(scan_tickers):
+            prog.progress((idx+1)/len(scan_tickers))
+            name = name_map.get(ticker, ticker)
+            status.markdown(f"<span style='font-size:12px;color:#6b7fa3'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
-            for idx, ticker in enumerate(scan_tickers):
-                progress.progress((idx+1)/len(scan_tickers))
-                name = name_map.get(ticker, ticker)
-                status_text.markdown(f"<span style='font-size:12px; color:#6b7fa3'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+            try:
+                if market_type == "미국(S&P500)":
+                    import yfinance as yf
+                    _yt   = yf.Ticker(ticker)
+                    _hist = _yt.history(period="6mo", interval="1d")
+                    if _hist is None or _hist.empty: continue
+                    df = _hist.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(60)
+                    df = df[df['거래량']>0]
+                else:
+                    df = fetch_ohlcv(ticker, 60)
+                if df is None or len(df) < 20: continue
 
+                _price = df['종가'].iloc[-1]
+                if _price < min_price or _price > max_price: continue
+
+                df = calc_indicators(df)
+                l = df.iloc[-1]; p = df.iloc[-2]
+                volr  = l['거래량']/df['거래량'].tail(20).mean()*100
+                bb_r  = l['BB_upper']-l['BB_lower']
+                bb_p  = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
+
+                score = 0; reasons = []
+                if use_rsi and l['RSI']<=35:
+                    score+=2; reasons.append(f"📉RSI {l['RSI']:.0f}")
+                if use_vol and volr>=150:
+                    score+=2; reasons.append(f"🔥거래량{volr:.0f}%")
+                if use_macd and l['MACD']>l['Signal'] and p['MACD']<=p['Signal']:
+                    score+=3; reasons.append("⚡골든크로스")
+                if use_bb and bb_p<=25:
+                    score+=2; reasons.append(f"📊BB{bb_p}%")
+                if use_align and l['종가']>l['MA5']>l['MA20']>l['MA60']:
+                    score+=2; reasons.append("✅정배열")
+
+                if score >= min_score:
+                    chg = (l['종가']/p['종가']-1)*100
+                    passed.append({
+                        'ticker':   ticker,
+                        'name':     name,
+                        '현재가':   l['종가'],
+                        '등락(%)':  round(chg,2),
+                        'RSI':      l['RSI'],
+                        'MACD':     '골든크로스' if (l['MACD']>l['Signal'] and p['MACD']<=p['Signal']) else ('▲' if l['MACD']>l['Signal'] else '▼'),
+                        'BB위치':   f"{bb_p}%",
+                        '거래량비율': round(volr,0),
+                        'score':    score,
+                        'reasons':  reasons,
+                        'df':       df,
+                    })
+            except: continue
+
+        prog.empty(); status.empty()
+        passed = sorted(passed, key=lambda x: x['score'], reverse=True)
+        st.session_state.passed     = passed
+        st.session_state.scan_done  = True
+
+    # ── 결과 표시 ──
+    if st.session_state.passed:
+        _sc_wl  = st.session_state.get('watchlist_data') or load_watchlist()
+        _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
+        _p_list = st.session_state.passed
+
+        st.success(f"✅ {len(_p_list)}개 종목 발굴!")
+
+        # 전체 추가 버튼
+        _new_items = [i for i in _p_list if i['ticker'] not in _sc_ids]
+        if _new_items:
+            if st.button(f"⭐ 전체 {len(_new_items)}개 사이드바 추가", key="bulk_add_btn",
+                         use_container_width=True, type="primary"):
                 try:
-                    # 미국 종목은 suffix 없이 직접 조회
-                    if market_type == "미국(S&P500)":
-                        try:
-                            import yfinance as yf
-                            _yt   = yf.Ticker(ticker)
-                            _hist = _yt.history(period="6mo", interval="1d")
-                            if _hist is None or _hist.empty:
-                                continue
-                            df = _hist.rename(columns={
-                                'Open':'시가','High':'고가','Low':'저가',
-                                'Close':'종가','Volume':'거래량'
-                            })[['시가','고가','저가','종가','거래량']].tail(60)
-                            df = df[df['거래량'] > 0]
-                        except:
-                            continue
-                    else:
-                        df = fetch_ohlcv(ticker, 60)
-                    if df is None or len(df) < 20: continue
+                    _ws = get_gsheet()
+                    _cur = st.session_state.get('watchlist_data') or load_watchlist()
+                    for _it in _new_items:
+                        _ws.append_row([_it['ticker'], _it['name']])
+                        _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
+                    st.session_state.watchlist_data = _cur
+                    safe_clear_cache()
+                    st.session_state._keep_passed = True
+                    st.success(f"✅ {len(_new_items)}개 추가 완료!")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"추가 오류: {_e}")
 
-                    l = df.iloc[-1]
-                    # 가격 필터 (미국은 달러 기준)
-                    _price = l['종가']
-                    if _price < min_price or _price > max_price: continue
+        st.divider()
 
-                    df = calc_indicators(df)
-                    l  = df.iloc[-1]
-                    p  = df.iloc[-2]
+        # ── 결과 테이블 ──
+        st.markdown("#### 📋 발굴 종목 테이블")
+        import pandas as pd
+        _rows = []
+        for item in _p_list:
+            _added = "✅" if item['ticker'] in _sc_ids else "➕"
+            _chg_arrow = "▲" if item['등락(%)']>0 else "▼"
+            _rows.append({
+                "추가": _added,
+                "종목명": item['name'],
+                "코드": item['ticker'],
+                "현재가": f"{item['현재가']:,.0f}",
+                "등락(%)": f"{_chg_arrow}{abs(item['등락(%)']):+.2f}%",
+                "RSI": f"{item['RSI']:.1f}",
+                "MACD": item['MACD'],
+                "BB위치": item['BB위치'],
+                "거래량%": f"{item['거래량비율']:.0f}%",
+                "점수": f"{item['score']}점",
+                "신호": " ".join(item['reasons']),
+            })
 
-                    volr = l['거래량']/df['거래량'].tail(20).mean()*100
-                    bb_r = l['BB_upper']-l['BB_lower']
-                    bb_p = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
+        _result_df = pd.DataFrame(_rows)
 
-                    score = 0
-                    reasons = []
+        # 스타일 적용
+        def _color_row(row):
+            styles = []
+            for col in row.index:
+                if col == '등락(%)':
+                    styles.append('color: #ff4d6d' if '▲' in str(row[col]) else 'color: #4da6ff')
+                elif col == '점수':
+                    val = int(str(row[col]).replace('점',''))
+                    styles.append('color: #ffd166; font-weight: bold' if val >= 6 else 'color: #e0e6f0')
+                elif col == '추가':
+                    styles.append('color: #4dff91' if row[col]=='✅' else 'color: #ffd166')
+                else:
+                    styles.append('')
+            return styles
 
-                    if use_rsi and l['RSI'] <= 35:
-                        score += 2; reasons.append(f"📉RSI {l['RSI']:.1f}")
-                    if use_vol and volr >= 150:
-                        score += 2; reasons.append(f"🔥거래량{volr:.0f}%")
-                    if use_macd and l['MACD'] > l['Signal'] and p['MACD'] <= p['Signal']:
-                        score += 3; reasons.append("⚡골든크로스")
-                    if use_bb and bb_p <= 25:
-                        score += 2; reasons.append(f"📊BB하단{bb_p}%")
-                    if use_align and l['종가'] > l['MA5'] > l['MA20'] > l['MA60']:
-                        score += 2; reasons.append("✅정배열")
+        st.dataframe(
+            _result_df.style.apply(_color_row, axis=1),
+            use_container_width=True,
+            height=min(400, 35 + len(_rows)*35),
+            hide_index=True,
+        )
 
-                    if score >= min_score:
-                        chg = (l['종가']/p['종가']-1)*100
-                        passed.append({
-                            'ticker': ticker,
-                            'name': name,
-                            '현재가': l['종가'],
-                            '등락(%)': chg,
-                            'RSI': l['RSI'],
-                            '거래량비율': volr,
-                            'BB위치': bb_p,
-                            'score': score,
-                            'reasons': reasons,
-                            'df': df
-                        })
-                except:
-                    continue
+        st.divider()
 
-            progress.empty()
-            status_text.empty()
+        # ── 종목 선택 → 상세 분석 ──
+        st.markdown("#### 🔍 종목 선택 → 상세 분석")
+        _sel_names = [f"{item['name']} ({item['ticker']}) | {item['score']}점" for item in _p_list]
+        _sel_scan  = st.selectbox("분석할 종목", _sel_names, key="scan_detail_sel")
+        _sel_scan_idx = _sel_names.index(_sel_scan)
+        _sel_scan_item = _p_list[_sel_scan_idx]
 
-            # 점수순 정렬
-            passed = sorted(passed, key=lambda x: x['score'], reverse=True)
-            # df 포함 전체 저장 — rerun 후에도 차트 유지
-            st.session_state.passed = passed
-            st.session_state.scan_done = True
+        # 액션 버튼
+        _ab1, _ab2, _ab3 = st.columns(3)
+        _is_added_scan = _sel_scan_item['ticker'] in _sc_ids
 
-            if not passed:
-                st.warning("⚠️ 조건을 충족하는 종목이 없습니다. 조건을 완화해보세요.")
+        if _is_added_scan:
+            _ab1.markdown("<div style='color:#4dff91;padding:8px 0'>✅ 이미 추가됨</div>", unsafe_allow_html=True)
+        else:
+            if _ab1.button("⭐ 관심종목 추가", key="scan_ind_add", use_container_width=True):
+                try:
+                    _ws2 = get_gsheet()
+                    _ws2.append_row([_sel_scan_item['ticker'], _sel_scan_item['name']])
+                    _cur2 = (st.session_state.get('watchlist_data') or load_watchlist()).strip()
+                    st.session_state.watchlist_data = _cur2 + f"\n{_sel_scan_item['ticker']},{_sel_scan_item['name']}"
+                    safe_clear_cache()
+                    st.session_state._keep_passed = True
+                    st.success(f"✅ {_sel_scan_item['name']} 추가!")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"오류: {_e}")
 
-        # ── 스캔 결과 항상 표시 ──
-        if st.session_state.passed:
-            _sc_wl  = st.session_state.get('watchlist_data', None) or load_watchlist()
-            _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
-            _new_items = [i for i in st.session_state.passed if i['ticker'] not in _sc_ids]
+        _chart_key_s = f"scan_chart_{_sel_scan_item['ticker']}"
+        if _chart_key_s not in st.session_state:
+            st.session_state[_chart_key_s] = False
+        if _ab2.button(
+            "📈 차트 닫기" if st.session_state[_chart_key_s] else "📈 차트",
+            key="scan_chart_toggle", use_container_width=True
+        ):
+            st.session_state[_chart_key_s] = not st.session_state[_chart_key_s]
+            st.session_state._keep_passed = True
 
-            st.success(f"✅ {len(st.session_state.passed)}개 종목 발굴!")
+        _gem_key_s = f"scan_gem_{_sel_scan_item['ticker']}"
+        if _gem_key_s not in st.session_state:
+            st.session_state[_gem_key_s] = False
+        if _ab3.button(
+            "🤖 분석 닫기" if st.session_state[_gem_key_s] else "🤖 Gemini",
+            key="scan_gem_toggle", use_container_width=True,
+            disabled=not gemini_key
+        ):
+            st.session_state[_gem_key_s] = not st.session_state[_gem_key_s]
+            st.session_state._keep_passed = True
 
-            # ── 전체 일괄 추가 버튼 ──
-            if _new_items:
-                _col_add, _col_info = st.columns([2, 3])
-                if _col_add.button(
-                    f"⭐ 전체 {len(_new_items)}개 사이드바 추가",
-                    key="bulk_add_btn",
-                    use_container_width=True,
-                    type="primary"
-                ):
-                    try:
-                        _ws = get_gsheet()
-                        # Sheets 현재 데이터 다시 읽어서 중복 방지
-                        _sheet_data = _ws.get_all_values()
-                        _sheet_ids  = [r[0].strip() for r in _sheet_data if r]
-                        _cur = "\n".join([",".join(r) for r in _sheet_data if len(r)>=2])
-                        _added = 0
-                        for _it in _new_items:
-                            if _it['ticker'] not in _sheet_ids:
-                                _ws.append_row([_it['ticker'], _it['name']])
-                                _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
-                                _sheet_ids.append(_it['ticker'])
-                                _added += 1
-                        # session_state 즉시 업데이트
-                        st.session_state.watchlist_data = _cur
-                        safe_clear_cache()
-                        st.session_state._keep_passed = True
-                        st.success(f"✅ {_added}개 추가 완료! 사이드바가 업데이트됩니다.")
-                        st.rerun()
-                    except Exception as _e:
-                        import traceback
-                        st.error(f"추가 오류: {_e}")
-                        st.code(traceback.format_exc())
-                _col_info.markdown(
-                    "<div style='padding:8px; font-size:12px; color:#6b7fa3'>"
-                    "사이드바에 없는 종목만 추가됩니다.</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.info("✅ 발굴된 종목이 모두 이미 사이드바에 있습니다.")
-
-            st.markdown("---")
-
-            # ── 종목 선택 → 통합 분석 ──
-            st.markdown("#### 🔍 종목 선택 → 즉시 통합 분석")
-
-            # 종목 선택 라디오 버튼
-            _scan_names = [f"{'✅' if item['ticker'] in _sc_ids else '⭐'} {item['name']} ({item['ticker']}) | {item['등락(%)']:+.2f}% | {item['score']}점"
-                           for item in st.session_state.passed]
-            _selected_scan = st.radio("분석할 종목 선택", _scan_names, key="scan_radio")
-            _sel_idx = _scan_names.index(_selected_scan)
-            _sel_item = st.session_state.passed[_sel_idx]
-
-            st.markdown("---")
-
-            # ── 선택 종목 요약 카드 ──
-            _is_added  = _sel_item['ticker'] in _sc_ids
-            _chg_c     = '#ff4d6d' if _sel_item['등락(%)'] > 0 else '#4da6ff'
-            _badge_html = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in _sel_item['reasons']])
-
-            st.markdown(
-                f"<div style='background:#111827;border:2px solid {'#2d6644' if _is_added else '#ffd166'};"
-                f"border-radius:12px;padding:16px 20px;margin-bottom:12px'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                f"<span style='font-size:18px;font-weight:700'>{'✅' if _is_added else '⭐'} {_sel_item['name']}"
-                f" <span style='color:#475569;font-size:13px'>({_sel_item['ticker']})</span></span>"
-                f"<span style='color:{_chg_c};font-size:18px;font-weight:700;font-family:IBM Plex Mono'>"
-                f"{'▲' if _sel_item['등락(%)']>0 else '▼'} {abs(_sel_item['등락(%)']):+.2f}%</span>"
-                f"</div>"
-                f"<div style='display:flex;gap:20px;margin-top:10px'>"
-                f"<span style='color:#a0b0c8'>현재가 <b style='color:#e0e6f0;font-size:16px'>{_sel_item['현재가']:,.0f}</b></span>"
-                f"<span style='color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{_sel_item['RSI']:.1f}</b></span>"
-                f"<span style='color:#a0b0c8'>거래량 <b style='color:#e0e6f0'>{_sel_item['거래량비율']:.0f}%</b></span>"
-                f"<span style='color:#ffd166;font-weight:700'>{_sel_item['score']}점</span>"
-                f"</div>"
-                f"<div style='margin-top:8px'>{_badge_html}</div>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-
-            # ── 액션 버튼 행 ──
-            _ab1, _ab2, _ab3, _ab4 = st.columns(4)
-
-            # 관심종목 추가
-            if _is_added:
-                _ab1.markdown("<div style='color:#4dff91;padding:8px;font-size:13px'>✅ 이미 추가됨</div>", unsafe_allow_html=True)
-            else:
-                if _ab1.button("⭐ 관심종목 추가", key="scan_quick_add", use_container_width=True):
-                    try:
-                        _ws_q = get_gsheet()
-                        _ws_q.append_row([_sel_item['ticker'], _sel_item['name']])
-                        _cur_wl2 = st.session_state.get('watchlist_data') or load_watchlist()
-                        st.session_state.watchlist_data = _cur_wl2.strip() + f"\n{_sel_item['ticker']},{_sel_item['name']}"
-                        try: safe_clear_cache()
-                        except: pass
-                        st.session_state._keep_passed = True
-                        st.success(f"✅ {_sel_item['name']} 추가!")
-                        st.rerun()
-                    except Exception as _e:
-                        st.error(f"추가 오류: {_e}")
-
-            # 차트 토글
-            _chart_show_key = f"scan_chart_{_sel_item['ticker']}"
-            if _chart_show_key not in st.session_state:
-                st.session_state[_chart_show_key] = False
-            if _ab2.button(
-                "📈 차트 닫기" if st.session_state[_chart_show_key] else "📈 차트 보기",
-                key="scan_chart_btn", use_container_width=True
-            ):
-                st.session_state[_chart_show_key] = not st.session_state[_chart_show_key]
-                st.session_state._keep_passed = True
-
-            # Gemini 분석 토글
-            _gem_show_key = f"scan_gem_{_sel_item['ticker']}"
-            if _gem_show_key not in st.session_state:
-                st.session_state[_gem_show_key] = False
-            if _ab3.button(
-                "🤖 분석 닫기" if st.session_state[_gem_show_key] else "🤖 Gemini 분석",
-                key="scan_gem_btn", use_container_width=True,
-                disabled=not gemini_key
-            ):
-                st.session_state[_gem_show_key] = not st.session_state[_gem_show_key]
-                st.session_state._keep_passed = True
-
-            # 페이퍼 트레이딩 바로 매수
-            if _ab4.button("📝 모의매수", key="scan_paper_buy", use_container_width=True):
-                st.session_state['paper_prefill'] = _sel_item['ticker']
-                st.session_state._keep_passed = True
-                st.info("💡 페이퍼 트레이딩 탭으로 이동해서 매수하세요!")
-
-            # ── 차트 표시 ──
-            if st.session_state.get(_chart_show_key, False):
-                _scan_df = _sel_item.get('df')
-                if _scan_df is not None and not _scan_df.empty:
-                    try:
-                        _scan_df = calc_indicators(_scan_df)
-                        _fig_scan = make_chart(_scan_df, _sel_item['name'])
-                        st.plotly_chart(_fig_scan, use_container_width=True)
-
-                        # 핵심 지표 표시
-                        _sl = _scan_df.iloc[-1]
-                        _sp = _scan_df.iloc[-2]
-                        _sm1, _sm2, _sm3, _sm4, _sm5 = st.columns(5)
-                        _sm1.markdown(f"<div class='metric-card'><div class='label'>현재가</div><div class='value flat'>{_sl['종가']:,.0f}</div></div>", unsafe_allow_html=True)
-                        _rsi_c2 = '#ff4d6d' if _sl['RSI']>=70 else '#4da6ff' if _sl['RSI']<=30 else '#a0b0c8'
-                        _sm2.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value' style='color:{_rsi_c2}'>{_sl['RSI']:.1f}</div></div>", unsafe_allow_html=True)
-                        _macd_st = '골든크로스' if _sl['MACD']>_sl['Signal'] and _sp['MACD']<=_sp['Signal'] else 'MACD>' if _sl['MACD']>_sl['Signal'] else 'MACD<'
-                        _sm3.markdown(f"<div class='metric-card'><div class='label'>MACD</div><div class='value flat' style='font-size:13px'>{_macd_st}</div></div>", unsafe_allow_html=True)
-                        _bb_r2 = _sl['BB_upper']-_sl['BB_lower']
-                        _bb_p2 = round((_sl['종가']-_sl['BB_lower'])/_bb_r2*100,1) if _bb_r2>0 else 50
-                        _sm4.markdown(f"<div class='metric-card'><div class='label'>BB위치</div><div class='value flat'>{_bb_p2}%</div></div>", unsafe_allow_html=True)
-                        _vol_r2 = _sl['거래량']/_scan_df['거래량'].tail(20).mean()*100
-                        _sm5.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value flat'>{_vol_r2:.0f}%</div></div>", unsafe_allow_html=True)
-
-                        # R:R 자동 계산
-                        _entry = _sl['종가']
-                        _stop  = _entry * 0.93
-                        _target1 = _sl.get('저항선', _entry * 1.14) if '저항선' in _scan_df.columns else _entry * 1.14
-                        _rr = (_target1 - _entry) / (_entry - _stop) if _entry > _stop else 0
-                        _rr_c = '#4dff91' if _rr >= 2 else '#ff4d6d'
-                        st.markdown(
-                            f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:8px'>"
-                            f"💡 <b>자동 전략 계산</b> (현재가 기준) | "
-                            f"매수가: <b>{_entry:,.0f}</b> | "
-                            f"손절가: <b style='color:#ff4d6d'>{_stop:,.0f} (-7%)</b> | "
-                            f"목표가: <b style='color:#4dff91'>{_target1:,.0f}</b> | "
-                            f"R:R: <b style='color:{_rr_c}'>{_rr:.1f}</b>"
-                            f"{'  ✅ 진입 가능' if _rr>=2 else '  ❌ R:R 부족'}"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
-                    except Exception as _e:
-                        st.warning(f"차트 오류: {_e}")
-
-            # ── Gemini 분석 표시 ──
-            if st.session_state.get(_gem_show_key, False) and gemini_key:
-                _gem_cache_key = f"gem_cache_{_sel_item['ticker']}"
-                if _gem_cache_key not in st.session_state:
-                    import google.generativeai as genai
-                    genai.configure(api_key=gemini_key)
-                    _gmodel = genai.GenerativeModel(model_name)
-                    _GSYS = (
-                        'You are a Korean stock quantitative analysis AI. '
-                        'Always respond in Korean. '
-                        'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
-                        'No entry 09:00-09:30 KST / No averaging down. '
-                        'Be concise and actionable.'
-                    )
-                    _scan_df2 = _sel_item.get('df')
-                    if _scan_df2 is None or _scan_df2.empty:
-                        _scan_df2 = fetch_ohlcv(_sel_item['ticker'], 60)
-                    if _scan_df2 is not None:
-                        _prompt = build_prompt(_scan_df2, _sel_item['name'], _sel_item['ticker'])
-                        with st.spinner(f"🤖 {_sel_item['name']} Gemini 분석 중..."):
-                            try:
-                                _res = _gmodel.generate_content(_GSYS + '\n\n' + _prompt)
-                                st.session_state[_gem_cache_key] = _res.text
-                                st.session_state._keep_passed = True
-                            except Exception as _e:
-                                st.session_state[_gem_cache_key] = f"분석 오류: {_e}"
-
-                if _gem_cache_key in st.session_state:
+        # 차트
+        if st.session_state.get(_chart_key_s, False):
+            _df_s = _sel_scan_item.get('df')
+            if _df_s is not None and not _df_s.empty:
+                try:
+                    _df_s = calc_indicators(_df_s)
+                    _entry_s = _df_s['종가'].iloc[-1]
+                    _stop_s  = round(_entry_s * 0.93)
+                    _target_s = _df_s.get('저항선', pd.Series([_entry_s*1.14])).iloc[-1] if '저항선' in _df_s.columns else _entry_s*1.14
+                    _rr_s = round((_target_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
+                    _rr_c_s = '#4dff91' if _rr_s>=2 else '#ff4d6d'
                     st.markdown(
-                        f"<div class='gemini-box'>{st.session_state[_gem_cache_key]}</div>",
+                        f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:10px;margin-bottom:8px'>"
+                        f"자동 전략 | 매수 <b>{_entry_s:,.0f}</b> | "
+                        f"손절 <b style='color:#ff4d6d'>{_stop_s:,.0f}</b> (-7%) | "
+                        f"목표 <b style='color:#4dff91'>{_target_s:,.0f}</b> | "
+                        f"R:R <b style='color:{_rr_c_s}'>{_rr_s}</b>"
+                        f"{'  ✅' if _rr_s>=2 else '  ❌'}</div>",
                         unsafe_allow_html=True
                     )
-                    if st.button("🔄 분석 재실행", key="gem_rerun_btn"):
-                        del st.session_state[_gem_cache_key]
-                        st.session_state._keep_passed = True
-                        st.rerun()
+                    st.plotly_chart(make_chart(_df_s, _sel_scan_item['name']), use_container_width=True)
+                except Exception as _e:
+                    st.warning(f"차트 오류: {_e}")
 
-            st.markdown("---")
+        # Gemini
+        if st.session_state.get(_gem_key_s, False) and gemini_key:
+            _gcache = f"gem_cache_{_sel_scan_item['ticker']}"
+            if _gcache not in st.session_state:
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_key)
+                _gm = genai.GenerativeModel(model_name)
+                _sys = 'You are a Korean stock quant AI. Always respond in Korean. Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.'
+                _df_g = _sel_scan_item.get('df', fetch_ohlcv(_sel_scan_item['ticker'], 60))
+                if _df_g is not None:
+                    with st.spinner("🤖 분석 중..."):
+                        try:
+                            _res_g = _gm.generate_content(_sys + '\n\n' + build_prompt(_df_g, _sel_scan_item['name'], _sel_scan_item['ticker']))
+                            st.session_state[_gcache] = _res_g.text
+                            st.session_state._keep_passed = True
+                        except Exception as _eg:
+                            st.session_state[_gcache] = f"오류: {_eg}"
+            if _gcache in st.session_state:
+                st.markdown(f"<div class='gemini-box'>{st.session_state[_gcache]}</div>", unsafe_allow_html=True)
+                if st.button("🔄 재분석", key="scan_gem_rerun"):
+                    del st.session_state[_gcache]
+                    st.session_state._keep_passed = True
+                    st.rerun()
 
-            # 전체 종목 목록 (미니 요약)
-            st.markdown("##### 📋 발굴 종목 전체 목록")
-            for _si, item in enumerate(st.session_state.passed):
-                _is_add2  = item['ticker'] in _sc_ids
-                _chg_c2   = '#ff4d6d' if item['등락(%)'] > 0 else '#4da6ff'
-                _bdg = ' '.join([f"<span class='badge badge-buy'>{r}</span>" for r in item['reasons']])
-                st.markdown(
-                    f"<div style='background:#0a0e1a;border:1px solid {'#2d6644' if _is_add2 else '#1a2535'};"
-                    f"border-radius:8px;padding:10px 14px;margin-bottom:4px;cursor:pointer'>"
-                    f"{'✅' if _is_add2 else '⭐'} <b>{item['name']}</b> "
-                    f"<span style='color:#475569;font-size:11px'>({item['ticker']})</span> "
-                    f"<span style='color:{_chg_c2}'>{item['등락(%)']:+.2f}%</span> "
-                    f"<span style='color:#ffd166;font-size:12px'>{item['score']}점</span> "
-                    f"{_bdg}</div>",
-                    unsafe_allow_html=True
-                )
-
-
-# ══════════════════════════════════════════
-# 탭 5: 관심종목 관리
-# ══════════════════════════════════════════
 with tab5:
     st.markdown("### ⭐ 관심종목 관리")
     st.caption("추가/삭제 후 현황판 탭으로 이동하면 즉시 반영됩니다.")
