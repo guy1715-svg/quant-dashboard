@@ -1935,16 +1935,30 @@ with tab4:
                     _target_s = _df_s.get('저항선', pd.Series([_entry_s*1.14])).iloc[-1] if '저항선' in _df_s.columns else _entry_s*1.14
                     _rr_s = round((_target_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
                     _rr_c_s = '#4dff91' if _rr_s>=2 else '#ff4d6d'
+                    _target2_s = round(_entry_s * 1.20)
+                    _rr2_s     = round((_target2_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
                     st.markdown(
-                        f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:10px;margin-bottom:8px'>"
-                        f"자동 전략 | 매수 <b>{_entry_s:,.0f}</b> | "
-                        f"손절 <b style='color:#ff4d6d'>{_stop_s:,.0f}</b> (-7%) | "
-                        f"목표 <b style='color:#4dff91'>{_target_s:,.0f}</b> | "
-                        f"R:R <b style='color:{_rr_c_s}'>{_rr_s}</b>"
-                        f"{'  ✅' if _rr_s>=2 else '  ❌'}</div>",
+                        f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-bottom:8px'>"
+                        f"<div style='display:flex;gap:16px;flex-wrap:wrap;align-items:center'>"
+                        f"<span>🎯 <b>매수가</b> <span style='color:#ffd166;font-size:16px'>{_entry_s:,.0f}원</span></span>"
+                        f"<span>🛑 <b>손절가</b> <span style='color:#ff4d6d;font-size:16px'>{_stop_s:,.0f}원</span> <span style='color:#6b7fa3;font-size:11px'>(-7%)</span></span>"
+                        f"<span>🎯 <b>1차목표</b> <span style='color:#4dff91;font-size:16px'>{round(_target_s):,.0f}원</span></span>"
+                        f"<span>🎯 <b>2차목표</b> <span style='color:#4dff91;font-size:16px'>{_target2_s:,.0f}원</span> <span style='color:#6b7fa3;font-size:11px'>(+20%)</span></span>"
+                        f"<span>📊 <b>R:R</b> <span style='color:{_rr_c_s};font-size:16px;font-weight:700'>{_rr_s}</span>"
+                        f"{'  ✅ 진입가능' if _rr_s>=2 else '  ❌ R:R부족'}</span>"
+                        f"</div></div>",
                         unsafe_allow_html=True
                     )
-                    st.plotly_chart(make_chart(_df_s, _sel_scan_item['name']), use_container_width=True)
+                    st.plotly_chart(
+                        make_chart(
+                            _df_s, _sel_scan_item['name'],
+                            entry    = _entry_s,
+                            stoploss = _stop_s,
+                            target1  = round(_target_s),
+                            target2  = round(_entry_s * 1.20),  # 2차 목표 +20%
+                        ),
+                        use_container_width=True
+                    )
                 except Exception as _e:
                     st.warning(f"차트 오류: {_e}")
 
