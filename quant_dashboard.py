@@ -1016,6 +1016,9 @@ with tab_main:
     st.divider()
 
     # ── 관심종목 현황 요약 ──
+    # 메인 탭에서도 all_data 사용 (session_state에서)
+    all_data = st.session_state.get('all_data_cache', {})
+
     _main_c1, _main_c2 = st.columns([3, 2])
 
     with _main_c1:
@@ -1117,6 +1120,7 @@ with tab_main:
 
     # ── 오늘의 신호 종목 (빠른 스캔) ──
     st.markdown("#### ⚡ 오늘의 신호 종목")
+    all_data = st.session_state.get('all_data_cache', {})
     if all_data:
         _signal_items = []
         for _t, _n in TICKERS:
@@ -1544,8 +1548,11 @@ with tab2:
     st.markdown("### 📈 차트 + Gemini 통합 분석")
     st.caption("종목 선택 → 차트와 AI 분석을 한 화면에서")
 
+    all_data = st.session_state.get('all_data_cache', {})
     if not all_data:
-        st.info("메인 탭을 먼저 열어서 데이터를 로드해주세요.")
+        st.info("💡 메인 탭을 먼저 열면 데이터가 자동 로드됩니다.")
+        if st.button("🔄 데이터 로드", key="chart_load"):
+            st.rerun()
     else:
         # 종목 선택
         def _display_name2(ticker, name):
