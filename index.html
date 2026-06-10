@@ -1,0 +1,2424 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>성우전자 글로벌 품질관리 시스템</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f0f2f5;color:#222;}
+.topbar{background:#1a1a2e;color:#fff;padding:14px 28px;display:flex;align-items:center;justify-content:space-between;}
+.topbar h1{font-size:15px;font-weight:700;}
+.topbar p{font-size:11px;opacity:0.5;margin-top:3px;}
+.topbar-right{font-size:11px;opacity:0.55;text-align:right;line-height:1.9;}
+.container{max-width:1200px;margin:0 auto;padding:20px 16px;}
+.breadcrumb{font-size:12px;color:#888;margin-bottom:20px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.crumb{cursor:pointer;padding:3px 6px;border-radius:4px;}
+.crumb:hover{background:#e8e8e8;color:#1a1a2e;}
+.bc-active{color:#1a1a2e;font-weight:700;}
+.sep{color:#ccc;}
+.screen{display:none;}
+.screen.active{display:block;animation:fadeIn 0.25s ease;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px;}
+.stat-box{background:#fff;border-radius:10px;padding:14px 16px;border:1px solid #e4e4e4;text-align:center;}
+.stat-val{font-size:22px;font-weight:700;}
+.stat-label{font-size:11px;color:#888;margin-top:3px;}
+.sec-title{font-size:13px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;}
+.customer-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:32px;}
+.customer-card{background:#fff;border-radius:12px;padding:20px;border:1px solid #e4e4e4;cursor:pointer;transition:all 0.2s;}
+.customer-card:hover{border-color:#1a1a2e;box-shadow:0 4px 20px rgba(0,0,0,0.08);transform:translateY(-2px);}
+.model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:32px;}
+.model-card{background:#fff;border-radius:10px;padding:16px;border:1px solid #e4e4e4;cursor:pointer;transition:all 0.2s;}
+.model-card:hover{border-color:#3b82f6;box-shadow:0 4px 16px rgba(59,130,246,0.1);}
+.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;}
+.product-card{background:#fff;border-radius:12px;padding:18px;border:1px solid #e4e4e4;cursor:pointer;transition:all 0.2s;position:relative;}
+.product-card:hover{border-color:#27ae60;box-shadow:0 4px 20px rgba(39,174,96,0.1);transform:translateY(-2px);}
+.product-card.disabled{opacity:0.5;cursor:default;}
+.product-card.disabled:hover{transform:none;box-shadow:none;border-color:#e4e4e4;}
+.p-tag{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:600;}
+.tag-vina{background:#dbeafe;color:#1e40af;}.tag-hq{background:#d1fae5;color:#065f46;}.tag-none{background:#f0f0f0;color:#888;}
+.p-bar{height:4px;border-radius:2px;background:#eee;margin-top:12px;overflow:hidden;}
+.p-bar-fill{height:100%;border-radius:2px;}
+.p-arrow{position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:18px;color:#ddd;}
+.product-card:hover .p-arrow{color:#27ae60;}
+.tabs{display:flex;gap:4px;margin-bottom:20px;background:#fff;border-radius:10px;padding:6px;border:1px solid #e4e4e4;}
+.tab{flex:1;padding:10px;text-align:center;font-size:13px;font-weight:600;border-radius:7px;cursor:pointer;color:#888;transition:all 0.2s;}
+.tab:hover{color:#1a1a2e;background:#f5f5f5;}
+.tab.active{background:#1a1a2e;color:#fff;}
+.tab-content{display:none;}
+.tab-content.active{display:block;}
+.kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px;}
+.kpi{background:#fff;border-radius:10px;padding:14px 16px;border:1px solid #e4e4e4;}
+.kpi-label{font-size:11px;color:#888;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.04em;}
+.kpi-val{font-size:26px;font-weight:700;}
+.kpi-sub{font-size:11px;color:#aaa;margin-top:3px;}
+.red{color:#c0392b;}.yellow{color:#d68910;}.green{color:#1e8449;}.blue{color:#1a1a2e;}.gray{color:#888;}
+.row2{display:grid;grid-template-columns:220px 1fr;gap:14px;margin-bottom:14px;}
+.card{background:#fff;border-radius:10px;padding:18px;border:1px solid #e4e4e4;margin-bottom:12px;}
+.card-title{font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;font-size:11px;color:#666;}
+.legend span{display:flex;align-items:center;gap:4px;}
+.ld{width:10px;height:10px;border-radius:2px;display:inline-block;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{padding:8px 10px;text-align:center;font-size:10px;color:#666;font-weight:700;border-bottom:1px solid #eee;background:#f8f8f8;text-transform:uppercase;white-space:nowrap;}
+td{padding:7px 10px;text-align:center;border-bottom:1px solid #f2f2f2;white-space:nowrap;}
+td.left{text-align:left;}
+tr:hover td{background:#fafafa;}
+tr.angle-row td{background:#f9f9f9;color:#bbb;}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;}
+.br{background:#fdedec;color:#c0392b;}.by{background:#fef9e7;color:#d68910;}.bg{background:#eafaf1;color:#1e8449;}.bk{background:#f0f0f0;color:#999;}
+.trend-up{color:#c0392b;}.trend-dn{color:#1e8449;}.trend-fl{color:#999;}
+.part-name{font-weight:600;}
+.notice{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 16px;font-size:11px;color:#92400e;margin-bottom:14px;}
+.gap-info{background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 16px;font-size:11px;color:#1e40af;margin-bottom:14px;}
+.filter-bar{background:#fff;border-radius:10px;padding:12px 16px;border:1px solid #e4e4e4;margin-bottom:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.filter-btn{padding:5px 12px;border:1px solid #e4e4e4;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#555;transition:all 0.2s;}
+.filter-btn:hover{border-color:#1a1a2e;color:#1a1a2e;}
+.filter-btn.active{background:#1a1a2e;color:#fff;border-color:#1a1a2e;}
+.filter-btn.lh-active{background:#2980b9;color:#fff;border-color:#2980b9;}
+.filter-btn.rh-active{background:#e74c3c;color:#fff;border-color:#e74c3c;}
+.filter-sep{width:1px;height:24px;background:#e4e4e4;margin:0 4px;}
+.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
+.upload-box{background:#fff;border-radius:12px;border:2px dashed #e4e4e4;padding:28px 20px;text-align:center;cursor:pointer;transition:all 0.2s;position:relative;}
+.upload-box:hover{border-color:#3b82f6;background:#f8fbff;}
+.upload-box.done{border-color:#27ae60;border-style:solid;background:#f0fdf4;}
+.upload-icon{font-size:32px;margin-bottom:10px;}
+.upload-title{font-size:14px;font-weight:700;margin-bottom:4px;}
+.upload-sub{font-size:11px;color:#888;}
+.upload-filename{font-size:11px;color:#27ae60;font-weight:600;margin-top:8px;}
+.upload-input{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;}
+.run-btn{width:100%;padding:14px;background:#1a1a2e;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:20px;transition:background 0.2s;}
+.run-btn:hover{background:#2d2d4e;}
+.run-btn:disabled{background:#ccc;cursor:not-allowed;}
+.cmp-card{background:#fff;border-radius:10px;padding:18px 20px;border:1px solid #e4e4e4;margin-bottom:10px;}
+.cmp-card.danger{border-left:4px solid #e74c3c;}.cmp-card.warn{border-left:4px solid #f39c12;}.cmp-card.ok{border-left:4px solid #27ae60;}.cmp-card.ref{border-left:4px solid #ccc;opacity:0.65;}
+.sec-div{font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid #eee;}
+.legend-bar{background:#fff;border-radius:10px;padding:12px 20px;border:1px solid #e4e4e4;margin-bottom:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;font-size:12px;}
+.error-msg{background:#fdedec;border:1px solid #f5c6cb;border-radius:8px;padding:12px 16px;font-size:12px;color:#c0392b;margin-bottom:16px;display:none;}
+.pdf-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#fff;border:1px solid #e4e4e4;border-radius:8px;font-size:12px;font-weight:600;color:#555;cursor:pointer;margin-bottom:16px;transition:all 0.2s;float:right;}
+.pdf-btn:hover{border-color:#1a1a2e;color:#1a1a2e;}
+.sp-wrap{position:relative;height:38px;margin-top:10px;}
+.sp-track{position:absolute;top:14px;left:0;right:0;height:8px;background:#f0f0f0;border-radius:4px;}
+.sp-range{position:absolute;top:14px;height:8px;background:#dbeafe;border:1px solid #93c5fd;border-radius:3px;}
+.sp-nom{position:absolute;top:14px;width:2px;height:8px;background:#93c5fd;}
+.dot-hq{position:absolute;top:8px;width:20px;height:20px;border-radius:50%;background:#2980b9;border:2px solid #fff;box-shadow:0 2px 6px rgba(41,128,185,0.4);transform:translateX(-50%);z-index:2;}
+.dot-vina{position:absolute;top:8px;width:20px;height:20px;border-radius:50%;background:#e74c3c;border:2px solid #fff;box-shadow:0 2px 6px rgba(231,76,60,0.4);transform:translateX(-50%);z-index:2;}
+.sp-lbl{position:absolute;bottom:0;font-size:9px;color:#aaa;transform:translateX(-50%);}
+.sp-lbl-c{color:#3b82f6;font-weight:600;}
+.footer{text-align:center;font-size:11px;color:#bbb;padding:16px 0;border-top:1px solid #e8e8e8;margin-top:16px;}
+@media(max-width:800px){.kpi-grid{grid-template-columns:repeat(2,1fr);}.row2{grid-template-columns:1fr;}.upload-grid{grid-template-columns:1fr;}.stats-row{grid-template-columns:repeat(2,1fr);}}
+</style>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>성우전자 &nbsp;|&nbsp; 글로벌 품질관리 시스템</h1>
+    <p>SUNGWOO ELECTRONICS · Global Quality Management · 예지보전 대시보드</p>
+  </div>
+  <div class="topbar-right" id="topbarRight">관리자: 성우전자 개발팀<br>업데이트: 2026-05-26</div>
+</div>
+
+<div class="container">
+  <div class="breadcrumb" id="breadcrumb"><span class="bc-active">🏠 홈</span></div>
+
+  <!-- 홈 -->
+  <div id="screen-home" class="screen active">
+    <div class="stats-row" style="margin-bottom:24px">
+      <div class="stat-box">
+        <div class="stat-val blue">2</div>
+        <div class="stat-label">고객사</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" style="color:#3b82f6">1</div>
+        <div class="stat-label">관리 모델</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" style="color:#f39c12">7</div>
+        <div class="stat-label">관리 제품</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val green">1</div>
+        <div class="stat-label">승인 완료</div>
+        <div style="font-size:10px;color:#27ae60;margin-top:2px">1 / 4 제품</div>
+      </div>
+    </div>
+
+    <div class="sec-title">고객사 현황</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;margin-bottom:24px">
+
+      <div style="background:#fff;border-radius:14px;border:1px solid #e4e4e4;overflow:hidden;cursor:pointer;transition:all 0.2s" onclick="goModel()" onmouseover="this.style.boxShadow='0 4px 20px rgba(0,0,0,0.1)';this.style.transform='translateY(-2px)'" onmouseout="this.style.boxShadow='none';this.style.transform='translateY(0)'">
+        <div style="background:#1a1a2e;padding:16px 20px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#fff">만도</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:2px">Mando Corporation</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:rgba(255,255,255,0.5)">모델 1개 · 제품 4종</div>
+            <div style="font-size:11px;color:#6ee7b7;margin-top:2px">승인완료 1 / 4</div>
+          </div>
+        </div>
+        <div style="padding:16px 20px">
+          <div style="font-size:11px;color:#888;font-weight:700;margin-bottom:10px">MX5A EREV &nbsp;<span style="color:#3b82f6;font-weight:400">전기차 브레이크 브라켓</span></div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">BR0035 L-A/R-A</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">FRT BRKT LH#1</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#fff3cd;color:#856404;padding:1px 6px;border-radius:3px;font-weight:600">⏳ 승인대기</span>
+              </div>
+            </div>
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">BR0036 L-A/R-A</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">RR BRKT LH#1</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#fff3cd;color:#856404;padding:1px 6px;border-radius:3px;font-weight:600">⏳ 승인대기</span>
+              </div>
+            </div>
+            <div style="background:#eafaf1;border-radius:8px;padding:10px 12px;border-left:3px solid #27ae60">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">BR0037 L-A/R-A</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">RR BRKT LH#2</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">본사 ✓</span>
+                <span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">✅ 승인완료</span>
+              </div>
+              <div style="font-size:10px;color:#27ae60;margin-top:3px">2026-05-19</div>
+            </div>
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">BR0038 L-A/R-A</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">RR BRKT LH#3</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#fff3cd;color:#856404;padding:1px 6px;border-radius:3px;font-weight:600">⏳ 승인대기</span>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:4px">
+            <span>승인 진행률</span><span style="color:#27ae60;font-weight:600">25% (1/4)</span>
+          </div>
+          <div style="height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:25%;background:linear-gradient(90deg,#27ae60,#2ecc71);border-radius:3px"></div>
+          </div>
+        </div>
+        <div style="padding:0 20px 14px;text-align:right">
+          <span style="font-size:12px;color:#3b82f6;font-weight:600">상세보기 →</span>
+        </div>
+      </div>
+
+      <!-- AM사 카드 -->
+      <div style="background:#fff;border-radius:14px;border:1px solid #e4e4e4;overflow:hidden;cursor:pointer;transition:all 0.2s" onclick="goModelAM()" onmouseover="this.style.boxShadow='0 4px 20px rgba(0,0,0,0.1)';this.style.transform='translateY(-2px)'" onmouseout="this.style.boxShadow='none';this.style.transform='translateY(0)'">
+        <div style="background:#2c3e50;padding:16px 20px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#fff">AM사</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:2px">AM Corporation</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:rgba(255,255,255,0.5)">모델 1개 · 제품 3종</div>
+            <div style="font-size:11px;color:#6ee7b7;margin-top:2px">승인완료 3 / 3</div>
+          </div>
+        </div>
+        <div style="padding:16px 20px">
+          <div style="font-size:11px;color:#888;font-weight:700;margin-bottom:10px">SHIELD CAN &nbsp;<span style="color:#3b82f6;font-weight:400">전자부품 쉴드캔</span></div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">AT5851</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">BT SHIELD CAN</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">✅ 승인완료</span>
+              </div>
+              <div style="font-size:10px;color:#27ae60;margin-top:3px">2025-11-04</div>
+            </div>
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">AP5010</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">SHIELD CAN A/B</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">✅ 승인완료</span>
+              </div>
+              <div style="font-size:10px;color:#27ae60;margin-top:3px">2025-06-27</div>
+            </div>
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #3b82f6">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">AP5030</div>
+              <div style="font-size:12px;font-weight:700;color:#1a1a2e">LCD GND SPRING</div>
+              <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:walk">
+                <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>
+                <span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">✅ 승인완료</span>
+              </div>
+              <div style="font-size:10px;color:#27ae60;margin-top:3px">2025-08-21</div>
+            </div>
+            <div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #e4e4e4;opacity:0.5">
+              <div style="font-size:10px;color:#888;margin-bottom:2px">+ 제품 추가</div>
+              <div style="font-size:12px;font-weight:700;color:#aaa">준비 중</div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:4px">
+            <span>승인 진행률</span><span style="color:#27ae60;font-weight:600">100% (3/3)</span>
+          </div>
+          <div style="height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:100%;background:linear-gradient(90deg,#27ae60,#2ecc71);border-radius:3px"></div>
+          </div>
+        </div>
+        <div style="padding:0 20px 14px;text-align:right">
+          <span style="font-size:12px;color:#3b82f6;font-weight:600">상세보기 →</span>
+        </div>
+      </div>
+
+      <div id="addCustomerBtn" style="background:#fff;border-radius:14px;border:2px dashed #3b82f6;padding:40px 20px;text-align:center;cursor:pointer;transition:all 0.2s" onclick="openAddCustomer()" onmouseover="this.style.background='#f0f7ff'" onmouseout="this.style.background='#fff'">
+        <div style="font-size:32px;margin-bottom:10px">+</div>
+        <div style="font-size:14px;font-weight:700;color:#3b82f6">고객사 추가</div>
+        <div style="font-size:11px;color:#aaa;margin-top:4px">클릭하여 추가</div>
+      </div>
+    </div>
+
+    <div class="sec-title">최근 활동</div>
+    <div style="background:#fff;border-radius:12px;border:1px solid #e4e4e4;overflow:hidden;margin-bottom:24px">
+      <div style="padding:12px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #f0f0f0">
+        <span style="font-size:18px">✅</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">BR0037 RR BRKT LH#2 — 승인 완료</div>
+          <div style="font-size:11px;color:#888">만도 · MX5A EREV · 검사자: 강병민</div>
+        </div>
+        <div style="font-size:11px;color:#888">2026-05-19</div>
+      </div>
+      <div style="padding:12px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #f0f0f0">
+        <span style="font-size:18px">📊</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">BR0035 FRT BRKT LH#1 — VINA 측정 완료</div>
+          <div style="font-size:11px;color:#888">만도 · MX5A EREV · 05/21 측정</div>
+        </div>
+        <div style="font-size:11px;color:#888">2026-05-21</div>
+      </div>
+      <div style="padding:12px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #f0f0f0">
+        <span style="font-size:18px">📊</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">BR0038 RR BRKT LH#3 — VINA 측정 완료</div>
+          <div style="font-size:11px;color:#888">만도 · MX5A EREV · 05/12 측정</div>
+        </div>
+        <div style="font-size:11px;color:#888">2026-05-12</div>
+      </div>
+      <div style="padding:12px 20px;display:flex;align-items:center;gap:12px">
+        <span style="font-size:18px">📊</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">BR0037 RR BRKT LH#2 — VINA 측정 완료</div>
+          <div style="font-size:11px;color:#888">만도 · MX5A EREV · 05/08 측정</div>
+        </div>
+        <div style="font-size:11px;color:#888">2026-05-08</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 모델 -->
+  <div id="screen-model" class="screen">
+    <div class="sec-title">모델 선택 — 만도</div>
+    <div class="model-grid">
+      <div class="model-card" onclick="goProduct()">
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">MX5A EREV</div>
+        <div style="font-size:11px;color:#888">전기차 브레이크 브라켓</div>
+        <div style="font-size:11px;color:#3b82f6;margin-top:8px;font-weight:600">제품 4종 관리 중</div>
+      </div>
+      <div class="model-card" style="opacity:0.4;cursor:default">
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">+ 모델 추가</div>
+        <div style="font-size:11px;color:#888">준비 중</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 제품 -->
+  <div id="screen-product" class="screen">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="sec-title" style="margin-bottom:0">제품 선택 — MX5A EREV</div>
+      <button onclick="goCompare()" style="padding:10px 20px;background:#2980b9;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">📂 HQ vs VINA 파일 비교</button>
+    </div>
+    <div class="product-grid">
+      <div class="product-card" onclick="goDashboard('br0035')">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">BR0035 L-A / R-A</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">FRT BRKT LH#1</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px"><span class="p-tag tag-vina">VINA ✓</span></div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:80%;background:#3b82f6"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>VINA 데이터 완성</span><span>2026-05-21</span></div>
+        <span class="p-arrow" style="color:#3b82f6">→</span>
+      </div>
+      <div class="product-card" onclick="goDashboard('br0036')">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">BR0036 L-A / R-A</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">RR BRKT LH#1</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px"><span class="p-tag tag-vina">VINA ✓</span></div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:80%;background:#3b82f6"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>VINA 데이터 완성</span><span>2026-05-09</span></div>
+        <span class="p-arrow" style="color:#3b82f6">→</span>
+      </div>
+      <div class="product-card" onclick="goDashboard('br0037')">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">BR0037 L-A / R-A</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">RR BRKT LH#2</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px"><span class="p-tag tag-hq">본사 ✓</span><span class="p-tag tag-vina">VINA ✓</span></div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:100%;background:#27ae60"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>대시보드 완성</span><span>2026-05-26</span></div>
+        <span class="p-arrow" style="color:#27ae60">→</span>
+      </div>
+      <div class="product-card" onclick="goDashboard('br0038')">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">BR0038 L-A / R-A</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">RR BRKT LH#3</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px"><span class="p-tag tag-vina">VINA ✓</span></div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:80%;background:#3b82f6"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>VINA 데이터 완성</span><span>2026-05-12</span></div>
+        <span class="p-arrow" style="color:#3b82f6">→</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- AM사 모델 화면 -->
+  <div id="screen-model-am" class="screen">
+    <div class="sec-title">모델 선택 — AM사</div>
+    <div class="model-grid">
+      <div class="model-card" onclick="goProductAM()">
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">SHIELD CAN</div>
+        <div style="font-size:11px;color:#888">전자부품 쉴드캔</div>
+        <div style="font-size:11px;color:#3b82f6;margin-top:8px;font-weight:600">제품 3종 관리 중</div>
+      </div>
+      <div class="model-card" style="opacity:0.4;cursor:default">
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">+ 모델 추가</div>
+        <div style="font-size:11px;color:#888">준비 중</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AM사 제품 화면 -->
+  <div id="screen-product-am" class="screen">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="sec-title" style="margin-bottom:0">제품 선택 — SHIELD CAN</div>
+      <button onclick="goCompare()" style="padding:10px 20px;background:#2980b9;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">📂 HQ vs VINA 파일 비교</button>
+    </div>
+    <div class="product-grid">
+      <div class="product-card" onclick="goDashboard('at5851')" style="border-color:#27ae60">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">AT5851</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">BT SHIELD CAN</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <span class="p-tag tag-vina">VINA ✓</span>
+          <span class="p-tag" style="background:#d1fae5;color:#065f46">✅ 승인완료</span>
+        </div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:100%;background:#27ae60"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>승인완료</span><span>2025-11-04</span></div>
+        <span class="p-arrow" style="color:#27ae60">→</span>
+      </div>
+      <div class="product-card" onclick="goDashboard('ap5010')" style="border-color:#27ae60">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">AP5010</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">SHIELD CAN A/B</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <span class="p-tag tag-vina">VINA ✓</span>
+          <span class="p-tag" style="background:#d1fae5;color:#065f46">✅ 승인완료</span>
+        </div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:100%;background:#27ae60"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>승인완료</span><span>2025-06-27</span></div>
+        <span class="p-arrow" style="color:#27ae60">→</span>
+      </div>
+      <div class="product-card" onclick="goDashboard('ap5030')" style="border-color:#27ae60">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">AP5030</div>
+        <div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">LCD GND SPRING</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <span class="p-tag tag-vina">VINA ✓</span>
+          <span class="p-tag" style="background:#d1fae5;color:#065f46">✅ 승인완료</span>
+        </div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:100%;background:#27ae60"></div></div>
+        <div style="font-size:10px;color:#888;margin-top:5px;display:flex;justify-content:space-between"><span>승인완료</span><span>2025-08-21</span></div>
+        <span class="p-arrow" style="color:#27ae60">→</span>
+      </div>
+      <div class="product-card disabled">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">+ 제품 추가</div>
+        <div style="font-size:14px;font-weight:700;color:#aaa;margin-bottom:8px">준비 중</div>
+        <span class="p-arrow">→</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 비교 화면 -->
+  <div id="screen-compare" class="screen">
+    <div class="gap-info" style="margin-bottom:16px">📂 <strong>사용법:</strong> 본사(HQ) 엑셀과 VINA 엑셀을 각각 업로드하면 자동으로 Spec 범위 내 실측값을 비교합니다.</div>
+    <div class="upload-grid">
+      <div class="upload-box" id="hqBox">
+        <input type="file" class="upload-input" id="hqFile" accept=".xlsx,.xls">
+        <div class="upload-icon">🏢</div>
+        <div class="upload-title" style="color:#2980b9">본사(HQ) 파일</div>
+        <div class="upload-sub">HQ_37번_... DATA.xlsx</div>
+        <div class="upload-filename" id="hqName">파일을 선택하세요</div>
+      </div>
+      <div class="upload-box" id="vinaBox">
+        <input type="file" class="upload-input" id="vinaFile" accept=".xlsx,.xls">
+        <div class="upload-icon">🌏</div>
+        <div class="upload-title" style="color:#e74c3c">VINA 파일</div>
+        <div class="upload-sub">Measurement Data_....xlsx</div>
+        <div class="upload-filename" id="vinaName">파일을 선택하세요</div>
+      </div>
+    </div>
+    <div class="error-msg" id="errorMsg"></div>
+    <button class="run-btn" id="runBtn" onclick="analyze()" disabled>📊 비교 분석 시작</button>
+    <div id="cmpSummary" style="display:none">
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="kpi"><div class="kpi-label">전체 항목</div><div class="kpi-val blue" id="c-total">-</div></div>
+        <div class="kpi"><div class="kpi-label">즉시수리</div><div class="kpi-val red" id="c-red">-</div></div>
+        <div class="kpi"><div class="kpi-label">주의관찰</div><div class="kpi-val yellow" id="c-yellow">-</div></div>
+        <div class="kpi"><div class="kpi-label">정상</div><div class="kpi-val green" id="c-green">-</div></div>
+      </div>
+      <div class="legend-bar">
+        <strong>범례</strong>
+        <div style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:12px;height:12px;border-radius:50%;background:#2980b9;display:inline-block"></span>본사(HQ)</div>
+        <div style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:12px;height:12px;border-radius:50%;background:#e74c3c;display:inline-block"></span>VINA</div>
+        <div style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:24px;height:8px;background:#dbeafe;border:1px solid #93c5fd;border-radius:2px;display:inline-block"></span>Spec 허용범위</div>
+        <div style="margin-left:auto;display:flex;gap:6px">
+          <span class="badge bg">정상 &lt;0.05</span>
+          <span class="badge by">주의 0.05~0.1</span>
+          <span class="badge br">즉시수리 ≥0.1</span>
+        </div>
+      </div>
+      <div id="cmpCards"></div>
+    </div>
+  </div>
+
+  <!-- 대시보드 -->
+  <div id="screen-dashboard" class="screen">
+    <button class="pdf-btn" onclick="window.print()">🖨️ PDF 출력</button>
+    <div style="clear:both;margin-bottom:8px"></div>
+    <div class="tabs" id="dashTabs">
+      <div class="tab active" onclick="switchTab('dash1',this)">📊 VINA 예지보전 대시보드</div>
+
+    </div>
+
+    <!-- 탭1 -->
+    <div id="dash1" class="tab-content active">
+      <!-- 측정 파일 업로드 -->
+      <div style="background:#fff;border-radius:10px;padding:14px 20px;border:1px solid #e4e4e4;margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span style="font-size:13px;font-weight:700;color:#1a1a2e">📤 측정 파일 업로드</span>
+        <div style="position:relative;display:inline-block">
+          <input type="file" id="measFile" accept=".xlsx,.xls" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer">
+          <button style="padding:7px 16px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">파일 선택</button>
+        </div>
+        <span id="measFileName" style="font-size:12px;color:#888">파일을 선택하면 자동으로 대시보드에 반영됩니다</span>
+        <div id="measStatus" style="font-size:11px;color:#27ae60;font-weight:600;display:none"></div>
+      </div>
+
+      <div class="notice">📐 <strong>각도 항목</strong>은 측정 오차 특성상 참고치수로만 표시됩니다.</div>
+      <div class="gap-info">📊 <strong>판정 기준:</strong> VINA 측정값이 Spec 허용범위 대비 위치로 판정 · 정상: 범위 내 중앙 70% · 주의: 경계 30% · 즉시수리: 범위 초과</div>
+
+      <div class="filter-bar" id="filterBar">
+        <span style="font-size:12px;font-weight:700;color:#555">📅 날짜:</span>
+        <div id="dateBtns"></div>
+        <div class="filter-sep"></div>
+        <span style="font-size:12px;font-weight:700;color:#555">🔧 구분:</span>
+        <button class="filter-btn active" onclick="setSide('all',this)">LH+RH</button>
+        <button class="filter-btn" onclick="setSide('lh',this)">LH</button>
+        <button class="filter-btn" onclick="setSide('rh',this)">RH</button>
+        <span id="filterLabel" style="font-size:11px;color:#888;margin-left:4px">전체 평균 · LH+RH</span>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-label">전체 항목</div><div class="kpi-val blue" id="kpi-total">-</div><div class="kpi-sub">VINA 측정</div></div>
+        <div class="kpi"><div class="kpi-label">즉시수리</div><div class="kpi-val red" id="kpi-red">-</div><div class="kpi-sub">범위 초과</div></div>
+        <div class="kpi"><div class="kpi-label">주의관찰</div><div class="kpi-val yellow" id="kpi-yellow">-</div><div class="kpi-sub">경계 근접</div></div>
+        <div class="kpi"><div class="kpi-label">정상</div><div class="kpi-val green" id="kpi-green">-</div><div class="kpi-sub">범위 내 안정</div></div>
+        <div class="kpi"><div class="kpi-label">선택</div><div class="kpi-val blue" style="font-size:14px" id="kpi-sel">-</div><div class="kpi-sub">날짜·구분</div></div>
+      </div>
+
+      <div class="row2">
+        <div class="card">
+          <div class="card-title">판정 현황</div>
+          <div class="legend"><span><span class="ld" style="background:#e74c3c"></span>즉시수리</span><span><span class="ld" style="background:#f39c12"></span>주의관찰</span><span><span class="ld" style="background:#27ae60"></span>정상</span></div>
+          <div style="position:relative;height:160px"><canvas id="donutChart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Spec 중앙 대비 VINA 편차 — 공차 비율(%)</div>
+          <div style="position:relative;height:180px"><canvas id="deviationChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-title">날짜별 VINA 측정값 추이 <span id="trendSideLabel" style="color:#2980b9">(LH+RH 평균)</span></div>
+        <div class="legend" id="trendLegend"></div>
+        <div style="position:relative;height:220px"><canvas id="trendChart"></canvas></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">전체 항목 상세 &nbsp;<span style="font-size:10px;color:#e74c3c;font-weight:600">🔴 위험 항목 상단 정렬</span></div>
+        <div style="overflow-x:auto">
+          <table><thead><tr>
+            <th>No.</th><th style="text-align:left">측정 부위</th>
+            <th>Spec</th><th>TOL</th><th>하한</th><th>상한</th>
+            <th>VINA 값</th><th>Spec 위치</th><th>추세</th><th>판정</th>
+          </tr></thead><tbody id="tableBody"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 하부스캔 섹션 -->
+    <div id="scanSection" style="display:none;margin-bottom:12px">
+      <div class="card">
+        <div class="card-title">📐 하부스캔 휨 분석 (SMT 평탄도) &nbsp;<span style="font-size:10px;color:#27ae60;font-weight:600">✅ 전수 검사 합격</span></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+          <div style="background:#f8f8f8;border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">규격 허용 편차</div>
+            <div style="font-size:20px;font-weight:700;color:#1a1a2e">±0.08<span style="font-size:12px">mm</span></div>
+          </div>
+          <div style="background:#f8f8f8;border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">측정 제품수</div>
+            <div style="font-size:20px;font-weight:700;color:#1a1a2e">710<span style="font-size:12px">개</span></div>
+          </div>
+          <div style="background:#eafaf1;border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">최대 휨</div>
+            <div style="font-size:20px;font-weight:700;color:#1e8449">0.035<span style="font-size:12px">mm</span></div>
+            <div style="font-size:10px;color:#27ae60">규격 내</div>
+          </div>
+          <div style="background:#eafaf1;border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">평균 휨</div>
+            <div style="font-size:20px;font-weight:700;color:#1e8449">0.021<span style="font-size:12px">mm</span></div>
+            <div style="font-size:10px;color:#27ae60">양호</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div>
+            <div style="font-size:11px;color:#888;font-weight:700;margin-bottom:8px">휨 분포 (최대값 기준)</div>
+            <div style="position:relative;height:160px"><canvas id="scanChart"></canvas></div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#888;font-weight:700;margin-bottom:8px">합격/불합격 현황</div>
+            <div style="position:relative;height:160px"><canvas id="scanDonut"></canvas></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;background:#f0f7ff;border-radius:8px;padding:10px 14px;font-size:11px;color:#1e40af">
+          💡 <strong>SMT 평탄도 기준:</strong> 하부스캔 최대 휨 0.08mm 이하 → 710개 전수 합격 (불량률 0%)
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 고객사 추가 모달 -->
+  <div id="modalOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:16px;padding:28px;width:480px;max-width:90%;max-height:80vh;overflow-y:auto;position:relative">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div style="font-size:16px;font-weight:700;color:#1a1a2e" id="modalTitle">고객사 추가</div>
+        <button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <div class="footer">성우전자 글로벌 품질관리 시스템 &nbsp;·&nbsp; SUNGWOO ELECTRONICS &nbsp;·&nbsp; 2026</div>
+</div>
+
+<script>
+// ===== Firebase 초기화 =====
+const firebaseConfig = {
+  apiKey: "AIzaSyD9HVCVoM2UUdEaLIsLGua1rRGIXmbtTNc",
+  authDomain: "sungwoo-quality.firebaseapp.com",
+  databaseURL: "https://sungwoo-quality-default-rtdb.firebaseio.com",
+  projectId: "sungwoo-quality",
+  storageBucket: "sungwoo-quality.firebasestorage.app",
+  messagingSenderId: "915173775641",
+  appId: "1:915173775641:web:ca1aa22326223c6267cd88"
+};
+firebase.initializeApp(firebaseConfig);
+var db = firebase.database();
+
+// 측정 데이터 삭제
+function rebuildDateBtns(productId, fbDates){
+  var dates = Object.keys(PRODUCTS[productId].vinaAll).sort();
+  var dateBtns = document.getElementById('dateBtns');
+  if(!dateBtns) return;
+  dateBtns.innerHTML = '';
+  var allBtn = document.createElement('button');
+  allBtn.className = 'filter-btn active';
+  allBtn.textContent = '전체';
+  allBtn.onclick = function(){ setDate('all', this); };
+  dateBtns.appendChild(allBtn);
+  dates.forEach(function(d){
+    var wrap = document.createElement('span');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:2px;';
+    var btn = document.createElement('button');
+    btn.className = 'filter-btn';
+    btn.textContent = d;
+    btn.onclick = (function(date){ return function(){ setDate(date, this); }; })(d);
+    wrap.appendChild(btn);
+    if(fbDates && fbDates.indexOf(d) >= 0){
+      var delBtn = document.createElement('button');
+      delBtn.textContent = '✕';
+      delBtn.title = d + ' 삭제';
+      delBtn.style.cssText = 'padding:3px 6px;background:#fee2e2;color:#c0392b;border:1px solid #fca5a5;border-radius:4px;font-size:10px;cursor:pointer;font-weight:700;';
+      delBtn.onclick = (function(date, pid){
+        return function(e){ e.stopPropagation(); deleteMeasData(pid, date); };
+      })(d, productId);
+      wrap.appendChild(delBtn);
+    }
+    dateBtns.appendChild(wrap);
+  });
+}
+
+function deleteMeasData(productId, dateLabel){
+  if(!confirm(dateLabel + ' 데이터를 삭제할까요?')) return;
+  var fbDates = curFbDates;
+  var key = dateLabel.replace('/','_');
+  var ref = db.ref('measData/' + productId + '/' + key);
+  ref.remove().then(function(){
+    // 로컬 데이터에서도 제거
+    delete PRODUCTS[productId].vinaAll[dateLabel];
+    delete PRODUCTS[productId].vinaLH[dateLabel];
+    delete PRODUCTS[productId].vinaRH[dateLabel];
+    // fbDates에서도 제거
+    var idx = fbDates.indexOf(dateLabel);
+    if(idx >= 0) fbDates.splice(idx, 1);
+    // 날짜 버튼 재생성
+    rebuildDateBtns(productId, fbDates);
+    curDate = 'all';
+    buildTrendChart();
+    renderData();
+    alert('✅ ' + dateLabel + ' 데이터가 삭제되었습니다.');
+  }).catch(function(err){
+    alert('❌ 삭제 실패: ' + err.message);
+  });
+}
+
+// 측정 데이터 저장
+function saveMeasData(productId, dateLabel, data){
+  var ref = db.ref('measData/' + productId + '/' + dateLabel.replace('/','_'));
+  ref.set(data).then(function(){
+    document.getElementById('measStatus').textContent = '💾 Firebase 저장 완료! (' + dateLabel + ')';
+    document.getElementById('measStatus').style.color = '#27ae60';
+  }).catch(function(err){
+    document.getElementById('measStatus').textContent = '❌ 저장 실패: ' + err.message;
+    document.getElementById('measStatus').style.color = '#e74c3c';
+  });
+}
+
+// 측정 데이터 불러오기
+function loadMeasData(productId, callback){
+  var ref = db.ref('measData/' + productId);
+  ref.once('value').then(function(snapshot){
+    var data = snapshot.val();
+    if(data){
+      curFbDates = Object.keys(data).map(function(k){ return k.replace('_','/'); });
+      callback(data);
+    }
+  });
+}
+
+// 페이지 로드 시 Firebase에서 데이터 불러오기
+function loadProductDataFromFirebase(productId){
+  // Firebase 제품: specMap/tolMap도 함께 불러오기
+  if(PRODUCTS[productId] && PRODUCTS[productId]._fromFirebase){
+    db.ref('products/' + productId).once('value').then(function(snap){
+      var pd = snap.val();
+      if(pd){
+        if(pd.specMap && Object.keys(pd.specMap).length > 0 && Object.keys(PRODUCTS[productId].specMap).length === 0){
+          // Firebase 키는 문자열이므로 숫자로 변환
+          var sm = {}, tm = {};
+          Object.keys(pd.specMap).forEach(function(k){ sm[parseInt(k)] = pd.specMap[k]; });
+          if(pd.tolMap) Object.keys(pd.tolMap).forEach(function(k){ tm[parseInt(k)] = pd.tolMap[k]; });
+          PRODUCTS[productId].specMap = sm;
+          PRODUCTS[productId].tolMap  = tm;
+          Object.keys(sm).forEach(function(no){
+            if(!PRODUCTS[productId].partNames[no]) PRODUCTS[productId].partNames[no] = 'No.' + no;
+          });
+        }
+      }
+      _doLoadMeasData(productId);
+    });
+  } else {
+    _doLoadMeasData(productId);
+  }
+}
+
+function _doLoadMeasData(productId){
+  loadMeasData(productId, function(data){
+    var updated = false;
+    var fbDateLabels = Object.keys(data).map(function(k){ return k.replace('_', '/'); });
+    curFbDates = fbDateLabels.slice();
+    window._fbDates = fbDateLabels.slice();
+
+    Object.keys(data).forEach(function(dateKey){
+      var dateLabel = dateKey.replace('_', '/');
+      if(!PRODUCTS[productId].vinaAll[dateLabel]){
+        PRODUCTS[productId].vinaAll[dateLabel] = data[dateKey];
+        PRODUCTS[productId].vinaLH[dateLabel] = data[dateKey];
+        PRODUCTS[productId].vinaRH[dateLabel] = data[dateKey];
+        updated = true;
+      }
+    });
+    // 항상 날짜 버튼 재생성 (삭제 버튼 포함)
+    rebuildDateBtns(productId, fbDateLabels);
+    if(updated || (PRODUCTS[productId]._fromFirebase && Object.keys(PRODUCTS[productId].specMap).length > 0)){
+      curDate = 'all';
+      buildTrendChart();
+      renderData();
+    }
+  });
+}
+
+// ===== 제품 데이터 =====
+var PRODUCTS = {
+  br0035: {
+    name: 'BR0035 FRT BRKT LH#1',
+    code: 'BR0035 L-A / R-A',
+    lastDate: '2026-05-21',
+    hasHQ: false,
+    angleNos: [15,26,32],
+    specMap: {1:5.0,2:67.04,3:8.5,4:84.4,5:15.8,6:3.4,7:4.9,8:13.2,9:19.5,10:18.84,11:8.15,12:15.0,13:11.0,14:8.0,15:90.0,16:53.5,17:12.8,18:16.0,19:7.5,20:7.0,21:12.0,22:27.8,23:5.0,24:5.0,25:1.6,26:68.1,27:27.9,28:4.2,29:23.1,30:2.9,31:7.1,32:90.0},
+    tolMap:  {1:3.0,2:0.5,3:0.2,4:3.0,5:0.4,6:0.5,7:0.5,8:0.5,9:0.5,10:0.5,11:0.5,12:0.5,13:0.2,14:0.5,15:3.0,16:0.5,17:0.5,18:0.5,19:0.4,20:0.2,21:0.2,22:0.5,23:0.2,24:0.5,25:0.5,26:3.0,27:0.5,28:0.5,29:0.5,30:0.5,31:0.5,32:3.0},
+    partNames: {1:'Y축 거리 #1',2:'Y축 거리 #2',3:'홀 직경 (ø8.5)',4:'X축 거리 #1',5:'X축 거리 #2',6:'X축 거리 #3',7:'Y축 거리 #3',8:'파이프 직경',9:'Y축 거리 #4',10:'각도 #1',11:'홀 직경 #2',12:'거리 #1',13:'두께 (T값)',14:'X축 거리 #4',15:'각도 #2',16:'X축 거리 #5',17:'Y축 거리 #5',18:'거리 #2',19:'R값 #1',20:'R값 #2',21:'거리 #3',22:'Y축 거리 #6',23:'홀 직경 #3',24:'홀 직경 #4',25:'두께 #2',26:'각도 #3',27:'X축 거리 #6',28:'X축 거리 #7',29:'X축 거리 #8',30:'거리 #4',31:'Y축 거리 #7',32:'각도 #4'},
+    vinaAll: {
+      '05/12':{1:4.7656,2:66.9462,3:8.5284,4:84.3262,5:15.8675,6:3.3156,7:4.8296,8:13.2352,9:19.5726,10:18.715,11:8.3866,12:15.545,13:10.9118,14:7.968,15:88.8807,16:53.3355,17:12.795,18:16.06,19:7.5597,20:6.9359,21:11.902,22:27.96,23:5.155,24:5.055,25:1.645,26:68.61,27:27.8367,28:4.4616,29:23.1239,30:2.6246,31:7.1021,32:89.135},
+      '05/21':{1:5.1464,2:67.0444,3:8.5737,4:84.3803,5:15.8486,6:3.3167,7:4.8666,8:13.1982,9:19.4576,10:19.0,11:8.3618,12:15.15,13:11.0446,14:8.1044,15:90.3551,16:53.295,17:12.7175,18:15.945,19:7.4922,20:7.0238,21:12.0009,22:27.945,23:5.05,24:4.99,25:1.585,26:69.095,27:27.772,28:4.5465,29:23.0289,30:2.6246,31:7.073,32:88.74}
+    },
+    vinaLH: {
+      '05/12':{1:4.4817,2:66.8429,3:8.5102,4:84.2866,5:15.8343,6:3.3159,7:4.8389,8:13.2519,9:19.557,10:18.77,11:8.4324,12:15.53,13:10.972,14:7.9421,15:88.7893,16:53.581,17:12.8125,18:16.06,19:7.5906,20:6.9471,21:11.8704,22:27.97,23:5.15,24:5.05,25:1.64,26:68.48,27:27.7885,28:4.3858,29:22.9763,30:2.6111,31:6.9325,32:89.22},
+      '05/21':{1:4.5517,2:66.827,3:8.5368,4:84.5144,5:15.8629,6:3.3303,7:4.8565,8:13.1907,9:19.417,10:19.17,11:8.3422,12:15.14,13:11.0238,14:8.0933,15:90.3142,16:53.35,17:12.698,18:15.94,19:7.4906,20:7.0025,21:12.0139,22:27.9,23:5.05,24:4.99,25:1.59,26:68.88,27:27.7655,28:4.6293,29:23.0027,30:2.6111,31:7.067,32:88.59}
+    },
+    vinaRH: {
+      '05/12':{1:5.0496,2:67.0496,3:8.5465,4:84.3659,5:15.9006,6:3.3153,7:4.8203,8:13.2186,9:19.5883,10:18.66,11:8.3409,12:15.56,13:10.8516,14:7.994,15:88.9721,16:53.09,17:12.7775,18:16.06,19:7.5289,20:6.9248,21:11.9337,22:27.95,23:5.16,24:5.06,25:1.65,26:68.74,27:27.8849,28:4.5374,29:23.2516,30:2.638,31:7.2717,32:89.05},
+      '05/21':{1:5.7412,2:67.262,3:8.6107,4:84.2462,5:15.8343,6:3.3032,7:4.8768,8:13.2058,9:19.4983,10:18.83,11:8.3814,12:15.16,13:11.0655,14:8.1155,15:90.396,16:53.24,17:12.737,18:15.95,19:7.4938,20:7.0451,21:11.9879,22:27.99,23:5.05,24:4.99,25:1.58,26:69.31,27:27.7785,28:4.4636,29:23.055,30:2.638,31:7.079,32:88.89}
+    }
+  },
+  br0036: {
+    name: 'BR0036 RR BRKT LH#1',
+    code: 'BR0036 L-A / R-A',
+    lastDate: '2026-05-09',
+    hasHQ: false,
+    angleNos: [10,19,20],
+    specMap: {1:19.5,2:6.0,3:2.0,4:20.0,6:6.5,7:11.9,9:9.5,10:19.0,11:9.0,12:6.2,13:12.1,14:111.0,15:15.98,16:7.65,17:7.65},
+    tolMap:  {1:0.7,2:3.0,3:0.7,4:0.4,6:0.2,7:0.4,9:0.4,10:0.7,11:0.4,12:0.7,13:0.4,14:3.0,15:0.7,16:0.5,17:0.5},
+    partNames: {1:'Y축 거리 #1',2:'거리 #1',3:'두께 (T값)',4:'X축 거리 #1',6:'X축 거리 #2',7:'Y축 거리 #2',9:'Y축 거리 #3',10:'각도 #1',11:'홀 직경',12:'X축 거리 #3',13:'Y축 거리 #4',14:'X축 거리 #4',15:'거리 #2',16:'R값 #1',17:'R값 #2'},
+    vinaAll: {
+      '04/01':{1:19.5325,2:7.3,3:2.0,4:20.1825,6:6.6186,7:11.9264,10:19.0675,11:8.9574,12:6.2568,13:12.0278,14:112.7525,15:16.2825},
+      '05/09':{1:19.63,2:7.0842,3:2.08,4:20.1114,6:6.526,7:12.0814,9:9.3784,10:19.115,11:8.8522,12:6.2414,13:12.1052,14:112.163}
+    },
+    vinaLH: {
+      '04/01':{1:19.535,4:20.215,6:6.6141,7:11.8833,10:19.075,11:8.9647,12:6.3275,13:12.0782,14:112.92,15:16.28},
+      '05/09':{1:19.65,2:7.0041,3:2.08,4:20.1253,6:6.4018,7:12.1413,9:9.4505,10:19.13,11:8.8917,12:6.1576,13:12.0602,14:112.0602}
+    },
+    vinaRH: {
+      '04/01':{1:19.53,2:7.3,3:2.0,4:20.15,6:6.6231,7:11.9694,10:19.06,11:8.9501,12:6.1861,13:11.9775,14:112.585,15:16.285},
+      '05/09':{1:19.61,2:7.1643,3:2.08,4:20.0975,6:6.6501,7:12.0215,9:9.3063,10:19.1,11:8.8126,12:6.3252,13:12.1502,14:112.2658}
+    }
+  },
+  br0037: {
+    name: 'BR0037 RR BRKT LH#2',
+    code: 'BR0037 L-A / R-A',
+    lastDate: '2026-05-08',
+    hasHQ: true,
+    angleNos: [10,11,16,18],
+    specMap: {1:19.5,2:12.0,3:8.5,4:12.0,5:24.0,6:4.0,7:9.51,8:36.1,9:5.0,10:16.5,11:2.0,12:5.0,13:2.0,14:19.5,15:18.0,16:90.0,17:19.5,18:2.5},
+    tolMap:  {1:0.5,2:0.4,3:0.2,4:0.4,5:0.5,6:0.4,7:0.5,8:0.5,9:0.2,10:3.0,11:3.0,12:0.4,13:0.5,14:0.5,15:0.5,16:3.0,17:0.5,18:3.0},
+    partNames: {1:'상단 마운팅 Y축 거리',2:'좌측 브라켓 Y축 거리',3:'하단 홀 직경 (ø8.5)',4:'중앙 브라켓 X축 거리',5:'하단 X축 거리',6:'좌측 단차 X축 거리',7:'우측 브라켓 Y축 거리',8:'우측 파이프 직경 (ø36.1)',9:'우측 상단 홀 Y축',10:'파이프 연결 각도',11:'하단 플랜지 각도',12:'파이프 X축 거리',13:'스프링 클립 두께 (T값)',14:'상단 X축 거리',15:'중앙 X축 거리',16:'좌측 플랜지 각도 (90°)',17:'하단 Y축 거리',18:'우측 파이프 각도 (2.5°)'},
+    vinaAll: {
+      '03/28':{1:19.4842,2:11.9898,3:8.6043,4:12.0184,5:23.9714,6:3.8831,7:9.6566,8:36.1120,9:4.7925,10:15.5736,11:3.0060,12:4.9150,13:1.9975,14:19.4900,15:18.0275,16:89.3651,17:19.5250,18:3.1962},
+      '04/15':{1:19.4750,2:11.9892,3:8.6125,4:11.9650,5:23.9575,6:3.9525,7:9.6375,8:36.1125,9:4.7900,10:17.0350,11:2.3300,12:4.8950,13:2.0000,14:19.5075,15:18.0300,16:89.9700,17:19.5100,18:2.8875},
+      '04/16':{1:19.4750,2:11.9950,3:8.6150,4:11.9700,5:23.9650,6:3.9650,7:9.6400,8:36.1125,9:4.7900,10:16.9270,11:2.3990,12:4.9000,13:2.0000,14:19.5100,15:18.0350,16:90.2665,17:19.5100,18:2.8400},
+      '04/25':{1:19.4750,2:11.9950,3:8.6150,4:11.9700,5:23.9650,6:3.9650,7:9.6400,8:36.1125,9:4.7800,10:16.9270,11:2.3990,12:4.9000,13:2.0000,14:19.5250,15:18.0650,16:90.2665,17:19.5450,18:2.8400},
+      '05/08':{1:19.5425,2:12.0026,3:8.5351,4:11.9851,5:24.0215,6:3.9906,7:9.6457,8:36.2050,9:4.8800,10:16.9099,11:2.3746,12:4.9400,13:2.0800,14:19.6100,15:18.1450,16:90.0154,17:19.6100,18:2.8228}
+    },
+    vinaLH: {
+      '03/28':{1:19.4552,2:11.906,3:8.6044,4:11.9584,5:23.9359,6:3.914,7:9.6974,8:36.0501,9:4.73,10:15.3254,11:3.572,12:4.88,13:2.0,14:19.485,15:18.04,16:89.5825,17:19.515,18:2.7554},
+      '04/15':{1:19.46,2:11.9635,3:8.61,4:11.96,5:23.95,6:3.93,7:9.66,8:36.085,9:4.785,10:16.72,11:2.24,12:4.895,13:2.0,14:19.51,15:18.045,16:89.6,17:19.505,18:2.86},
+      '04/16':{1:19.46,2:11.96,3:8.61,4:11.96,5:23.95,6:3.96,7:9.66,8:36.085,9:4.78,10:16.614,11:2.358,12:4.9,13:2.0,14:19.51,15:18.05,16:89.643,17:19.51,18:2.63},
+      '04/25':{1:19.46,2:11.96,3:8.61,4:11.96,5:23.95,6:3.96,7:9.66,8:36.085,9:4.78,10:16.614,11:2.358,12:4.91,13:2.0,14:19.51,15:18.09,16:89.643,17:19.54,18:2.63},
+      '05/08':{1:19.5777,2:12.043,3:8.5605,4:11.9804,5:23.995,6:3.9915,7:9.6577,8:36.2069,9:4.92,10:16.5439,11:2.4261,12:4.96,13:2.08,14:19.61,15:18.17,16:89.6461,17:19.6,18:2.6149}
+    },
+    vinaRH: {
+      '03/28':{1:19.513,2:12.0736,3:8.6042,4:12.0784,5:24.007,6:3.8522,7:9.6158,8:36.174,9:4.855,10:15.8218,11:2.44,12:4.95,13:1.995,14:19.495,15:18.015,16:89.1478,17:19.535,18:3.6369},
+      '04/15':{1:19.49,2:12.015,3:8.615,4:11.97,5:23.965,6:3.975,7:9.615,8:36.14,9:4.795,10:17.35,11:2.42,12:4.895,13:2.0,14:19.505,15:18.015,16:90.34,17:19.515,18:2.915},
+      '04/16':{1:19.49,2:12.03,3:8.62,4:11.98,5:23.98,6:3.97,7:9.62,8:36.14,9:4.8,10:17.24,11:2.44,12:4.9,13:2.0,14:19.51,15:18.02,16:90.89,17:19.51,18:3.05},
+      '04/25':{1:19.49,2:12.03,3:8.62,4:11.98,5:23.98,6:3.97,7:9.62,8:36.14,9:4.78,10:17.24,11:2.44,12:4.89,13:2.0,14:19.54,15:18.04,16:90.89,17:19.55,18:3.05},
+      '05/08':{1:19.5072,2:11.9623,3:8.5097,4:11.9898,5:24.048,6:3.9897,7:9.6337,8:36.2031,9:4.84,10:17.2759,11:2.3232,12:4.92,13:2.08,14:19.61,15:18.12,16:90.3847,17:19.62,18:3.0307}
+    }
+  },
+  br0038: {
+    name: 'BR0038 RR BRKT LH#3',
+    code: 'BR0038 L-A / R-A',
+    lastDate: '2026-05-12',
+    hasHQ: false,
+    angleNos: [14,19,20,28,30],
+    specMap: {1:84.0,2:66.8,3:14.5,4:27.5,5:24.0,6:11.0,7:6.5,8:7.0,9:3.0,10:24.9,11:13.1,12:2.5,13:8.5,14:90.0,15:19.5,16:35.8,17:57.6,18:17.5,19:5.5,20:90.0,21:13.0,22:6.5,23:22.0,24:11.3,25:13.0,26:5.0,27:5.0,28:5.0,29:2.0,30:6.5,31:19.5,32:160.4},
+    tolMap:  {1:0.5,2:0.5,3:0.5,4:0.5,5:0.5,6:0.4,7:0.2,8:0.2,9:0.2,10:0.5,11:0.4,12:0.4,13:0.2,14:3.0,15:0.5,16:0.5,17:0.5,18:0.5,19:3.0,20:3.0,21:0.4,22:0.5,23:0.5,24:0.4,25:1.0,26:0.5,27:0.2,28:3.0,29:0.5,30:3.0,31:0.5,32:3.0},
+    partNames: {1:'X축 거리 #1',2:'Y축 거리 #1',3:'거리 #1',4:'X축 거리 #2',5:'X축 거리 #3',6:'Y축 거리 #2',7:'홀 직경 #1',8:'홀 직경 #2',9:'홀 직경 #3',10:'X축 거리 #4',11:'Y축 거리 #3',12:'두께 (T값)',13:'홀 직경 #4',14:'각도 #1',15:'Y축 거리 #4',16:'X축 거리 #5',17:'Y축 거리 #5',18:'거리 #2',19:'R값 #1',20:'각도 #2',21:'거리 #3',22:'홀 직경 #5',23:'X축 거리 #6',24:'Y축 거리 #6',25:'Y축 거리 #7',26:'홀 직경 #6',27:'홀 직경 #7',28:'각도 #3',29:'두께 #2',30:'각도 #4',31:'Y축 거리 #8',32:'X축 거리 #7'},
+    vinaAll: {
+      '04/01':{1:83.5525,2:66.7562,3:14.3922,4:27.4162,5:23.851,6:10.9495,7:6.534,8:7.1042,9:3.0988,10:25.05,11:12.7718,12:2.405,13:8.6072,14:90.4098,15:19.5075,16:35.712,17:57.9128,18:17.5025,19:5.696,20:90.4192,21:12.6572,22:6.605,23:22.065,24:10.8888,25:12.7495,26:4.875,27:4.9625,28:4.682,29:2.0,30:6.3528,31:19.495,32:159.9422},
+      '05/12':{1:83.7453,2:66.72,3:14.4708,4:27.4564,5:23.9214,6:10.9401,7:6.475,8:7.0423,9:3.0671,10:25.12,11:12.9348,12:2.3674,13:8.5154,14:90.5317,15:19.615,16:35.7394,17:58.062,18:17.615,19:5.5522,20:90.3866,21:10.7006,23:22.065,24:11.3566,25:12.5969,26:4.915,27:5.095,28:4.5674,29:2.07,30:7.1298,31:19.61,32:160.0678}
+    },
+    vinaLH: {
+      '04/01':{1:83.469,2:66.884,3:14.3785,4:27.4195,6:10.9285,7:6.503,8:7.08,9:3.084,10:25.035,11:12.6475,12:2.474,13:8.61,14:90.469,15:19.495,16:35.6405,17:57.6855,18:17.515,19:5.555,20:90.405,21:12.95,22:6.6,23:22.065,24:10.6975,25:12.845,26:4.845,27:4.9625,28:4.6865,29:2.0,30:6.2225,31:19.495,32:159.91},
+      '05/12':{1:83.5843,2:66.7929,3:14.4413,4:27.4417,6:10.9221,7:6.4857,8:7.0471,9:3.0671,10:25.1225,11:12.8968,12:2.397,13:8.5129,14:90.4727,15:19.6125,16:35.7094,17:58.1013,18:17.615,19:5.5643,20:90.3866,21:10.9525,23:22.065,24:11.3258,25:12.615,26:4.9025,27:5.095,28:4.5675,29:2.07,30:7.1738,31:19.61,32:160.0678}
+    },
+    vinaRH: {
+      '04/01':{1:83.636,2:66.6285,3:14.406,4:27.413,5:23.851,6:10.9705,7:6.565,8:7.1285,9:3.1135,10:25.065,11:12.896,12:2.336,13:8.6045,14:90.3505,15:19.52,16:35.7835,17:58.14,18:17.49,19:5.5025,20:90.4334,21:12.3644,22:6.61,23:22.065,24:11.08,25:12.654,26:4.905,27:4.9625,28:4.6775,29:2.0,30:6.4831,31:19.495,32:159.9754},
+      '05/12':{1:83.906,2:66.6471,3:14.5003,4:27.4711,5:23.9214,6:10.9581,7:6.4643,8:7.0376,9:3.0671,10:25.1175,11:12.9728,12:2.3378,13:8.5179,14:90.5907,15:19.6175,16:35.7694,17:58.0227,18:17.615,19:5.54,20:90.3866,21:10.4487,23:22.065,24:11.3874,25:12.5788,26:4.9275,27:5.095,28:4.5673,29:2.07,30:7.0858,31:19.61,32:160.0678}
+    }
+  }
+};
+
+// AM사 제품 추가
+PRODUCTS['at5851'] = {
+  name: 'AT5851 BT SHIELD CAN',
+  code: 'AT5851',
+  lastDate: '2025-11-04',
+  hasHQ: false,
+  angleNos: [],
+  specMap: {1:14.5, 2:11.6, 3:1.9, 4:0.2},
+  tolMap:  {1:0.1,  2:0.1,  3:0.05, 4:0.05},
+  partNames: {1:'X축 거리', 2:'Y축 거리', 3:'높이', 4:'T값'},
+  vinaAll: {
+    '08/07': {1:14.49, 2:11.58, 3:1.9,  4:0.2},
+    '11/04': {1:14.5,  2:11.62, 3:1.89, 4:0.2}
+  },
+  vinaLH: {
+    '08/07': {1:14.49, 2:11.58, 3:1.9,  4:0.2},
+    '11/04': {1:14.5,  2:11.62, 3:1.89, 4:0.2}
+  },
+  vinaRH: {
+    '08/07': {1:14.49, 2:11.58, 3:1.9,  4:0.2},
+    '11/04': {1:14.5,  2:11.62, 3:1.89, 4:0.2}
+  }
+};
+
+PRODUCTS['ap5010'] = {
+  name: 'AP5010 SHIELD CAN A/B',
+  code: 'AP5010',
+  lastDate: '2025-06-26',
+  hasHQ: false,
+  angleNos: [],
+  specMap: {1:14.2, 2:23.2, 3:2.8},
+  tolMap:  {1:0.1,  2:0.1,  3:0.05},
+  partNames: {1:'X축 거리', 2:'Y축 거리', 3:'X축 거리 #2'},
+  vinaAll: {'06/26': {1:14.21, 2:23.22, 3:2.785}},
+  vinaLH:  {'06/26': {1:14.21, 2:23.22, 3:2.785}},
+  vinaRH:  {'06/26': {1:14.21, 2:23.22, 3:2.785}},
+  scanData: {
+    spec: 0.08,
+    total: 710,
+    avg: 0.0206,
+    max: 0.035,
+    min: 0.007,
+    pass: 710,
+    fail: 0,
+    dist: [319, 391, 0, 0, 0]
+  }
+};
+
+PRODUCTS['ap5030'] = {
+  name: 'AP5030 LCD GND SPRING',
+  code: 'AP5030',
+  lastDate: '2025-08-21',
+  hasHQ: false,
+  angleNos: [],
+  specMap: {1:38.0,2:60.7,3:56.5,4:0.15,5:1.2,6:0.25,7:0.7,8:1.4,9:1.4,10:1.4,11:1.4,12:0.7,13:0.7,14:0.7,15:0.7,16:0.7,17:0.7,18:0.7},
+  tolMap:  {1:0.5,2:0.5,3:0.5,4:0.05,5:0.1,6:0.05,7:0.05,8:0.1,9:0.1,10:0.1,11:0.1,12:0.05,13:0.05,14:0.05,15:0.05,16:0.05,17:0.05,18:0.05},
+  partNames: {1:'전체 X축',2:'전체 Y축',3:'전체 Z축',4:'두께',5:'높이 #1',6:'너비 #1',7:'너비 #2',8:'길이 #1',9:'길이 #2',10:'길이 #3',11:'길이 #4',12:'간격 #1',13:'간격 #2',14:'간격 #3',15:'간격 #4',16:'간격 #5',17:'간격 #6',18:'간격 #7'},
+  vinaAll: {'08/21': {1:38.003,2:60.782,3:56.531,4:0.15,5:1.161,6:0.234,7:0.713,8:1.381,9:1.368,10:1.329,11:1.482,12:0.795,13:0.764,14:0.789,15:0.73,16:0.753,17:0.789,18:0.655}},
+  vinaLH:  {'08/21': {1:38.003,2:60.782,3:56.531,4:0.15,5:1.161,6:0.234,7:0.713,8:1.381,9:1.368,10:1.329,11:1.482,12:0.795,13:0.764,14:0.789,15:0.73,16:0.753,17:0.789,18:0.655}},
+  vinaRH:  {'08/21': {1:38.003,2:60.782,3:56.531,4:0.15,5:1.161,6:0.234,7:0.713,8:1.381,9:1.368,10:1.329,11:1.482,12:0.795,13:0.764,14:0.789,15:0.73,16:0.753,17:0.789,18:0.655}}
+};
+
+var curProduct = null;
+var curDate = 'all';
+var curSide = 'all';
+var curFbDates = [];  // Firebase 저장 날짜 목록
+var donutChart=null,deviationChart=null,trendChart=null;
+
+// ===== 화면 전환 =====
+function showScreen(id){document.querySelectorAll('.screen').forEach(function(s){s.classList.remove('active');});document.getElementById('screen-'+id).classList.add('active');}
+function updateBC(items){
+  var bc=document.getElementById('breadcrumb');
+  bc.innerHTML=items.map(function(item,i){
+    return i<items.length-1
+      ?'<span class="crumb" onclick="'+item.fn+'">'+item.label+'</span><span class="sep">›</span>'
+      :'<span class="bc-active">'+item.label+'</span>';
+  }).join('');
+}
+// ===== 모달 관리 =====
+function openModal(title, body){
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = body;
+  var overlay = document.getElementById('modalOverlay');
+  overlay.style.display = 'flex';
+}
+
+function closeModal(){
+  document.getElementById('modalOverlay').style.display = 'none';
+}
+
+// 고객사 추가
+function openAddCustomer(){
+  openModal('고객사 추가', `
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">고객사명 (한글)</div>
+      <input id="newCustomerName" type="text" placeholder="예: 현대모비스" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">영문명</div>
+      <input id="newCustomerEng" type="text" placeholder="예: Hyundai Mobis" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">고객사 색상</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div onclick="selectColor(this,'#1a1a2e')" style="width:32px;height:32px;background:#1a1a2e;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#2c3e50')" style="width:32px;height:32px;background:#2c3e50;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#1e3a5f')" style="width:32px;height:32px;background:#1e3a5f;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#2980b9')" style="width:32px;height:32px;background:#2980b9;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#27ae60')" style="width:32px;height:32px;background:#27ae60;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#8e44ad')" style="width:32px;height:32px;background:#8e44ad;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#c0392b')" style="width:32px;height:32px;background:#c0392b;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+        <div onclick="selectColor(this,'#d35400')" style="width:32px;height:32px;background:#d35400;border-radius:6px;cursor:pointer;border:2px solid transparent"></div>
+      </div>
+      <input type="hidden" id="newCustomerColor" value="#1a1a2e">
+    </div>
+    <button onclick="saveCustomer()" style="width:100%;padding:12px;background:#1a1a2e;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">+ 고객사 추가</button>
+  `);
+}
+
+function selectColor(el, color){
+  document.querySelectorAll('#modalBody [onclick^="selectColor"]').forEach(function(d){
+    d.style.border = '2px solid transparent';
+  });
+  el.style.border = '2px solid #3b82f6';
+  document.getElementById('newCustomerColor').value = color;
+}
+
+function saveCustomer(){
+  var name = document.getElementById('newCustomerName').value.trim();
+  var eng = document.getElementById('newCustomerEng').value.trim();
+  var color = document.getElementById('newCustomerColor').value;
+  if(!name){ alert('고객사명을 입력하세요'); return; }
+
+  var id = 'c_' + Date.now();
+  var customer = {id:id, name:name, eng:eng||name, color:color, models:{}, createdAt: new Date().toISOString()};
+
+  // Firebase 저장
+  db.ref('customers/' + id).set(customer).then(function(){
+    alert('✅ ' + name + ' 고객사가 추가되었습니다!');
+    closeModal();
+    // 홈화면 카드 추가
+    addCustomerCard(customer, []);
+    // KPI 업데이트
+    refreshHomeKPI();
+  }).catch(function(err){
+    alert('❌ 저장 실패: ' + err.message);
+  });
+}
+
+function addCustomerCard(customer, products){
+  var grid = document.querySelector('#screen-home [style*="grid-template-columns"]');
+  if(!grid) return;
+  // 이미 존재하는 카드 중복 방지
+  if(document.getElementById('customer_' + customer.id)) return;
+
+  products = products || [];
+  window._customerCache = window._customerCache || {};
+  window._customerCache[customer.id] = customer;
+  // 항상 addCustomerBtn 기준으로 삽입 (버튼이 밀리지 않게)
+  var addCard = document.getElementById('addCustomerBtn');
+  if(!addCard) addCard = grid.lastElementChild;
+  var card = document.createElement('div');
+  card.id = 'customer_' + customer.id;
+  card.style.cssText = 'background:#fff;border-radius:14px;border:1px solid #e4e4e4;overflow:hidden;cursor:pointer;transition:all 0.2s';
+  card.onmouseover = function(){ this.style.boxShadow='0 4px 20px rgba(0,0,0,0.1)';this.style.transform='translateY(-2px)'; };
+  card.onmouseout  = function(){ this.style.boxShadow='none';this.style.transform='translateY(0)'; };
+
+  // 고객사 클릭 시 동적 모델/제품 화면으로 이동
+  card.onclick = function(){ goCustomerDynamic(customer, products); };
+
+  // 모델별 제품 그룹핑
+  var modelMap = {}; // modelName -> [product]
+  products.forEach(function(p){
+    if(!modelMap[p.modelName]) modelMap[p.modelName] = [];
+    modelMap[p.modelName].push(p);
+  });
+  var modelCount = Object.keys(modelMap).length;
+  var approvedCount = products.filter(function(p){ return p.approvalStatus === 'approved'; }).length;
+
+  // 제품 미리보기 HTML (최대 4개)
+  var previewHtml = '';
+  if(products.length === 0){
+    previewHtml = '<div style="font-size:12px;color:#888;margin-bottom:10px">등록된 모델/제품이 없습니다</div>';
+  } else {
+    previewHtml = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">';
+    products.slice(0,4).forEach(function(p){
+      var isApproved = p.approvalStatus === 'approved';
+      previewHtml +=
+        '<div style="background:'+(isApproved?'#eafaf1':'#f8f8f8')+';border-radius:8px;padding:10px 12px;border-left:3px solid '+(isApproved?'#27ae60':'#3b82f6')+';position:relative">'+
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start">'+
+            '<div style="font-size:10px;color:#888;margin-bottom:2px">'+p.productCode+'</div>'+
+            '<button onclick="event.stopPropagation();confirmDeleteProduct(\''+p.productId+'\')" style="background:#fee2e2;border:none;border-radius:4px;color:#c0392b;font-size:9px;padding:1px 5px;cursor:pointer;font-weight:700;line-height:1.6">🗑️</button>'+
+          '</div>'+
+          '<div style="font-size:12px;font-weight:700;color:#1a1a2e">'+p.productName+'</div>'+
+          '<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">'+
+            '<span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:3px;font-weight:600">VINA ✓</span>'+
+            (isApproved
+              ? '<span style="font-size:10px;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:3px;font-weight:600">✅ 승인완료</span>'
+              : '<span style="font-size:10px;background:#fff3cd;color:#856404;padding:1px 6px;border-radius:3px;font-weight:600">⏳ 승인대기</span>')+
+          '</div>'+
+        '</div>';
+    });
+    if(products.length > 4){
+      previewHtml += '<div style="background:#f8f8f8;border-radius:8px;padding:10px 12px;border-left:3px solid #e4e4e4;display:flex;align-items:center;justify-content:center"><div style="font-size:12px;color:#888;font-weight:600">+' + (products.length-4) + '개 더보기</div></div>';
+    }
+    previewHtml += '</div>';
+    // 승인 진행률
+    var pct = products.length > 0 ? Math.round(approvedCount/products.length*100) : 0;
+    previewHtml +=
+      '<div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:4px">'+
+        '<span>승인 진행률</span><span style="color:#27ae60;font-weight:600">'+pct+'% ('+approvedCount+'/'+products.length+')</span>'+
+      '</div>'+
+      '<div style="height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden">'+
+        '<div style="height:100%;width:'+pct+'%;background:linear-gradient(90deg,#27ae60,#2ecc71);border-radius:3px"></div>'+
+      '</div>';
+  }
+
+  var custJson = JSON.stringify(customer).replace(/'/g,"\\'");
+  card.innerHTML =
+    '<div style="background:'+customer.color+';padding:16px 20px;display:flex;align-items:center;justify-content:space-between;position:relative">'+
+      '<div>'+
+        '<div style="font-size:16px;font-weight:700;color:#fff">'+customer.name+'</div>'+
+        '<div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:2px">'+customer.eng+'</div>'+
+      '</div>'+
+      '<div style="display:flex;align-items:flex-start;gap:10px">'+
+        '<div style="text-align:right">'+
+          '<div style="font-size:11px;color:rgba(255,255,255,0.5)">모델 '+modelCount+'개 · 제품 '+products.length+'종</div>'+
+          '<div style="font-size:11px;color:#6ee7b7;margin-top:2px">승인완료 '+approvedCount+' / '+products.length+'</div>'+
+        '</div>'+
+        '<button onclick="event.stopPropagation();openCustomerMenu(this,\''+customer.id+'\')" style="background:rgba(255,255,255,0.15);border:none;border-radius:6px;color:#fff;font-size:16px;width:28px;height:28px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">⋮</button>'+
+      '</div>'+
+    '</div>'+
+    '<div style="padding:16px 20px">'+
+      (modelCount > 0 ? '<div style="font-size:11px;color:#888;font-weight:700;margin-bottom:10px">'+Object.keys(modelMap).join(', ')+'</div>' : '')+
+      previewHtml+
+      '<button onclick="event.stopPropagation();openAddModel(window._customerCache[\''+customer.id+'\'])" style="width:100%;padding:8px;background:#f0f7ff;color:#3b82f6;border:1px solid #bfdbfe;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;margin-top:10px">+ 모델/제품 추가</button>'+
+    '</div>'+
+    '<div style="padding:0 20px 14px;text-align:right"><span style="font-size:12px;color:#3b82f6;font-weight:600">상세보기 →</span></div>';
+
+  grid.insertBefore(card, addCard);
+}
+
+// ===== 고객사 컨텍스트 메뉴 =====
+var _menuTarget = null;
+function openCustomerMenu(btn, customerId){
+  // 기존 메뉴 닫기
+  var existing = document.getElementById('customerContextMenu');
+  if(existing){
+    existing.remove();
+    if(_menuTarget === customerId) { _menuTarget = null; return; }
+  }
+  _menuTarget = customerId;
+  var rect = btn.getBoundingClientRect();
+  var menu = document.createElement('div');
+  menu.id = 'customerContextMenu';
+  menu.style.cssText = 'position:fixed;top:'+(rect.bottom+4)+'px;right:'+(window.innerWidth-rect.right)+'px;background:#fff;border:1px solid #e4e4e4;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);z-index:9999;min-width:160px;overflow:hidden;';
+  menu.innerHTML =
+    '<div onclick="closeCustomerMenu();openAddModel(window._customerCache[\''+customerId+'\'])" style="padding:11px 16px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;color:#1a1a2e" onmouseover="this.style.background=\'#f5f5f5\'" onmouseout="this.style.background=\'\'">'+
+      '➕ 모델/제품 추가'+
+    '</div>'+
+    '<div style="height:1px;background:#f0f0f0"></div>'+
+    '<div onclick="closeCustomerMenu();confirmDeleteCustomer(\''+customerId+'\')" style="padding:11px 16px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;color:#e74c3c" onmouseover="this.style.background=\'#fff5f5\'" onmouseout="this.style.background=\'\'">'+
+      '🗑️ 고객사 삭제'+
+    '</div>';
+  document.body.appendChild(menu);
+  // 외부 클릭 시 닫기 (addCustomerBtn 클릭은 통과)
+  setTimeout(function(){
+    document.addEventListener('click', function handler(e){
+      document.removeEventListener('click', handler);
+      var btn = document.getElementById('addCustomerBtn');
+      if(btn && btn.contains(e.target)) return; // 고객사 추가 버튼은 통과
+      closeCustomerMenu();
+    });
+  }, 10);
+}
+
+function closeCustomerMenu(){
+  var m = document.getElementById('customerContextMenu');
+  if(m) m.remove();
+  _menuTarget = null;
+}
+
+// 고객사 캐시 (메뉴에서 참조용)
+window._customerCache = window._customerCache || {};
+
+function confirmDeleteCustomer(customerId){
+  var cust = window._customerCache[customerId];
+  var name = cust ? cust.name : customerId;
+  if(!confirm('⚠️ ' + name + ' 고객사를 삭제할까요?\n\n해당 고객사의 모든 제품과 측정 데이터도 함께 삭제됩니다.')) return;
+  deleteCustomer(customerId, name);
+}
+
+function confirmDeleteProduct(productId){
+  var productName = PRODUCTS[productId] ? PRODUCTS[productId].name : productId;
+  if(!confirm('⚠️ ' + productName + ' 제품을 삭제할까요?\n\n측정 데이터도 함께 삭제됩니다.')) return;
+  deleteProduct(productId, productName);
+}
+
+function deleteProduct(productId, productName){
+  // 삭제 전 customerId 저장 (홈카드 재생성용)
+  var customerId = PRODUCTS[productId] ? PRODUCTS[productId].customerId : null;
+
+  var tasks = [
+    db.ref('products/' + productId).remove(),
+    db.ref('measData/' + productId).remove()
+  ];
+  delete PRODUCTS[productId];
+
+  Promise.all(tasks).then(function(){
+    // 1. 현재 화면 제품 카드 제거
+    document.querySelectorAll('.product-card').forEach(function(card){
+      if(card.innerHTML.indexOf(productId) >= 0) card.remove();
+    });
+
+    // 2. 홈화면 고객사 카드 재생성 (미리보기 최신화)
+    if(customerId){
+      var oldCard = document.getElementById('customer_' + customerId);
+      if(oldCard) oldCard.remove();
+      db.ref('customers/' + customerId).once('value').then(function(snapC){
+        var cust = snapC.val();
+        if(!cust) return;
+        db.ref('products').orderByChild('customerId').equalTo(customerId).once('value').then(function(snapP){
+          var prods = snapP.val() ? Object.values(snapP.val()) : [];
+          addCustomerCard(cust, prods);
+        });
+      });
+    }
+
+    refreshHomeKPI();
+    alert('✅ ' + (productName||'제품') + ' 삭제 완료');
+  }).catch(function(err){
+    alert('❌ 삭제 실패: ' + err.message);
+  });
+}
+
+function deleteCustomer(customerId, customerName){
+  // 1. 해당 고객사의 제품 목록 조회 후 measData도 삭제
+  db.ref('products').orderByChild('customerId').equalTo(customerId).once('value').then(function(snap){
+    var prods = snap.val() || {};
+    var delTasks = [];
+
+    Object.keys(prods).forEach(function(pid){
+      delTasks.push(db.ref('products/' + pid).remove());
+      delTasks.push(db.ref('measData/' + pid).remove());
+      // PRODUCTS 전역 객체에서도 제거
+      delete PRODUCTS[pid];
+    });
+
+    // 2. 고객사 삭제
+    delTasks.push(db.ref('customers/' + customerId).remove());
+
+    Promise.all(delTasks).then(function(){
+      // 3. 카드 DOM 제거
+      var card = document.getElementById('customer_' + customerId);
+      if(card) card.remove();
+      // 캐시 제거
+      delete window._customerCache[customerId];
+      // KPI 업데이트
+      refreshHomeKPI();
+      alert('✅ ' + (customerName||'고객사') + ' 삭제 완료');
+    }).catch(function(err){
+      alert('❌ 삭제 실패: ' + err.message);
+    });
+  });
+}
+
+// 동적 고객사 → 모델/제품 화면 이동
+function goCustomerDynamic(customer, products){
+  // 동적 모델 화면 생성 또는 업데이트
+  var screenId = 'screen-dyn-' + customer.id;
+  var existing = document.getElementById(screenId);
+  if(!existing){
+    var div = document.createElement('div');
+    div.id = screenId;
+    div.className = 'screen';
+    document.querySelector('.container').appendChild(div);
+  }
+  var screen = document.getElementById(screenId);
+
+  // 모델별 제품 그룹핑
+  var modelMap = {};
+  products.forEach(function(p){
+    if(!modelMap[p.modelName]) modelMap[p.modelName] = { desc: p.modelDesc, products: [] };
+    modelMap[p.modelName].products.push(p);
+  });
+
+  var modelCardsHtml = '';
+  Object.keys(modelMap).forEach(function(modelName){
+    var mData = modelMap[modelName];
+    modelCardsHtml +=
+      '<div class="model-card" onclick="goProductDynamic(\''+customer.id+'\',\''+modelName+'\', \''+encodeURIComponent(customer.name)+'\')">'+
+        '<div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">'+modelName+'</div>'+
+        '<div style="font-size:11px;color:#888">'+(mData.desc||'')+'</div>'+
+        '<div style="font-size:11px;color:#3b82f6;margin-top:8px;font-weight:600">제품 '+mData.products.length+'종 관리 중</div>'+
+      '</div>';
+  });
+  modelCardsHtml += '<div class="model-card" style="opacity:0.4;cursor:default"><div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:3px">+ 모델 추가</div><div style="font-size:11px;color:#888">준비 중</div></div>';
+
+  screen.innerHTML =
+    '<div class="sec-title">모델 선택 — '+customer.name+'</div>'+
+    '<div class="model-grid">'+modelCardsHtml+'</div>';
+
+  showScreen('dyn-' + customer.id);
+  updateBC([{label:'🏠 홈',fn:'goHome()'},{label:customer.name}]);
+  document.getElementById('topbarRight').innerHTML='관리자: 성우전자 개발팀<br>고객사: '+customer.eng;
+}
+
+// 동적 고객사 제품 화면
+function goProductDynamic(customerId, modelName, customerNameEnc){
+  var customerName = decodeURIComponent(customerNameEnc);
+  db.ref('products').orderByChild('customerId').equalTo(customerId).once('value').then(function(snap){
+    var allProds = snap.val() || {};
+    var products = Object.values(allProds).filter(function(p){ return p.modelName === modelName; });
+
+    var screenId = 'screen-dynp-' + customerId + '-' + modelName.replace(/[^a-zA-Z0-9]/g,'');
+    var existing = document.getElementById(screenId);
+    if(!existing){
+      var div = document.createElement('div');
+      div.id = screenId;
+      div.className = 'screen';
+      document.querySelector('.container').appendChild(div);
+    }
+    var screen = document.getElementById(screenId);
+
+    var productCardsHtml = products.map(function(p){
+      var isApproved = p.approvalStatus === 'approved';
+      var pid = p.productId;
+      // PRODUCTS 동기화
+      if(!PRODUCTS[pid]){
+        PRODUCTS[pid] = {
+          name: p.productCode+' '+p.productName, code: p.productCode,
+          lastDate: p.createdAt?p.createdAt.split('T')[0]:'-',
+          hasHQ:false, angleNos:[], specMap:{}, tolMap:{}, partNames:{},
+          vinaAll:{}, vinaLH:{}, vinaRH:{},
+          customerId: customerId, modelName: modelName,
+          hasSide: p.hasSide, approvalStatus: p.approvalStatus||'pending',
+          _fromFirebase:true
+        };
+      }
+
+      return '<div class="product-card" onclick="goDashboard(\''+pid+'\')" style="border-color:'+(isApproved?'#27ae60':'#e4e4e4')+'">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
+          '<div style="font-size:11px;color:#888;font-weight:600">'+p.productCode+'</div>'+
+          '<button onclick="event.stopPropagation();confirmDeleteProduct(\''+pid+'\')" style="background:#fee2e2;border:none;border-radius:5px;color:#c0392b;font-size:10px;padding:2px 7px;cursor:pointer;font-weight:700">🗑️</button>'+
+        '</div>'+
+        '<div style="font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:8px">'+p.productName+'</div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:10px">'+
+          '<span class="p-tag tag-vina">VINA ✓</span>'+
+          (isApproved
+            ? '<span class="p-tag" style="background:#d1fae5;color:#065f46">✅ 승인완료</span>'
+            : '<span class="p-tag" style="background:#fff3cd;color:#856404">⏳ 승인대기</span>')+
+        '</div>'+
+        '<div class="p-bar"><div class="p-bar-fill" style="width:'+(isApproved?'100':'30')+'%;background:'+(isApproved?'#27ae60':'#f39c12')+'"></div></div>'+
+        '<span class="p-arrow" style="color:'+(isApproved?'#27ae60':'#ddd')+'">→</span>'+
+      '</div>';
+    }).join('');
+    productCardsHtml += '<div class="product-card disabled"><div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">+ 제품 추가</div><div style="font-size:14px;font-weight:700;color:#aaa;margin-bottom:8px">준비 중</div><span class="p-arrow">→</span></div>';
+
+    screen.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'+
+        '<div class="sec-title" style="margin-bottom:0">제품 선택 — '+modelName+'</div>'+
+      '</div>'+
+      '<div class="product-grid">'+productCardsHtml+'</div>';
+
+    var dynScreenId = 'dyn-' + customerId + '-' + modelName.replace(/[^a-zA-Z0-9]/g,'');
+    // id 교체
+    screen.id = 'screen-' + dynScreenId;
+    showScreen(dynScreenId);
+    updateBC([
+      {label:'🏠 홈',fn:'goHome()'},
+      {label:customerName,fn:'goCustomerDynamic('+JSON.stringify({id:customerId,name:customerName,eng:customerName,color:"#1a1a2e"})+',Object.values(PRODUCTS).filter(function(p){return p.customerId==="'+customerId+'";}))'},
+      {label:modelName}
+    ]);
+  });
+}
+
+// 모델 추가
+function openAddModel(customer){
+  openModal('모델/제품 추가 — ' + customer.name, `
+    <div style="background:#f0f7ff;border-radius:8px;padding:10px 14px;font-size:11px;color:#1e40af;margin-bottom:16px">
+      📋 고객사: <strong>${customer.name}</strong>
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">모델명</div>
+      <input id="newModelName" type="text" placeholder="예: MX5A EREV" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">모델 설명</div>
+      <input id="newModelDesc" type="text" placeholder="예: 전기차 브레이크 브라켓" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <hr style="border:none;border-top:1px solid #f0f0f0;margin:16px 0">
+    <div style="font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:12px">제품 정보</div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">제품 코드</div>
+      <input id="newProductCode" type="text" placeholder="예: BR0039" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">제품명</div>
+      <input id="newProductName" type="text" placeholder="예: RR BRKT LH#4" style="width:100%;padding:10px;border:1px solid #e4e4e4;border-radius:8px;font-size:13px">
+    </div>
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:700">LH/RH 구분 여부</div>
+      <div style="display:flex;gap:8px">
+        <button id="sideYes" onclick="setSideOpt(true)" style="flex:1;padding:8px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">구분 있음 (LH/RH)</button>
+        <button id="sideNo" onclick="setSideOpt(false)" style="flex:1;padding:8px;background:#f0f0f0;color:#888;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">구분 없음</button>
+      </div>
+      <input type="hidden" id="newProductSide" value="true">
+    </div>
+    <button onclick="saveModel('${customer.id}','${customer.name}')" style="width:100%;padding:12px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">+ 모델/제품 등록</button>
+  `);
+}
+
+function setSideOpt(hasSide){
+  document.getElementById('newProductSide').value = hasSide;
+  document.getElementById('sideYes').style.background = hasSide ? '#1a1a2e' : '#f0f0f0';
+  document.getElementById('sideYes').style.color = hasSide ? '#fff' : '#888';
+  document.getElementById('sideNo').style.background = hasSide ? '#f0f0f0' : '#1a1a2e';
+  document.getElementById('sideNo').style.color = hasSide ? '#888' : '#fff';
+}
+
+function saveModel(customerId, customerName){
+  var modelName = document.getElementById('newModelName').value.trim();
+  var modelDesc = document.getElementById('newModelDesc').value.trim();
+  var productCode = document.getElementById('newProductCode').value.trim();
+  var productName = document.getElementById('newProductName').value.trim();
+  var hasSide = document.getElementById('newProductSide').value === 'true';
+
+  if(!modelName){ alert('모델명을 입력하세요'); return; }
+  if(!productCode){ alert('제품 코드를 입력하세요'); return; }
+  if(!productName){ alert('제품명을 입력하세요'); return; }
+
+  var productId = productCode.toLowerCase().replace(/[^a-z0-9]/g,'');
+  var now = new Date().toISOString().split('T')[0];
+
+  // PRODUCTS에 추가
+  PRODUCTS[productId] = {
+    name: productCode + ' ' + productName,
+    code: productCode,
+    lastDate: now,
+    hasHQ: false,
+    angleNos: [],
+    specMap: {},
+    tolMap: {},
+    partNames: {},
+    vinaAll: {},
+    vinaLH: {},
+    vinaRH: {},
+    customerId: customerId,
+    modelName: modelName,
+    hasSide: hasSide
+  };
+
+  var data = {
+    customerId: customerId,
+    customerName: customerName,
+    modelName: modelName,
+    modelDesc: modelDesc,
+    productCode: productCode,
+    productName: productName,
+    productId: productId,
+    hasSide: hasSide,
+    createdAt: now,
+    approvalStatus: 'pending'
+  };
+
+  // Firebase 저장
+  db.ref('products/' + productId).set(data).then(function(){
+    alert('✅ ' + productCode + ' ' + productName + ' 등록 완료!');
+    closeModal();
+    // 기존 카드 제거 후 재생성
+    var oldCard = document.getElementById('customer_' + customerId);
+    if(oldCard) oldCard.remove();
+    // 고객사 + 전체 제품 다시 불러와서 카드 재생성
+    db.ref('customers/' + customerId).once('value').then(function(snapC){
+      var cust = snapC.val();
+      if(!cust) return;
+      db.ref('products').orderByChild('customerId').equalTo(customerId).once('value').then(function(snapP){
+        var prods = snapP.val() ? Object.values(snapP.val()) : [];
+        addCustomerCard(cust, prods);
+        refreshHomeKPI();
+      });
+    });
+  }).catch(function(err){
+    alert('❌ 저장 실패: ' + err.message);
+  });
+}
+
+function refreshHomeKPI(){
+  // 홈 통계 박스 동적 업데이트
+  var statBoxes = document.querySelectorAll('#screen-home .stat-box .stat-val');
+  if(!statBoxes.length) return;
+  db.ref('customers').once('value').then(function(snapC){
+    var custCount = snapC.val() ? Object.keys(snapC.val()).length : 0;
+    // 고정 고객사(만도, AM사) 포함
+    var totalCust = 2 + custCount;
+    statBoxes[0].textContent = totalCust;
+  });
+  db.ref('products').once('value').then(function(snapP){
+    var prods = snapP.val() ? Object.values(snapP.val()) : [];
+    var approved = prods.filter(function(p){ return p.approvalStatus === 'approved'; }).length;
+    // 고정 제품 포함: 만도 4개 + AM사 3개
+    var totalProds = 7 + prods.length;
+    statBoxes[2].textContent = totalProds;
+    // 승인완료: 고정 1 + Firebase approved
+    var statBox3 = document.querySelectorAll('#screen-home .stat-box')[3];
+    if(statBox3){
+      statBox3.querySelector('.stat-val').textContent = 1 + approved;
+      var sub = statBox3.querySelector('[style*="color:#27ae60"]');
+      if(sub) sub.textContent = (1+approved) + ' / ' + totalProds + ' 제품';
+    }
+  });
+}
+
+// ===== Firebase 동적 데이터 로드 =====
+// Firebase에 저장된 고객사/모델/제품을 불러와 대시보드에 반영
+function loadFirebaseData(){
+  db.ref('customers').once('value').then(function(snapC){
+    var customers = snapC.val() || {};
+    db.ref('products').once('value').then(function(snapP){
+      var products = snapP.val() || {};
+
+      // 고객사별 제품 그룹핑
+      var custProducts = {}; // customerId -> [product]
+      Object.values(products).forEach(function(p){
+        if(!custProducts[p.customerId]) custProducts[p.customerId] = [];
+        custProducts[p.customerId].push(p);
+
+        // PRODUCTS 전역 객체에 등록 (대시보드 진입용)
+        var pid = p.productId;
+        if(!PRODUCTS[pid]){
+          PRODUCTS[pid] = {
+            name: p.productCode + ' ' + p.productName,
+            code: p.productCode,
+            lastDate: p.createdAt ? p.createdAt.split('T')[0] : '-',
+            hasHQ: false,
+            angleNos: [],
+            specMap: {},
+            tolMap: {},
+            partNames: {},
+            vinaAll: {},
+            vinaLH: {},
+            vinaRH: {},
+            customerId: p.customerId,
+            modelName: p.modelName,
+            hasSide: p.hasSide,
+            approvalStatus: p.approvalStatus || 'pending',
+            _fromFirebase: true
+          };
+        }
+      });
+
+      // 고객사 카드 생성
+      Object.values(customers).forEach(function(customer){
+        var prods = custProducts[customer.id] || [];
+        addCustomerCard(customer, prods);
+      });
+
+      // KPI 업데이트
+      refreshHomeKPI();
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  loadFirebaseData();
+});
+
+function goHome(){showScreen('home');updateBC([{label:'🏠 홈',fn:''}]);document.getElementById('topbarRight').innerHTML='관리자: 성우전자 개발팀<br>업데이트: 2026-05-26';}
+function goModel(){showScreen('model');updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'만도'}]);}
+function goProduct(){showScreen('product');updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'만도',fn:'goModel()'},{label:'MX5A EREV'}]);}
+
+function goModelAM(){
+  showScreen('model-am');
+  updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'AM사'}]);
+  document.getElementById('topbarRight').innerHTML='관리자: 성우전자 개발팀<br>고객사: AM Corporation';
+}
+
+function goProductAM(){
+  showScreen('product-am');
+  updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'AM사',fn:'goModelAM()'},{label:'SHIELD CAN'}]);
+}
+
+function goCompare(){
+  showScreen('compare');
+  updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'만도',fn:'goModel()'},{label:'MX5A EREV',fn:'goProduct()'},{label:'HQ vs VINA 비교'}]);
+  // 파일 업로드 초기화
+  hqParsed={};vinaParsed={};
+  document.getElementById('hqName').textContent='파일을 선택하세요';
+  document.getElementById('vinaName').textContent='파일을 선택하세요';
+  document.getElementById('hqBox').classList.remove('done');
+  document.getElementById('vinaBox').classList.remove('done');
+  document.getElementById('runBtn').disabled=true;
+  document.getElementById('cmpSummary').style.display='none';
+  document.getElementById('errorMsg').style.display='none';
+}
+
+function goDashboard(productId){
+  curProduct = PRODUCTS[productId];
+  curDate = 'all';
+  curSide = 'all';
+  showScreen('dashboard');
+  var isAM = ['at5851','ap5010','ap5030'].indexOf(productId) >= 0;
+  if(isAM){
+    updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'AM사',fn:'goModelAM()'},{label:'SHIELD CAN',fn:'goProductAM()'},{label:curProduct.name}]);
+  } else if(curProduct._fromFirebase){
+    updateBC([{label:'🏠 홈',fn:'goHome()'},{label:curProduct.name}]);
+  } else {
+    updateBC([{label:'🏠 홈',fn:'goHome()'},{label:'만도',fn:'goModel()'},{label:'MX5A EREV',fn:'goProduct()'},{label:curProduct.name}]);
+  }
+  document.getElementById('topbarRight').innerHTML='VINA 최근: '+curProduct.lastDate+'<br>Part: '+curProduct.code;
+
+  // HQ vs VINA 탭 별도 화면으로 이동됨
+
+  // LH/RH 필터 숨김 (AM사 제품)
+  var amProducts = ['at5851','ap5010','ap5030'];
+  var filterBar = document.getElementById('filterBar');
+  if(amProducts.indexOf(productId) >= 0){
+    // 구분 버튼 숨김
+    filterBar.querySelectorAll('button').forEach(function(b){
+      if(b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('setSide') >= 0)
+        b.style.display='none';
+    });
+    filterBar.querySelectorAll('span').forEach(function(s){
+      if(s.textContent.trim()==='🔧 구분:') s.style.display='none';
+    });
+    filterBar.querySelectorAll('.filter-sep').forEach(function(s){s.style.display='none';});
+  } else {
+    filterBar.querySelectorAll('button').forEach(function(b){b.style.display='';});
+    filterBar.querySelectorAll('span').forEach(function(s){s.style.display='';});
+    filterBar.querySelectorAll('.filter-sep').forEach(function(s){s.style.display='';});
+  }
+
+  // 날짜 버튼 생성
+  var dates = Object.keys(curProduct.vinaAll);
+  var dateBtns = document.getElementById('dateBtns');
+  dateBtns.innerHTML = "<button class='filter-btn active' onclick='setDate(\"all\",this)'>전체</button>";
+  dates.forEach(function(d){
+    dateBtns.innerHTML += "<button class='filter-btn' onclick='setDate(\""+d+"\"  ,this)'>" + d + "</button>";
+  });
+
+  // 탭 초기화
+  document.querySelectorAll('.tab-content').forEach(function(t){t.classList.remove('active');});
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
+  document.getElementById('dash1').classList.add('active');
+  document.querySelector('.tab').classList.add('active');
+
+  // 차트 완전 초기화
+  if(donutChart){donutChart.destroy();donutChart=null;}
+  if(deviationChart){deviationChart.destroy();deviationChart=null;}
+  if(trendChart){trendChart.destroy();trendChart=null;}
+  document.getElementById('trendLegend').innerHTML='';
+  document.getElementById('tableBody').innerHTML='';
+
+  // Firebase로만 등록된 제품(specMap 미설정) 안내
+  if(curProduct._fromFirebase && Object.keys(curProduct.specMap).length === 0){
+    document.getElementById('tableBody').innerHTML =
+      '<tr><td colspan="10" style="padding:40px;text-align:center;color:#888">'+
+        '<div style="font-size:32px;margin-bottom:12px">📋</div>'+
+        '<div style="font-size:14px;font-weight:700;margin-bottom:6px">Spec 데이터가 없습니다</div>'+
+        '<div style="font-size:12px">📤 위 <strong>파일 선택</strong> 버튼으로 측정 엑셀 파일을 업로드하면<br>Spec이 자동으로 설정되고 차트·테이블이 채워집니다.</div>'+
+      '</td></tr>';
+    // trendChart 영역에도 안내
+    var tc = document.getElementById('trendChart');
+    if(tc){ var ctx=tc.getContext('2d'); ctx.clearRect(0,0,tc.width,tc.height); }
+    document.getElementById('trendLegend').innerHTML = '<span style="color:#aaa;font-size:12px">측정 파일 업로드 후 표시됩니다</span>';
+  } else {
+    buildTrendChart();
+    renderData();
+  }
+
+  // Firebase에서 추가 측정 데이터 불러오기
+  loadProductDataFromFirebase(productId);
+
+  // AP5010 하부스캔 섹션
+  var scanSection = document.getElementById('scanSection');
+  if(curProduct.scanData){
+    scanSection.style.display = 'block';
+    renderScanChart(curProduct.scanData);
+  } else {
+    scanSection.style.display = 'none';
+  }
+}
+
+function switchTab(id,el){
+  document.querySelectorAll('.tab-content').forEach(function(t){t.classList.remove('active');});
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
+  document.getElementById(id).classList.add('active');
+  el.classList.add('active');
+}
+
+function getDataSource(){
+  return curSide==='lh'?curProduct.vinaLH:curSide==='rh'?curProduct.vinaRH:curProduct.vinaAll;
+}
+
+function getSelectedData(){
+  var src=getDataSource();
+  var dates=Object.keys(src);
+  var result={};
+  if(curDate==='all'){
+    var nos=Object.keys(curProduct.specMap).map(Number);
+    nos.forEach(function(no){
+      var vals=dates.map(function(d){return src[d][no];}).filter(function(v){return v!==undefined&&v!==null;});
+      if(vals.length>0) result[no]=vals.reduce(function(a,b){return a+b;},0)/vals.length;
+    });
+  }else{
+    result=src[curDate]||{};
+  }
+  return result;
+}
+
+function getStatus(val,spec,tol,isAngle){
+  if(isAngle)return{status:'참고치수',badgeCls:'bk',sortKey:3,color:'#ccc'};
+  var min=spec-tol,max=spec+tol;
+  if(val<min||val>max)return{status:'🔴 즉시수리',badgeCls:'br',sortKey:0,color:'#c0392b'};
+  var pct=Math.abs((val-spec)/tol*100);
+  if(pct>=70)return{status:'🟡 주의관찰',badgeCls:'by',sortKey:1,color:'#d68910'};
+  return{status:'🟢 정상',badgeCls:'bg',sortKey:2,color:'#1e8449'};
+}
+
+function buildTrendChart(){
+  var src=getDataSource();
+  var dates=Object.keys(src);
+  var nos=Object.keys(curProduct.specMap).map(Number).filter(function(no){
+    return curProduct.angleNos.indexOf(no)<0;
+  });
+
+  // 편차 가장 큰 상위 5개
+  var devMap={};
+  nos.forEach(function(no){
+    var spec=curProduct.specMap[no];
+    var lastDate=dates[dates.length-1];
+    var val=src[lastDate]?src[lastDate][no]:null;
+    if(val!==undefined&&val!==null) devMap[no]=Math.abs((val-spec)/curProduct.tolMap[no]*100);
+  });
+  var topNos=Object.keys(devMap).map(Number).sort(function(a,b){return devMap[b]-devMap[a];}).slice(0,5);
+  var COLORS=['#e74c3c','#f39c12','#2980b9','#27ae60','#9b59b6'];
+
+  var datasets=topNos.map(function(no,i){
+    var spec=curProduct.specMap[no],tol=curProduct.tolMap[no];
+    var data=dates.map(function(d){
+      var val=src[d]?src[d][no]:null;
+      return val!==undefined&&val!==null?parseFloat(((val-spec)/tol*100).toFixed(2)):null;
+    });
+    return{label:'No.'+no,data:data,borderColor:COLORS[i],backgroundColor:'transparent',pointRadius:5,borderWidth:2,tension:0.3,borderDash:i>=3?[4,3]:[]};
+  });
+
+  var legendEl=document.getElementById('trendLegend');
+  legendEl.innerHTML='';
+  topNos.forEach(function(no,i){
+    var span=document.createElement('span');
+    span.innerHTML='<span class="ld" style="background:'+COLORS[i]+'"></span>No.'+no+' '+(curProduct.partNames[no]||'');
+    legendEl.appendChild(span);
+  });
+
+  if(trendChart)trendChart.destroy();
+  trendChart=new Chart(document.getElementById('trendChart'),{
+    type:'line',data:{labels:dates,datasets:datasets},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:11}},grid:{display:false}},
+        y:{ticks:{font:{size:10},callback:function(v){return v+'%';}},
+          grid:{color:'rgba(0,0,0,0.05)'},
+          title:{display:true,text:'Spec 중앙 대비 편차(%)',font:{size:10},color:'#888'}}}}
+  });
+}
+
+function renderData(){
+  var selectedData=getSelectedData();
+  var tbody=document.getElementById('tableBody');
+  tbody.innerHTML='';
+  var rows=[],redCnt=0,yelCnt=0,grnCnt=0,devData=[];
+  var nos=Object.keys(curProduct.specMap).map(Number);
+
+  nos.forEach(function(no){
+    var spec=curProduct.specMap[no],tol=curProduct.tolMap[no];
+    var isAngle=curProduct.angleNos.indexOf(no)>=0;
+    var val=selectedData[no];
+    if(val===undefined||val===null)return;
+    var st=getStatus(val,spec,tol,isAngle);
+    var min=spec-tol,max=spec+tol;
+
+    var src=getDataSource();
+    var dates=Object.keys(src);
+    var trendTxt='<span style="color:#999">-</span>';
+    if(!isAngle&&dates.length>=2){
+      var last=src[dates[dates.length-1]]?src[dates[dates.length-1]][no]:null;
+      var prev=src[dates[dates.length-2]]?src[dates[dates.length-2]][no]:null;
+      if(last!==null&&prev!==null){
+        var lastDev=Math.abs(last-spec),prevDev=Math.abs(prev-spec);
+        if(lastDev-prevDev>0.003)trendTxt='<span class="trend-up">↗ 악화</span>';
+        else if(lastDev-prevDev<-0.003)trendTxt='<span class="trend-dn">↘ 개선</span>';
+        else trendTxt='<span class="trend-fl">→ 유지</span>';
+      }
+    }
+
+    var devPct=isAngle?null:((val-spec)/tol*100).toFixed(1);
+    var posLabel=isAngle?'-':(devPct>0?'+':'')+devPct+'%';
+    var posColor=isAngle?'#ccc':Math.abs(devPct)>=70?'#c0392b':Math.abs(devPct)>=40?'#d68910':'#1e8449';
+
+    if(!isAngle){
+      if(st.sortKey===0)redCnt++;
+      else if(st.sortKey===1)yelCnt++;
+      else grnCnt++;
+      devData.push({no:no,pct:Math.abs(devPct),color:st.color});
+    }
+    rows.push({no:no,spec:spec,tol:tol,val:val,min:min,max:max,isAngle:isAngle,st:st,trendTxt:trendTxt,devPct:devPct,posLabel:posLabel,posColor:posColor});
+  });
+
+  rows.sort(function(a,b){return a.st.sortKey-b.st.sortKey;});
+  rows.forEach(function(r){
+    var tr=document.createElement('tr');
+    if(r.isAngle)tr.classList.add('angle-row');
+    tr.innerHTML=
+      '<td><strong style="color:'+(r.isAngle?'#ccc':'#222')+'">'+r.no+'</strong></td>'+
+      '<td class="left"><span class="part-name">'+(curProduct.partNames[r.no]||'No.'+r.no)+'</span>'+
+        (r.isAngle?'<span style="display:inline-block;background:#f0f0f0;color:#999;font-size:9px;padding:1px 6px;border-radius:3px;margin-left:4px">각도</span>':'')+
+      '</td>'+
+      '<td>'+r.spec+'</td><td>±'+r.tol+'</td>'+
+      '<td style="color:'+(r.isAngle?'#ccc':'#555')+'">'+r.min.toFixed(3)+'</td>'+
+      '<td style="color:'+(r.isAngle?'#ccc':'#555')+'">'+r.max.toFixed(3)+'</td>'+
+      '<td><strong style="color:'+(r.isAngle?'#ccc':r.st.color)+'">'+r.val.toFixed(4)+'</strong></td>'+
+      '<td><span style="color:'+r.posColor+';font-weight:600">'+r.posLabel+'</span></td>'+
+      '<td>'+r.trendTxt+'</td>'+
+      '<td><span class="badge '+r.st.badgeCls+'">'+r.st.status+'</span></td>';
+    tbody.appendChild(tr);
+  });
+
+  var totalNos=nos.filter(function(no){return selectedData[no]!==undefined&&selectedData[no]!==null;});
+  document.getElementById('kpi-total').textContent=totalNos.length;
+  document.getElementById('kpi-red').textContent=redCnt;
+  document.getElementById('kpi-yellow').textContent=yelCnt;
+  document.getElementById('kpi-green').textContent=grnCnt;
+  var dateLabel=curDate==='all'?'전체':curDate;
+  var sideLabel=curSide==='lh'?'LH':curSide==='rh'?'RH':'ALL';
+  document.getElementById('kpi-sel').textContent=dateLabel+'·'+sideLabel;
+  document.getElementById('filterLabel').textContent=(curDate==='all'?'전체 평균':curDate)+' · '+(curSide==='all'?'LH+RH':curSide.toUpperCase());
+
+  if(donutChart)donutChart.destroy();
+  donutChart=new Chart(document.getElementById('donutChart'),{
+    type:'doughnut',
+    data:{labels:['즉시수리','주의관찰','정상'],datasets:[{data:[redCnt,yelCnt,grnCnt],backgroundColor:['#e74c3c','#f39c12','#27ae60'],borderWidth:0}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{display:false}}}
+  });
+
+  devData.sort(function(a,b){return b.pct-a.pct;});
+  if(deviationChart)deviationChart.destroy();
+  deviationChart=new Chart(document.getElementById('deviationChart'),{
+    type:'bar',
+    data:{labels:devData.map(function(d){return'No.'+d.no;}),datasets:[{data:devData.map(function(d){return d.pct;}),backgroundColor:devData.map(function(d){return d.color;}),borderWidth:0,borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{display:false}},
+        y:{ticks:{font:{size:10},callback:function(v){return v+'%';}},grid:{color:'rgba(0,0,0,0.05)'},max:100}}}
+  });
+}
+
+function detectFileType(arr){
+  for(var i=0;i<Math.min(20,arr.length);i++){
+    var row = arr[i];
+    if(!row) continue;
+    // 하부스캔: 규격 허용 편차
+    if(row[0] && String(row[0]).indexOf('규격 허용 편차') >= 0) return 'scan';
+    // VINA Measurement Data: Cavity=열0, No=열1
+    if(row[0] && String(row[0]).indexOf('Cavity') >= 0 &&
+       row[1] && String(row[1]).indexOf('No') >= 0) return 'dimension';
+    // HQ 형식: No=열4, 기준치수=열6
+    if(row[4] && String(row[4]).trim()==='No' &&
+       row[6] && String(row[6]).indexOf('기준치수') >= 0) return 'dimension_hq';
+  }
+  return 'unknown';
+}
+
+function parseDimensionFile(wb){
+  var result = {};
+  var dateLabel = null;
+
+  wb.SheetNames.forEach(function(sname){
+    var ws = wb.Sheets[sname];
+    var arr = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+    // 날짜 추출 - 여러 형식 지원
+    for(var i=0;i<Math.min(10,arr.length);i++){
+      if(!arr[i]) continue;
+      for(var j=0;j<arr[i].length;j++){
+        var v = arr[i][j];
+        if(!v) continue;
+        var vs = String(v);
+        // 'Date : 25/04/2026' 형식 (DD/MM/YYYY) → MM/DD로 저장
+        var m1 = vs.match(/Date\s*:\s*(\d{2})\/(\d{2})\/(\d{4})/);
+        if(m1){ dateLabel = m1[2]+'/'+m1[1]; break; }
+        // 'Date : 2026-05-08' 형식
+        var m2 = vs.match(/Date\s*:\s*\d{4}-(\d{2})-(\d{2})/);
+        if(m2){ dateLabel = m2[1]+'/'+m2[2]; break; }
+        // '측정일자' 다음 셀 (엑셀 날짜 숫자)
+        if(vs.indexOf('측정일자') >= 0){
+          var dv = arr[i][j+2] || arr[i][j+1];
+          if(dv && typeof dv === 'number'){
+            var d = new Date((dv-25569)*86400*1000);
+            dateLabel = String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0');
+          }
+        }
+      }
+      if(dateLabel) break;
+    }
+
+    arr.forEach(function(row){
+      if(!row||!row.length) return;
+
+      // VINA Measurement Data: No=열1, Spec=열4, Average=열12
+      var no = null;
+      var noRaw = row[1];
+      if(noRaw !== null && noRaw !== undefined){
+        var n = parseFloat(String(noRaw).trim());
+        if(!isNaN(n) && n>=1 && n<=50 && Math.abs(n-Math.round(n))<0.01)
+          no = Math.round(n);
+      }
+
+      if(no){
+        var spec = pNum(row[4]);
+        var avg = pNum(row[12]); // Average 열
+        if(avg===null||avg===0){
+          // 측정값 열7~11 평균
+          var vals=[], v;
+          for(var c=7;c<=11;c++){v=pNum(row[c]);if(v!==null&&v!==0)vals.push(v);}
+          if(vals.length>0){avg=vals.reduce(function(a,b){return a+b;},0)/vals.length;}
+        }
+        if(spec!==null && avg!==null && avg!==0){
+          if(!result[no]) result[no]={spec:spec,vals:[]};
+          result[no].vals.push(avg);
+        }
+      }
+    });
+  });
+
+  var parsed = {};
+  var specMap = {};
+  var tolMap = {};
+  Object.keys(result).forEach(function(no){
+    var d = result[no];
+    var sum=0;
+    for(var i=0;i<d.vals.length;i++) sum+=d.vals[i];
+    var ni = parseInt(no);
+    parsed[ni] = sum/d.vals.length;
+    if(d.spec !== null && d.spec !== undefined){
+      specMap[ni] = d.spec;
+      // spec 크기에 따라 기본 tol 자동 설정
+      tolMap[ni] = Math.abs(d.spec) <= 5 ? 0.05 : (Math.abs(d.spec) <= 15 ? 0.2 : 0.5);
+    }
+  });
+
+  return {date: dateLabel, data: parsed, specMap: specMap, tolMap: tolMap};
+}
+
+function parseHQFile(wb){
+  var result = {};
+  var specMap = {};
+  var tolMap = {};
+  var partNames = {};
+  var dateLabel = null;
+
+  wb.SheetNames.forEach(function(sname){
+    var ws = wb.Sheets[sname];
+    var arr = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+    // 날짜 추출 - 행7(index 6)의 열4(index 4)
+    for(var i=0; i<Math.min(15, arr.length); i++){
+      var row = arr[i];
+      if(!row) continue;
+      // '측정일자' 행 찾기
+      for(var j=0; j<row.length; j++){
+        if(row[j] && String(row[j]).indexOf('측정일자') >= 0){
+          // 같은 행 또는 다음 셀에서 날짜값 찾기
+          var dv = row[j+2] || row[j+1] || row[j+3];
+          if(dv && typeof dv === 'number' && dv > 40000){
+            var d = new Date((dv - 25569) * 86400 * 1000);
+            dateLabel = String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0');
+          } else if(dv && typeof dv === 'string'){
+            var dm = dv.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+            if(dm) dateLabel = dm[2].padStart(2,'0') + '/' + dm[3].padStart(2,'0');
+          }
+        }
+      }
+      if(dateLabel) break;
+    }
+
+    // 데이터 행 파싱
+    // 컬럼: [1]금형차수 [2]CavityNo [3]장비 [4]No [5]항목 [6]기준치수 [7]공차+ [8]공차- [9]관리상한 [10]관리하한 [11]Max [12]Min [13]판정 [14]측정값
+    arr.forEach(function(row){
+      if(!row || row.length < 12) return;
+
+      var noRaw = row[4];
+      if(noRaw === null || noRaw === undefined || noRaw === 'No' || noRaw === '항 목') return;
+
+      // No 파싱 - 숫자 또는 '26-1' 같은 형식 → 정수부만 사용
+      var no = null;
+      var noStr = String(noRaw).trim();
+      var noMatch = noStr.match(/^(\d+)/);
+      if(noMatch){
+        no = parseInt(noMatch[1]);
+      }
+      if(!no || no < 1 || no > 200) return;
+
+      var spec    = pNum(row[6]);   // 기준치수
+      var tolPlus = pNum(row[7]);   // 공차(+)
+      var tolMinus= pNum(row[8]);   // 공차(-)
+      var measVal = pNum(row[14]);  // 측정값 (열14, 첫번째 측정값)
+      if(measVal === null) measVal = pNum(row[11]); // Max값 fallback
+
+      var partName = row[5] ? String(row[5]).trim() : ('No.'+no);
+
+      if(spec !== null && measVal !== null && measVal !== 0){
+        if(!result[no]){
+          result[no] = {spec: spec, tolPlus: tolPlus, tolMinus: tolMinus, vals: [], name: partName};
+        }
+        result[no].vals.push(measVal);
+        if(!partNames[no]) partNames[no] = partName;
+      }
+    });
+  });
+
+  var parsed = {};
+  Object.keys(result).forEach(function(no){
+    var d = result[no];
+    if(!d.vals.length) return;
+    var ni = parseInt(no);
+    var sum = 0;
+    d.vals.forEach(function(v){ sum += v; });
+    parsed[ni] = sum / d.vals.length;
+    specMap[ni] = d.spec;
+    // tol: 공차+ 와 공차- 의 평균, 없으면 크기 기반 자동 설정
+    var tp = d.tolPlus !== null ? d.tolPlus : null;
+    var tm = d.tolMinus !== null ? d.tolMinus : null;
+    if(tp !== null && tm !== null){
+      tolMap[ni] = (tp + tm) / 2;
+    } else {
+      tolMap[ni] = Math.abs(d.spec) <= 5 ? 0.05 : (Math.abs(d.spec) <= 15 ? 0.2 : 0.5);
+    }
+  });
+
+  if(!dateLabel) dateLabel = 'unknown';
+  return {date: dateLabel, data: parsed, specMap: specMap, tolMap: tolMap, partNames: partNames};
+}
+
+function parseScanFile(wb){
+  var ws = wb.Sheets[wb.SheetNames[0]];
+  var arr = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  var spec = pNum(arr[0][1]) || 0.08;
+  var maxVals = [];
+
+  for(var i=3;i<arr.length;i++){
+    var row = arr[i];
+    if(!row || !row[0] || String(row[0]).indexOf('제품') < 0) continue;
+    var maxVal = pNum(row[11]);
+    if(maxVal !== null) maxVals.push(maxVal);
+  }
+
+  if(maxVals.length === 0) return null;
+
+  var sum=0, maxV=0, minV=999;
+  var dist=[0,0,0,0,0];
+  maxVals.forEach(function(v){
+    sum+=v;
+    if(v>maxV) maxV=v;
+    if(v<minV) minV=v;
+    if(v<0.02) dist[0]++;
+    else if(v<0.04) dist[1]++;
+    else if(v<0.06) dist[2]++;
+    else if(v<0.08) dist[3]++;
+    else dist[4]++;
+  });
+
+  return {
+    spec: spec,
+    total: maxVals.length,
+    avg: Math.round(sum/maxVals.length*10000)/10000,
+    max: maxV,
+    min: minV,
+    pass: maxVals.filter(function(v){return v<=spec;}).length,
+    fail: maxVals.filter(function(v){return v>spec;}).length,
+    dist: dist
+  };
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  var measFile = document.getElementById('measFile');
+  if(measFile){
+    measFile.addEventListener('change', function(){
+      if(!this.files[0]) return;
+      var file = this.files[0];
+      document.getElementById('measFileName').textContent = file.name + ' 읽는 중...';
+      document.getElementById('measStatus').style.display='none';
+
+      var reader = new FileReader();
+      reader.onload = function(e){
+        try{
+          var wb = XLSX.read(e.target.result, {type:'array'});
+          var ws = wb.Sheets[wb.SheetNames[0]];
+          var arr = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+          var fileType = detectFileType(arr);
+
+          if(fileType === 'dimension'){
+            var result = parseDimensionFile(wb);
+            if(Object.keys(result.data).length === 0){
+              document.getElementById('measFileName').textContent = '⚠️ 데이터를 읽지 못했습니다';
+              return;
+            }
+            // 파일명에서 날짜 추출 우선 (26MMDD 형식)
+            var fnMatch = file.name.match(/26(\d{2})(\d{2})/);
+            var label = fnMatch ? fnMatch[1]+'/'+fnMatch[2] : (result.date || '신규');
+
+            // Firebase 제품: specMap/tolMap 자동 채우기 (첫 업로드 시)
+            if(curProduct._fromFirebase && Object.keys(curProduct.specMap).length === 0){
+              if(result.specMap && Object.keys(result.specMap).length > 0){
+                curProduct.specMap = result.specMap;
+                curProduct.tolMap  = result.tolMap || {};
+                // partNames 자동 생성 (No.1, No.2 ...)
+                Object.keys(result.specMap).forEach(function(no){
+                  if(!curProduct.partNames[parseInt(no)])
+                    curProduct.partNames[parseInt(no)] = 'No.' + no;
+                });
+                // Firebase에 specMap 저장 (다음 로드 시 재사용)
+                var pid = curProduct.code.split(" ")[0].toLowerCase();
+                db.ref('products/' + pid + '/specMap').set(result.specMap);
+                db.ref('products/' + pid + '/tolMap').set(result.tolMap || {});
+              }
+            }
+
+            // 기존 날짜와 중복 체크
+            var existingDates = Object.keys(curProduct.vinaAll);
+            if(existingDates.indexOf(label) < 0){
+              // 새 날짜 추가
+              curProduct.vinaAll[label] = result.data;
+              curProduct.vinaLH[label] = result.data;
+              curProduct.vinaRH[label] = result.data;
+            } else {
+              // 기존 날짜 업데이트
+              curProduct.vinaAll[label] = result.data;
+            }
+
+            // 날짜 버튼 재생성
+            var dates = Object.keys(curProduct.vinaAll);
+            var dateBtns = document.getElementById('dateBtns');
+            dateBtns.innerHTML = '';
+            var allBtn = document.createElement('button');
+            allBtn.className = 'filter-btn active';
+            allBtn.textContent = '전체';
+            allBtn.onclick = function(){ setDate('all', this); };
+            dateBtns.appendChild(allBtn);
+            dates.forEach(function(d){
+              var btn = document.createElement('button');
+              btn.className = 'filter-btn';
+              btn.textContent = d;
+              btn.onclick = (function(date){ return function(){ setDate(date, this); }; })(d);
+              dateBtns.appendChild(btn);
+            });
+
+            // 차트/테이블 업데이트
+            curDate = 'all';
+            buildTrendChart();
+            renderData();
+
+            document.getElementById('measFileName').textContent = '✅ '+file.name;
+            document.getElementById('measStatus').textContent = '📊 치수측정 데이터 반영완료! 날짜: '+label+' ('+Object.keys(result.data).length+'개 항목)';
+            document.getElementById('measStatus').style.display='block';
+            document.getElementById('measStatus').style.color='#27ae60';
+            // Firebase 자동 저장
+            saveMeasData(curProduct.code.split(' ')[0].toLowerCase(), label, result.data);
+
+          } else if(fileType === 'dimension_hq'){
+            var result = parseHQFile(wb);
+            if(Object.keys(result.data).length === 0){
+              document.getElementById('measFileName').textContent = '⚠️ 데이터를 읽지 못했습니다';
+              return;
+            }
+            // 파일명에서 날짜 추출 우선 (26MMDD 형식)
+            var fnMatch = file.name.match(/26(\d{2})(\d{2})/);
+            var label = fnMatch ? fnMatch[1]+'/'+fnMatch[2] : (result.date || '신규');
+
+            // Firebase 제품: specMap/tolMap/partNames 자동 채우기 (첫 업로드 시)
+            if(curProduct._fromFirebase && Object.keys(curProduct.specMap).length === 0){
+              if(result.specMap && Object.keys(result.specMap).length > 0){
+                curProduct.specMap = result.specMap;
+                curProduct.tolMap  = result.tolMap || {};
+                curProduct.partNames = result.partNames || {};
+                var pid = curProduct.code.split(' ')[0].toLowerCase();
+                db.ref('products/' + pid + '/specMap').set(result.specMap);
+                db.ref('products/' + pid + '/tolMap').set(result.tolMap || {});
+              }
+            }
+
+            // 기존 날짜와 중복 체크
+            var existingDates = Object.keys(curProduct.vinaAll);
+            if(existingDates.indexOf(label) < 0){
+              curProduct.vinaAll[label] = result.data;
+              curProduct.vinaLH[label] = result.data;
+              curProduct.vinaRH[label] = result.data;
+            } else {
+              curProduct.vinaAll[label] = result.data;
+            }
+
+            // 날짜 버튼 재생성
+            var dates = Object.keys(curProduct.vinaAll);
+            var dateBtns = document.getElementById('dateBtns');
+            dateBtns.innerHTML = '';
+            var allBtn = document.createElement('button');
+            allBtn.className = 'filter-btn active';
+            allBtn.textContent = '전체';
+            allBtn.onclick = function(){ setDate('all', this); };
+            dateBtns.appendChild(allBtn);
+            dates.forEach(function(d){
+              var btn = document.createElement('button');
+              btn.className = 'filter-btn';
+              btn.textContent = d;
+              btn.onclick = (function(date){ return function(){ setDate(date, this); }; })(d);
+              dateBtns.appendChild(btn);
+            });
+
+            curDate = 'all';
+            buildTrendChart();
+            renderData();
+
+            document.getElementById('measFileName').textContent = '✅ '+file.name;
+            document.getElementById('measStatus').textContent = '📊 본사 측정 데이터 반영완료! 날짜: '+label+' ('+Object.keys(result.data).length+'개 항목)';
+            document.getElementById('measStatus').style.display='block';
+            document.getElementById('measStatus').style.color='#27ae60';
+            saveMeasData(curProduct.code.split(' ')[0].toLowerCase(), label, result.data);
+
+          } else if(fileType === 'scan'){
+            var scanResult = parseScanFile(wb);
+            if(!scanResult){
+              document.getElementById('measFileName').textContent = '⚠️ 스캔 데이터를 읽지 못했습니다';
+              return;
+            }
+            curProduct.scanData = scanResult;
+            var scanSection = document.getElementById('scanSection');
+            scanSection.style.display = 'block';
+            renderScanChart(scanResult);
+
+            document.getElementById('measFileName').textContent = '✅ '+file.name;
+            document.getElementById('measStatus').textContent = '📐 하부스캔 데이터 반영완료! 측정수: '+scanResult.total+'개 (합격률: '+Math.round(scanResult.pass/scanResult.total*100)+'%)';
+            document.getElementById('measStatus').style.display='block';
+
+          } else {
+            document.getElementById('measFileName').textContent = '⚠️ 지원하지 않는 파일 형식입니다';
+          }
+        }catch(err){
+          document.getElementById('measFileName').textContent = '❌ 오류: '+err.message;
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+});
+
+function renderScanChart(scanData){
+  // 분포 바차트
+  var sc = document.getElementById('scanChart');
+  if(sc._chart) sc._chart.destroy();
+  sc._chart = new Chart(sc, {
+    type:'bar',
+    data:{
+      labels:['0~0.02','0.02~0.04','0.04~0.06','0.06~0.08','0.08↑'],
+      datasets:[{
+        data: scanData.dist,
+        backgroundColor:['#27ae60','#2ecc71','#f39c12','#e67e22','#e74c3c'],
+        borderWidth:0, borderRadius:4
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{ticks:{font:{size:10}}, grid:{display:false}},
+        y:{ticks:{font:{size:10}}, grid:{color:'rgba(0,0,0,0.05)'},
+           title:{display:true, text:'제품수(개)', font:{size:10}, color:'#888'}}
+      }
+    }
+  });
+
+  // 합격/불합격 도넛
+  var sd = document.getElementById('scanDonut');
+  if(sd._chart) sd._chart.destroy();
+  sd._chart = new Chart(sd, {
+    type:'doughnut',
+    data:{
+      labels:['합격','불합격'],
+      datasets:[{
+        data:[scanData.pass, scanData.fail],
+        backgroundColor:['#27ae60','#e74c3c'],
+        borderWidth:0
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      cutout:'65%',
+      plugins:{
+        legend:{display:true, position:'bottom', labels:{font:{size:10}}},
+        tooltip:{callbacks:{label:function(c){return c.label+': '+c.parsed+'개 ('+Math.round(c.parsed/scanData.total*100)+'%)'}}}
+      }
+    }
+  });
+}
+
+function setDate(date,btn){
+  document.querySelectorAll('#dateBtns .filter-btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  curDate=date;
+  buildTrendChart();
+  renderData();
+}
+
+function setSide(side,btn){
+  document.querySelectorAll('.filter-bar .filter-btn').forEach(function(b){
+    if(b.getAttribute('onclick')&&b.getAttribute('onclick').indexOf('setSide')>=0)
+      b.classList.remove('active','lh-active','rh-active');
+  });
+  if(side==='lh')btn.classList.add('lh-active');
+  else if(side==='rh')btn.classList.add('rh-active');
+  else btn.classList.add('active');
+  curSide=side;
+  document.getElementById('trendSideLabel').textContent=side==='lh'?'(LH)':side==='rh'?'(RH)':'(LH+RH 평균)';
+  buildTrendChart();
+  renderData();
+}
+
+// ===== TAB2 =====
+var hqParsed={},vinaParsed={};
+function pNum(v){if(v===null||v===undefined)return null;var n=parseFloat(String(v).trim());return isNaN(n)?null:n;}
+function pInt(v){if(v===null||v===undefined)return null;var n=pNum(v);if(n===null)return null;var i=Math.round(n);return(i>=1&&i<=50&&Math.abs(n-i)<0.01)?i:null;}
+
+document.getElementById('hqFile').addEventListener('change',function(){if(this.files[0])readFile('hq',this.files[0]);});
+document.getElementById('vinaFile').addEventListener('change',function(){if(this.files[0])readFile('vina',this.files[0]);});
+
+function readFile(type,file){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:'array'});
+      var result={};
+      for(var si=0;si<wb.SheetNames.length;si++){
+        var ws=wb.Sheets[wb.SheetNames[si]];
+        var arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
+        for(var ri=0;ri<arr.length;ri++){
+          var row=arr[ri];
+          if(!row||!row.length)continue;
+          if(type==='hq'){
+            var no=pInt(row[3]);
+            if(no){
+              var spec=pNum(row[5]);
+              var avg=pNum(row[15]);
+              if(avg!==null&&avg!==0){
+                if(!result[no])result[no]={spec:spec,vals:[]};
+                result[no].vals.push(avg);
+              }
+            }
+          }else{
+            var no2=pInt(row[1]);
+            if(no2){
+              var val=pNum(row[9]);
+              if(val!==null){
+                if(!result[no2])result[no2]={vals:[]};
+                result[no2].vals.push(val);
+              }
+            }
+          }
+        }
+      }
+      var parsed={};
+      var keys=Object.keys(result);
+      for(var ki=0;ki<keys.length;ki++){
+        var k=parseInt(keys[ki]);
+        var d=result[k];
+        if(d.vals.length>0){
+          var sum=0;
+          for(var vi=0;vi<d.vals.length;vi++)sum+=d.vals[vi];
+          parsed[k]={avg:sum/d.vals.length,spec:d.spec};
+        }
+      }
+      var foundNos=Object.keys(parsed).map(Number).sort(function(a,b){return a-b;});
+      if(type==='hq'){
+        hqParsed=parsed;
+        document.getElementById('hqName').textContent='✅ '+file.name+' ('+foundNos.length+'개)';
+        document.getElementById('hqBox').classList.add('done');
+      }else{
+        vinaParsed=parsed;
+        document.getElementById('vinaName').textContent='✅ '+file.name+' ('+foundNos.length+'개)';
+        document.getElementById('vinaBox').classList.add('done');
+      }
+      if(Object.keys(hqParsed).length>0&&Object.keys(vinaParsed).length>0)
+        document.getElementById('runBtn').disabled=false;
+    }catch(err){
+      document.getElementById('errorMsg').textContent='파일 읽기 오류: '+err.message;
+      document.getElementById('errorMsg').style.display='block';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function toP(val,vMin,vRange){return Math.min(Math.max(((val-vMin)/vRange)*100,1),99);}
+
+function analyze(){
+  document.getElementById('errorMsg').style.display='none';
+  var cards=document.getElementById('cmpCards');
+  cards.innerHTML='';
+  var rc=0,yc=0,gc=0,total=0;
+  var specMap=curProduct?curProduct.specMap:{};
+  var tolMap=curProduct?curProduct.tolMap:{};
+  var partNames=curProduct?curProduct.partNames:{};
+  var angleNos=curProduct?curProduct.angleNos:[];
+  var allNos=Object.keys(hqParsed).map(Number).filter(function(no){return vinaParsed[no];});
+
+  allNos.forEach(function(no){
+    var hq=hqParsed[no],vina=vinaParsed[no];
+    var spec=hq.spec||specMap[no]||0,tol=tolMap[no]||0.5;
+    var isAngle=angleNos.indexOf(no)>=0;
+    var gap=Math.abs(hq.avg-vina.avg);
+    total++;
+    var cls,badge,badgeTxt,gapColor,gapTxt;
+    if(isAngle){cls='ref';badge='bk';badgeTxt='각도참고';gapColor='#aaa';gapTxt='-';}
+    else if(gap>=0.1){cls='danger';badge='br';badgeTxt='🔴 즉시수리';gapColor='#c0392b';gapTxt=gap.toFixed(3);rc++;}
+    else if(gap>=0.05){cls='warn';badge='by';badgeTxt='🟡 주의관찰';gapColor='#d68910';gapTxt=gap.toFixed(3);yc++;}
+    else{cls='ok';badge='bg';badgeTxt='🟢 정상';gapColor='#1e8449';gapTxt=gap.toFixed(3);gc++;}
+    var min=spec-tol,max=spec+tol;
+    var vMin=spec-tol*1.8,vRange=(spec+tol*1.8)-vMin;
+    var sL=toP(min,vMin,vRange),sR=toP(max,vMin,vRange);
+    var nomP=toP(spec,vMin,vRange),hqP=toP(hq.avg,vMin,vRange),vinaP=toP(vina.avg,vMin,vRange);
+    var hqOut=hq.avg<min||hq.avg>max,vinaOut=vina.avg<min||vina.avg>max;
+    cards.innerHTML+=
+      '<div class="cmp-card '+cls+'">'+
+        '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">'+
+          '<div style="width:28px;height:28px;border-radius:50%;background:#1a1a2e;color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+no+'</div>'+
+          '<div>'+
+            '<div style="font-size:13px;font-weight:700">'+(partNames[no]||'No.'+no)+'</div>'+
+            '<div style="font-size:11px;color:#888">Spec: '+spec+' ± '+tol+' &nbsp; 범위: '+min.toFixed(3)+' ~ '+max.toFixed(3)+'</div>'+
+          '</div>'+
+          '<div style="display:flex;gap:14px;font-size:11px;flex-wrap:wrap;margin-left:auto">'+
+            '<span style="color:#2980b9;font-weight:600">🔵 HQ: '+hq.avg.toFixed(4)+(hqOut?' ⚠️':'')+'</span>'+
+            '<span style="color:#e74c3c;font-weight:600">🔴 VINA: '+vina.avg.toFixed(4)+(vinaOut?' ⚠️':'')+'</span>'+
+            '<span style="color:'+gapColor+';font-weight:600">Gap: '+gapTxt+'</span>'+
+            '<span class="badge '+badge+'">'+badgeTxt+'</span>'+
+          '</div>'+
+        '</div>'+
+        '<div class="sp-wrap">'+
+          '<div class="sp-track"></div>'+
+          '<div class="sp-range" style="left:'+sL+'%;width:'+(sR-sL)+'%"></div>'+
+          '<div class="sp-nom" style="left:'+nomP+'%"></div>'+
+          '<div class="dot-hq" style="left:'+hqP+'%"></div>'+
+          '<div class="dot-vina" style="left:'+vinaP+'%"></div>'+
+          '<div class="sp-lbl" style="left:'+sL+'%">'+min.toFixed(2)+'</div>'+
+          '<div class="sp-lbl sp-lbl-c" style="left:'+nomP+'%">'+spec+'</div>'+
+          '<div class="sp-lbl" style="left:'+sR+'%">'+max.toFixed(2)+'</div>'+
+        '</div>'+
+      '</div>';
+  });
+
+  document.getElementById('c-total').textContent=total;
+  document.getElementById('c-red').textContent=rc;
+  document.getElementById('c-yellow').textContent=yc;
+  document.getElementById('c-green').textContent=gc;
+  document.getElementById('cmpSummary').style.display='block';
+  document.getElementById('cmpSummary').scrollIntoView({behavior:'smooth'});
+}
+</script>
+</body>
+</html>
