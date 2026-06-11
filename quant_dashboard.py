@@ -195,6 +195,104 @@ def kis_debug_info():
     except Exception as _e:
         return [], [str(_e)]
 
+# ══════════════════════════════════════════
+# V8.9.1 하드 서킷 브레이커 & 방어 모듈
+# ══════════════════════════════════════════
+
+MACRO_EVENTS_1TIER = [
+    # "2026-06-18",  # FOMC 예시
+]
+
+def check_macro_blackout():
+    from datetime import datetime
+    _now = datetime.now()
+    for _ev in MACRO_EVENTS_1TIER:
+        try:
+            _ev_dt = datetime.strptime(_ev, "%Y-%m-%d")
+            _diff  = abs((_now - _ev_dt).total_seconds() / 3600)
+            if _diff <= 48:
+                return True, f"🚫 매크로 블랙아웃 — {_ev} 이벤트 {_diff:.0f}시간 이내 (OBSERVE_ONLY)"
+        except:
+            pass
+    return False, ""
+
+def check_index_shutdown():
+    try:
+        import yfinance as yf
+        _results = {}
+        for _name, _sym in [("코스피","^KS11"), ("코스닥","^KQ11")]:
+            _h = yf.Ticker(_sym).history(period="2d", interval="1d")
+            if len(_h) >= 2:
+                _chg = (_h['Close'].iloc[-1] / _h['Close'].iloc[-2] - 1) * 100
+                _results[_name] = round(_chg, 2)
+        _kospi_chg  = _results.get("코스피", 0)
+        _kosdaq_chg = _results.get("코스닥", 0)
+        if _kospi_chg <= -2.0 or _kosdaq_chg <= -2.0:
+            _reason = (
+                f"🚨 지수 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
+                f"(-2.0% 급락) | 개별 지지선 무효 / 신규 매수 차단"
+            )
+            return True, _reason, _kospi_chg, _kosdaq_chg
+        return False, "", _kospi_chg, _kosdaq_chg
+    except Exception as _e:
+        return False, f"지수 조회 오류: {_e}", 0, 0
+
+def check_smart_killswitch(ticker, entry_price, current_price):
+    if entry_price <= 0:
+        return 'SAFE', ""
+    _chg_pct = (current_price - entry_price) / entry_price * 100
+    if _chg_pct <= -10.0:
+        return 'EXECUTE_MARKET_SELL', (
+            f"🚨 하드 서킷 브레이커! 진입가 {entry_price:,.0f} 대비 {_chg_pct:.2f}% (-10%) → EXECUTE_MARKET_SELL"
+        )
+    if _chg_pct <= -7.0:
+        try:
+            import yfinance as yf
+            _is_korean = ticker.isdigit() and len(ticker) == 6
+            _sym = f"{ticker}.KS" if _is_korean else ticker
+            _df  = yf.Ticker(_sym).history(period="10d", interval="1d")
+            if _df is not None and len(_df) >= 6:
+                _vol_today = _df['Volume'].iloc[-1]
+                _vol_5d    = _df['Volume'].iloc[-6:-1].mean()
+                _vol_ratio = _vol_today / _vol_5d if _vol_5d > 0 else 1.0
+                if _vol_ratio < 0.5:
+                    return 'HOLD_AND_VERIFY_1HR', (
+                        f"⚠️ 스마트 킬스위치 — {_chg_pct:.2f}% (거래량 {_vol_ratio*100:.0f}% — 투매 아님) → HOLD_AND_VERIFY_1HR"
+                    )
+                else:
+                    return 'EXECUTE_MARKET_SELL', (
+                        f"🚨 킬스위치 — {_chg_pct:.2f}% (거래량 {_vol_ratio*100:.0f}% — 실제 투매) → EXECUTE_MARKET_SELL"
+                    )
+        except:
+            pass
+        return 'EXECUTE_MARKET_SELL', f"🚨 킬스위치 — {_chg_pct:.2f}% → EXECUTE_MARKET_SELL"
+    return 'SAFE', ""
+
+def run_v891_system_check(ticker="", entry_price=0, current_price=0):
+    _alerts = []; _can_enter = True; _killswitch = 'SAFE'
+    _bo, _bo_msg = check_macro_blackout()
+    if _bo:
+        _can_enter = False
+        _alerts.append(_bo_msg)
+    _sd, _sd_msg, _kospi_chg, _kosdaq_chg = check_index_shutdown()
+    if _sd:
+        _can_enter = False
+        _alerts.append(_sd_msg)
+    if ticker and entry_price > 0 and current_price > 0:
+        _ks_action, _ks_msg = check_smart_killswitch(ticker, entry_price, current_price)
+        _killswitch = _ks_action
+        if _ks_action != 'SAFE':
+            _alerts.append(_ks_msg)
+    return {
+        'can_enter':  _can_enter,
+        'killswitch': _killswitch,
+        'alerts':     _alerts,
+        'blackout':   _bo,
+        'shutdown':   _sd,
+        'kospi_chg':  _kospi_chg,
+        'kosdaq_chg': _kosdaq_chg,
+    }
+
 def get_gsheet():
     """Google Sheets 연결 (캐시 — 연결 1회만)"""
     creds_dict = dict(st.secrets["gcp_service_account"])
