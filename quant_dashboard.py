@@ -546,96 +546,195 @@ if 'scan_done' not in st.session_state:
 if 'watchlist_data' not in st.session_state:
     st.session_state.watchlist_data = DEFAULT_WATCHLIST
 
-# ── 스타일 ──
+# ── 스타일 (Young & Modern Fintech) ──
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+KR:wght@400;700&display=swap');
 
+/* ── 전역 배경 ── */
 html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', sans-serif;
-    background-color: #0a0e1a;
-    color: #e0e6f0;
+    font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
+    background-color: #0d1117;
+    color: #f0f4ff;
 }
-.stApp { background-color: #0a0e1a; }
+.stApp {
+    background: linear-gradient(135deg, #0d1117 0%, #0f172a 50%, #0d1117 100%);
+}
 
-/* 카드 */
-.metric-card {
-    background: linear-gradient(135deg, #111827 0%, #1a2235 100%);
-    border: 1px solid #1e3a5f;
+/* ── 탭 스타일 ── */
+.stTabs [data-baseweb="tab-list"] {
+    background: rgba(255,255,255,0.03);
+    border-radius: 16px;
+    padding: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
     border-radius: 12px;
-    padding: 16px 20px;
+    color: #94a3b8;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 8px 16px;
+    transition: all 0.2s;
+}
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 15px rgba(99,102,241,0.4);
+}
+
+/* ── 메트릭 카드 ── */
+.metric-card {
+    background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 18px 22px;
     margin-bottom: 12px;
+    backdrop-filter: blur(10px);
+    transition: border-color 0.2s;
+}
+.metric-card:hover {
+    border-color: rgba(99,102,241,0.4);
 }
 .metric-card .label {
     font-size: 11px;
-    color: #6b7fa3;
+    color: #64748b;
     text-transform: uppercase;
     letter-spacing: 1.5px;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
 }
 .metric-card .value {
-    font-size: 24px;
+    font-size: 22px;
     font-weight: 700;
-    font-family: 'IBM Plex Mono', monospace;
-    margin-top: 4px;
+    font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+    margin-top: 6px;
+    letter-spacing: -0.5px;
 }
-.up   { color: #ff4d6d; }
-.down { color: #4da6ff; }
-.flat { color: #a0b0c8; }
 
-/* 신호 뱃지 */
+/* ── 색상 ── */
+.up   { color: #f43f5e; }
+.down { color: #38bdf8; }
+.flat { color: #94a3b8; }
+
+/* ── 신호 뱃지 ── */
 .badge {
     display: inline-block;
-    padding: 2px 10px;
+    padding: 3px 10px;
     border-radius: 20px;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.5px;
     margin: 2px;
 }
-.badge-buy    { background: #1a3a2a; color: #4dff91; border: 1px solid #2d6644; }
-.badge-sell   { background: #3a1a1a; color: #ff6b6b; border: 1px solid #6b2d2d; }
-.badge-watch  { background: #1a2a3a; color: #6bbfff; border: 1px solid #2d4a6b; }
-.badge-neutral{ background: #1e2535; color: #8899bb; border: 1px solid #2d3a55; }
+.badge-buy     { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
+.badge-sell    { background: rgba(244,63,94,0.15);  color: #fb7185; border: 1px solid rgba(251,113,133,0.3); }
+.badge-watch   { background: rgba(56,189,248,0.15); color: #7dd3fc; border: 1px solid rgba(125,211,252,0.3); }
+.badge-neutral { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.2); }
 
-/* Gemini 결과 박스 */
+/* ── Gemini 결과 박스 ── */
 .gemini-box {
-    background: #0f1726;
-    border-left: 3px solid #4da6ff;
-    border-radius: 0 8px 8px 0;
-    padding: 16px 20px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.05) 100%);
+    border-left: 3px solid #6366f1;
+    border-radius: 0 12px 12px 0;
+    padding: 18px 22px;
     font-size: 14px;
-    line-height: 1.7;
+    line-height: 1.8;
     white-space: pre-wrap;
-    font-family: 'Noto Sans KR', sans-serif;
+    font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
+    border-top: 1px solid rgba(99,102,241,0.2);
+    border-right: 1px solid rgba(99,102,241,0.1);
+    border-bottom: 1px solid rgba(99,102,241,0.1);
 }
 
-/* 사이드바 */
+/* ── 사이드바 ── */
 [data-testid="stSidebar"] {
-    background-color: #080c18;
-    border-right: 1px solid #1e3a5f;
+    background: linear-gradient(180deg, #0a0f1e 0%, #0d1117 100%);
+    border-right: 1px solid rgba(255,255,255,0.06);
+}
+[data-testid="stSidebar"] .stMarkdown {
+    color: #cbd5e1;
 }
 
-/* 구분선 */
-hr { border-color: #1e3a5f; }
-
-/* 테이블 */
-.watchlist-row {
-    display: flex;
-    align-items: center;
-    padding: 10px 0;
-    border-bottom: 1px solid #1a2535;
-    gap: 12px;
+/* ── 버튼 ── */
+.stButton > button {
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    transition: all 0.2s !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    border: none !important;
+    box-shadow: 0 4px 15px rgba(99,102,241,0.3) !important;
+    color: white !important;
+}
+.stButton > button[kind="primary"]:hover {
+    box-shadow: 0 6px 20px rgba(99,102,241,0.5) !important;
+    transform: translateY(-1px) !important;
+}
+.stButton > button[kind="secondary"] {
+    background: rgba(255,255,255,0.05) !important;
+    color: #94a3b8 !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background: rgba(255,255,255,0.1) !important;
+    color: #f0f4ff !important;
 }
 
-/* ── 모바일 반응형 ── */
+/* ── 입력 필드 ── */
+.stTextInput input, .stNumberInput input, .stSelectbox select {
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 10px !important;
+    color: #f0f4ff !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus {
+    border-color: rgba(99,102,241,0.5) !important;
+    box-shadow: 0 0 0 2px rgba(99,102,241,0.2) !important;
+}
+
+/* ── expander ── */
+.streamlit-expanderHeader {
+    background: rgba(255,255,255,0.03) !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    color: #cbd5e1 !important;
+}
+
+/* ── 구분선 ── */
+hr { border-color: rgba(255,255,255,0.06); }
+
+/* ── 제목 ── */
+h1 { 
+    background: linear-gradient(135deg, #f0f4ff, #a5b4fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+}
+h3 { color: #e2e8f0; font-weight: 700; }
+
+/* ── 테이블 (dataframe) ── */
+.stDataFrame {
+    border-radius: 12px !important;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+}
+
+/* ── 알림 박스 ── */
+.stAlert {
+    border-radius: 12px !important;
+}
+
+/* ── 모바일 ── */
 @media (max-width: 768px) {
-    .metric-card { padding: 10px 12px; }
+    .metric-card { padding: 12px 14px; }
     .metric-card .value { font-size: 18px; }
     .metric-card .label { font-size: 10px; }
     .badge { font-size: 10px; padding: 2px 7px; }
     .gemini-box { font-size: 13px; padding: 12px 14px; }
-    .stTabs [data-baseweb="tab"] { font-size: 11px; padding: 5px 6px; }
+    .stTabs [data-baseweb="tab"] { font-size: 11px; padding: 6px 8px; }
     h1, h2, h3 { font-size: 16px !important; }
 }
 /* 탭 스타일 */
@@ -1006,7 +1105,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     # ── 레이아웃 ──
     fig.update_layout(
         title=dict(text=f'<b>{name}</b>', font=dict(size=16, color='#e0e6f0'), x=0.01),
-        paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
+        paper_bgcolor='#0d1117', plot_bgcolor='#0f1723',
         font=dict(color='#8899bb', size=11),
         xaxis_rangeslider_visible=False,
         height=820,
@@ -1062,7 +1161,7 @@ with st.sidebar:
     for _t, _n in _sb_pairs:
         _t = _t.strip(); _n = _n.strip()
         _sc1, _sc2 = st.columns([3, 1])
-        _sc1.markdown(f"<div style='font-size:12px; padding:4px 0'><b>{_n}</b><br><span style='color:#475569; font-size:10px'>{_t}</span></div>", unsafe_allow_html=True)
+        _sc1.markdown(f"<div style='font-size:12px; padding:4px 0'><b>{_n}</b><br><span style='color:#64748b; font-size:10px'>{_t}</span></div>", unsafe_allow_html=True)
         if _sc2.button("✕", key=f"sb_del_{_t}"):
             _new_lines = [l for l in _sb_lines if not l.startswith(_t + ",")]
             _new_wl = "\n".join(_new_lines)
@@ -1101,7 +1200,7 @@ with st.sidebar:
             st.warning("코드와 이름 입력")
 
     n = len(_sb_pairs)
-    st.markdown(f"<div style='font-size:11px; color:#4dff91'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
 
     lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
 
@@ -1112,7 +1211,7 @@ with st.sidebar:
         "models/gemini-3.1-pro-preview",
     ])
 
-    st.markdown(f"<div style='font-size:10px; color:#475569; text-align:center'>마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:10px; color:#64748b; text-align:center'>마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
     refresh = st.button("🔄 강제 새로고침", use_container_width=True)
     if refresh:
         st.cache_data.clear()
@@ -1122,7 +1221,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("""
-    <div style='font-size:11px; color:#475569; line-height:1.8'>
+    <div style='font-size:11px; color:#64748b; line-height:1.8'>
     📌 <b>보완 규칙 적용 중</b><br>
     • R:R 2.0 미만 기각<br>
     • 손절 -7% 킬스위치<br>
@@ -1169,12 +1268,12 @@ st.markdown("""
     <span style='font-size:28px; font-weight:800; font-family:"IBM Plex Mono",monospace;
                  background:linear-gradient(90deg,#4da6ff,#a78bfa); -webkit-background-clip:text;
                  -webkit-text-fill-color:transparent'>퀀트 관제탑</span>
-    <span style='font-size:12px; color:#475569; font-family:"IBM Plex Mono",monospace'>V8.9</span>
+    <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V8.9</span>
 </div>
 """, unsafe_allow_html=True)
 
 now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
-st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
+st.markdown(f"<div style='font-size:12px; color:#64748b; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
 # ── 전역 데이터 초기화 ──
@@ -1254,8 +1353,8 @@ with tab_a:
             _rsi_ch = '#ff4d6d' if _lh['RSI']>=70 else '#4da6ff' if _lh['RSI']<=30 else '#6b7fa3'
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                f"padding:8px 12px;background:#111827;border-radius:8px;margin-bottom:4px;border:1px solid #1e3a5f'>"
-                f"<span><b>{_nh}</b> <span style='color:#475569;font-size:11px'>({_th})</span></span>"
+                f"padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;margin-bottom:4px;border:1px solid rgba(255,255,255,0.08)'>"
+                f"<span><b>{_nh}</b> <span style='color:#64748b;font-size:11px'>({_th})</span></span>"
                 f"<span style='display:flex;gap:10px;align-items:center'>"
                 f"<span style='font-family:IBM Plex Mono'>{format_price(_lh['종가'],_th)}</span>"
                 f"<span style='color:{_cch}'>{_chgh:+.2f}%</span>"
@@ -1311,7 +1410,7 @@ with tab_b:
                 _kis_price = kis_get_price(sel_ticker)
             _display_price = _kis_price['현재가'] if _kis_price else l['종가']
             _display_chg   = _kis_price['등락률'] if _kis_price else chg
-            _kis_badge     = " <span style='font-size:10px;color:#4dff91'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#475569'>● 지연</span>"
+            _kis_badge     = " <span style='font-size:10px;color:#34d399'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#64748b'>● 지연</span>"
             _cur_fmt  = format_price(_display_price, sel_ticker)
             m1.markdown(f"<div class='metric-card'><div class='label'>현재가{_kis_badge}</div><div class='value flat'>{_cur_fmt}</div></div>", unsafe_allow_html=True)
             m2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value {chg_color}'>{chg:+.2f}%</div></div>", unsafe_allow_html=True)
@@ -1345,7 +1444,7 @@ with tab_b:
                 rr_text  = '✅ 진입 가능' if rr >= 2.0 else '❌ R:R 부족 (2.0 미만 기각)'
                 st.markdown(
                     f"<div class='metric-card' style='display:inline-block; padding:10px 20px'>"
-                    f"<span style='color:#6b7fa3; font-size:11px'>R:R 비율</span> "
+                    f"<span style='color:#64748b; font-size:11px'>R:R 비율</span> "
                     f"<span style='color:{rr_color}; font-size:20px; font-weight:700; font-family:IBM Plex Mono'> {rr}</span> "
                     f"<span style='color:{rr_color}; font-size:13px'>{rr_text}</span>"
                     f"</div>",
@@ -1583,7 +1682,7 @@ with tab_c:
         for idx, ticker in enumerate(scan_tickers):
             prog.progress((idx+1)/len(scan_tickers))
             name = name_map.get(ticker, ticker)
-            status.markdown(f"<span style='font-size:12px;color:#6b7fa3'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+            status.markdown(f"<span style='font-size:12px;color:#64748b'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
             try:
                 if market_type == "미국(S&P500)":
@@ -1733,7 +1832,7 @@ with tab_c:
         _is_added_scan = _sel_scan_item['ticker'] in _sc_ids
 
         if _is_added_scan:
-            _ab1.markdown("<div style='color:#4dff91;padding:8px 0'>✅ 이미 추가됨</div>", unsafe_allow_html=True)
+            _ab1.markdown("<div style='color:#34d399;padding:8px 0'>✅ 이미 추가됨</div>", unsafe_allow_html=True)
         else:
             if _ab1.button("⭐ 관심종목 추가", key="scan_ind_add", use_container_width=True):
                 try:
@@ -1785,12 +1884,12 @@ with tab_c:
                     _target2_s = round(_entry_s * 1.20)
                     _rr2_s     = round((_target2_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
                     st.markdown(
-                        f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-bottom:8px'>"
+                        f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-bottom:8px'>"
                         f"<div style='display:flex;gap:16px;flex-wrap:wrap;align-items:center'>"
-                        f"<span>🎯 <b>매수가</b> <span style='color:#ffd166;font-size:16px'>{_entry_s:,.0f}원</span></span>"
-                        f"<span>🛑 <b>손절가</b> <span style='color:#ff4d6d;font-size:16px'>{_stop_s:,.0f}원</span> <span style='color:#6b7fa3;font-size:11px'>(-7%)</span></span>"
-                        f"<span>🎯 <b>1차목표</b> <span style='color:#4dff91;font-size:16px'>{round(_target_s):,.0f}원</span></span>"
-                        f"<span>🎯 <b>2차목표</b> <span style='color:#4dff91;font-size:16px'>{_target2_s:,.0f}원</span> <span style='color:#6b7fa3;font-size:11px'>(+20%)</span></span>"
+                        f"<span>🎯 <b>매수가</b> <span style='color:#fbbf24;font-size:16px'>{_entry_s:,.0f}원</span></span>"
+                        f"<span>🛑 <b>손절가</b> <span style='color:#f43f5e;font-size:16px'>{_stop_s:,.0f}원</span> <span style='color:#64748b;font-size:11px'>(-7%)</span></span>"
+                        f"<span>🎯 <b>1차목표</b> <span style='color:#34d399;font-size:16px'>{round(_target_s):,.0f}원</span></span>"
+                        f"<span>🎯 <b>2차목표</b> <span style='color:#34d399;font-size:16px'>{_target2_s:,.0f}원</span> <span style='color:#64748b;font-size:11px'>(+20%)</span></span>"
                         f"<span>📊 <b>R:R</b> <span style='color:{_rr_c_s};font-size:16px;font-weight:700'>{_rr_s}</span>"
                         f"{'  ✅ 진입가능' if _rr_s>=2 else '  ❌ R:R부족'}</span>"
                         f"</div></div>",
@@ -1814,11 +1913,11 @@ with tab_c:
             _gcache = f"gem_cache_{_sel_scan_item['ticker']}"
             st.markdown("#### 🤖 Gemini 정밀분석")
             st.markdown(
-                f"<div style='background:#0a1a2a;border:1px solid #1e3a5f;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;color:#6b7fa3'>"
-                f"분석 대상: <b style='color:#e0e6f0'>{_sel_scan_item['name']}</b> | "
-                f"현재가: <b style='color:#ffd166'>{_sel_scan_item['현재가']:,.0f}원</b> | "
+                f"<div style='background:rgba(99,102,241,0.06);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;color:#64748b'>"
+                f"분석 대상: <b style='color:#f0f4ff'>{_sel_scan_item['name']}</b> | "
+                f"현재가: <b style='color:#fbbf24'>{_sel_scan_item['현재가']:,.0f}원</b> | "
                 f"RSI: <b>{_sel_scan_item['RSI']:.1f}</b> | "
-                f"점수: <b style='color:#ffd166'>{_sel_scan_item['score']}점</b>"
+                f"점수: <b style='color:#fbbf24'>{_sel_scan_item['score']}점</b>"
                 f"</div>",
                 unsafe_allow_html=True
             )
@@ -2039,7 +2138,7 @@ with tab_d:
             _ac      = '#4dff91' if row['ADX']>=25 else '#ff4d6d'
             _rank    = '🥇' if _is_top else f"{_i+1}위"
             _tag     = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">100% 스위칭 타겟</span>' if _is_top else ''
-            _dead_tag= ' <span style="color:#475569;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
+            _dead_tag= ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
             _already = row['종목코드'] in _etf_wl_ids
 
             st.markdown(
@@ -2047,19 +2146,19 @@ with tab_d:
                 f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
-                f"<span style='color:#475569;font-size:11px'> ({row['종목코드']})</span>"
+                f"<span style='color:#64748b;font-size:11px'> ({row['종목코드']})</span>"
                 f"{_tag}{_dead_tag}</div>"
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
                 f"<div style='display:flex;gap:20px;margin-top:8px'>"
-                f"<span style='font-size:12px;color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{row['현재가']:,.0f}</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{row.get('RSI',0)}</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>MACD <b style='color:#e0e6f0'>{row.get('MACD','')}</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>Z <b style='color:#e0e6f0'>{row.get('Z-Score',0):+.2f}</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>모멘텀 <b style='color:#e0e6f0'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
-                f"<span style='font-size:12px;color:#a0b0c8'>정배열 <b>{row.get('정배열','')}</b></span>"
-                f"<span style='font-size:12px;color:#ffd166'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{row['현재가']:,.0f}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
+                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
                 f"</div></div>",
                 unsafe_allow_html=True
             )
@@ -2067,7 +2166,7 @@ with tab_d:
             # 관심종목 추가 버튼
             _eb1, _eb2 = st.columns([1, 4])
             if _already:
-                _eb1.markdown("<div style='color:#4dff91;font-size:12px;padding:4px 0'>✅ 추가됨</div>", unsafe_allow_html=True)
+                _eb1.markdown("<div style='color:#34d399;font-size:12px;padding:4px 0'>✅ 추가됨</div>", unsafe_allow_html=True)
             else:
                 if _eb1.button("⭐ 추가", key=f"etf_add_{_i}_{row['종목코드']}"):
                     try:
@@ -2339,10 +2438,10 @@ with tab_e:
         for _idx, (_tk, _nm) in enumerate(_pairs):
             _ca, _cb = st.columns([5, 1])
             _ca.markdown(
-                f"<div style='padding:10px; background:#111827; border-radius:8px;"
-                f"border:1px solid #1e3a5f; margin-bottom:6px'>"
+                f"<div style='padding:10px; background:rgba(255,255,255,0.04); border-radius:8px;"
+                f"border:1px solid rgba(255,255,255,0.08); margin-bottom:6px'>"
                 f"<b>{_nm}</b>&nbsp;&nbsp;"
-                f"<code style='color:#475569;font-size:11px'>{_tk}</code></div>",
+                f"<code style='color:#64748b;font-size:11px'>{_tk}</code></div>",
                 unsafe_allow_html=True
             )
             _cb.button(
@@ -2421,7 +2520,7 @@ with tab_e:
                     f"border:1px solid {'#2d6644' if _done else '#1e3a5f'};"
                     f"margin-bottom:6px'>"
                     f"<b>{_nm2}</b>&nbsp;"
-                    f"<code style='color:#475569;font-size:11px'>{_tk2}</code>&nbsp;"
+                    f"<code style='color:#64748b;font-size:11px'>{_tk2}</code>&nbsp;"
                     f"<span style='color:{_cc}'>{_chg:+.2f}%</span>"
                     f"{'&nbsp;✅' if _done else ''}</div>",
                     unsafe_allow_html=True
@@ -2503,18 +2602,18 @@ with tab_e:
                 _ks_action = _ks_result['killswitch']
 
                 st.markdown(
-                    f"<div style='background:#111827;border:2px solid {'#ff4d6d' if _kill_alert else '#1e3a5f'};border-radius:10px;padding:14px;margin-bottom:8px'>"
+                    f"<div style='background:rgba(255,255,255,0.04);border:2px solid {'#ff4d6d' if _kill_alert else '#1e3a5f'};border-radius:10px;padding:14px;margin-bottom:8px'>"
                     f"<div style='display:flex;justify-content:space-between'>"
-                    f"<b style='font-size:15px'>{_pos['name']} <span style='color:#475569;font-size:12px'>({_pos['ticker']})</span></b>"
+                    f"<b style='font-size:15px'>{_pos['name']} <span style='color:#64748b;font-size:12px'>({_pos['ticker']})</span></b>"
                     f"<span class='{_pc}' style='font-size:16px;font-weight:700'>{_pos_pct:+.2f}%</span></div>"
                     f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px'>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>수량</div><div style='font-weight:700'>{_pos['qty']:,}주</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평단가</div><div style='font-weight:700'>{_pos['avg_price']:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>현재가</div><div style='font-weight:700'>{_cur_p:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평가금액</div><div style='font-weight:700'>{_pos_val:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#6b7fa3'>평가손익</div><div class='{_pc}' style='font-weight:700'>{_pos_pnl:+,.0f}원</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>수량</div><div style='font-weight:700'>{_pos['qty']:,}주</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평단가</div><div style='font-weight:700'>{_pos['avg_price']:,.0f}원</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-weight:700'>{_cur_p:,.0f}원</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가금액</div><div style='font-weight:700'>{_pos_val:,.0f}원</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가손익</div><div class='{_pc}' style='font-weight:700'>{_pos_pnl:+,.0f}원</div></div>"
                     f"</div>"
-                    f"<div style='margin-top:8px;font-size:12px;color:#ff4d6d'>킬스위치 기준: {_kill:,.0f}원 (-7%)"
+                    f"<div style='margin-top:8px;font-size:12px;color:#f43f5e'>킬스위치 기준: {_kill:,.0f}원 (-7%)"
                     f"{'  🚨 킬스위치 발동! 즉각 매도 검토' if _kill_alert else ''}</div>"
                     f"</div>",
                     unsafe_allow_html=True
@@ -2561,9 +2660,9 @@ with tab_e:
             _buy_cur = 0
 
         _bc2.markdown(
-            f"<div style='background:#0f1726;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-top:28px'>"
-            f"현재가: <b style='font-size:18px;color:#ffd166'>{_buy_cur:,.0f}원</b> | "
-            f"현금잔고: <b style='color:#4dff91'>{_acc['cash']:,.0f}원</b></div>",
+            f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
+            f"현재가: <b style='font-size:18px;color:#fbbf24'>{_buy_cur:,.0f}원</b> | "
+            f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
             unsafe_allow_html=True
         )
 
@@ -2577,7 +2676,7 @@ with tab_e:
         _brow4.markdown(
             f"<div style='padding-top:28px'>"
             f"필요금액: <b>{_buy_total:,.0f}원</b><br>"
-            f"<span style='font-size:11px;color:#6b7fa3'>슬리피지 반영: {_net_buy_preview:,.0f}원/주</span></div>",
+            f"<span style='font-size:11px;color:#64748b'>슬리피지 반영: {_net_buy_preview:,.0f}원/주</span></div>",
             unsafe_allow_html=True
         )
 
@@ -2943,10 +3042,10 @@ with tab_e:
                                 _hc = 'up' if _h['수익률'] >= 0 else 'down'
                                 _kill_warn = _h['수익률'] <= -6.5
                                 st.markdown(
-                                    f"<div style='background:#111827;border:1px solid {'#ff4d6d' if _kill_warn else '#1e3a5f'};border-radius:8px;padding:10px;margin-bottom:6px'>"
-                                    f"<b>{_h['종목명']}</b> <span style='color:#475569;font-size:11px'>({_h['종목코드']})</span>"
+                                    f"<div style='background:rgba(255,255,255,0.04);border:1px solid {'#ff4d6d' if _kill_warn else '#1e3a5f'};border-radius:8px;padding:10px;margin-bottom:6px'>"
+                                    f"<b>{_h['종목명']}</b> <span style='color:#64748b;font-size:11px'>({_h['종목코드']})</span>"
                                     f"{'  🚨 킬스위치 임박!' if _kill_warn else ''}<br>"
-                                    f"<span style='font-size:12px;color:#a0b0c8'>"
+                                    f"<span style='font-size:12px;color:#94a3b8'>"
                                     f"수량 {_h['수량']:,}주 | 평단 {_h['평단가']:,.0f} | 현재 {_h['현재가']:,.0f} | "
                                     f"<span class='{_hc}'>{_h['수익률']:+.2f}% ({_h['평가손익']:+,.0f}원)</span>"
                                     f"</span></div>",
@@ -2964,7 +3063,7 @@ with tab_e:
                                 _pc = 'up' if _price_data['등락률'] >= 0 else 'down'
                                 st.markdown(
                                     f"<div style='display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a2535'>"
-                                    f"<span><b>{_n}</b> <span style='color:#475569;font-size:11px'>({_t})</span></span>"
+                                    f"<span><b>{_n}</b> <span style='color:#64748b;font-size:11px'>({_t})</span></span>"
                                     f"<span class='{_pc}' style='font-family:IBM Plex Mono'>"
                                     f"{_price_data['현재가']:,.0f}원 ({_price_data['등락률']:+.2f}%)</span>"
                                     f"</div>",
@@ -3012,8 +3111,8 @@ with tab_e:
             cols_header = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
             headers = ['종목', '현재가', '등락', 'RSI', 'MA5', 'MA20', '거래량비율', '신호']
         for col, h in zip(cols_header, headers):
-            col.markdown(f"<div style='font-size:10px; color:#475569; text-transform:uppercase; letter-spacing:1px'>{h}</div>", unsafe_allow_html=True)
-        st.markdown("<hr style='margin:6px 0; border-color:#1a2535'>", unsafe_allow_html=True)
+            col.markdown(f"<div style='font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px'>{h}</div>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:6px 0; border-color:rgba(255,255,255,0.06)'>", unsafe_allow_html=True)
 
         total = len(TICKERS)
         prog_bar = st.progress(0, text="데이터 로딩 중...")
@@ -3041,7 +3140,7 @@ with tab_e:
                 cols = st.columns([2, 1.5, 1, 2])
                 cols[0].markdown(
                     f"<b style='font-size:13px'>{name}</b><br>"
-                    f"<span style='font-size:10px; color:#475569'>{ticker}</span>",
+                    f"<span style='font-size:10px; color:#64748b'>{ticker}</span>",
                     unsafe_allow_html=True)
                 cols[1].markdown(
                     f"<span style='font-family:IBM Plex Mono; font-size:14px; font-weight:700'>{l['종가']:,.0f}</span><br>"
@@ -3053,12 +3152,12 @@ with tab_e:
                 cols[3].markdown(badge_html, unsafe_allow_html=True)
             else:
                 cols = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
-                cols[0].markdown(f"<b style='font-size:13px'>{name}</b><br><span style='font-size:10px; color:#475569; font-family:IBM Plex Mono'>{ticker}</span>", unsafe_allow_html=True)
+                cols[0].markdown(f"<b style='font-size:13px'>{name}</b><br><span style='font-size:10px; color:#64748b; font-family:IBM Plex Mono'>{ticker}</span>", unsafe_allow_html=True)
                 cols[1].markdown(f"<span style='font-family:IBM Plex Mono; font-size:13px; font-weight:600'>{l['종가']:,.0f}</span>", unsafe_allow_html=True)
                 cols[2].markdown(f"<span class='{chg_color}' style='font-family:IBM Plex Mono; font-size:13px'>{chg:+.2f}%</span>", unsafe_allow_html=True)
                 cols[3].markdown(f"<span style='color:{rsi_color}; font-family:IBM Plex Mono; font-size:13px'>{l['RSI']:.1f}</span>", unsafe_allow_html=True)
-                cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA5']:,.0f}</span>", unsafe_allow_html=True)
-                cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#8899bb'>{l['MA20']:,.0f}</span>", unsafe_allow_html=True)
+                cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{l['MA5']:,.0f}</span>", unsafe_allow_html=True)
+                cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{l['MA20']:,.0f}</span>", unsafe_allow_html=True)
                 cols[6].markdown(f"<span style='color:{vol_color}; font-family:IBM Plex Mono; font-size:12px'>{volr:.0f}%</span>", unsafe_allow_html=True)
                 cols[7].markdown(badge_html, unsafe_allow_html=True)
 
@@ -3085,8 +3184,8 @@ with tab_e:
 
             c1.markdown(f"<div class='metric-card'><div class='label'>매수신호</div><div class='value up'>{buy_cnt}종목</div></div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='metric-card'><div class='label'>매도신호</div><div class='value down'>{sell_cnt}종목</div></div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='metric-card'><div class='label'>과매도(RSI≤35)</div><div class='value' style='color:#4da6ff'>{oversold}종목</div></div>", unsafe_allow_html=True)
-            c4.markdown(f"<div class='metric-card'><div class='label'>과매수(RSI≥65)</div><div class='value' style='color:#ff4d6d'>{overbought}종목</div></div>", unsafe_allow_html=True)
+            c3.markdown(f"<div class='metric-card'><div class='label'>과매도(RSI≤35)</div><div class='value' style='color:#38bdf8'>{oversold}종목</div></div>", unsafe_allow_html=True)
+            c4.markdown(f"<div class='metric-card'><div class='label'>과매수(RSI≥65)</div><div class='value' style='color:#f43f5e'>{overbought}종목</div></div>", unsafe_allow_html=True)
 
 
     # ══════════════════════════════════════════
@@ -3094,4 +3193,4 @@ with tab_e:
     # ══════════════════════════════════════════
 
 st.markdown("---")
-st.markdown("<div style='text-align:center;font-size:11px;color:#2d3a55;font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;font-size:11px;color:rgba(255,255,255,0.1);font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
