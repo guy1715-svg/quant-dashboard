@@ -1177,6 +1177,11 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#475569; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
+# ── 전역 데이터 초기화 ──
+if 'all_data_cache' not in st.session_state:
+    st.session_state.all_data_cache = {}
+all_data = st.session_state.all_data_cache
+
 tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리"])
 
 
@@ -2886,6 +2891,28 @@ with tab_e:
 
     with _sub_e4:
         st.markdown("### 관심 종목 현황")
+        # 데이터 로드
+        if not all_data:
+            _lookback = 80
+            all_data = {}
+            total = len(TICKERS)
+            prog_bar = st.progress(0, text="데이터 로딩 중...")
+            for idx, (ticker, name) in enumerate(TICKERS):
+                prog_bar.progress((idx+1)/max(total,1), text=f"📡 {name} ({idx+1}/{total})")
+                df = fetch_ohlcv(ticker, _lookback)
+                if df is None or len(df) < 20:
+                    import yfinance as yf
+                    try:
+                        _yt = yf.Ticker(ticker)
+                        _h  = _yt.history(period="3mo", interval="1d")
+                        if not _h.empty:
+                            df = _h.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(_lookback)
+                    except: pass
+                if df is None or len(df) < 20: continue
+                df = calc_indicators(df)
+                all_data[ticker] = {'name': name, 'df': df}
+            prog_bar.empty()
+            st.session_state.all_data_cache = all_data
 
         # ── KIS 실시간 연동 ──
         # V8.9.1 지수 셧다운 체크 (현황판)
