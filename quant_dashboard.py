@@ -2283,8 +2283,8 @@ with tab5:
 # 탭 6: ETF 로테이션 랭킹판
 # ══════════════════════════════════════════
 with tab6:
-    st.markdown("### 🔄 ADX/Z-Score 기반 7대 ETF 로테이션 랭킹판")
-    st.caption("ADX 25 미만은 추세 없음으로 탈락. 1위 ETF에 100% 스위칭 권고.")
+    st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
+    st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
 
     ETF_LIST = [
         # 삼성증권 HTS 기준 ETF 종목코드
@@ -2308,28 +2308,135 @@ with tab6:
         for ticker, name, mkt in ETF_LIST:
             try:
                 _sym = f"{ticker}.KS"
-                _df  = yf.Ticker(_sym).history(period="6mo", interval="1d")
-                if _df is None or len(_df) < 30:
-                    results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,'ADX':0,'Z-Score':0,'상태':'데이터없음'})
+                _df  = yf.Ticker(_sym).history(period="1y", interval="1d")
+                if _df is None or len(_df) < 60:
+                    results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,
+                                    'ADX':0,'RSI':0,'MACD신호':'','Z-Score':0,
+                                    '모멘텀(20일)':0,'거래량비율':0,'종합점수':0,'상태':'데이터없음'})
                     continue
-                _df = _df.rename(columns={'High':'고가','Low':'저가','Close':'종가'})
-                _hi = _df['고가']; _lo = _df['저가']; _cl = _df['종가']
-                _tr  = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
-                _atr = _tr.rolling(14).mean()
-                _pdm = _hi.diff().clip(lower=0)
-                _ndm = (-_lo.diff()).clip(lower=0)
-                _pdi = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
-                _ndi = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
-                _dx  = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
-                _adx = _dx.rolling(14).mean().iloc[-1]
+
+                _df  = _df.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})
+                _hi  = _df['고가']; _lo = _df['저가']; _cl = _df['종가']; _vol = _df['거래량']
+
+                # ── ADX(14) ──
+                _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
+                _atr  = _tr.rolling(14).mean()
+                _pdm  = _hi.diff().clip(lower=0)
+                _ndm  = (-_lo.diff()).clip(lower=0)
+                _pdi  = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
+                _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
+                _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
+                _adx  = round(_dx.rolling(14).mean().iloc[-1], 1)
+
+                # ── RSI(14) ──
+                _delta = _cl.diff()
+                _gain  = _delta.clip(lower=0).rolling(14).mean()
+                _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
+                _rs    = _gain / _loss.replace(0, np.nan)
+                _rsi   = round((100 - 100/(1+_rs)).iloc[-1], 1)
+
+                # ── MACD(12,26,9) ──
+                _ema12  = _cl.ewm(span=12).mean()
+                _ema26  = _cl.ewm(span=26).mean()
+                _macd   = _ema12 - _ema26
+                _signal = _macd.ewm(span=9).mean()
+                _macd_v = _macd.iloc[-1]; _sig_v = _signal.iloc[-1]
+                _macd_p = _macd.iloc[-2]; _sig_p = _signal.iloc[-2]
+                if _macd_v > _sig_v and _macd_p <= _sig_p:
+                    _macd_sig = '🟢골든크로스'
+                elif _macd_v > _sig_v:
+                    _macd_sig = '▲상승'
+                elif _macd_v < _sig_v and _macd_p >= _sig_p:
+                    _macd_sig = '🔴데드크로스'
+                else:
+                    _macd_sig = '▼하락'
+
+                # ── Z-Score(20일) ──
                 _ret = _cl.pct_change()
-                _zs  = (_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1] if _ret.rolling(20).std().iloc[-1]>0 else 0
-                _chg = (_cl.iloc[-1]/_cl.iloc[-2]-1)*100
-                results.append({'종목코드':ticker,'ETF명':name,'현재가':round(_cl.iloc[-1],0),
-                                 '등락(%)':round(_chg,2),'ADX':round(_adx,1),
-                                 'Z-Score':round(_zs,2),'상태':'활성' if _adx>=25 else '탈락'})
+                _zs  = round((_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1]
+                             if _ret.rolling(20).std().iloc[-1] > 0 else 0, 2)
+
+                # ── 모멘텀(20일 수익률) ──
+                _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
+
+                # ── 거래량 비율(5일 평균 대비) ──
+                _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
+
+                # ── 정배열 여부 ──
+                _ma5  = _cl.rolling(5).mean().iloc[-1]
+                _ma20 = _cl.rolling(20).mean().iloc[-1]
+                _ma60 = _cl.rolling(60).mean().iloc[-1]
+                _aligned = _cl.iloc[-1] > _ma5 > _ma20 > _ma60
+
+                # ── 볼린저 밴드 위치 ──
+                _bb_mid = _cl.rolling(20).mean().iloc[-1]
+                _bb_std = _cl.rolling(20).std().iloc[-1]
+                _bb_up  = _bb_mid + 2*_bb_std
+                _bb_lo  = _bb_mid - 2*_bb_std
+                _bb_pos = round((_cl.iloc[-1]-_bb_lo)/(_bb_up-_bb_lo)*100, 1) if (_bb_up-_bb_lo) > 0 else 50
+
+                # ── 52주 위치 ──
+                _52h = _cl.tail(252).max()
+                _52l = _cl.tail(252).min()
+                _52pos = round((_cl.iloc[-1]-_52l)/(_52h-_52l)*100, 1) if (_52h-_52l) > 0 else 50
+
+                # ── 종합 점수 계산 (0~100) ──
+                _score = 0
+                # ADX (추세 강도) — 최대 25점
+                if _adx >= 40:   _score += 25
+                elif _adx >= 30: _score += 18
+                elif _adx >= 25: _score += 12
+                # RSI (과매수/과매도) — 최대 15점
+                if 40 <= _rsi <= 60:   _score += 15  # 중립 = 좋음
+                elif 30 <= _rsi < 40:  _score += 10  # 반등 기대
+                elif 60 < _rsi <= 70:  _score += 8   # 강세지만 주의
+                elif _rsi < 30:        _score += 5   # 과매도
+                # MACD — 최대 20점
+                if '골든크로스' in _macd_sig: _score += 20
+                elif '상승' in _macd_sig:     _score += 12
+                elif '데드크로스' in _macd_sig: _score += 0
+                else:                          _score += 4
+                # Z-Score (상대강도) — 최대 15점
+                if _zs >= 1.5:    _score += 15
+                elif _zs >= 0.5:  _score += 10
+                elif _zs >= -0.5: _score += 6
+                elif _zs >= -1.5: _score += 2
+                # 모멘텀(20일) — 최대 15점
+                if _mom >= 10:    _score += 15
+                elif _mom >= 5:   _score += 10
+                elif _mom >= 0:   _score += 6
+                elif _mom >= -5:  _score += 2
+                # 정배열 — 최대 10점
+                if _aligned: _score += 10
+                # 거래량 비율 — 최대 10점 (150% 이상이면 관심)
+                if _vol_r >= 200:   _score += 10
+                elif _vol_r >= 150: _score += 7
+                elif _vol_r >= 100: _score += 4
+
+                _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
+
+                results.append({
+                    '종목코드':    ticker,
+                    'ETF명':      name,
+                    '현재가':     round(_cl.iloc[-1], 0),
+                    '등락(%)':    _chg,
+                    'ADX':        _adx,
+                    'RSI':        _rsi,
+                    'MACD':       _macd_sig,
+                    'Z-Score':    _zs,
+                    '모멘텀(%)':  _mom,
+                    '거래량%':    _vol_r,
+                    'BB위치':     _bb_pos,
+                    '52주위치':   _52pos,
+                    '정배열':     '✅' if _aligned else '❌',
+                    '종합점수':   _score,
+                    '상태':       '활성' if _adx >= 25 else '탈락',
+                })
             except Exception as _e:
-                results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,'ADX':0,'Z-Score':0,'상태':'오류'})
+                results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,
+                                'ADX':0,'RSI':0,'MACD':'','Z-Score':0,
+                                '모멘텀(%)':0,'거래량%':0,'BB위치':0,'52주위치':0,
+                                '정배열':'❌','종합점수':0,'상태':'오류'})
         return results
 
     with st.spinner("ETF 데이터 로딩 중..."):
@@ -2337,7 +2444,7 @@ with tab6:
 
     if _etf_data:
         _df_etf  = pd.DataFrame(_etf_data)
-        _active  = _df_etf[_df_etf['상태']=='활성'].sort_values('Z-Score', ascending=False)
+        _active  = _df_etf[_df_etf['상태']=='활성'].sort_values('종합점수', ascending=False)
         _passive = _df_etf[_df_etf['상태']!='활성']
         _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
 
@@ -2368,9 +2475,14 @@ with tab6:
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
                 f"<div style='display:flex;gap:20px;margin-top:8px'>"
-                f"<span style='font-size:13px;color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{row['현재가']:,.0f}</b></span>"
-                f"<span style='font-size:13px;color:#a0b0c8'>ADX <b style='color:{_ac}'>{row['ADX']}</b></span>"
-                f"<span style='font-size:13px;color:#a0b0c8'>Z-Score <b style='color:#e0e6f0'>{row['Z-Score']:+.2f}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>현재가 <b style='color:#e0e6f0'>{row['현재가']:,.0f}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>RSI <b style='color:#e0e6f0'>{row.get('RSI',0)}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>MACD <b style='color:#e0e6f0'>{row.get('MACD','')}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>Z <b style='color:#e0e6f0'>{row.get('Z-Score',0):+.2f}</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>모멘텀 <b style='color:#e0e6f0'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
+                f"<span style='font-size:12px;color:#a0b0c8'>정배열 <b>{row.get('정배열','')}</b></span>"
+                f"<span style='font-size:12px;color:#ffd166'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
                 f"</div></div>",
                 unsafe_allow_html=True
             )
@@ -2397,7 +2509,7 @@ with tab6:
             st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
         st.markdown("---")
-        st.caption("ADX ≥ 25: 강한 추세 / Z-Score 높을수록 상대 강도 우위 / 1위 ETF 집중 스위칭 권고")
+        st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
         if st.button("🔄 ETF 새로고침", key="etf_refresh2"):
             fetch_etf_data.clear()
             st.rerun()
