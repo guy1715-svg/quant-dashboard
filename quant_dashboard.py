@@ -1386,6 +1386,13 @@ with tab1:
     st.markdown("### 관심 종목 현황")
 
     # ── KIS 실시간 연동 ──
+    # V8.9.1 지수 셧다운 체크 (현황판)
+    _sd_check, _sd_msg, _kp, _kq = check_index_shutdown()
+    if _sd_check:
+        st.error(_sd_msg)
+    elif _kp <= -1.0 or _kq <= -1.0:
+        st.warning(f"⚠️ 지수 주의 — 코스피 {_kp:+.2f}% / 코스닥 {_kq:+.2f}%")
+
     if kis_available():
         with st.expander("📡 KIS 실시간 계좌 현황", expanded=True):
             _kis_col1, _kis_col2 = st.columns([1, 1])
@@ -2768,6 +2775,14 @@ with tab7:
             _kill    = _pos['avg_price'] * 0.93
             _kill_alert = _cur_p <= _kill
 
+            # V8.9.1 스마트 킬스위치 체크
+            _ks_result = run_v891_system_check(
+                ticker=_pos['ticker'],
+                entry_price=float(_pos['avg_price']),
+                current_price=float(_cur_p)
+            )
+            _ks_action = _ks_result['killswitch']
+
             st.markdown(
                 f"<div style='background:#111827;border:2px solid {'#ff4d6d' if _kill_alert else '#1e3a5f'};border-radius:10px;padding:14px;margin-bottom:8px'>"
                 f"<div style='display:flex;justify-content:space-between'>"
@@ -2853,8 +2868,15 @@ with tab7:
     if not _cash_ok:
         st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
 
+    # V8.9.1 진입 가능 여부 확인
+    _v891_check = run_v891_system_check()
+    if not _v891_check['can_enter']:
+        for _a in _v891_check['alerts']:
+            st.error(_a)
+        st.warning("⚠️ V8.9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+
     if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
-                 type="primary", disabled=not _cash_ok):
+                 type="primary", disabled=(not _cash_ok or not _v891_check['can_enter'])):
         _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
         _cost  = _net_b * _buy_qty
         _acc['cash'] -= _cost
