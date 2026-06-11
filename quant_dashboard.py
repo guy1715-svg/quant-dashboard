@@ -2510,9 +2510,204 @@ with tab6:
 
         st.markdown("---")
         st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
-        if st.button("🔄 ETF 새로고침", key="etf_refresh2"):
+
+        _r1, _r2 = st.columns(2)
+        if _r1.button("🔄 ETF 새로고침", key="etf_refresh2", use_container_width=True):
             fetch_etf_data.clear()
             st.rerun()
+
+        st.divider()
+
+        # ── 백테스팅 ──
+        st.markdown("### 📊 ETF 로테이션 백테스팅")
+        st.caption("1위 ETF에 매월 스위칭 전략 vs 코스피 수익률 비교")
+
+        @st.cache_data(ttl=86400, show_spinner=False)
+        def run_etf_backtest():
+            import yfinance as yf
+            import numpy as np
+
+            # 각 ETF 월별 수익률 계산
+            _monthly = {}
+            for ticker, name, _ in ETF_LIST:
+                try:
+                    _sym = f"{ticker}.KS"
+                    _df  = yf.Ticker(_sym).history(period="2y", interval="1mo")
+                    if _df is None or len(_df) < 6: continue
+                    _cl  = _df['Close']
+                    _ret = _cl.pct_change().dropna()
+                    _monthly[ticker] = {'name': name, 'returns': _ret}
+                except:
+                    pass
+
+            # 벤치마크 (코스피)
+            try:
+                _bm_df  = yf.Ticker("^KS11").history(period="2y", interval="1mo")
+                _bm_ret = _bm_df['Close'].pct_change().dropna()
+            except:
+                _bm_ret = None
+
+            if not _monthly:
+                return None
+
+            # 매월 1위 ETF 선택 (ADX 기반 간이 랭킹)
+            _all_tickers = list(_monthly.keys())
+            _min_len = min(len(_monthly[t]['returns']) for t in _all_tickers)
+            if _min_len < 3:
+                return None
+
+            # 공통 날짜
+            _dates = None
+            for t in _all_tickers:
+                _idx = _monthly[t]['returns'].index
+                if _dates is None:
+                    _dates = set(_idx)
+                else:
+                    _dates = _dates & set(_idx)
+            _dates = sorted(_dates)
+
+            # 로테이션 전략: 매월 직전 3개월 모멘텀 1위 ETF에 투자
+            _portfolio = [1.0]
+            _chosen    = []
+            _bench     = [1.0]
+
+            for _i, _dt in enumerate(_dates[3:], 3):
+                # 직전 3개월 모멘텀 계산
+                _scores = {}
+                for t in _all_tickers:
+                    _rets = _monthly[t]['returns']
+                    _past = [r for d, r in zip(_rets.index, _rets) if d in _dates[_i-3:_i]]
+                    if _past:
+                        _scores[t] = sum(_past)  # 3개월 누적 수익률
+
+                if not _scores:
+                    _portfolio.append(_portfolio[-1])
+                    _chosen.append('없음')
+                    continue
+
+                # 1위 ETF 선택
+                _best_t = max(_scores, key=_scores.get)
+                _best_n = _monthly[_best_t]['name']
+
+                # 해당 월 수익률 적용
+                _rets_t = _monthly[_best_t]['returns']
+                _month_ret = dict(zip(_rets_t.index, _rets_t)).get(_dt, 0)
+                _portfolio.append(_portfolio[-1] * (1 + _month_ret))
+                _chosen.append(_best_n)
+
+                # 벤치마크
+                if _bm_ret is not None:
+                    _bm_month = dict(zip(_bm_ret.index, _bm_ret)).get(_dt, 0)
+                    _bench.append(_bench[-1] * (1 + _bm_month))
+                else:
+                    _bench.append(_bench[-1])
+
+            # 성과 지표
+            _port_arr  = np.array(_portfolio)
+            _bench_arr = np.array(_bench)
+            _port_ret  = (_port_arr[-1] - 1) * 100
+            _bench_ret = (_bench_arr[-1] - 1) * 100
+
+            # MDD
+            _peak  = np.maximum.accumulate(_port_arr)
+            _mdd   = (((_port_arr - _peak) / _peak) * 100).min()
+
+            # 샤프 비율 (월간)
+            _monthly_rets = np.diff(_port_arr) / _port_arr[:-1]
+            _sharpe = round((_monthly_rets.mean() / _monthly_rets.std() * np.sqrt(12))
+                            if _monthly_rets.std() > 0 else 0, 2)
+
+            return {
+                'dates':     _dates[3:],
+                'portfolio': [round((v-1)*100, 2) for v in _portfolio[1:]],
+                'benchmark': [round((v-1)*100, 2) for v in _bench[1:]],
+                'chosen':    _chosen,
+                'total_ret': round(_port_ret, 2),
+                'bench_ret': round(_bench_ret, 2),
+                'mdd':       round(_mdd, 2),
+                'sharpe':    _sharpe,
+            }
+
+        with st.spinner("백테스팅 계산 중... (최초 1회)"):
+            _bt = run_etf_backtest()
+
+        if _bt:
+            # 성과 요약
+            _bt1, _bt2, _bt3, _bt4 = st.columns(4)
+            _ret_c = 'up' if _bt['total_ret'] > 0 else 'down'
+            _alpha = _bt['total_ret'] - _bt['bench_ret']
+            _ac    = 'up' if _alpha > 0 else 'down'
+
+            _bt1.markdown(
+                f"<div class='metric-card'><div class='label'>전략 수익률(2년)</div>"
+                f"<div class='value {_ret_c}'>{_bt['total_ret']:+.2f}%</div></div>",
+                unsafe_allow_html=True)
+            _bt2.markdown(
+                f"<div class='metric-card'><div class='label'>코스피 수익률</div>"
+                f"<div class='value {'up' if _bt['bench_ret']>0 else 'down'}'>{_bt['bench_ret']:+.2f}%</div></div>",
+                unsafe_allow_html=True)
+            _bt3.markdown(
+                f"<div class='metric-card'><div class='label'>알파(초과수익)</div>"
+                f"<div class='value {_ac}'>{_alpha:+.2f}%</div></div>",
+                unsafe_allow_html=True)
+            _bt4.markdown(
+                f"<div class='metric-card'><div class='label'>MDD / 샤프</div>"
+                f"<div class='value flat'>{_bt['mdd']:.1f}% / {_bt['sharpe']}</div></div>",
+                unsafe_allow_html=True)
+
+            # 수익률 차트
+            import plotly.graph_objects as go
+            _fig_bt = go.Figure()
+            _fig_bt.add_trace(go.Scatter(
+                x=list(range(len(_bt['portfolio']))),
+                y=_bt['portfolio'],
+                name='로테이션 전략',
+                line=dict(color='#4dff91', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(77,255,145,0.08)'
+            ))
+            _fig_bt.add_trace(go.Scatter(
+                x=list(range(len(_bt['benchmark']))),
+                y=_bt['benchmark'],
+                name='코스피',
+                line=dict(color='#4da6ff', width=1.5, dash='dash')
+            ))
+            _fig_bt.add_hline(y=0, line_color='#2d3a55', line_width=0.8)
+            _fig_bt.update_layout(
+                paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
+                font=dict(color='#8899bb', size=11),
+                height=300,
+                legend=dict(orientation='h', y=1.02),
+                margin=dict(l=10, r=40, t=30, b=10),
+                yaxis=dict(gridcolor='#1a2535', ticksuffix='%', side='right'),
+                xaxis=dict(gridcolor='#1a2535', title='개월'),
+            )
+            st.plotly_chart(_fig_bt, use_container_width=True)
+
+            # 월별 선택 ETF 히스토리
+            with st.expander("📋 월별 선택 ETF 히스토리"):
+                _hist_rows = []
+                for _d, _c, _p, _b in zip(
+                    _bt['dates'], _bt['chosen'],
+                    _bt['portfolio'], _bt['benchmark']
+                ):
+                    try:
+                        _d_str = str(_d)[:7]
+                    except:
+                        _d_str = str(_d)
+                    _hist_rows.append({
+                        '월': _d_str,
+                        '선택 ETF': _c,
+                        '전략 누적(%)': f"{_p:+.2f}%",
+                        '코스피 누적(%)': f"{_b:+.2f}%",
+                    })
+                st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+
+            if st.button("🔄 백테스팅 재실행", key="bt_rerun"):
+                run_etf_backtest.clear()
+                st.rerun()
+        else:
+            st.warning("백테스팅 데이터 부족 (2년 데이터 필요)")
 
 # ══════════════════════════════════════════
 # 탭 7: 페이퍼 트레이딩
