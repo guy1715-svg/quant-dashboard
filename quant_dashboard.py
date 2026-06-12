@@ -200,18 +200,31 @@ def kis_debug_info():
 # ══════════════════════════════════════════
 
 MACRO_EVENTS_1TIER = [
-    # "2026-06-18",  # FOMC 예시
+    # "2026-06-18",  # FOMC 예시 (대시보드 홈탭에서 UI로 관리)
 ]
+
+def get_macro_events():
+    """session_state + 하드코딩 이벤트 통합"""
+    _ui_events = st.session_state.get('macro_events', [])
+    return MACRO_EVENTS_1TIER + _ui_events
 
 def check_macro_blackout():
     from datetime import datetime
-    _now = datetime.now()
-    for _ev in MACRO_EVENTS_1TIER:
+    _now    = datetime.now()
+    _events = get_macro_events()
+    for _ev_item in _events:
         try:
-            _ev_dt = datetime.strptime(_ev, "%Y-%m-%d")
+            # {"date": "2026-06-18", "name": "FOMC"} 또는 "2026-06-18" 형식 지원
+            if isinstance(_ev_item, dict):
+                _ev_date = _ev_item.get('date','')
+                _ev_name = _ev_item.get('name','이벤트')
+            else:
+                _ev_date = str(_ev_item)
+                _ev_name = '이벤트'
+            _ev_dt = datetime.strptime(_ev_date, "%Y-%m-%d")
             _diff  = abs((_now - _ev_dt).total_seconds() / 3600)
             if _diff <= 48:
-                return True, f"🚫 매크로 블랙아웃 — {_ev} 이벤트 {_diff:.0f}시간 이내 (OBSERVE_ONLY)"
+                return True, f"🚫 매크로 블랙아웃 — {_ev_name}({_ev_date}) {_diff:.0f}시간 이내 (OBSERVE_ONLY)"
         except:
             pass
     return False, ""
@@ -1383,6 +1396,84 @@ with tab_a:
                 f"{_bdgh}</span></div>",
                 unsafe_allow_html=True)
         except: pass
+
+    st.divider()
+
+    # ── 🗓️ 매크로 이벤트 관리 ──
+    st.markdown("#### 🗓️ 매크로 이벤트 관리")
+    st.caption("등록된 이벤트 ±48시간 이내 신규 진입 자동 차단 (V8.9.1 블랙아웃)")
+
+    # session_state 초기화
+    if 'macro_events' not in st.session_state:
+        st.session_state.macro_events = []
+
+    # 주요 이벤트 빠른 추가 버튼
+    st.markdown("**⚡ 빠른 추가**")
+    _qe_cols = st.columns(6)
+    _quick_events = ["FOMC", "CPI", "GDP", "금리발표", "실업지표", "PPI"]
+    for _qi, _qe in enumerate(_quick_events):
+        if _qe_cols[_qi].button(_qe, key=f"qe_{_qi}", use_container_width=True):
+            from datetime import datetime as _dtt
+            st.session_state['_qe_name'] = _qe
+
+    # 이벤트 추가 폼
+    with st.form("macro_add_form", clear_on_submit=True):
+        _fa1, _fa2, _fa3 = st.columns([2, 3, 1])
+        _ev_date = _fa1.date_input("날짜", key="ev_date_input")
+        _ev_name_default = st.session_state.pop('_qe_name', '')
+        _ev_name = _fa2.text_input("이벤트명", value=_ev_name_default,
+                                    placeholder="예: FOMC, CPI 발표")
+        _fa3.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+        _ev_submit = st.form_submit_button("➕ 추가", use_container_width=True)
+        if _ev_submit and _ev_name:
+            _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
+            # 중복 체크
+            _existing = [e['date'] for e in st.session_state.macro_events]
+            if str(_ev_date) not in _existing:
+                st.session_state.macro_events.append(_new_ev)
+                st.session_state.pop('v891_cache', None)  # V8.9.1 캐시 초기화
+                st.success(f"✅ {_ev_name} ({_ev_date}) 추가!")
+                st.rerun()
+            else:
+                st.warning("이미 등록된 날짜입니다.")
+
+    # 등록된 이벤트 목록
+    if st.session_state.macro_events:
+        from datetime import datetime as _dtt2
+        _now_str = _dtt2.now()
+        st.markdown("**📋 등록된 이벤트**")
+        for _ei, _ev in enumerate(sorted(st.session_state.macro_events,
+                                          key=lambda x: x['date'])):
+            try:
+                _ev_dt2  = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
+                _diff_h  = (_ev_dt2 - _now_str).total_seconds() / 3600
+                _is_active = abs(_diff_h) <= 48
+                _status  = "🔴 블랙아웃 중" if _is_active else (
+                            "⏰ 임박" if 0 < _diff_h <= 72 else
+                            "✅ 종료" if _diff_h < 0 else "📅 예정")
+                _bg = "rgba(244,63,94,0.1)" if _is_active else "rgba(255,255,255,0.03)"
+                _border = "rgba(244,63,94,0.4)" if _is_active else "rgba(255,255,255,0.08)"
+            except:
+                _status = "📅 예정"; _bg = "rgba(255,255,255,0.03)"; _border = "rgba(255,255,255,0.08)"
+                _diff_h = 999
+
+            _el1, _el2 = st.columns([5, 1])
+            _el1.markdown(
+                f"<div style='background:{_bg};border:1px solid {_border};"
+                f"border-radius:10px;padding:10px 14px;margin-bottom:4px'>"
+                f"<b>{_ev['name']}</b> "
+                f"<span style='color:#64748b;font-size:12px'>{_ev['date']}</span> "
+                f"<span style='font-size:12px'>{_status}</span>"
+                f"{'  <span style="color:#f43f5e;font-size:11px">신규진입 차단중</span>' if _is_active else ''}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            if _el2.button("🗑️", key=f"del_ev_{_ei}", use_container_width=True):
+                st.session_state.macro_events.pop(_ei)
+                st.session_state.pop('v891_cache', None)
+                st.rerun()
+    else:
+        st.info("💡 등록된 이벤트 없음 — 위에서 FOMC, CPI 등 주요 이벤트를 추가하세요.")
 
     st.divider()
     if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
