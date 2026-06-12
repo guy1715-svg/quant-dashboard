@@ -2684,6 +2684,152 @@ with tab_d:
         _passive = _df_etf[_df_etf['상태']!='활성']
         _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
 
+        # ══════════════════════════════════════════
+        # 🎯 실전 매매 관제판
+        # ══════════════════════════════════════════
+        st.markdown("### 🎯 실전 매매 관제판")
+        st.caption("보유 중인 ETF와 매수가를 입력하면 지금 당장 홀드/스위칭 여부를 판단합니다.")
+
+        # 현재 1위 ETF 정보
+        _top1 = _active.iloc[0] if not _active.empty else None
+
+        # 보유 ETF 선택 — ETF 리스트에서 고르기
+        _etf_names = [f"{r['ETF명']} ({r['종목코드']})" for _, r in _ranked.iterrows() if r['상태']=='활성']
+        _etf_code_map = {f"{r['ETF명']} ({r['종목코드']})": r for _, r in _ranked.iterrows() if r['상태']=='활성'}
+
+        _pc1, _pc2, _pc3 = st.columns(3)
+        with _pc1:
+            _hold_sel = st.selectbox("📦 보유 ETF", ["(없음 / 신규진입)"] + _etf_names, key="etf_hold_sel")
+        with _pc2:
+            _buy_price = st.number_input("💰 매수 평단가 (원)", min_value=0, value=0, step=100, key="etf_buy_price")
+        with _pc3:
+            _hold_qty  = st.number_input("📊 보유 수량", min_value=0, value=0, step=1, key="etf_hold_qty")
+
+        if _hold_sel != "(없음 / 신규진입)" and _top1 is not None:
+            _hold_row   = _etf_code_map[_hold_sel]
+            _hold_code  = _hold_row['종목코드']
+            _hold_name  = _hold_row['ETF명']
+            _hold_price = float(_hold_row['현재가'])
+            _hold_score = int(_hold_row['종합점수'])
+
+            # 현재 보유 종목의 순위
+            _active_list = _active.reset_index(drop=True)
+            _hold_rank_list = _active_list[_active_list['종목코드']==_hold_code].index.tolist()
+            _hold_rank = _hold_rank_list[0] + 1 if _hold_rank_list else 99
+
+            _top1_score = int(_top1['종합점수'])
+            _score_gap  = _top1_score - _hold_score
+
+            # 손익 계산
+            _pnl_pct  = (_hold_price / _buy_price - 1) * 100 if _buy_price > 0 else 0
+            _pnl_amt  = (_hold_price - _buy_price) * _hold_qty if _buy_price > 0 and _hold_qty > 0 else 0
+
+            # ── 판단 로직 ──
+            # 우선순위: 손절 > 스위칭 > 주의 > 홀드
+            if _buy_price > 0 and _pnl_pct <= -7:
+                _signal = "STOP"
+            elif _hold_rank >= 4:
+                _signal = "SWITCH"
+            elif _score_gap >= 20 and _hold_rank >= 3:
+                _signal = "SWITCH"
+            elif _hold_rank == 3 or _score_gap >= 15:
+                _signal = "WATCH"
+            else:
+                _signal = "HOLD"
+
+            _sig_cfg = {
+                "HOLD":   ("🟢 홀드",    "#064e3b", "#34d399", "현재 1~2위 유지 중. 계속 보유하세요."),
+                "WATCH":  ("🟡 주의",    "#422006", "#fbbf24", "3위권 진입 또는 1위와 점수 차이가 벌어지고 있습니다."),
+                "SWITCH": ("🔴 스위칭",  "#450a0a", "#f87171", "보유 ETF 경쟁력 하락. 1위 ETF로 교체를 검토하세요."),
+                "STOP":   ("⚫ 손절",    "#1c1c1c", "#94a3b8", "-7% 손절 라인 도달. 즉시 매도 후 재판단하세요."),
+            }
+            _sig_label, _sig_bg, _sig_color, _sig_msg = _sig_cfg[_signal]
+
+            # 판단 카드
+            st.markdown(f"""
+<div style='background:{_sig_bg};border:2px solid {_sig_color};border-radius:14px;padding:20px 24px;margin:12px 0'>
+  <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px'>
+    <div>
+      <div style='font-size:22px;font-weight:800;color:{_sig_color}'>{_sig_label}</div>
+      <div style='font-size:13px;color:#94a3b8;margin-top:4px'>{_sig_msg}</div>
+    </div>
+    <div style='text-align:right'>
+      <div style='font-size:12px;color:#64748b'>현재 순위</div>
+      <div style='font-size:28px;font-weight:800;color:{_sig_color}'>{_hold_rank}위</div>
+    </div>
+  </div>
+  <div style='display:flex;gap:24px;margin-top:16px;flex-wrap:wrap'>
+    <div><div style='font-size:11px;color:#64748b'>보유 ETF</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_name}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>현재가</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_price:,.0f}원</div></div>
+    {"<div><div style='font-size:11px;color:#64748b'>평가손익</div><div style='font-size:14px;font-weight:700;color:" + ("#f43f5e" if _pnl_pct>=0 else "#38bdf8") + f"'>{_pnl_pct:+.2f}% ({_pnl_amt:+,.0f}원)</div></div>" if _buy_price > 0 else ""}
+    <div><div style='font-size:11px;color:#64748b'>보유 점수</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_score}점</div></div>
+    <div><div style='font-size:11px;color:#64748b'>1위와 차이</div>
+         <div style='font-size:14px;font-weight:700;color:{"#f87171" if _score_gap>=15 else "#94a3b8"}'>{_score_gap:+d}점</div></div>
+    {"<div><div style='font-size:11px;color:#64748b'>손절 라인</div><div style='font-size:14px;font-weight:700;color:#f87171'>" + f"{_buy_price*0.93:,.0f}원 (-7%)" + "</div></div>" if _buy_price > 0 else ""}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # 스위칭 대상 안내
+            if _signal in ("SWITCH", "WATCH") and _top1['종목코드'] != _hold_code:
+                st.markdown(f"""
+<div style='background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px 20px;margin-bottom:12px'>
+  <div style='font-size:13px;color:#a5b4fc;font-weight:700;margin-bottom:8px'>🎯 스위칭 대상 (현재 1위)</div>
+  <div style='display:flex;gap:24px;flex-wrap:wrap'>
+    <div><div style='font-size:11px;color:#64748b'>ETF명</div>
+         <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_top1['ETF명']}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>현재가</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1['현재가']:,.0f}원</div></div>
+    <div><div style='font-size:11px;color:#64748b'>종합점수</div>
+         <div style='font-size:14px;font-weight:700;color:#fbbf24'>{_top1['종합점수']}점</div></div>
+    <div><div style='font-size:11px;color:#64748b'>MACD</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1['MACD']}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>모멘텀</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1["모멘텀(%)"]:+.1f}%</div></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        elif _hold_sel == "(없음 / 신규진입)" and _top1 is not None:
+            # 신규 진입 안내
+            st.markdown(f"""
+<div style='background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.25);border-radius:12px;padding:16px 20px;margin-bottom:12px'>
+  <div style='font-size:13px;color:#34d399;font-weight:700;margin-bottom:8px'>🟢 신규 진입 추천 (현재 1위)</div>
+  <div style='display:flex;gap:24px;flex-wrap:wrap'>
+    <div><div style='font-size:11px;color:#64748b'>ETF명</div>
+         <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_top1['ETF명']}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>현재가</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1['현재가']:,.0f}원</div></div>
+    <div><div style='font-size:11px;color:#64748b'>종합점수</div>
+         <div style='font-size:14px;font-weight:700;color:#fbbf24'>{_top1['종합점수']}점</div></div>
+    <div><div style='font-size:11px;color:#64748b'>ADX(추세강도)</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1['ADX']}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>모멘텀</div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1["모멘텀(%)"]:+.1f}%</div></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        # 스위칭 규칙 요약
+        with st.expander("📋 스위칭 규칙 보기"):
+            st.markdown("""
+| 신호 | 조건 | 액션 |
+|------|------|------|
+| 🟢 홀드 | 보유 ETF 1~2위 유지 & 1위와 점수차 15점 미만 | 계속 보유 |
+| 🟡 주의 | 3위 진입 OR 1위와 점수차 15점 이상 | 모니터링 강화, 다음날 재확인 |
+| 🔴 스위칭 | 4위 이하 진입 OR 점수차 20점 이상 | 장 시작 후 현재 1위로 교체 |
+| ⚫ 손절 | 매수가 대비 -7% 이하 | 즉시 매도, 당일 재진입 금지 |
+
+**💡 실전 팁**
+- 스위칭은 **당일 장 시작 후 10분 뒤** 체결 (09:30 이후)
+- 하루에 한 번만 확인 — 매일 09:30 또는 장 마감 후
+- 1위가 매일 바뀌면 스위칭 보류 — **3거래일 연속 1위 ETF**로만 이동
+- 수수료 + 세금 고려 시 스위칭 최소 간격: **2주 이상**
+""")
+
+        st.divider()
+        st.markdown("### 📊 ETF 로테이션 종합 랭킹판")
+
         # 현재 관심종목 목록
         _etf_wl_now  = get_watchlist()
         _etf_wl_ids  = [l.split(',')[0].strip() for l in _etf_wl_now.split('\n') if ',' in l]
