@@ -465,25 +465,61 @@ def calc_portfolio_value(acc):
             total += pos['avg_price'] * pos['qty']
     return total
 
-def load_watchlist():
-    """Google Sheets에서 관심종목 로드"""
+import os as _os
+import json as _json
+
+_WL_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "watchlist.json")
+
+def _wl_to_list(text):
+    """watchlist 문자열 → [[ticker, name], ...]"""
+    result = []
+    for line in text.strip().split("\n"):
+        parts = line.strip().split(",", 1)
+        if len(parts) == 2 and parts[0].strip():
+            result.append([parts[0].strip(), parts[1].strip()])
+    return result
+
+def _list_to_text(pairs):
+    """[[ticker, name], ...] → watchlist 문자열"""
+    return "\n".join(f"{t},{n}" for t, n in pairs)
+
+def _load_wl_file():
+    """watchlist.json 파일에서 로드"""
+    try:
+        if _os.path.exists(_WL_FILE):
+            with open(_WL_FILE, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return _list_to_text(data)
+    except Exception:
+        pass
+    return DEFAULT_WATCHLIST
+
+def _save_wl_file(text):
+    """watchlist.json 파일에 저장"""
+    try:
+        with open(_WL_FILE, "w", encoding="utf-8") as f:
+            _json.dump(_wl_to_list(text), f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as _e:
+        return False
+
+def _sync_sheets(text):
+    """Sheets 백업 동기화 — 실패해도 앱 동작에 영향 없음"""
     try:
         ws = get_gsheet()
-        data = ws.get_all_values()
-        if data:
-            result = "\n".join([",".join(row) for row in data if len(row) >= 2])
-            return result
-        else:
-            return DEFAULT_WATCHLIST
-    except Exception as e:
-        st.session_state['_sheets_error'] = str(e)
-        return DEFAULT_WATCHLIST
+        rows = _wl_to_list(text)
+        ws.clear()
+        if rows:
+            ws.update("A1", rows)
+    except Exception:
+        pass  # Sheets는 선택적 백업 — 오류 무시
+
+def load_watchlist():
+    """관심종목 로드: JSON파일 → DEFAULT 순"""
+    return _load_wl_file()
 
 def get_watchlist():
-    """
-    ★ 관심종목 표준 로드 함수 — 코드 전체에서 이 함수만 사용
-    우선순위: session_state → Sheets 캐시 → 기본값
-    """
+    """★ 관심종목 표준 로드 함수 — 코드 전체에서 이 함수만 사용"""
     _wl = st.session_state.get('watchlist_data', '')
     if _wl:
         return _wl
@@ -491,47 +527,18 @@ def get_watchlist():
     st.session_state.watchlist_data = _wl
     return _wl
 
-def clean_sheet_duplicates():
-    """Sheets 중복 데이터 제거"""
-    try:
-        ws   = get_gsheet()
-        data = ws.get_all_values()
-        seen = set()
-        clean = []
-        for row in data:
-            if row and row[0].strip() not in seen:
-                seen.add(row[0].strip())
-                clean.append(row)
-        ws.clear()
-        if clean:
-            ws.update("A1", clean)
-        result = "\n".join([",".join(r) for r in clean if len(r)>=2])
-        st.session_state.watchlist_data = result
-        safe_clear_cache()
-        return result
-    except Exception as e:
-        return None
-
 def safe_clear_cache():
+    """watchlist session_state 초기화 (파일에서 재로드하게)"""
     st.session_state.pop('watchlist_data', None)
+
 def save_watchlist(text):
-    """관심종목 전체 저장 (삭제 시 사용)"""
+    """관심종목 전체 저장"""
     st.session_state.watchlist_data = text
-    try:
-        ws = get_gsheet()
-        ws.clear()
-        rows = []
-        for line in text.strip().split("\n"):
-            parts = line.strip().split(",", 1)
-            if len(parts) == 2:
-                rows.append(parts)
-        if rows:
-            ws.update("A1", rows)
-    except Exception as e:
-        st.warning(f"Sheets 저장 오류: {e}")
+    _save_wl_file(text)
+    _sync_sheets(text)  # Sheets 백업 (실패해도 무관)
 
 def _parse_watchlist(wl):
-    """watchlist 문자열 → [(ticker, name), ...] 파싱 — 단일 진입점"""
+    """watchlist 문자열 → [(ticker, name), ...] 파싱"""
     result = []
     for line in wl.strip().split("\n"):
         parts = line.strip().split(",", 1)
@@ -543,20 +550,25 @@ def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
 
 def add_ticker(ticker, name):
-    """관심종목 1개 추가 — append_row로 안전하게 저장"""
+    """관심종목 1개 추가"""
     wl = get_watchlist()
     existing = [t for t, _ in _parse_watchlist(wl)]
     if ticker in existing:
         return False
-    # 1) session_state 즉시 반영
-    new_wl = wl.strip() + f"\n{ticker},{name}"
-    st.session_state.watchlist_data = new_wl
-    # 2) Sheets에 한 줄만 추가 (clear 없이 → 안전)
-    try:
-        get_gsheet().append_row([ticker, name], value_input_option="RAW")
-    except Exception as _e:
-        st.error(f"⚠️ Sheets 저장 실패: {_e}\n\n새로고침 시 사라질 수 있습니다.")
+    save_watchlist(wl.strip() + f"\n{ticker},{name}")
     return True
+
+def clean_sheet_duplicates():
+    """중복 제거"""
+    wl = get_watchlist()
+    seen = set()
+    clean = []
+    for t, n in _parse_watchlist(wl):
+        if t not in seen:
+            seen.add(t)
+            clean.append((t, n))
+    save_watchlist(_list_to_text(clean))
+    return _list_to_text(clean)
 
 def remove_ticker(ticker):
     pairs = _parse_watchlist(get_watchlist())
@@ -1203,11 +1215,7 @@ with st.sidebar:
 
     st.markdown("### 📋 관심 종목")
 
-    # Sheets 연결 오류 표시
-    if st.session_state.get('_sheets_error'):
-        st.error(f"🔴 Sheets 연결 오류:\n{st.session_state['_sheets_error']}")
-
-    # 사이드바 — session_state 우선 (Sheets API 호출 최소화)
+    # 사이드바 — session_state 우선
     _sb_wl = get_watchlist()
     _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
     _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
@@ -1218,17 +1226,7 @@ with st.sidebar:
         _sc1.markdown(f"<div style='font-size:12px; padding:4px 0'><b>{_n}</b><br><span style='color:#64748b; font-size:10px'>{_t}</span></div>", unsafe_allow_html=True)
         if _sc2.button("✕", key=f"sb_del_{_t}"):
             _new_lines = [l for l in _sb_lines if not l.startswith(_t + ",")]
-            _new_wl = "\n".join(_new_lines)
-            st.session_state.watchlist_data = _new_wl
-            try:
-                _ws = get_gsheet()
-                _ws.clear()
-                _rows = [[p.strip() for p in l.split(",",1)] for l in _new_lines]
-                if _rows:
-                    _ws.update("A1", _rows)
-                safe_clear_cache()
-            except Exception as _e:
-                st.warning(f"저장 오류: {_e}")
+            save_watchlist("\n".join(_new_lines))
             st.rerun()
 
     st.markdown("---")
