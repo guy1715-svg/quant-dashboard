@@ -906,73 +906,83 @@ def build_prompt(df, name, ticker):
 
 def calc_entry_point(df, preset=None):
     """
-    프리셋별 진입 타점 자동 계산 (현재가와 분리)
-    핵심: 매수 타점은 현재가보다 낮은 눌림목/지지선 기준
+    프리셋별 진입 타점 자동 계산
+    규칙: entry < cur (매수 타점은 항상 현재가 아래)
+          stoploss < entry (손절가는 항상 매수가 아래)
+          target1 > entry (목표가는 항상 매수가 위)
     """
     import numpy as np
     l   = df.iloc[-1]
-    cur = l['종가']
+    cur = float(l['종가'])
 
-    # 핵심 지표
-    ma5   = l['MA5']
-    ma20  = l['MA20']
-    ma60  = l['MA60']
-    bb_lo = l['BB_lower']
-    bb_mi = (l['BB_upper'] + l['BB_lower']) / 2
-    bb_hi = l['BB_upper']
-    rsi   = l['RSI']
+    ma5   = float(l['MA5'])
+    ma20  = float(l['MA20'])
+    ma60  = float(l['MA60'])
+    bb_lo = float(l['BB_lower'])
+    bb_mi = float((l['BB_upper'] + l['BB_lower']) / 2)
+    bb_hi = float(l['BB_upper'])
 
-    # 지지선: 최근 20일 저가 중 현재가 아래 피벗
-    _lows = df['저가'].tail(20)
-    _support_candidates = [v for v in [ma20, ma60, bb_lo,
-                           _lows.nsmallest(3).mean()] if v < cur * 0.999]
-    support = max(_support_candidates) if _support_candidates else cur * 0.95
+    # 지지선 후보 — 반드시 현재가 아래
+    _sup_cands = sorted(
+        [v for v in [ma20, ma60, bb_lo,
+                     float(df['저가'].tail(20).nsmallest(3).mean())]
+         if v < cur * 0.999],
+        reverse=True
+    )
+    support = _sup_cands[0] if _sup_cands else cur * 0.93
 
-    # 저항선: 최근 20일 고가 중 현재가 위 피벗
-    _highs = df['고가'].tail(20)
-    _resist_candidates = [v for v in [bb_hi, bb_mi,
-                          _highs.nlargest(3).mean()] if v > cur * 1.001]
-    resist = min(_resist_candidates) if _resist_candidates else cur * 1.10
+    # 저항선 후보 — 반드시 현재가 위
+    _res_cands = sorted(
+        [v for v in [bb_hi,
+                     float(df['고가'].tail(20).nlargest(3).mean())]
+         if v > cur * 1.001]
+    )
+    resist = _res_cands[0] if _res_cands else cur * 1.10
 
     if preset == 'bounce':
-        # 반등매매: BB하단/MA20 중 현재가에 가까운 지지선 → 눌림 대기
         _cands = [v for v in [bb_lo, ma20, support] if v < cur * 0.998]
-        entry    = round(max(_cands) * 1.003) if _cands else round(cur * 0.97)
-        stoploss = round(entry * 0.93)
-        target1  = round(bb_mi)
-        target2  = round(resist)
-        reason   = f"BB하단({bb_lo:,.0f}) 반등 눌림목 대기"
+        entry   = round(max(_cands) * 1.003) if _cands else round(cur * 0.96)
+        reason  = f"BB하단({bb_lo:,.0f}) 반등 눌림목 대기"
+        target1 = round(max(bb_mi, entry * 1.07))
+        target2 = round(max(resist, entry * 1.14))
 
     elif preset == 'trend':
-        # 추세매매: MA5/MA20 사이 눌림목
         _cands = [v for v in [ma5, ma20] if v < cur * 0.998]
-        entry    = round(max(_cands) * 1.005) if _cands else round(cur * 0.98)
-        stoploss = round(ma20 * 0.97)
-        target1  = round(resist)
-        target2  = round(resist * 1.10)
-        reason   = f"MA20({ma20:,.0f}) 눌림목 대기"
+        entry   = round(max(_cands) * 1.003) if _cands else round(cur * 0.97)
+        reason  = f"MA20({ma20:,.0f}) 눌림목 대기"
+        target1 = round(max(resist, entry * 1.08))
+        target2 = round(max(resist * 1.08, entry * 1.15))
 
     elif preset == 'bottom':
-        # 바닥확인: BB하단 터치 후 반등 진입
-        entry    = round(bb_lo * 1.008)
-        stoploss = round(df['저가'].tail(5).min() * 0.97)
-        target1  = round(bb_mi)
-        target2  = round(bb_hi)
-        reason   = f"BB하단({bb_lo:,.0f}) 바닥 확인 진입"
+        entry   = round(bb_lo * 1.005)
+        reason  = f"BB하단({bb_lo:,.0f}) 바닥 확인 진입"
+        target1 = round(max(bb_mi, entry * 1.07))
+        target2 = round(max(bb_hi, entry * 1.14))
 
     else:
-        # 기본: 가장 가까운 지지선 기준
-        entry    = round(support * 1.005)
-        stoploss = round(support * 0.93)
-        target1  = round(resist)
-        target2  = round(resist * 1.10)
-        reason   = f"지지선({support:,.0f}) 기준"
+        entry   = round(support * 1.005)
+        reason  = f"지지선({support:,.0f}) 기준"
+        target1 = round(max(resist, entry * 1.08))
+        target2 = round(max(resist * 1.08, entry * 1.15))
 
-    # 현재가보다 높으면 현재가 기준으로 fallback
+    # ── 안전 검증 ──
+    # 1. entry가 현재가 이상이면 강제로 낮춤
     if entry >= cur:
-        entry    = round(cur * 0.985)  # 현재가보다 1.5% 낮게
-        stoploss = round(entry * 0.93)
-        reason   += " (현재가 근접 — 소폭 눌림 대기)"
+        entry  = round(cur * 0.97)
+        reason += " (현재가 근접 → 3% 눌림 대기)"
+
+    # 2. stoploss = entry × 0.93 (항상 entry 아래)
+    stoploss = round(entry * 0.93)
+
+    # 3. target1이 entry 이하면 강제로 높임
+    if target1 <= entry:
+        target1 = round(entry * 1.08)
+    if target2 <= target1:
+        target2 = round(target1 * 1.07)
+
+    # 4. 최종 검증
+    assert stoploss < entry < cur, f"타점 오류: {stoploss} < {entry} < {cur} 불만족"
+    assert target1 > entry, f"목표가 오류: {target1} <= {entry}"
 
     risk   = entry - stoploss
     reward = target1 - entry
