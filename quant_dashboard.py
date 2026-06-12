@@ -322,6 +322,7 @@ _GS_SCOPES = [
 ]
 
 @st.cache_resource(show_spinner=False)
+@st.cache_resource
 def _get_gspread_workbook():
     """인증 + 워크북 연결 — 앱 전체에서 1회만 실행"""
     creds = Credentials.from_service_account_info(
@@ -1559,6 +1560,13 @@ with tab_b:
                     return f"{ticker} ({name})"
 
             _b1_tickers = get_watchlist_tickers()  # 항상 최신 관심종목 반영
+            # all_data에 없는 종목은 즉시 로드
+            for _bt, _bn in _b1_tickers:
+                if _bt not in all_data:
+                    _bdf = fetch_ohlcv(_bt, 80)
+                    if _bdf is not None and len(_bdf) >= 20:
+                        all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+                        st.session_state.all_data_cache = all_data
             selected = st.selectbox("종목 선택",
                 [_display_name(ticker, name) for ticker, name in _b1_tickers if ticker in all_data])
             # 티커 추출
@@ -3507,12 +3515,22 @@ with tab_e:
     with _sub_e4:
         st.markdown("### 관심 종목 현황")
         # 데이터 로드
+        _cur_tickers = get_watchlist_tickers()
+        # 새로 추가된 종목이 all_data에 없으면 즉시 로드
+        _missing = [(t, n) for t, n in _cur_tickers if t not in all_data]
+        if _missing:
+            for _mt, _mn in _missing:
+                _mdf = fetch_ohlcv(_mt, 80)
+                if _mdf is not None and len(_mdf) >= 20:
+                    all_data[_mt] = {'name': _mn, 'df': calc_indicators(_mdf)}
+            st.session_state.all_data_cache = all_data
+
         if not all_data:
             _lookback = 80
             all_data = {}
-            total = len(TICKERS)
+            total = len(_cur_tickers)
             prog_bar = st.progress(0, text="데이터 로딩 중...")
-            for idx, (ticker, name) in enumerate(TICKERS):
+            for idx, (ticker, name) in enumerate(_cur_tickers):
                 prog_bar.progress((idx+1)/max(total,1), text=f"📡 {name} ({idx+1}/{total})")
                 df = fetch_ohlcv(ticker, _lookback)
                 if df is None or len(df) < 20:
