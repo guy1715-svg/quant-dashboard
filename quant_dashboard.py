@@ -1928,22 +1928,39 @@ with tab_c:
     if 'scan_preset' not in st.session_state:
         st.session_state.scan_preset = None
 
+    def _apply_preset(name):
+        """프리셋 선택 시 체크박스 session_state 동시 업데이트"""
+        st.session_state.scan_preset = name
+        _map = {
+            # (rsi, vol, macd, bb, align)
+            "bounce": (True,  True,  False, False, False),
+            "trend":  (False, True,  True,  False, True),
+            "bottom": (True,  True,  True,  True,  False),
+            "custom": (st.session_state.get('f_rsi', True),
+                       st.session_state.get('f_vol', True),
+                       st.session_state.get('f_macd', False),
+                       st.session_state.get('f_bb', False),
+                       st.session_state.get('f_align', False)),
+        }
+        r, v, m, b, a = _map[name]
+        st.session_state['f_rsi']   = r
+        st.session_state['f_vol']   = v
+        st.session_state['f_macd']  = m
+        st.session_state['f_bb']    = b
+        st.session_state['f_align'] = a
+
     if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
                    type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
-        st.session_state.scan_preset = "bounce"
-        st.rerun()
+        _apply_preset("bounce"); st.rerun()
     if _pr2.button("📈 추세매매", key="preset_trend", use_container_width=True,
                    type="primary" if st.session_state.scan_preset=="trend" else "secondary"):
-        st.session_state.scan_preset = "trend"
-        st.rerun()
+        _apply_preset("trend"); st.rerun()
     if _pr3.button("🎯 바닥확인", key="preset_bottom", use_container_width=True,
                    type="primary" if st.session_state.scan_preset=="bottom" else "secondary"):
-        st.session_state.scan_preset = "bottom"
-        st.rerun()
+        _apply_preset("bottom"); st.rerun()
     if _pr4.button("⚙️ 직접설정", key="preset_custom", use_container_width=True,
                    type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
-        st.session_state.scan_preset = "custom"
-        st.rerun()
+        _apply_preset("custom"); st.rerun()
 
     # 프리셋 설명
     _preset_desc = {
@@ -1969,21 +1986,27 @@ with tab_c:
     with _sc_col2:
         st.markdown("**🎯 필터 조건**")
         _preset = st.session_state.scan_preset
-
-        # 프리셋에 따라 기본값 설정
-        _def_rsi   = _preset in ["bounce", "bottom"] if _preset else True
-        _def_vol   = True
-        _def_macd  = _preset in ["trend", "bottom"] if _preset else False
-        _def_bb    = _preset == "bottom" if _preset else False
-        _def_align = _preset == "trend" if _preset else False
+        # 초기값 (프리셋 미선택 시)
+        if 'f_rsi'   not in st.session_state: st.session_state['f_rsi']   = True
+        if 'f_vol'   not in st.session_state: st.session_state['f_vol']   = True
+        if 'f_macd'  not in st.session_state: st.session_state['f_macd']  = False
+        if 'f_bb'    not in st.session_state: st.session_state['f_bb']    = False
+        if 'f_align' not in st.session_state: st.session_state['f_align'] = False
 
         _disabled = _preset != "custom" and _preset is not None
 
-        use_rsi   = st.checkbox("RSI 과매도 (≤35)", value=_def_rsi,   disabled=_disabled, key="f_rsi")
-        use_vol   = st.checkbox("거래량 폭발 (≥150%)", value=_def_vol, disabled=_disabled, key="f_vol")
-        use_macd  = st.checkbox("MACD 골든크로스", value=_def_macd,   disabled=_disabled, key="f_macd")
-        use_bb    = st.checkbox("BB 하단 근접 (≤25%)", value=_def_bb, disabled=_disabled, key="f_bb")
-        use_align = st.checkbox("정배열 (MA5>MA20>MA60)", value=_def_align, disabled=_disabled, key="f_align")
+        st.checkbox("RSI 과매도 (≤35)",      disabled=_disabled, key="f_rsi")
+        st.checkbox("거래량 폭발 (≥150%)",   disabled=_disabled, key="f_vol")
+        st.checkbox("MACD 골든크로스",        disabled=_disabled, key="f_macd")
+        st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
+        st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
+
+        # disabled 여부와 관계없이 session_state에서 직접 읽음 (Streamlit disabled 버그 우회)
+        use_rsi   = st.session_state['f_rsi']
+        use_vol   = st.session_state['f_vol']
+        use_macd  = st.session_state['f_macd']
+        use_bb    = st.session_state['f_bb']
+        use_align = st.session_state['f_align']
 
     with _sc_col3:
         st.markdown("**⚙️ 추가 설정**")
