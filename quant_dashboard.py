@@ -1547,26 +1547,31 @@ with tab_b:
     _sub_b1, _sub_b2 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석"])
 
     with _sub_b1:
-        if not all_data:
-            st.info("현황판 탭을 먼저 열어서 데이터를 로드해주세요.")
-        else:
-            def _display_name(ticker, name):
-                """영문 종목은 티커(이름) 형식으로 표시"""
-                if is_korean_ticker(ticker):
-                    return f"{name} ({ticker})"
-                else:
-                    return f"{ticker} ({name})"
+        def _display_name(ticker, name):
+            if is_korean_ticker(ticker):
+                return f"{name} ({ticker})"
+            else:
+                return f"{ticker} ({name})"
 
-            _b1_tickers = get_watchlist_tickers()  # 항상 최신 관심종목 반영
-            # all_data에 없는 종목은 즉시 로드
-            for _bt, _bn in _b1_tickers:
-                if _bt not in all_data:
-                    _bdf = fetch_ohlcv(_bt, 80)
-                    if _bdf is not None and len(_bdf) >= 20:
-                        all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
-                        st.session_state.all_data_cache = all_data
-            selected = st.selectbox("종목 선택",
-                [_display_name(ticker, name) for ticker, name in _b1_tickers if ticker in all_data])
+        _b1_tickers = get_watchlist_tickers()
+        if not _b1_tickers:
+            st.info("👈 사이드바에서 관심종목을 추가해주세요.")
+        else:
+            # all_data에 없는 종목 즉시 로드 (관리 탭을 안 열어도 동작)
+            _b1_missing = [(_bt, _bn) for _bt, _bn in _b1_tickers if _bt not in all_data]
+            if _b1_missing:
+                with st.spinner(f"📡 {len(_b1_missing)}개 종목 데이터 로딩 중..."):
+                    for _bt, _bn in _b1_missing:
+                        _bdf = fetch_ohlcv(_bt, 80)
+                        if _bdf is not None and len(_bdf) >= 20:
+                            all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+                    st.session_state.all_data_cache = all_data
+
+            _b1_opts = [_display_name(t, n) for t, n in _b1_tickers if t in all_data]
+            if not _b1_opts:
+                st.warning("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+                st.stop()
+            selected = st.selectbox("종목 선택", _b1_opts)
             # 티커 추출
             sel_ticker = selected.split('(')[-1].replace(')', '').strip()
             if not is_korean_ticker(sel_ticker):
@@ -1768,8 +1773,6 @@ with tab_b:
     with _sub_b2:
         if not gemini_key:
             st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
-        elif not all_data:
-            st.info("현황판 탭을 먼저 열어서 데이터를 로드해주세요.")
         else:
             st.caption("💡 종목별로 개별 분석 버튼을 클릭하세요. (Free tier: 하루 20회 제한)")
 
@@ -1801,7 +1804,18 @@ with tab_b:
                             raise
                 raise Exception("최대 재시도 횟수 초과 (429 rate limit). 내일 다시 시도하거나 유료 플랜을 확인하세요.")
 
-            for ticker, name in get_watchlist_tickers():  # 항상 최신 관심종목 반영
+            _b2_tickers = get_watchlist_tickers()
+            # all_data에 없는 종목 즉시 로드
+            _b2_missing = [(_bt, _bn) for _bt, _bn in _b2_tickers if _bt not in all_data]
+            if _b2_missing:
+                with st.spinner(f"📡 {len(_b2_missing)}개 종목 데이터 로딩 중..."):
+                    for _bt, _bn in _b2_missing:
+                        _bdf = fetch_ohlcv(_bt, 80)
+                        if _bdf is not None and len(_bdf) >= 20:
+                            all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+                    st.session_state.all_data_cache = all_data
+
+            for ticker, name in _b2_tickers:
                 if ticker not in all_data:
                     continue
                 with st.expander(f"📊 {name} ({ticker}) 분석", expanded=False):
