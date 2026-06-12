@@ -1766,31 +1766,68 @@ with tab_b:
             st.info("현황판 탭을 먼저 열어서 데이터를 로드해주세요.")
         else:
             analyze_all = st.button("🤖 전체 종목 Gemini 분석 시작", use_container_width=True)
+            st.caption("⚠️ Free tier: 하루 20회 제한. 전체분석 시 종목 수가 많으면 할당량을 초과할 수 있습니다.")
             st.markdown("또는 종목별로 개별 분석:")
 
-            for ticker, name in TICKERS:
-                if ticker not in all_data:
-                    continue
-                with st.expander(f"📊 {name} ({ticker}) 분석", expanded=False):
-                    btn = st.button(f"{name} 분석", key=f"btn_{ticker}")
-                    if btn or analyze_all:
-                        import google.generativeai as genai
-                        genai.configure(api_key=gemini_key)
-                        model = genai.GenerativeModel(model_name)
-                        SYSTEM = (
-                            'You are a Korean stock quantitative analysis AI. '
-                            'Always respond in Korean. '
-                            'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
-                            'No entry 09:00-09:30 KST / No averaging down'
-                        )
-                        prompt = build_prompt(all_data[ticker]['df'], name, ticker)
-                        with st.spinner(f'{name} 분석 중...'):
-                            try:
-                                res = model.generate_content(SYSTEM + '\n\n' + prompt)
-                                st.markdown(f"<div class='gemini-box'>{res.text}</div>",
-                                            unsafe_allow_html=True)
-                            except Exception as e:
-                                st.error(f"오류: {e}")
+            import google.generativeai as genai
+            import time as _time
+            genai.configure(api_key=gemini_key)
+            _b2_model = genai.GenerativeModel(model_name)
+            _B2_SYSTEM = (
+                'You are a Korean stock quantitative analysis AI. '
+                'Always respond in Korean. '
+                'Rules: Reject R:R below 2.0 / Stop-loss -7% / '
+                'No entry 09:00-09:30 KST / No averaging down'
+            )
+
+            def _gemini_safe_call(mdl, prompt_text, max_retries=3):
+                """429 rate-limit 에러 시 retry_delay 만큼 대기 후 재시도"""
+                for attempt in range(max_retries):
+                    try:
+                        return mdl.generate_content(prompt_text)
+                    except Exception as _e:
+                        err_str = str(_e)
+                        if '429' in err_str:
+                            import re as _re
+                            m = _re.search(r'seconds:\s*(\d+)', err_str)
+                            wait = int(m.group(1)) + 2 if m else 20
+                            st.warning(f"⏳ API 한도 초과 — {wait}초 대기 후 재시도 ({attempt+1}/{max_retries})")
+                            _time.sleep(wait)
+                        else:
+                            raise
+                raise Exception("최대 재시도 횟수 초과 (429 rate limit)")
+
+            if analyze_all:
+                _avail = [(t, n) for t, n in TICKERS if t in all_data]
+                _prog = st.progress(0, text="전체 분석 준비 중...")
+                for _i, (_t, _n) in enumerate(_avail):
+                    _prog.progress((_i + 1) / len(_avail), text=f"분석 중: {_n} ({_i+1}/{len(_avail)})")
+                    _prompt = build_prompt(all_data[_t]['df'], _n, _t)
+                    try:
+                        _res = _gemini_safe_call(_b2_model, _B2_SYSTEM + '\n\n' + _prompt)
+                        with st.expander(f"📊 {_n} ({_t}) 분석 결과", expanded=False):
+                            st.markdown(f"<div class='gemini-box'>{_res.text}</div>", unsafe_allow_html=True)
+                    except Exception as _e:
+                        st.error(f"{_n}: 오류 — {_e}")
+                    if _i < len(_avail) - 1:
+                        _time.sleep(3)  # 분당 요청 수 제한 방지
+                _prog.empty()
+                st.success("✅ 전체 분석 완료")
+            else:
+                for ticker, name in TICKERS:
+                    if ticker not in all_data:
+                        continue
+                    with st.expander(f"📊 {name} ({ticker}) 분석", expanded=False):
+                        btn = st.button(f"{name} 분석", key=f"btn_{ticker}")
+                        if btn:
+                            prompt = build_prompt(all_data[ticker]['df'], name, ticker)
+                            with st.spinner(f'{name} 분석 중...'):
+                                try:
+                                    res = _gemini_safe_call(_b2_model, _B2_SYSTEM + '\n\n' + prompt)
+                                    st.markdown(f"<div class='gemini-box'>{res.text}</div>",
+                                                unsafe_allow_html=True)
+                                except Exception as e:
+                                    st.error(f"오류: {e}")
 
 
     # ══════════════════════════════════════════
