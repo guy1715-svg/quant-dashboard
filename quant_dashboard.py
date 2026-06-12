@@ -1604,6 +1604,7 @@ with tab_c:
 
     if st.session_state._keep_passed:
         st.session_state._keep_passed = False
+        # passed 유지 — rerun 없이 계속
 
     if scan_btn:
         st.session_state.passed = []
@@ -1850,25 +1851,35 @@ with tab_c:
         _chart_key_s = f"scan_chart_{_sel_scan_item['ticker']}"
         if _chart_key_s not in st.session_state:
             st.session_state[_chart_key_s] = False
-        if _ab2.button(
-            "📈 차트 닫기" if st.session_state[_chart_key_s] else "📈 차트",
-            key="scan_chart_toggle", use_container_width=True
-        ):
-            st.session_state[_chart_key_s] = not st.session_state[_chart_key_s]
+
+        def _toggle_chart():
+            st.session_state[_chart_key_s] = not st.session_state.get(_chart_key_s, False)
             st.session_state._keep_passed = True
+
+        _ab2.button(
+            "📈 차트 닫기" if st.session_state.get(_chart_key_s, False) else "📈 차트",
+            key="scan_chart_toggle",
+            on_click=_toggle_chart,
+            use_container_width=True
+        )
 
         _gem_key_s = f"scan_gem_{_sel_scan_item['ticker']}"
         if _gem_key_s not in st.session_state:
             st.session_state[_gem_key_s] = False
-        if _ab3.button(
-            "🤖 분석 닫기" if st.session_state[_gem_key_s] else "🤖 Gemini 정밀분석",
-            key="scan_gem_toggle", use_container_width=True,
-        ):
+
+        def _toggle_gem():
             if not gemini_key:
-                st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
-            else:
-                st.session_state[_gem_key_s] = not st.session_state[_gem_key_s]
-                st.session_state._keep_passed = True
+                return
+            st.session_state[_gem_key_s] = not st.session_state.get(_gem_key_s, False)
+            st.session_state._keep_passed = True
+
+        _ab3.button(
+            "🤖 분석 닫기" if st.session_state.get(_gem_key_s, False) else "🤖 Gemini 정밀분석",
+            key="scan_gem_toggle",
+            on_click=_toggle_gem,
+            use_container_width=True,
+            disabled=not gemini_key
+        )
 
         # 차트
         if st.session_state.get(_chart_key_s, False):
