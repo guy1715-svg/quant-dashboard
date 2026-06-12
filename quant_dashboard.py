@@ -519,7 +519,6 @@ def safe_clear_cache():
 def save_watchlist(text):
     """관심종목 전체 저장 (삭제 시 사용)"""
     st.session_state.watchlist_data = text
-    safe_clear_cache()
     try:
         ws = get_gsheet()
         ws.clear()
@@ -2133,18 +2132,12 @@ with tab_c:
         if _new_items:
             if st.button(f"⭐ 전체 {len(_new_items)}개 사이드바 추가", key="bulk_add_btn",
                          use_container_width=True, type="primary"):
-                try:
-                    _ws = get_gsheet()
-                    _cur = get_watchlist()
-                    for _it in _new_items:
-                        _ws.append_row([_it['ticker'], _it['name']])
-                        _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
-                    st.session_state.watchlist_data = _cur
-                    safe_clear_cache()
-                    st.success(f"✅ {len(_new_items)}개 추가 완료!")
+                _added_cnt = sum(1 for _it in _new_items if add_ticker(_it['ticker'], _it['name']))
+                if _added_cnt:
+                    st.success(f"✅ {_added_cnt}개 추가 완료!")
                     st.rerun()
-                except Exception as _e:
-                    st.error(f"추가 오류: {_e}")
+                else:
+                    st.warning("모두 이미 등록된 종목입니다.")
 
         st.divider()
 
@@ -2603,19 +2596,11 @@ with tab_d:
                 _eb1.markdown("<div style='color:#34d399;font-size:12px;padding:4px 0'>✅ 추가됨</div>", unsafe_allow_html=True)
             else:
                 if _eb1.button("⭐ 추가", key=f"etf_add_{_i}_{row['종목코드']}"):
-                    try:
-                        _ws_etf = get_gsheet()
-                        _ws_etf.append_row([row['종목코드'], row['ETF명']])
-                        _new_wl = _etf_wl_now.strip() + f"\n{row['종목코드']},{row['ETF명']}"
-                        st.session_state.watchlist_data = _new_wl
-                        try:
-                            safe_clear_cache()
-                        except:
-                            pass
+                    if add_ticker(row['종목코드'], row['ETF명']):
                         st.success(f"✅ {row['ETF명']} 관심종목 추가!")
                         st.rerun()
-                    except Exception as _e:
-                        st.error(f"추가 오류: {_e}")
+                    else:
+                        st.warning("이미 등록된 종목입니다.")
             st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
         st.markdown("---")
