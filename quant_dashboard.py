@@ -465,78 +465,6 @@ def calc_portfolio_value(acc):
             total += pos['avg_price'] * pos['qty']
     return total
 
-import os as _os
-import json as _json
-
-_WL_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "watchlist.json")
-
-def _wl_to_list(text):
-    """watchlist 문자열 → [[ticker, name], ...]"""
-    result = []
-    for line in text.strip().split("\n"):
-        parts = line.strip().split(",", 1)
-        if len(parts) == 2 and parts[0].strip():
-            result.append([parts[0].strip(), parts[1].strip()])
-    return result
-
-def _list_to_text(pairs):
-    """[[ticker, name], ...] → watchlist 문자열"""
-    return "\n".join(f"{t},{n}" for t, n in pairs)
-
-def _load_wl_file():
-    """watchlist.json 파일에서 로드"""
-    try:
-        if _os.path.exists(_WL_FILE):
-            with open(_WL_FILE, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-            return _list_to_text(data)
-    except Exception:
-        pass
-    return DEFAULT_WATCHLIST
-
-def _save_wl_file(text):
-    """watchlist.json 파일에 저장"""
-    try:
-        with open(_WL_FILE, "w", encoding="utf-8") as f:
-            _json.dump(_wl_to_list(text), f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as _e:
-        return False
-
-def _sync_sheets(text):
-    """Sheets 백업 동기화 — 실패해도 앱 동작에 영향 없음"""
-    try:
-        ws = get_gsheet()
-        rows = _wl_to_list(text)
-        ws.clear()
-        if rows:
-            ws.update("A1", rows)
-    except Exception:
-        pass  # Sheets는 선택적 백업 — 오류 무시
-
-def load_watchlist():
-    """관심종목 로드: JSON파일 → DEFAULT 순"""
-    return _load_wl_file()
-
-def get_watchlist():
-    """★ 관심종목 표준 로드 함수 — 코드 전체에서 이 함수만 사용"""
-    _wl = st.session_state.get('watchlist_data', '')
-    if _wl:
-        return _wl
-    _wl = load_watchlist()
-    st.session_state.watchlist_data = _wl
-    return _wl
-
-def safe_clear_cache():
-    """watchlist session_state 초기화 (파일에서 재로드하게)"""
-    st.session_state.pop('watchlist_data', None)
-
-def save_watchlist(text):
-    """관심종목 전체 저장"""
-    st.session_state.watchlist_data = text
-    _save_wl_file(text)
-    _sync_sheets(text)  # Sheets 백업 (실패해도 무관)
-
 def _parse_watchlist(wl):
     """watchlist 문자열 → [(ticker, name), ...] 파싱"""
     result = []
@@ -546,33 +474,94 @@ def _parse_watchlist(wl):
             result.append((parts[0].strip(), parts[1].strip()))
     return result
 
+def _pairs_to_text(pairs):
+    return "\n".join(f"{t},{n}" for t, n in pairs)
+
+def load_watchlist():
+    """Google Sheets에서 관심종목 로드"""
+    try:
+        ws = get_gsheet()
+        data = ws.get_all_values()
+        if data:
+            return "\n".join([",".join(row[:2]) for row in data if len(row) >= 2 and row[0].strip()])
+    except Exception:
+        pass
+    return DEFAULT_WATCHLIST
+
+def get_watchlist():
+    """★ 관심종목 표준 로드 함수"""
+    _wl = st.session_state.get('watchlist_data', '')
+    if _wl:
+        return _wl
+    _wl = load_watchlist()
+    st.session_state.watchlist_data = _wl
+    return _wl
+
+def safe_clear_cache():
+    """watchlist session_state 초기화 → 다음 호출 시 Sheets에서 재로드"""
+    st.session_state.pop('watchlist_data', None)
+
+def save_watchlist(text):
+    """관심종목 전체 저장 — session_state + Sheets 동시 저장"""
+    st.session_state.watchlist_data = text
+    try:
+        ws = get_gsheet()
+        rows = [[p.strip() for p in l.split(",", 1)]
+                for l in text.strip().split("\n")
+                if "," in l and l.strip()]
+        ws.clear()
+        if rows:
+            ws.update("A1", rows)
+    except Exception as _e:
+        st.warning(f"⚠️ Sheets 저장 오류 (앱은 정상): {_e}")
+
 def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
 
 def add_ticker(ticker, name):
-    """관심종목 1개 추가"""
+    """관심종목 1개 추가 — append_row로 안전하게"""
     wl = get_watchlist()
     existing = [t for t, _ in _parse_watchlist(wl)]
     if ticker in existing:
         return False
-    save_watchlist(wl.strip() + f"\n{ticker},{name}")
+    # session_state 즉시 반영
+    st.session_state.watchlist_data = wl.strip() + f"\n{ticker},{name}"
+    # Sheets에 한 줄 추가 (clear 없이 안전)
+    try:
+        get_gsheet().append_row([ticker, name], value_input_option="RAW")
+    except Exception as _e:
+        st.warning(f"⚠️ Sheets 저장 오류 (앱은 정상): {_e}")
     return True
+
+def remove_ticker_from_sheets(text):
+    """삭제 후 Sheets 전체 갱신"""
+    try:
+        ws = get_gsheet()
+        rows = [[p.strip() for p in l.split(",", 1)]
+                for l in text.strip().split("\n")
+                if "," in l and l.strip()]
+        ws.clear()
+        if rows:
+            ws.update("A1", rows)
+    except Exception as _e:
+        st.warning(f"⚠️ Sheets 저장 오류 (앱은 정상): {_e}")
 
 def clean_sheet_duplicates():
     """중복 제거"""
     wl = get_watchlist()
-    seen = set()
-    clean = []
+    seen = set(); clean = []
     for t, n in _parse_watchlist(wl):
         if t not in seen:
-            seen.add(t)
-            clean.append((t, n))
-    save_watchlist(_list_to_text(clean))
-    return _list_to_text(clean)
+            seen.add(t); clean.append((t, n))
+    result = _pairs_to_text(clean)
+    save_watchlist(result)
+    return result
 
 def remove_ticker(ticker):
     pairs = _parse_watchlist(get_watchlist())
-    save_watchlist("\n".join(f"{t},{n}" for t, n in pairs if t != ticker))
+    new_text = "\n".join(f"{t},{n}" for t, n in pairs if t != ticker)
+    st.session_state.watchlist_data = new_text
+    remove_ticker_from_sheets(new_text)
 
 # session_state 초기화
 if 'passed' not in st.session_state:
@@ -1226,7 +1215,9 @@ with st.sidebar:
         _sc1.markdown(f"<div style='font-size:12px; padding:4px 0'><b>{_n}</b><br><span style='color:#64748b; font-size:10px'>{_t}</span></div>", unsafe_allow_html=True)
         if _sc2.button("✕", key=f"sb_del_{_t}"):
             _new_lines = [l for l in _sb_lines if not l.startswith(_t + ",")]
-            save_watchlist("\n".join(_new_lines))
+            _new_text = "\n".join(_new_lines)
+            st.session_state.watchlist_data = _new_text
+            remove_ticker_from_sheets(_new_text)
             st.rerun()
 
     st.markdown("---")
