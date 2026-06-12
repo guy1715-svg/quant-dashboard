@@ -761,7 +761,7 @@ h3 { color: #e2e8f0; font-weight: 700; }
 # 데이터 함수
 # ══════════════════════════════════════════
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
     import yfinance as yf
     end   = datetime.today()
@@ -1144,17 +1144,8 @@ with st.sidebar:
 
     st.markdown("### 📋 관심 종목")
 
-    # 사이드바는 항상 Sheets에서 직접 읽기 (캐시 무시)
-    try:
-        _ws_sb = get_gsheet()
-        _raw   = _ws_sb.get_all_values()
-        if _raw:
-            _sb_wl = "\n".join([",".join(r) for r in _raw if len(r)>=2])
-            st.session_state.watchlist_data = _sb_wl
-        else:
-            _sb_wl = st.session_state.get('watchlist_data') or DEFAULT_WATCHLIST
-    except:
-        _sb_wl = st.session_state.get('watchlist_data') or DEFAULT_WATCHLIST
+    # 사이드바 — session_state 우선 (Sheets API 호출 최소화)
+    _sb_wl = st.session_state.get('watchlist_data') or load_watchlist()
     _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
     _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
 
@@ -1276,9 +1267,18 @@ now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#64748b; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
-# ── 전역 데이터 초기화 ──
+# ── 전역 데이터 초기화 (5분 캐시) ──
+import time as _time
 if 'all_data_cache' not in st.session_state:
     st.session_state.all_data_cache = {}
+if 'all_data_time' not in st.session_state:
+    st.session_state.all_data_time = 0
+
+# 5분(300초) 지나면 캐시 초기화
+if _time.time() - st.session_state.all_data_time > 300:
+    if st.session_state.all_data_cache:
+        st.session_state.all_data_cache = {}
+
 all_data = st.session_state.all_data_cache
 
 tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리"])
@@ -3012,6 +3012,8 @@ with tab_e:
                 all_data[ticker] = {'name': name, 'df': df}
             prog_bar.empty()
             st.session_state.all_data_cache = all_data
+            import time
+            st.session_state.all_data_time = time.time()
 
         # ── KIS 실시간 연동 ──
         # V8.9.1 지수 셧다운 체크 (현황판)
