@@ -1942,7 +1942,8 @@ with tab_c:
                     '4)리스크 5)결론(매수/관망/회피). '
                     'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.'
                 )
-                _df_g = _sel_scan_item.get('df') or fetch_ohlcv(_sel_scan_item['ticker'], 60)
+                _df_g_tmp = _sel_scan_item.get('df')
+                _df_g = _df_g_tmp if (_df_g_tmp is not None and not _df_g_tmp.empty) else fetch_ohlcv(_sel_scan_item['ticker'], 60)
                 if _df_g is not None:
                     with st.spinner(f"🤖 {_sel_scan_item['name']} 정밀분석 중..."):
                         try:
