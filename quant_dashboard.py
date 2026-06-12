@@ -893,66 +893,87 @@ def build_prompt(df, name, ticker):
 
 def calc_entry_point(df, preset=None):
     """
-    프리셋별 진입 타점 자동 계산
-    반환: (entry, stoploss, target1, target2, reason)
+    프리셋별 진입 타점 자동 계산 (현재가와 분리)
+    핵심: 매수 타점은 현재가보다 낮은 눌림목/지지선 기준
     """
+    import numpy as np
     l   = df.iloc[-1]
     cur = l['종가']
 
-    # 지지/저항 계산
-    recent_low  = df['저가'].tail(20).min()
-    recent_high = df['고가'].tail(20).max()
-    support  = l.get('지지선', recent_low)  if '지지선' in df.columns else recent_low
-    resist   = l.get('저항선', recent_high) if '저항선' in df.columns else recent_high
-    bb_lower = l['BB_lower']
-    bb_mid   = (l['BB_upper'] + l['BB_lower']) / 2
-    ma20     = l['MA20']
-    ma5      = l['MA5']
+    # 핵심 지표
+    ma5   = l['MA5']
+    ma20  = l['MA20']
+    ma60  = l['MA60']
+    bb_lo = l['BB_lower']
+    bb_mi = (l['BB_upper'] + l['BB_lower']) / 2
+    bb_hi = l['BB_upper']
+    rsi   = l['RSI']
 
-    if preset == 'bounce' or preset is None and l['RSI'] <= 35:
-        # 반등매매: BB하단 또는 지지선 중 높은 값 → 매수 타점
-        entry    = round(max(bb_lower, support) * 1.005)   # 지지선 살짝 위
-        stoploss = round(min(bb_lower, support) * 0.97)    # 지지선 아래 3%
-        target1  = round(bb_mid)                           # BB중간선
-        target2  = round(resist)                           # 저항선
-        reason   = f"BB하단({bb_lower:,.0f}) + 지지선({support:,.0f}) 기준"
+    # 지지선: 최근 20일 저가 중 현재가 아래 피벗
+    _lows = df['저가'].tail(20)
+    _support_candidates = [v for v in [ma20, ma60, bb_lo,
+                           _lows.nsmallest(3).mean()] if v < cur * 0.999]
+    support = max(_support_candidates) if _support_candidates else cur * 0.95
+
+    # 저항선: 최근 20일 고가 중 현재가 위 피벗
+    _highs = df['고가'].tail(20)
+    _resist_candidates = [v for v in [bb_hi, bb_mi,
+                          _highs.nlargest(3).mean()] if v > cur * 1.001]
+    resist = min(_resist_candidates) if _resist_candidates else cur * 1.10
+
+    if preset == 'bounce':
+        # 반등매매: BB하단/MA20 중 현재가에 가까운 지지선 → 눌림 대기
+        _cands = [v for v in [bb_lo, ma20, support] if v < cur * 0.998]
+        entry    = round(max(_cands) * 1.003) if _cands else round(cur * 0.97)
+        stoploss = round(entry * 0.93)
+        target1  = round(bb_mi)
+        target2  = round(resist)
+        reason   = f"BB하단({bb_lo:,.0f}) 반등 눌림목 대기"
 
     elif preset == 'trend':
-        # 추세매매: MA20 눌림목 → MA5가 MA20 위에서 눌림 후 반등
-        entry    = round(max(ma20, ma5) * 1.003)           # MA20 살짝 위
-        stoploss = round(ma20 * 0.97)                      # MA20 아래 3%
-        target1  = round(resist)                           # 저항선
-        target2  = round(resist * 1.08)                    # 저항선+8%
-        reason   = f"MA20({ma20:,.0f}) 눌림목 기준"
+        # 추세매매: MA5/MA20 사이 눌림목
+        _cands = [v for v in [ma5, ma20] if v < cur * 0.998]
+        entry    = round(max(_cands) * 1.005) if _cands else round(cur * 0.98)
+        stoploss = round(ma20 * 0.97)
+        target1  = round(resist)
+        target2  = round(resist * 1.10)
+        reason   = f"MA20({ma20:,.0f}) 눌림목 대기"
 
     elif preset == 'bottom':
-        # 바닥확인: BB하단 + MACD 골든크로스 지점
-        entry    = round(bb_lower * 1.005)                 # BB하단 살짝 위
-        stoploss = round(recent_low * 0.97)                # 최근 저점 아래
-        target1  = round(bb_mid)                           # BB중간선
-        target2  = round(l['BB_upper'])                    # BB상단
-        reason   = f"BB하단({bb_lower:,.0f}) + MACD 전환 기준"
+        # 바닥확인: BB하단 터치 후 반등 진입
+        entry    = round(bb_lo * 1.008)
+        stoploss = round(df['저가'].tail(5).min() * 0.97)
+        target1  = round(bb_mi)
+        target2  = round(bb_hi)
+        reason   = f"BB하단({bb_lo:,.0f}) 바닥 확인 진입"
 
     else:
-        # 기본: 현재가 기준
-        entry    = round(cur)
-        stoploss = round(cur * 0.93)
-        target1  = round(resist) if resist > cur else round(cur * 1.10)
-        target2  = round(cur * 1.20)
-        reason   = "현재가 기준"
+        # 기본: 가장 가까운 지지선 기준
+        entry    = round(support * 1.005)
+        stoploss = round(support * 0.93)
+        target1  = round(resist)
+        target2  = round(resist * 1.10)
+        reason   = f"지지선({support:,.0f}) 기준"
 
-    # R:R 계산
+    # 현재가보다 높으면 현재가 기준으로 fallback
+    if entry >= cur:
+        entry    = round(cur * 0.985)  # 현재가보다 1.5% 낮게
+        stoploss = round(entry * 0.93)
+        reason   += " (현재가 근접 — 소폭 눌림 대기)"
+
     risk   = entry - stoploss
     reward = target1 - entry
     rr     = round(reward / risk, 2) if risk > 0 else 0
 
     return {
+        'cur':      round(cur),
         'entry':    entry,
         'stoploss': stoploss,
         'target1':  target1,
         'target2':  target2,
         'reason':   reason,
         'rr':       rr,
+        'gap_pct':  round((entry - cur) / cur * 100, 1),  # 현재가 대비 진입가 차이
     }
 
 def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
@@ -1883,36 +1904,55 @@ with tab_c:
 
         # 차트
         if st.session_state.get(_chart_key_s, False):
-            _df_s = _sel_scan_item.get('df')
+            _df_s_tmp = _sel_scan_item.get('df')
+            _df_s = _df_s_tmp if (_df_s_tmp is not None and not _df_s_tmp.empty) else fetch_ohlcv(_sel_scan_item['ticker'], 60)
             if _df_s is not None and not _df_s.empty:
                 try:
-                    _df_s = calc_indicators(_df_s)
-                    _entry_s = _df_s['종가'].iloc[-1]
-                    _stop_s  = round(_entry_s * 0.93)
-                    _target_s = _df_s.get('저항선', pd.Series([_entry_s*1.14])).iloc[-1] if '저항선' in _df_s.columns else _entry_s*1.14
-                    _rr_s = round((_target_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
-                    _rr_c_s = '#4dff91' if _rr_s>=2 else '#ff4d6d'
-                    _target2_s = round(_entry_s * 1.20)
-                    _rr2_s     = round((_target2_s-_entry_s)/(_entry_s-_stop_s),2) if _entry_s>_stop_s else 0
+                    _df_s  = calc_indicators(_df_s)
+                    _preset_s = st.session_state.get('scan_preset')
+                    _ep_s  = calc_entry_point(_df_s, _preset_s)
+                    _cur_s = _ep_s['cur']
+                    _rr_c_s = '#34d399' if _ep_s['rr']>=2 else '#fbbf24' if _ep_s['rr']>=1 else '#f43f5e'
+                    _gap_c  = '#34d399' if _ep_s['gap_pct'] < 0 else '#fbbf24'
+
+                    # 전략 요약 박스
                     st.markdown(
-                        f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-bottom:8px'>"
-                        f"<div style='display:flex;gap:16px;flex-wrap:wrap;align-items:center'>"
-                        f"<span>🎯 <b>매수가</b> <span style='color:#fbbf24;font-size:16px'>{_entry_s:,.0f}원</span></span>"
-                        f"<span>🛑 <b>손절가</b> <span style='color:#f43f5e;font-size:16px'>{_stop_s:,.0f}원</span> <span style='color:#64748b;font-size:11px'>(-7%)</span></span>"
-                        f"<span>🎯 <b>1차목표</b> <span style='color:#34d399;font-size:16px'>{round(_target_s):,.0f}원</span></span>"
-                        f"<span>🎯 <b>2차목표</b> <span style='color:#34d399;font-size:16px'>{_target2_s:,.0f}원</span> <span style='color:#64748b;font-size:11px'>(+20%)</span></span>"
-                        f"<span>📊 <b>R:R</b> <span style='color:{_rr_c_s};font-size:16px;font-weight:700'>{_rr_s}</span>"
-                        f"{'  ✅ 진입가능' if _rr_s>=2 else '  ❌ R:R부족'}</span>"
-                        f"</div></div>",
+                        f"<div style='background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.05));"
+                        f"border:1px solid rgba(99,102,241,0.3);border-radius:14px;padding:16px;margin-bottom:12px'>"
+                        f"<div style='font-size:11px;color:#64748b;margin-bottom:10px'>"
+                        f"📐 {_ep_s['reason']} &nbsp;|&nbsp; "
+                        f"현재가 <b style='color:#f0f4ff'>{_cur_s:,.0f}원</b> &nbsp;|&nbsp; "
+                        f"진입 대기 <b style='color:{_gap_c}'>{_ep_s['gap_pct']:+.1f}%</b>"
+                        f"</div>"
+                        f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center'>"
+                        f"<div style='background:rgba(255,255,255,0.05);border-radius:10px;padding:10px'>"
+                        f"<div style='font-size:10px;color:#64748b'>현재가</div>"
+                        f"<div style='font-size:16px;font-weight:700;color:#94a3b8'>{_cur_s:,.0f}</div></div>"
+                        f"<div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:10px'>"
+                        f"<div style='font-size:10px;color:#64748b'>🎯 매수 타점</div>"
+                        f"<div style='font-size:16px;font-weight:700;color:#fbbf24'>{_ep_s['entry']:,.0f}</div></div>"
+                        f"<div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:10px;padding:10px'>"
+                        f"<div style='font-size:10px;color:#64748b'>🛑 손절가</div>"
+                        f"<div style='font-size:16px;font-weight:700;color:#f43f5e'>{_ep_s['stoploss']:,.0f}</div>"
+                        f"<div style='font-size:10px;color:#64748b'>-7%</div></div>"
+                        f"<div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:10px;padding:10px'>"
+                        f"<div style='font-size:10px;color:#64748b'>🎯 1차목표</div>"
+                        f"<div style='font-size:16px;font-weight:700;color:#34d399'>{_ep_s['target1']:,.0f}</div></div>"
+                        f"<div style='background:rgba({_rr_c_s.replace('#','').replace('34d399','52,211,153').replace('fbbf24','251,191,36').replace('f43f5e','244,63,94')},0.15);border-radius:10px;padding:10px'>"
+                        f"<div style='font-size:10px;color:#64748b'>📊 R:R</div>"
+                        f"<div style='font-size:22px;font-weight:700;color:{_rr_c_s}'>{_ep_s['rr']}</div>"
+                        f"<div style='font-size:11px;color:{_rr_c_s}'>{'✅ 진입가능' if _ep_s['rr']>=2 else '⚠️ 소량' if _ep_s['rr']>=1 else '❌ 불가'}</div>"
+                        f"</div></div></div>",
                         unsafe_allow_html=True
                     )
+
                     st.plotly_chart(
                         make_chart(
                             _df_s, _sel_scan_item['name'],
-                            entry    = _entry_s,
-                            stoploss = _stop_s,
-                            target1  = round(_target_s),
-                            target2  = round(_entry_s * 1.20),  # 2차 목표 +20%
+                            entry    = _ep_s['entry'],
+                            stoploss = _ep_s['stoploss'],
+                            target1  = _ep_s['target1'],
+                            target2  = _ep_s['target2'],
                         ),
                         use_container_width=True
                     )
@@ -1936,11 +1976,25 @@ with tab_c:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_key)
                 _gm   = genai.GenerativeModel(model_name)
+                _ep_gem = calc_entry_point(
+                    _df_g if (_df_g is not None and not _df_g.empty) else pd.DataFrame(),
+                    st.session_state.get('scan_preset')
+                ) if (_df_g is not None and not _df_g.empty) else {}
+
                 _sys  = (
                     'You are a Korean stock quantitative analysis AI. Always respond in Korean. '
-                    'Provide: 1)시장상황 2)기술적분석 3)매수전략(진입가/손절가/목표가/R:R) '
-                    '4)리스크 5)결론(매수/관망/회피). '
-                    'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down.'
+                    'CRITICAL: Start your response with a clear verdict box in this EXACT format:\n'
+                    '```\n'
+                    '【최종 판정】\n'
+                    '결론: [✅ 매수 가능 / ⚠️ 관망 / ❌ 회피] ← 반드시 셋 중 하나\n'
+                    '신뢰도: [상 / 중 / 하]\n'
+                    '매수 타점: [가격]원 (현재가 대비 [%])\n'
+                    '손절가: [가격]원 (-7%)\n'
+                    '1차 목표: [가격]원\n'
+                    'R:R: [수치]\n'
+                    '```\n'
+                    'Then provide: 1)근거(기술적/수급) 2)리스크 요인 3)진입 타이밍 조건\n'
+                    'Rules: R:R>2.0 / Stop-loss -7% / No entry 09-09:30 / No averaging down / No averaging down ever.'
                 )
                 _df_g_tmp = _sel_scan_item.get('df')
                 _df_g = _df_g_tmp if (_df_g_tmp is not None and not _df_g_tmp.empty) else fetch_ohlcv(_sel_scan_item['ticker'], 60)
@@ -1956,10 +2010,34 @@ with tab_c:
                             st.session_state[_gcache] = f"분석 오류: {_eg}"
 
             if _gcache in st.session_state:
-                st.markdown(
-                    f"<div class='gemini-box'>{st.session_state[_gcache]}</div>",
-                    unsafe_allow_html=True
-                )
+                _gem_text = st.session_state[_gcache]
+
+                # 판정 박스 추출 및 강조 표시
+                import re as _re
+                _verdict_match = _re.search(r'【최종 판정】.*?```', _gem_text, _re.DOTALL)
+                if _verdict_match:
+                    _verdict = _verdict_match.group(0)
+                    _rest    = _gem_text[_verdict_match.end():]
+                    _v_color = '#34d399' if '✅' in _verdict else '#fbbf24' if '⚠️' in _verdict else '#f43f5e'
+                    _v_bg    = 'rgba(52,211,153,0.1)' if '✅' in _verdict else 'rgba(251,191,36,0.1)' if '⚠️' in _verdict else 'rgba(244,63,94,0.1)'
+                    st.markdown(
+                        f"<div style='background:{_v_bg};border:2px solid {_v_color};"
+                        f"border-radius:14px;padding:16px;margin-bottom:12px;"
+                        f"font-family:monospace;font-size:14px;line-height:1.8;white-space:pre-wrap'>"
+                        f"{_verdict.replace('```','').strip()}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(
+                        f"<div class='gemini-box'>{_rest.strip()}</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f"<div class='gemini-box'>{_gem_text}</div>",
+                        unsafe_allow_html=True
+                    )
+
                 _rr1, _rr2 = st.columns(2)
                 if _rr1.button("🔄 재분석", key="scan_gem_rerun"):
                     del st.session_state[_gcache]
