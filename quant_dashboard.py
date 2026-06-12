@@ -1596,43 +1596,146 @@ with tab_b:
             vol_c = 'up' if l['거래량_비율']>=200 else 'flat'
             m6.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value {vol_c}'>{l['거래량_비율']:.0f}%</div></div>", unsafe_allow_html=True)
 
-            # ── 매수/손절/목표가 입력 ──
-            st.markdown("### 🎯 매수 전략 라인")
-            _unit    = get_currency(sel_ticker)
-            _step    = 100 if is_korean_ticker(sel_ticker) else 1
-            _fmt     = "%.0f" if is_korean_ticker(sel_ticker) else "%.2f"
-            lc1, lc2, lc3, lc4 = st.columns(4)
-            entry_price   = lc1.number_input(f"매수가 ({_unit})", value=0, step=_step,
-                                              help="입력하면 차트에 황금색 선으로 표시")
-            _stop_default = int(l['종가']*0.93) if entry_price==0 else int(entry_price*0.93)
-            stop_price    = lc2.number_input(f"손절가 ({_unit}, -7% 자동계산)",
-                                              value=_stop_default, step=_step)
-            target1_price = lc3.number_input(f"1차 목표가 ({_unit})", value=0, step=_step)
-            target2_price = lc4.number_input(f"2차 목표가 ({_unit})", value=0, step=_step)
+            # ── 🎯 자동 전략 분석 ──
+            st.markdown("### 🎯 자동 전략 분석")
 
-            # R:R 자동 계산
-            if entry_price > 0 and stop_price > 0 and target1_price > 0:
-                risk   = entry_price - stop_price
-                reward = target1_price - entry_price
-                rr     = round(reward/risk, 2) if risk > 0 else 0
-                rr_color = '#4dff91' if rr >= 2.0 else '#ff4d6d'
-                rr_text  = '✅ 진입 가능' if rr >= 2.0 else '❌ R:R 부족 (2.0 미만 기각)'
+            # 프리셋 선택
+            _an_pr1, _an_pr2, _an_pr3 = st.columns(3)
+            if 'analysis_preset' not in st.session_state:
+                st.session_state.analysis_preset = 'bounce'
+            if _an_pr1.button("📉 반등매매", key="an_bounce",
+                              type="primary" if st.session_state.analysis_preset=="bounce" else "secondary",
+                              use_container_width=True):
+                st.session_state.analysis_preset = "bounce"
+                st.rerun()
+            if _an_pr2.button("📈 추세매매", key="an_trend",
+                              type="primary" if st.session_state.analysis_preset=="trend" else "secondary",
+                              use_container_width=True):
+                st.session_state.analysis_preset = "trend"
+                st.rerun()
+            if _an_pr3.button("🎯 바닥확인", key="an_bottom",
+                              type="primary" if st.session_state.analysis_preset=="bottom" else "secondary",
+                              use_container_width=True):
+                st.session_state.analysis_preset = "bottom"
+                st.rerun()
+
+            # 타점 자동 계산
+            try:
+                _ep = calc_entry_point(sel_df, st.session_state.analysis_preset)
+                _rr_c = '#34d399' if _ep['rr'] >= 2 else '#fbbf24' if _ep['rr'] >= 1 else '#f43f5e'
+                _gap_c = '#34d399' if _ep['gap_pct'] < 0 else '#fbbf24'
+
+                # 진입 종합 판정
+                _sigs = get_signal(sel_df)
+                _buy_cnt  = sum(1 for _, t in _sigs if t == 'buy')
+                _sell_cnt = sum(1 for _, t in _sigs if t == 'sell')
+                _v891     = run_v891_system_check()
+
+                if not _v891['can_enter']:
+                    _verdict = "🚫 진입 차단"
+                    _verdict_color = "#f43f5e"
+                    _verdict_bg    = "rgba(244,63,94,0.1)"
+                    _verdict_border= "rgba(244,63,94,0.4)"
+                    _verdict_detail = " / ".join(_v891['alerts'])
+                elif _ep['rr'] < 2.0:
+                    _verdict = "❌ 진입 불가"
+                    _verdict_color = "#f43f5e"
+                    _verdict_bg    = "rgba(244,63,94,0.1)"
+                    _verdict_border= "rgba(244,63,94,0.4)"
+                    _verdict_detail = f"R:R {_ep['rr']} — 2.0 미만 기각"
+                elif _buy_cnt >= 2 and _ep['rr'] >= 2.0:
+                    _verdict = "✅ 매수 검토"
+                    _verdict_color = "#34d399"
+                    _verdict_bg    = "rgba(52,211,153,0.1)"
+                    _verdict_border= "rgba(52,211,153,0.4)"
+                    _verdict_detail = f"매수신호 {_buy_cnt}개 / R:R {_ep['rr']}"
+                else:
+                    _verdict = "⚠️ 관망"
+                    _verdict_color = "#fbbf24"
+                    _verdict_bg    = "rgba(251,191,36,0.1)"
+                    _verdict_border= "rgba(251,191,36,0.4)"
+                    _verdict_detail = f"신호 약함 (매수 {_buy_cnt} / 매도 {_sell_cnt})"
+
+                # 판정 배너
                 st.markdown(
-                    f"<div class='metric-card' style='display:inline-block; padding:10px 20px'>"
-                    f"<span style='color:#64748b; font-size:11px'>R:R 비율</span> "
-                    f"<span style='color:{rr_color}; font-size:20px; font-weight:700; font-family:IBM Plex Mono'> {rr}</span> "
-                    f"<span style='color:{rr_color}; font-size:13px'>{rr_text}</span>"
+                    f"<div style='background:{_verdict_bg};border:2px solid {_verdict_border};"
+                    f"border-radius:14px;padding:14px 20px;margin-bottom:12px;"
+                    f"display:flex;justify-content:space-between;align-items:center'>"
+                    f"<span style='font-size:22px;font-weight:800;color:{_verdict_color}'>{_verdict}</span>"
+                    f"<span style='font-size:13px;color:#94a3b8'>{_verdict_detail}</span>"
+                    f"<span style='font-size:12px;color:#64748b'>{_ep['reason']}</span>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
+
+                # 전략 카드 (현재가 / 매수타점 / 손절가 / 1차목표 / R:R)
+                st.markdown(
+                    f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px'>"
+                    f"<div style='background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>현재가</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:#94a3b8'>{_ep['cur']:,.0f}</div></div>"
+
+                    f"<div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:12px;padding:14px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🎯 매수 타점</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:#fbbf24'>{_ep['entry']:,.0f}</div>"
+                    f"<div style='font-size:11px;color:{_gap_c}'>{_ep['gap_pct']:+.1f}% 대기</div></div>"
+
+                    f"<div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:12px;padding:14px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🛑 손절가</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:#f43f5e'>{_ep['stoploss']:,.0f}</div>"
+                    f"<div style='font-size:11px;color:#64748b'>-7%</div></div>"
+
+                    f"<div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:12px;padding:14px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🎯 1차 목표</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:#34d399'>{_ep['target1']:,.0f}</div></div>"
+
+                    f"<div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:12px;padding:14px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>✨ 2차 목표</div>"
+                    f"<div style='font-size:18px;font-weight:700;color:#a78bfa'>{_ep['target2']:,.0f}</div></div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+                # R:R 바
+                st.markdown(
+                    f"<div style='background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);"
+                    f"border-radius:12px;padding:12px 20px;display:flex;align-items:center;gap:20px;margin-bottom:8px'>"
+                    f"<span style='color:#64748b;font-size:12px'>R:R</span>"
+                    f"<span style='font-size:28px;font-weight:800;color:{_rr_c};font-family:IBM Plex Mono'>{_ep['rr']}</span>"
+                    f"<span style='font-size:13px;color:{_rr_c}'>{'✅ 진입 가능 (2.0 이상)' if _ep['rr']>=2 else '⚠️ 소량만 (1.0~2.0)' if _ep['rr']>=1 else '❌ 진입 불가 (2.0 미만)'}</span>"
+                    f"<span style='margin-left:auto;font-size:11px;color:#64748b'>신호: {' '.join(s for s,_ in _sigs)}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+                entry_price   = _ep['entry']
+                stop_price    = _ep['stoploss']
+                target1_price = _ep['target1']
+                target2_price = _ep['target2']
+
+            except Exception as _ep_err:
+                st.warning(f"타점 계산 오류: {_ep_err}")
+                entry_price = stop_price = target1_price = target2_price = 0
+
+            st.divider()
+
+            # ── 수동 조정 (선택) ──
+            with st.expander("✏️ 수동 조정", expanded=False):
+                _unit  = get_currency(sel_ticker)
+                _step  = 100 if is_korean_ticker(sel_ticker) else 1
+                lc1, lc2, lc3, lc4 = st.columns(4)
+                entry_price   = lc1.number_input(f"매수가 ({_unit})", value=int(entry_price) if entry_price else 0, step=_step)
+                stop_price    = lc2.number_input(f"손절가 ({_unit})", value=int(stop_price)  if stop_price  else 0, step=_step)
+                target1_price = lc3.number_input(f"1차 목표 ({_unit})", value=int(target1_price) if target1_price else 0, step=_step)
+                target2_price = lc4.number_input(f"2차 목표 ({_unit})", value=int(target2_price) if target2_price else 0, step=_step)
 
             # 차트
             fig = make_chart(
                 sel_df, sel_name,
                 entry    = entry_price   if entry_price   > 0 else None,
-                stoploss = stop_price    if stop_price     > 0 else None,
-                target1  = target1_price if target1_price  > 0 else None,
-                target2  = target2_price if target2_price  > 0 else None,
+                stoploss = stop_price    if stop_price    > 0 else None,
+                target1  = target1_price if target1_price > 0 else None,
+                target2  = target2_price if target2_price > 0 else None,
             )
             st.plotly_chart(fig, use_container_width=True)
 
