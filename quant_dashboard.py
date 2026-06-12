@@ -466,7 +466,7 @@ def calc_portfolio_value(acc):
     return total
 
 def load_watchlist():
-    """Google Sheets에서 관심종목 로드 (30초 캐시)"""
+    """Google Sheets에서 관심종목 로드"""
     try:
         ws = get_gsheet()
         data = ws.get_all_values()
@@ -474,13 +474,10 @@ def load_watchlist():
             result = "\n".join([",".join(row) for row in data if len(row) >= 2])
             return result
         else:
-            # Sheets 비어있으면 DEFAULT 반환 후 Sheets에 저장
             return DEFAULT_WATCHLIST
     except Exception as e:
-        pass
-    if 'watchlist_data' in st.session_state:
-        return st.session_state.watchlist_data
-    return DEFAULT_WATCHLIST
+        st.session_state['_sheets_error'] = str(e)
+        return DEFAULT_WATCHLIST
 
 def get_watchlist():
     """
@@ -546,12 +543,20 @@ def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
 
 def add_ticker(ticker, name):
+    """관심종목 1개 추가 — append_row로 안전하게 저장"""
     wl = get_watchlist()
     existing = [t for t, _ in _parse_watchlist(wl)]
-    if ticker not in existing:
-        save_watchlist(wl.strip() + f"\n{ticker},{name}")
-        return True
-    return False
+    if ticker in existing:
+        return False
+    # 1) session_state 즉시 반영
+    new_wl = wl.strip() + f"\n{ticker},{name}"
+    st.session_state.watchlist_data = new_wl
+    # 2) Sheets에 한 줄만 추가 (clear 없이 → 안전)
+    try:
+        get_gsheet().append_row([ticker, name], value_input_option="RAW")
+    except Exception as _e:
+        st.error(f"⚠️ Sheets 저장 실패: {_e}\n\n새로고침 시 사라질 수 있습니다.")
+    return True
 
 def remove_ticker(ticker):
     pairs = _parse_watchlist(get_watchlist())
@@ -1197,6 +1202,10 @@ with st.sidebar:
                                 help="aistudio.google.com에서 발급")
 
     st.markdown("### 📋 관심 종목")
+
+    # Sheets 연결 오류 표시
+    if st.session_state.get('_sheets_error'):
+        st.error(f"🔴 Sheets 연결 오류:\n{st.session_state['_sheets_error']}")
 
     # 사이드바 — session_state 우선 (Sheets API 호출 최소화)
     _sb_wl = get_watchlist()
