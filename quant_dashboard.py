@@ -1558,8 +1558,9 @@ with tab_b:
                 else:
                     return f"{ticker} ({name})"
 
+            _b1_tickers = get_watchlist_tickers()  # 항상 최신 관심종목 반영
             selected = st.selectbox("종목 선택",
-                [_display_name(ticker, name) for ticker, name in TICKERS if ticker in all_data])
+                [_display_name(ticker, name) for ticker, name in _b1_tickers if ticker in all_data])
             # 티커 추출
             sel_ticker = selected.split('(')[-1].replace(')', '').strip()
             if not is_korean_ticker(sel_ticker):
@@ -1794,7 +1795,7 @@ with tab_b:
                             raise
                 raise Exception("최대 재시도 횟수 초과 (429 rate limit). 내일 다시 시도하거나 유료 플랜을 확인하세요.")
 
-            for ticker, name in TICKERS:
+            for ticker, name in get_watchlist_tickers():  # 항상 최신 관심종목 반영
                 if ticker not in all_data:
                     continue
                 with st.expander(f"📊 {name} ({ticker}) 분석", expanded=False):
