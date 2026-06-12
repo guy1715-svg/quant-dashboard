@@ -305,68 +305,68 @@ def run_v891_system_check(ticker="", entry_price=0, current_price=0):
         'kosdaq_chg': _kosdaq_chg,
     }
 
-def get_gsheet():
-    """Google Sheets 연결 (캐시 — 연결 1회만)"""
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    scopes = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(st.secrets["SHEET_ID"])
-    return sh.sheet1
+# ══════════════════════════════════════════
+# Google Sheets 공통 인증 헬퍼
+# ══════════════════════════════════════════
 
-@st.cache_data(ttl=30, show_spinner=False)
+_GS_SCOPES = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive",
+]
+
+@st.cache_resource(show_spinner=False)
+def _get_gspread_workbook():
+    """인증 + 워크북 연결 — 앱 전체에서 1회만 실행"""
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES
+    )
+    return gspread.authorize(creds).open_by_key(st.secrets["SHEET_ID"])
+
+def get_gsheet():
+    """관심종목 시트 (sheet1)"""
+    return _get_gspread_workbook().sheet1
+
 # ══════════════════════════════════════════
 # 페이퍼 트레이딩 백엔드
 # ══════════════════════════════════════════
 
 def get_trading_sheet():
-    """거래 일지 시트 (Sheet2)"""
+    """거래 일지 시트 (trading_log) — 없으면 자동 생성"""
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        from google.oauth2.service_account import Credentials
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        gc    = gspread.authorize(creds)
-        sh    = gc.open_by_key(st.secrets["SHEET_ID"])
-        # Sheet2 없으면 생성
+        sh = _get_gspread_workbook()
         try:
-            ws = sh.worksheet("trading_log")
-        except:
+            return sh.worksheet("trading_log")
+        except Exception:
             ws = sh.add_worksheet("trading_log", rows=1000, cols=20)
             ws.append_row(["날짜","시간","종목코드","종목명","매매","수량",
                            "체결단가","수수료","슬리피지","순체결가",
                            "잔고","평가금액","5AI점수","ADX","Z-Score","메모"])
-        return ws
-    except Exception as e:
+            return ws
+    except Exception:
         return None
 
 def get_account_sheet():
-    """가상 계좌 시트 (Sheet3)"""
+    """가상 계좌 시트 (account) — 없으면 자동 생성"""
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        from google.oauth2.service_account import Credentials
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        gc    = gspread.authorize(creds)
-        sh    = gc.open_by_key(st.secrets["SHEET_ID"])
+        sh = _get_gspread_workbook()
         try:
-            ws = sh.worksheet("account")
-        except:
+            return sh.worksheet("account")
+        except Exception:
             ws = sh.add_worksheet("account", rows=100, cols=10)
             ws.append_row(["초기자본","현금잔고","보유종목JSON","최고자산","최저자산"])
             ws.append_row([10000000, 10000000, "[]", 10000000, 10000000])
-        return ws
-    except:
+            return ws
+    except Exception:
         return None
+
+def _safe_json(s, default=None):
+    """JSON 파싱 실패 시 default 반환"""
+    if default is None:
+        default = []
+    try:
+        return json.loads(s) if s else default
+    except Exception:
+        return default
 
 def load_account():
     """가상 계좌 로드"""
@@ -380,7 +380,7 @@ def load_account():
             acc = {
                 'initial':    float(row[0]),
                 'cash':       float(row[1]),
-                'positions':  json.loads(row[2]) if row[2] else [],
+                'positions':  _safe_json(row[2]),
                 'peak':       float(row[3]),
                 'trough':     float(row[4]),
             }
@@ -3138,7 +3138,7 @@ with tab_e:
                         _port = _log_df.set_index('날짜')['수익률(%)']
                         _port.index = pd.to_datetime(_port.index).tz_localize(None)
                         _cmp  = pd.DataFrame({'내 포트폴리오(%)': _port, '코스피(%)': _bm_r})
-                        _cmp  = _cmp.fillna(method='ffill').dropna()
+                        _cmp  = _cmp.ffill().dropna()
                         st.line_chart(_cmp)
                     except:
                         st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
