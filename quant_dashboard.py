@@ -569,215 +569,298 @@ if 'passed' not in st.session_state:
 if 'watchlist_data' not in st.session_state:
     st.session_state.watchlist_data = DEFAULT_WATCHLIST
 
-# ── 스타일 (Young & Modern Fintech) ──
+# ── 스타일 (반응형 — Desktop / Mobile) ──
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+KR:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
 
-/* ── 전역 배경 ── */
+/* ══════════════════════════════════════
+   CSS 변수 (테마 토큰)
+══════════════════════════════════════ */
+:root {
+    --bg-base:    #0d1117;
+    --bg-card:    rgba(255,255,255,0.04);
+    --bg-sidebar: #090d18;
+    --border:     rgba(255,255,255,0.07);
+    --accent:     #6366f1;
+    --accent2:    #8b5cf6;
+    --text-pri:   #e2e8f0;
+    --text-sec:   #94a3b8;
+    --text-dim:   #475569;
+    --up:         #f43f5e;
+    --down:       #38bdf8;
+    --green:      #34d399;
+    --font-body:  'Noto Sans KR', sans-serif;
+    --font-mono:  'IBM Plex Mono', monospace;
+    /* 데스크톱 기본값 */
+    --fs-xs:   11px;
+    --fs-sm:   13px;
+    --fs-md:   15px;
+    --fs-lg:   18px;
+    --fs-xl:   24px;
+    --fs-2xl:  32px;
+    --card-pad: 18px 22px;
+    --radius:   14px;
+}
+
+/* ══════════════════════════════════════
+   전역
+══════════════════════════════════════ */
 html, body, [class*="css"] {
-    font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
-    background-color: #0d1117;
-    color: #f0f4ff;
+    font-family: var(--font-body);
+    background-color: var(--bg-base);
+    color: var(--text-pri);
+    font-size: var(--fs-md);
+    line-height: 1.6;
 }
 .stApp {
-    background: linear-gradient(135deg, #0d1117 0%, #0f172a 50%, #0d1117 100%);
+    background: linear-gradient(160deg, #0d1117 0%, #0f172a 60%, #0d1117 100%);
 }
 
-/* ── 탭 스타일 ── */
+/* ══════════════════════════════════════
+   사이드바
+══════════════════════════════════════ */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, var(--bg-sidebar) 0%, var(--bg-base) 100%);
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] * { font-size: var(--fs-sm) !important; }
+[data-testid="stSidebar"] h2 { font-size: var(--fs-md) !important; }
+
+/* ══════════════════════════════════════
+   탭
+══════════════════════════════════════ */
 .stTabs [data-baseweb="tab-list"] {
     background: rgba(255,255,255,0.03);
-    border-radius: 16px;
+    border-radius: var(--radius);
     padding: 4px;
-    border: 1px solid rgba(255,255,255,0.06);
-    gap: 4px;
+    border: 1px solid var(--border);
+    gap: 3px;
+    flex-wrap: wrap;
 }
 .stTabs [data-baseweb="tab"] {
-    border-radius: 12px;
-    color: #94a3b8;
+    border-radius: 10px;
+    color: var(--text-sec);
     font-weight: 600;
-    font-size: 13px;
-    padding: 8px 16px;
+    font-size: var(--fs-sm);
+    padding: 8px 18px;
     transition: all 0.2s;
+    white-space: nowrap;
 }
 .stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-    color: #ffffff !important;
-    box-shadow: 0 4px 15px rgba(99,102,241,0.4);
+    background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
+    color: #fff !important;
+    box-shadow: 0 3px 12px rgba(99,102,241,0.4);
 }
 
-/* ── 메트릭 카드 ── */
+/* ══════════════════════════════════════
+   메트릭 카드
+══════════════════════════════════════ */
 .metric-card {
-    background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-    padding: 18px 22px;
-    margin-bottom: 12px;
-    backdrop-filter: blur(10px);
-    transition: border-color 0.2s;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--card-pad);
+    margin-bottom: 10px;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.2s, transform 0.15s;
 }
 .metric-card:hover {
-    border-color: rgba(99,102,241,0.4);
+    border-color: rgba(99,102,241,0.35);
+    transform: translateY(-1px);
 }
 .metric-card .label {
-    font-size: 11px;
-    color: #64748b;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
     text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+    letter-spacing: 1.2px;
+    font-family: var(--font-mono);
 }
 .metric-card .value {
-    font-size: 22px;
+    font-size: var(--fs-xl);
     font-weight: 700;
-    font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace;
-    margin-top: 6px;
+    font-family: var(--font-mono);
+    margin-top: 5px;
     letter-spacing: -0.5px;
+    color: var(--text-pri);
+}
+.metric-card .delta {
+    font-size: var(--fs-sm);
+    font-family: var(--font-mono);
+    margin-top: 2px;
 }
 
-/* ── 색상 ── */
-.up   { color: #f43f5e; }
-.down { color: #38bdf8; }
-.flat { color: #94a3b8; }
+/* ══════════════════════════════════════
+   색상 유틸
+══════════════════════════════════════ */
+.up   { color: var(--up); }
+.down { color: var(--down); }
+.flat { color: var(--text-sec); }
 
-/* ── 신호 뱃지 ── */
+/* ══════════════════════════════════════
+   뱃지
+══════════════════════════════════════ */
 .badge {
     display: inline-block;
     padding: 3px 10px;
     border-radius: 20px;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.3px;
     margin: 2px;
+    font-family: var(--font-mono);
 }
-.badge-buy     { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
-.badge-sell    { background: rgba(244,63,94,0.15);  color: #fb7185; border: 1px solid rgba(251,113,133,0.3); }
-.badge-watch   { background: rgba(56,189,248,0.15); color: #7dd3fc; border: 1px solid rgba(125,211,252,0.3); }
-.badge-neutral { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.2); }
+.badge-buy     { background: rgba(52,211,153,0.12); color: var(--green);  border: 1px solid rgba(52,211,153,0.25); }
+.badge-sell    { background: rgba(244,63,94,0.12);  color: var(--up);     border: 1px solid rgba(244,63,94,0.25); }
+.badge-watch   { background: rgba(56,189,248,0.12); color: var(--down);   border: 1px solid rgba(56,189,248,0.25); }
+.badge-neutral { background: rgba(148,163,184,0.08); color: var(--text-sec); border: 1px solid rgba(148,163,184,0.18); }
 
-/* ── Gemini 결과 박스 ── */
+/* ══════════════════════════════════════
+   Gemini 결과 박스
+══════════════════════════════════════ */
 .gemini-box {
-    background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.05) 100%);
-    border-left: 3px solid #6366f1;
-    border-radius: 0 12px 12px 0;
-    padding: 18px 22px;
-    font-size: 14px;
-    line-height: 1.8;
+    background: linear-gradient(135deg, rgba(99,102,241,0.07), rgba(139,92,246,0.04));
+    border-left: 3px solid var(--accent);
+    border-top: 1px solid rgba(99,102,241,0.18);
+    border-right: 1px solid rgba(99,102,241,0.08);
+    border-bottom: 1px solid rgba(99,102,241,0.08);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 16px 20px;
+    font-size: var(--fs-md);
+    line-height: 1.85;
     white-space: pre-wrap;
-    font-family: 'Pretendard', 'Noto Sans KR', sans-serif;
-    border-top: 1px solid rgba(99,102,241,0.2);
-    border-right: 1px solid rgba(99,102,241,0.1);
-    border-bottom: 1px solid rgba(99,102,241,0.1);
 }
 
-/* ── 사이드바 ── */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0a0f1e 0%, #0d1117 100%);
-    border-right: 1px solid rgba(255,255,255,0.06);
-}
-[data-testid="stSidebar"] .stMarkdown {
-    color: #cbd5e1;
-}
-
-/* ── 버튼 ── */
+/* ══════════════════════════════════════
+   버튼
+══════════════════════════════════════ */
 .stButton > button {
-    border-radius: 12px !important;
+    border-radius: 10px !important;
     font-weight: 600 !important;
-    font-size: 13px !important;
+    font-size: var(--fs-sm) !important;
+    padding: 8px 16px !important;
     transition: all 0.2s !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
 }
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+    background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
     border: none !important;
-    box-shadow: 0 4px 15px rgba(99,102,241,0.3) !important;
-    color: white !important;
+    box-shadow: 0 3px 12px rgba(99,102,241,0.3) !important;
+    color: #fff !important;
 }
 .stButton > button[kind="primary"]:hover {
-    box-shadow: 0 6px 20px rgba(99,102,241,0.5) !important;
+    box-shadow: 0 5px 18px rgba(99,102,241,0.5) !important;
     transform: translateY(-1px) !important;
 }
 .stButton > button[kind="secondary"] {
     background: rgba(255,255,255,0.05) !important;
-    color: #94a3b8 !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-sec) !important;
 }
 .stButton > button[kind="secondary"]:hover {
-    background: rgba(255,255,255,0.1) !important;
-    color: #f0f4ff !important;
+    background: rgba(255,255,255,0.09) !important;
+    color: var(--text-pri) !important;
 }
 
-/* ── 입력 필드 ── */
-.stTextInput input, .stNumberInput input, .stSelectbox select {
-    background: rgba(255,255,255,0.05) !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
+/* ══════════════════════════════════════
+   입력 필드
+══════════════════════════════════════ */
+.stTextInput input, .stNumberInput input,
+.stSelectbox select, textarea {
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid var(--border) !important;
     border-radius: 10px !important;
-    color: #f0f4ff !important;
+    color: var(--text-pri) !important;
+    font-size: var(--fs-sm) !important;
 }
-.stTextInput input:focus, .stNumberInput input:focus {
+.stTextInput input:focus, .stNumberInput input:focus, textarea:focus {
     border-color: rgba(99,102,241,0.5) !important;
-    box-shadow: 0 0 0 2px rgba(99,102,241,0.2) !important;
+    box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
 }
 
-/* ── expander ── */
+/* ══════════════════════════════════════
+   Expander
+══════════════════════════════════════ */
 .streamlit-expanderHeader {
     background: rgba(255,255,255,0.03) !important;
-    border-radius: 12px !important;
-    border: 1px solid rgba(255,255,255,0.06) !important;
-    color: #cbd5e1 !important;
+    border-radius: 10px !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-pri) !important;
+    font-size: var(--fs-sm) !important;
 }
 
-/* ── 구분선 ── */
-hr { border-color: rgba(255,255,255,0.06); }
-
-/* ── 제목 ── */
-h1 { 
+/* ══════════════════════════════════════
+   제목 / 구분선 / 테이블
+══════════════════════════════════════ */
+h1 {
     background: linear-gradient(135deg, #f0f4ff, #a5b4fc);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 700;
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    font-weight: 800; font-size: var(--fs-2xl) !important;
 }
-h3 { color: #e2e8f0; font-weight: 700; }
+h2 { color: var(--text-pri); font-weight: 700; font-size: var(--fs-xl) !important; }
+h3 { color: #e2e8f0; font-weight: 700; font-size: var(--fs-lg) !important; }
+h4 { color: var(--text-sec); font-weight: 600; font-size: var(--fs-md) !important; }
+hr { border-color: var(--border); margin: 12px 0; }
+.stDataFrame { border-radius: var(--radius) !important; border: 1px solid var(--border) !important; }
+.stAlert { border-radius: 10px !important; font-size: var(--fs-sm) !important; }
+p, li { font-size: var(--fs-md); }
+caption, .stCaption { font-size: var(--fs-xs) !important; color: var(--text-dim) !important; }
 
-/* ── 테이블 (dataframe) ── */
-.stDataFrame {
-    border-radius: 12px !important;
-    overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.06) !important;
-}
-
-/* ── 알림 박스 ── */
-.stAlert {
-    border-radius: 12px !important;
-}
-
-/* ── 모바일 ── */
+/* ══════════════════════════════════════
+   모바일 반응형  ≤ 768px
+══════════════════════════════════════ */
 @media (max-width: 768px) {
-    .metric-card { padding: 12px 14px; }
-    .metric-card .value { font-size: 18px; }
-    .metric-card .label { font-size: 10px; }
-    .badge { font-size: 10px; padding: 2px 7px; }
-    .gemini-box { font-size: 13px; padding: 12px 14px; }
-    .stTabs [data-baseweb="tab"] { font-size: 11px; padding: 6px 8px; }
-    h1, h2, h3 { font-size: 16px !important; }
+    :root {
+        --fs-xs:  10px;
+        --fs-sm:  12px;
+        --fs-md:  13px;
+        --fs-lg:  15px;
+        --fs-xl:  19px;
+        --fs-2xl: 22px;
+        --card-pad: 12px 14px;
+        --radius: 10px;
+    }
+    /* 탭 — 아이콘만 보이도록 축소 */
+    .stTabs [data-baseweb="tab"] {
+        padding: 7px 10px !important;
+        font-size: 11px !important;
+    }
+    /* 사이드바 숨김 처리 (접을 수 있음) */
+    [data-testid="stSidebar"] * { font-size: 11px !important; }
+    /* 버튼 풀너비 패딩 줄임 */
+    .stButton > button { padding: 7px 10px !important; font-size: 11px !important; }
+    /* 데이터프레임 스크롤 */
+    .stDataFrame { font-size: 11px !important; }
+    /* 카드 수치 크기 */
+    .metric-card .value { font-size: var(--fs-xl); }
 }
-/* 탭 스타일 */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 4px; background: #080c18; padding: 4px; border-radius: 8px;
+
+/* ══════════════════════════════════════
+   태블릿  769px ~ 1024px
+══════════════════════════════════════ */
+@media (min-width: 769px) and (max-width: 1024px) {
+    :root {
+        --fs-sm:  12px;
+        --fs-md:  14px;
+        --fs-lg:  16px;
+        --fs-xl:  21px;
+        --card-pad: 14px 18px;
+    }
 }
-.stTabs [data-baseweb="tab"] {
-    background: transparent; border-radius: 6px; color: #6b7fa3; font-weight: 600;
+
+/* ══════════════════════════════════════
+   대형 모니터  ≥ 1440px
+══════════════════════════════════════ */
+@media (min-width: 1440px) {
+    :root {
+        --fs-sm:  14px;
+        --fs-md:  16px;
+        --fs-lg:  20px;
+        --fs-xl:  26px;
+        --fs-2xl: 36px;
+        --card-pad: 22px 28px;
+    }
 }
-.stTabs [aria-selected="true"] {
-    background: #1e3a5f !important; color: #e0e6f0 !important;
-}
-/* 버튼 */
-.stButton > button {
-    background: linear-gradient(135deg, #1e3a5f, #2d5a8f);
-    color: #e0e6f0; border: 1px solid #2d5a8f;
-    border-radius: 8px; font-weight: 600;
-}
-</style>
-""", unsafe_allow_html=True)
+</style>""", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════
