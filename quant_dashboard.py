@@ -1632,7 +1632,9 @@ with tab_c:
         st.session_state.scan_done = False
 
         # 종목 리스트
+        # ── KOSPI 200대 ──
         KOSPI_LIST = [
+            # 대형주
             ("005930","삼성전자"),("000660","SK하이닉스"),("005380","현대차"),
             ("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),
             ("035420","NAVER"),("035720","카카오"),("012450","한화에어로스페이스"),
@@ -1650,7 +1652,27 @@ with tab_c:
             ("018260","삼성에스디에스"),("064350","현대로템"),("000810","삼성화재"),
             ("088350","한화생명"),("139480","이마트"),("097950","CJ제일제당"),
             ("011070","LG이노텍"),("010950","S-Oil"),
+            # 중형주 추가
+            ("323410","카카오뱅크"),("035250","강원랜드"),("047050","포스코인터내셔널"),
+            ("069960","현대백화점"),("071050","한국금융지주"),("030000","제일기획"),
+            ("004170","신세계"),("069620","대웅제약"),("003490","대한항공"),
+            ("020150","롯데에너지머티리얼즈"),("010620","현대미포조선"),("002380","KCC"),
+            ("006360","GS건설"),("000720","현대건설"),("047810","한국항공우주"),
+            ("267250","HD현대"),("009830","한화솔루션"),("008930","한미사이언스"),
+            ("000990","DB하이텍"),("033780","KT&G"),("079550","LIG넥스원"),
+            ("377300","카카오페이"),("293490","카카오게임즈"),("259960","크래프톤"),
+            ("352820","하이브"),("122630","KODEX레버리지"),("114800","KODEX인버스"),
+            ("091180","티씨케이"),("036460","한국가스공사"),("138930","BNK금융지주"),
+            ("001270","부국증권"),("005070","코스모신소재"),("006650","대한유화"),
+            ("012330","현대모비스"),("161390","한국타이어앤테크놀로지"),
+            ("004000","롯데정밀화학"),("007070","GS리테일"),("021240","코웨이"),
+            ("086280","현대글로비스"),("042660","한화오션"),("000880","한화"),
+            ("010060","OCI홀딩스"),("002790","아모레퍼시픽"),("090430","아모레G"),
+            ("000120","CJ대한통운"),("006800","미래에셋증권"),("016360","삼성증권"),
+            ("071970","STX중공업"),("003380","하림지주"),("004830","덕성"),
         ]
+
+        # ── KOSDAQ 100대 ──
         KOSDAQ_LIST = [
             ("042700","한미반도체"),("086520","에코프로"),("247540","에코프로비엠"),
             ("003670","포스코퓨처엠"),("196170","알테오젠"),("263750","펄어비스"),
@@ -1659,25 +1681,79 @@ with tab_c:
             ("035900","JYP엔터테인먼트"),("041510","에스엠"),("067160","아프리카TV"),
             ("064350","현대로템"),("214150","클래시스"),("112040","위메이드"),
             ("122870","와이지엔터테인먼트"),("091990","셀트리온헬스케어"),
+            # 추가 종목
+            ("145020","휴젤"),("066970","엘앤에프"),("373220","LG에너지솔루션"),
+            ("278280","천보"),("207940","삼성바이오로직스"),("000660","SK하이닉스"),
+            ("018290","레이"),("039980","리켐"),("950130","코오롱티슈진"),
+            ("054540","삼양옵틱스"),("084370","유진테크"),("115390","락앤락"),
+            ("058610","에스씨엔지니어링"),("078340","컴투스"),("060310","3S"),
+            ("089790","제이씨케미칼"),("043370","피에이치에이"),("094840","슈프리마"),
+            ("053980","에이스테크"),("060250","NHN KCP"),("041960","블리자드"),
+            ("108860","셀바스AI"),("950200","파나시아"),("192820","코스맥스"),
+            ("131970","두산테스나"),("054080","큐렉소"),("096530","씨젠"),
+            ("145720","덴티움"),("253450","스튜디오드래곤"),("950160","코오롱티슈진"),
+            ("060560","홈캐스트"),("215600","신라젠"),("043650","국일제지"),
+            ("238170","엔에스"),("161890","한국콜마"),("089850","유비쿼스"),
+            ("060310","3S"),("023760","한국캐피탈"),("145995","삼양사우"),
+            ("049830","이노메트리"),("078590","EMW"),("119860","트루윈"),
         ]
+
+        # ── S&P500 150대 ──
         SP500_LIST = [
+            # 기술 대형주
             ("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),
             ("GOOGL","Alphabet"),("AMZN","Amazon"),("META","Meta"),
             ("TSLA","Tesla"),("AVGO","Broadcom"),("AMD","AMD"),
             ("INTC","Intel"),("QCOM","Qualcomm"),("MU","Micron"),
             ("NOW","ServiceNow"),("CRM","Salesforce"),("PLTR","Palantir"),
             ("ORCL","Oracle"),("CSCO","Cisco"),("AMAT","Applied Materials"),
-            ("JPM","JPMorgan"),("BAC","Bank of America"),("GS","Goldman Sachs"),
+            ("LRCX","Lam Research"),("KLAC","KLA Corp"),("ADI","Analog Devices"),
+            ("MRVL","Marvell"),("ARM","ARM Holdings"),("SMCI","Super Micro"),
+            ("DELL","Dell"),("HPE","HP Enterprise"),("WDC","Western Digital"),
+            ("STX","Seagate"),("NXPI","NXP Semi"),("ON","ON Semi"),
+            ("TXN","Texas Instruments"),("MPWR","Monolithic Power"),
+            ("ADBE","Adobe"),("INTU","Intuit"),("ANSS","Ansys"),
+            ("CDNS","Cadence"),("SNPS","Synopsys"),("ACN","Accenture"),
+            ("IBM","IBM"),("HPQ","HP Inc"),("ADP","ADP"),
+            # 사이버보안/클라우드
+            ("FTNT","Fortinet"),("PANW","Palo Alto"),("CRWD","CrowdStrike"),
+            ("ZS","Zscaler"),("OKTA","Okta"),("SNOW","Snowflake"),
+            ("DDOG","Datadog"),("MDB","MongoDB"),("NET","Cloudflare"),
+            ("TEAM","Atlassian"),("HUBS","HubSpot"),
+            # 금융
+            ("JPM","JPMorgan"),("BAC","Bank of America"),("WFC","Wells Fargo"),
+            ("GS","Goldman Sachs"),("MS","Morgan Stanley"),("C","Citigroup"),
+            ("BLK","BlackRock"),("SCHW","Charles Schwab"),
             ("V","Visa"),("MA","Mastercard"),("PYPL","PayPal"),
+            ("AXP","AmericanExpress"),("COF","Capital One"),
+            # 헬스케어
             ("UNH","UnitedHealth"),("LLY","Eli Lilly"),("JNJ","J&J"),
             ("PFE","Pfizer"),("MRK","Merck"),("ABBV","AbbVie"),
+            ("ABT","Abbott"),("TMO","Thermo Fisher"),("DHR","Danaher"),
+            ("AMGN","Amgen"),("GILD","Gilead"),("VRTX","Vertex"),
+            ("REGN","Regeneron"),("ISRG","Intuitive Surgical"),("BSX","Boston Sci"),
+            # 소비재
             ("WMT","Walmart"),("COST","Costco"),("HD","Home Depot"),
-            ("MCD","McDonald's"),("SBUX","Starbucks"),("NKE","Nike"),
+            ("LOW","Lowes"),("TGT","Target"),("MCD","McDonalds"),
+            ("SBUX","Starbucks"),("NKE","Nike"),("PG","P&G"),
+            ("KO","Coca-Cola"),("PEP","PepsiCo"),("PM","Philip Morris"),
+            # 에너지
             ("XOM","ExxonMobil"),("CVX","Chevron"),("COP","ConocoPhillips"),
+            ("SLB","SLB"),("EOG","EOG Resources"),
+            # 산업/방산
             ("BA","Boeing"),("CAT","Caterpillar"),("LMT","Lockheed Martin"),
-            ("NFLX","Netflix"),("DIS","Disney"),("COIN","Coinbase"),
-            ("MSTR","MicroStrategy"),("UBER","Uber"),("ABNB","Airbnb"),
-            ("SHOP","Shopify"),("SNOW","Snowflake"),
+            ("RTX","Raytheon"),("NOC","Northrop"),("GD","General Dynamics"),
+            ("GE","GE"),("HON","Honeywell"),("UPS","UPS"),("FDX","FedEx"),
+            # 미디어/통신
+            ("NFLX","Netflix"),("DIS","Disney"),("T","AT&T"),("VZ","Verizon"),
+            ("TMUS","T-Mobile"),("CMCSA","Comcast"),
+            # 핫 종목
+            ("COIN","Coinbase"),("MSTR","MicroStrategy"),("UBER","Uber"),
+            ("ABNB","Airbnb"),("SHOP","Shopify"),("MELI","MercadoLibre"),
+            ("SE","Sea Limited"),("DASH","DoorDash"),("RBLX","Roblox"),
+            ("HOOD","Robinhood"),("SOFI","SoFi"),("AFRM","Affirm"),
+            ("RIVN","Rivian"),("LCID","Lucid"),("NIO","NIO"),
+            ("BABA","Alibaba"),("JD","JD.com"),("PDD","PDD Holdings"),
         ]
 
         extra = [(t,n) for t,n in TICKERS]
