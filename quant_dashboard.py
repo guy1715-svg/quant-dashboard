@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import json
+import json as _json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -24,6 +25,7 @@ st.set_page_config(
 
 # ── Google Sheets 기반 관심종목 저장 ──
 import os
+import os as _os
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -424,24 +426,66 @@ def calc_slippage(price, is_buy, is_korean=True):
     else:
         return round(price * (1 - total_cost))   # 매도: 단가 내려감
 
+_TRADE_LOG_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "trading_log.json")
+
+def _load_trade_log_file():
+    """trading_log.json 로드"""
+    try:
+        if _os.path.exists(_TRADE_LOG_FILE):
+            with open(_TRADE_LOG_FILE, "r", encoding="utf-8") as f:
+                return _json.load(f)
+    except Exception:
+        pass
+    return []
+
+def _save_trade_log_file(rows):
+    """trading_log.json 저장"""
+    try:
+        with open(_TRADE_LOG_FILE, "w", encoding="utf-8") as f:
+            _json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        pass
+
 def log_trade(ticker, name, action, qty, price, net_price, cash_after,
               eval_total, ai_score=0, adx=0, zscore=0, memo=""):
-    """거래 일지 기록"""
+    """거래 일지 기록 — JSON파일(영구) + session_state + Sheets 백업"""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    _row = {
+        '날짜':     now.strftime('%Y-%m-%d'),
+        '시간':     now.strftime('%H:%M:%S'),
+        '종목코드': ticker,
+        '종목명':   name,
+        '매매':     action,
+        '수량':     int(qty),
+        '체결단가': float(price),
+        '수수료':   round(float(price) * 0.00015),
+        '슬리피지': round(float(price) * 0.001),
+        '순체결가': float(net_price),
+        '잔고':     float(cash_after),
+        '평가금액': float(eval_total),
+        '5AI점수':  ai_score,
+        'ADX':      adx,
+        'Z-Score':  zscore,
+        '메모':     memo,
+    }
+    # 1) JSON 파일 (새로고침해도 유지)
+    _existing = _load_trade_log_file()
+    _existing.append(_row)
+    _save_trade_log_file(_existing)
+
+    # 2) session_state 캐시
+    if 'local_trade_log' not in st.session_state:
+        st.session_state.local_trade_log = []
+    st.session_state.local_trade_log.append(_row)
+
+    # 3) Sheets 백업 (실패해도 무관)
     try:
-        from datetime import datetime as _dt
-        now  = _dt.now()
-        ws   = get_trading_sheet()
+        ws = get_trading_sheet()
         if ws:
-            ws.append_row([
-                now.strftime('%Y-%m-%d'),
-                now.strftime('%H:%M:%S'),
-                ticker, name, action, qty,
-                price, round(price*0.00015), round(price*0.001),
-                net_price, cash_after, eval_total,
-                ai_score, adx, zscore, memo
-            ])
-    except:
-        pass
+            ws.append_row(list(_row.values()))
+    except Exception as _e:
+        st.session_state['_trade_log_err'] = str(_e)
 
 def get_position(acc, ticker):
     """보유 포지션 조회"""
@@ -3361,6 +3405,7 @@ with tab_e:
 
         # ── 2. 보유 포지션 ──
         st.markdown("#### 📊 보유 포지션")
+        st.caption("📡 현재가 기준: yfinance 캐시 5분 + 한국주식 15~20분 지연 = **최대 25분 전 가격** / 미국주식 실시간(장중) | 새로고침하면 캐시 초기화")
         if not _acc['positions']:
             st.info("💡 보유 포지션 없음. 아래 가상 매수를 실행해보세요.")
         else:
@@ -3508,61 +3553,73 @@ with tab_e:
 
         # ── 4. 성과 분석 ──
         st.markdown("#### 📈 성과 분석 (vs 벤치마크)")
+
+        # Sheets 오류 알림
+        if st.session_state.get('_trade_log_err'):
+            st.warning(f"⚠️ Sheets 거래일지 저장 오류 (로컬에는 기록됨): {st.session_state['_trade_log_err']}")
+
         try:
+            # JSON파일(영구) + session_state + Sheets 3단계 합치기
+            _file_log    = _load_trade_log_file()
+            _session_log = st.session_state.get('local_trade_log', [])
+            _log_df_local = pd.DataFrame(_file_log + _session_log) if (_file_log or _session_log) else pd.DataFrame()
+
             _log_ws   = get_trading_sheet()
             _log_data = _log_ws.get_all_values() if _log_ws else []
+            _log_df_sheets = pd.DataFrame(_log_data[1:], columns=_log_data[0]) if len(_log_data) > 1 else pd.DataFrame()
 
-            if len(_log_data) > 1:
-                _log_df = pd.DataFrame(_log_data[1:], columns=_log_data[0])
+            _log_df = pd.concat([_log_df_sheets, _log_df_local], ignore_index=True)
+            if not _log_df.empty and {'날짜','시간','종목코드'}.issubset(_log_df.columns):
+                _log_df = _log_df.drop_duplicates(subset=['날짜','시간','종목코드'], keep='last')
+            if not _log_df.empty:
                 _log_df['날짜']     = pd.to_datetime(_log_df['날짜'], errors='coerce')
                 _log_df['평가금액'] = pd.to_numeric(_log_df['평가금액'], errors='coerce')
-                _log_df = _log_df.dropna(subset=['날짜','평가금액']).sort_values('날짜')
+                _log_df = _log_df.dropna(subset=['날짜']).sort_values('날짜')
 
-                if not _log_df.empty:
-                    _log_df['수익률(%)'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
+            if not _log_df.empty and '평가금액' in _log_df.columns and _log_df['평가금액'].notna().any():
+                _log_df['수익률(%)'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
 
-                    # 벤치마크 비교
-                    import yfinance as yf
-                    _start_bm = _log_df['날짜'].min()
-                    try:
-                        _bm   = yf.Ticker("^KS11").history(start=_start_bm, interval="1d")
-                        _bm_r = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
-                        _bm_r.index = pd.to_datetime(_bm_r.index).tz_localize(None)
-                        _port = _log_df.set_index('날짜')['수익률(%)']
-                        _port.index = pd.to_datetime(_port.index).tz_localize(None)
-                        _cmp  = pd.DataFrame({'내 포트폴리오(%)': _port, '코스피(%)': _bm_r})
-                        _cmp  = _cmp.ffill().dropna()
-                        st.line_chart(_cmp)
-                    except:
-                        st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
+                # 벤치마크 비교
+                import yfinance as yf
+                _start_bm = _log_df['날짜'].min()
+                try:
+                    _bm   = yf.Ticker("^KS11").history(start=_start_bm, interval="1d")
+                    _bm_r = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
+                    _bm_r.index = pd.to_datetime(_bm_r.index).tz_localize(None)
+                    _port = _log_df.set_index('날짜')['수익률(%)']
+                    _port.index = pd.to_datetime(_port.index).tz_localize(None)
+                    _cmp  = pd.DataFrame({'내 포트폴리오(%)': _port, '코스피(%)': _bm_r})
+                    _cmp  = _cmp.ffill().dropna()
+                    st.line_chart(_cmp)
+                except:
+                    st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
 
-                    # MDD
-                    _cm  = _log_df['평가금액'].cummax()
-                    _dd  = (_log_df['평가금액'] - _cm) / _cm * 100
-                    _mdd_v = _dd.min()
-                    _mc1, _mc2, _mc3 = st.columns(3)
-                    _mc1.metric("최대낙폭(MDD)", f"{_mdd_v:.2f}%")
-                    _mc2.metric("총 거래 횟수", f"{len(_log_df)}회")
-                    _mc3.metric("최종 수익률", f"{_log_df['수익률(%)'].iloc[-1]:+.2f}%")
+                # MDD
+                _cm    = _log_df['평가금액'].cummax()
+                _dd    = (_log_df['평가금액'] - _cm) / _cm * 100
+                _mdd_v = _dd.min()
+                _mc1, _mc2, _mc3 = st.columns(3)
+                _mc1.metric("최대낙폭(MDD)", f"{_mdd_v:.2f}%")
+                _mc2.metric("총 거래 횟수", f"{len(_log_df)}회")
+                _mc3.metric("최종 수익률", f"{_log_df['수익률(%)'].iloc[-1]:+.2f}%")
 
-                    # 거래 일지
-                    st.markdown("##### 📋 거래 일지")
-                    _show_cols = [c for c in ['날짜','종목명','매매','수량','순체결가','평가금액','5AI점수','메모'] if c in _log_df.columns]
-                    st.dataframe(_log_df[_show_cols].tail(20), use_container_width=True)
+                # 거래 일지
+                st.markdown("##### 📋 거래 일지")
+                _show_cols = [c for c in ['날짜','시간','종목명','매매','수량','순체결가','평가금액','메모'] if c in _log_df.columns]
+                st.dataframe(_log_df[_show_cols], use_container_width=True)
 
-                    _csv = _log_df[_show_cols].to_csv(index=False, encoding='utf-8-sig')
-                    st.download_button(
-                        label="📥 거래일지 CSV 다운로드",
-                        data=_csv,
-                        file_name=f"trading_log_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
+                _csv = _log_df[_show_cols].to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label="📥 거래일지 CSV 다운로드",
+                    data=_csv,
+                    file_name=f"trading_log_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
             else:
                 st.info("아직 거래 기록이 없습니다. 가상 매수를 실행해보세요!")
-                # 샘플 차트
                 _sample = pd.DataFrame({'내 포트폴리오(%)': [0,1.2,0.8,2.1,1.5,3.2,2.8],
-                                         '코스피(%)':       [0,0.5,0.3,1.1,0.9,1.8,1.5]})
+                                        '코스피(%)':        [0,0.5,0.3,1.1,0.9,1.8,1.5]})
                 st.markdown("*(샘플 차트 — 거래 실행 후 실제 데이터로 교체됩니다)*")
                 st.line_chart(_sample)
         except Exception as _e:
