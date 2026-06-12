@@ -1975,11 +1975,11 @@ with tab_c:
             if _gcache not in st.session_state:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_key)
-                _gm   = genai.GenerativeModel(model_name)
-                _ep_gem = calc_entry_point(
-                    _df_g if (_df_g is not None and not _df_g.empty) else pd.DataFrame(),
-                    st.session_state.get('scan_preset')
-                ) if (_df_g is not None and not _df_g.empty) else {}
+                _gm = genai.GenerativeModel(model_name)
+                # df 로드
+                _df_g_tmp = _sel_scan_item.get('df')
+                _df_g = _df_g_tmp if (_df_g_tmp is not None and not _df_g_tmp.empty) else fetch_ohlcv(_sel_scan_item['ticker'], 60)
+                _ep_gem = calc_entry_point(_df_g, st.session_state.get('scan_preset')) if (_df_g is not None and not _df_g.empty) else {}
 
                 _sys  = (
                     'You are a Korean stock quantitative analysis AI. Always respond in Korean. '
