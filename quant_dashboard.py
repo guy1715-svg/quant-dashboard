@@ -1905,6 +1905,12 @@ with tab_c:
     with _sc_col3:
         st.markdown("**⚙️ 추가 설정**")
         _is_us = market_type == "미국(S&P500)"
+        # 시장 전환 시 가격 필터 자동 리셋
+        _prev_market = st.session_state.get('_scanner_prev_market', '')
+        if _prev_market != market_type:
+            st.session_state['f_minp'] = 1 if _is_us else 5000
+            st.session_state['f_maxp'] = 100000 if _is_us else 2000000
+            st.session_state['_scanner_prev_market'] = market_type
         st.caption("💡 미국 선택 시 달러 기준 자동 적용")
         min_price = st.number_input(
             f"최소 주가({'$' if _is_us else '원'})",
