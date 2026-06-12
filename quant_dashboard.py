@@ -476,10 +476,20 @@ def load_watchlist():
     return DEFAULT_WATCHLIST
 
 def get_watchlist_fast():
-    """session_state 우선 반환 (Sheets 호출 최소화)"""
-    if 'watchlist_data' in st.session_state:
-        return st.session_state.watchlist_data
-    return load_watchlist()
+    """하위 호환 — get_watchlist() 위임"""
+    return get_watchlist()
+
+def get_watchlist():
+    """
+    ★ 관심종목 표준 로드 함수 — 코드 전체에서 이 함수만 사용
+    우선순위: session_state → Sheets 캐시 → 기본값
+    """
+    _wl = st.session_state.get('watchlist_data', '')
+    if _wl:
+        return _wl
+    _wl = load_watchlist()
+    st.session_state.watchlist_data = _wl
+    return _wl
 
 def clean_sheet_duplicates():
     """Sheets 중복 데이터 제거"""
@@ -509,6 +519,7 @@ def safe_clear_cache():
     except Exception:
         pass
 
+    st.session_state.pop('watchlist_data', None)
 def save_watchlist(text):
     """관심종목 전체 저장 (삭제 시 사용)"""
     st.session_state.watchlist_data = text
@@ -527,7 +538,7 @@ def save_watchlist(text):
         st.warning(f"Sheets 저장 오류: {e}")
 
 def get_watchlist_tickers():
-    wl = load_watchlist()
+    wl = get_watchlist()
     result = []
     for line in wl.strip().split("\n"):
         parts = line.strip().split(",", 1)
@@ -536,7 +547,7 @@ def get_watchlist_tickers():
     return result
 
 def add_ticker(ticker, name):
-    wl = load_watchlist()
+    wl = get_watchlist()
     tickers = [l.split(",")[0].strip() for l in wl.split("\n") if "," in l]
     if ticker not in tickers:
         save_watchlist(wl.strip() + f"\n{ticker},{name}")
@@ -544,7 +555,7 @@ def add_ticker(ticker, name):
     return False
 
 def remove_ticker(ticker):
-    wl = load_watchlist()
+    wl = get_watchlist()
     lines = [l for l in wl.split("\n")
              if l.strip() and l.split(",")[0].strip() != ticker]
     save_watchlist("\n".join(lines))
@@ -1189,7 +1200,7 @@ with st.sidebar:
     st.markdown("### 📋 관심 종목")
 
     # 사이드바 — session_state 우선 (Sheets API 호출 최소화)
-    _sb_wl = st.session_state.get('watchlist_data') or load_watchlist()
+    _sb_wl = get_watchlist()
     _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
     _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
 
@@ -1282,15 +1293,6 @@ def format_price(price, ticker):
     else:
         return f"${price:,.2f}"
 
-def get_watchlist_tickers():
-    wl = st.session_state.get('watchlist_data', None) or load_watchlist()
-    result = []
-    for line in wl.strip().split("\n"):
-        parts = line.strip().split(",", 1)
-        if len(parts) == 2:
-            result.append((parts[0].strip(), parts[1].strip()))
-    return result
-
 TICKERS = get_watchlist_tickers()
 
 
@@ -1380,7 +1382,7 @@ with tab_a:
 
     # 관심종목 현황 요약
     st.markdown("#### 📊 관심종목 현황")
-    _wl_home = st.session_state.get('watchlist_data') or load_watchlist()
+    _wl_home = get_watchlist()
     _tickers_home = [(l.split(',')[0].strip(), l.split(',')[1].strip())
                      for l in _wl_home.split('\n') if ',' in l]
 
@@ -1945,7 +1947,7 @@ with tab_c:
 
     # ── 결과 표시 ──
     if st.session_state.get('scan_done') and st.session_state.passed:
-        _sc_wl  = st.session_state.get('watchlist_data') or load_watchlist()
+        _sc_wl  = get_watchlist()
         _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
         _p_list = st.session_state.passed
 
@@ -1958,7 +1960,7 @@ with tab_c:
                          use_container_width=True, type="primary"):
                 try:
                     _ws = get_gsheet()
-                    _cur = st.session_state.get('watchlist_data') or load_watchlist()
+                    _cur = get_watchlist()
                     for _it in _new_items:
                         _ws.append_row([_it['ticker'], _it['name']])
                         _cur = _cur.strip() + f"\n{_it['ticker']},{_it['name']}"
@@ -2037,7 +2039,7 @@ with tab_c:
                 try:
                     _ws2 = get_gsheet()
                     _ws2.append_row([_sel_scan_item['ticker'], _sel_scan_item['name']])
-                    _cur2 = (st.session_state.get('watchlist_data') or load_watchlist()).strip()
+                    _cur2 = (get_watchlist()).strip()
                     st.session_state.watchlist_data = _cur2 + f"\n{_sel_scan_item['ticker']},{_sel_scan_item['name']}"
                     safe_clear_cache()
                     st.session_state._keep_passed = True
@@ -2392,7 +2394,7 @@ with tab_d:
         _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
 
         # 현재 관심종목 목록
-        _etf_wl_now  = st.session_state.get('watchlist_data') or load_watchlist()
+        _etf_wl_now  = get_watchlist()
         _etf_wl_ids  = [l.split(',')[0].strip() for l in _etf_wl_now.split('\n') if ',' in l]
 
         for _i, row in _ranked.iterrows():
@@ -2775,7 +2777,7 @@ with tab_e:
                 st.code(traceback.format_exc())
 
         # 항상 최신 데이터 로드
-        _wl    = load_watchlist()
+        _wl    = get_watchlist()
         _lines = [l.strip() for l in _wl.split("\n") if "," in l.strip()]
         _pairs = []
         for _l in _lines:
@@ -2832,7 +2834,7 @@ with tab_e:
             st.session_state.form_code = ''
             st.session_state.form_name = ''
             try:
-                _cur_wl  = load_watchlist()
+                _cur_wl  = get_watchlist()
                 _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
                 if _code not in _cur_ids:
                     # append_rows 방식으로 변경 (clear 없이 한 줄만 추가)
