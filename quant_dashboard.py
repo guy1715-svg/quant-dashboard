@@ -1489,8 +1489,7 @@ with st.sidebar:
         "models/gemini-2.5-flash",
         "models/gemini-2.5-pro",
         "models/gemini-2.0-flash",
-        "models/gemini-3.1-pro-preview",
-    ])
+    ], help="Flash: 빠름·하루 500회 무료 / Pro: 정밀분석·하루 25회 무료")
 
     st.markdown(f"<div style='font-size:10px; color:#64748b; text-align:center'>마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
     refresh = st.button("🔄 강제 새로고침", use_container_width=True)
@@ -2012,7 +2011,7 @@ with tab_b:
         if not gemini_key:
             st.warning("👈 사이드바에 Gemini API 키를 입력해주세요.")
         else:
-            st.caption("💡 종목별로 개별 분석 버튼을 클릭하세요. (Free tier: 하루 20회 제한)")
+            st.caption("💡 종목별로 개별 분석 버튼을 클릭하세요. (Free tier — Flash: 하루 500회 / Pro: 하루 25회)")
 
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
