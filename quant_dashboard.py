@@ -614,18 +614,18 @@ st.markdown("""
    CSS 변수 (테마 토큰)
 ══════════════════════════════════════ */
 :root {
-    --bg-base:    #0d1117;
-    --bg-card:    rgba(255,255,255,0.04);
-    --bg-sidebar: #090d18;
-    --border:     rgba(255,255,255,0.07);
+    --bg-base:    #f0f4f8;
+    --bg-card:    #ffffff;
+    --bg-sidebar: #e8eef5;
+    --border:     rgba(0,0,0,0.10);
     --accent:     #6366f1;
     --accent2:    #8b5cf6;
-    --text-pri:   #e2e8f0;
-    --text-sec:   #94a3b8;
-    --text-dim:   #475569;
-    --up:         #f43f5e;
-    --down:       #38bdf8;
-    --green:      #34d399;
+    --text-pri:   #1e293b;
+    --text-sec:   #475569;
+    --text-dim:   #94a3b8;
+    --up:         #e11d48;
+    --down:       #0284c7;
+    --green:      #059669;
     --font-body:  'Noto Sans KR', sans-serif;
     --font-mono:  'IBM Plex Mono', monospace;
     /* 데스크톱 기본값 */
@@ -650,14 +650,14 @@ html, body, [class*="css"] {
     line-height: 1.6;
 }
 .stApp {
-    background: linear-gradient(160deg, #0d1117 0%, #0f172a 60%, #0d1117 100%);
+    background: linear-gradient(160deg, #f0f4f8 0%, #e8eef5 60%, #f0f4f8 100%);
 }
 
 /* ══════════════════════════════════════
    사이드바
 ══════════════════════════════════════ */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, var(--bg-sidebar) 0%, var(--bg-base) 100%);
+    background: linear-gradient(180deg, #dde6f0 0%, #e8eef5 100%);
     border-right: 1px solid var(--border);
 }
 [data-testid="stSidebar"] * { font-size: var(--fs-sm) !important; }
@@ -667,7 +667,7 @@ html, body, [class*="css"] {
    탭
 ══════════════════════════════════════ */
 .stTabs [data-baseweb="tab-list"] {
-    background: rgba(255,255,255,0.03);
+    background: rgba(255,255,255,0.7);
     border-radius: var(--radius);
     padding: 4px;
     border: 1px solid var(--border);
@@ -693,12 +693,12 @@ html, body, [class*="css"] {
    메트릭 카드
 ══════════════════════════════════════ */
 .metric-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.09);
     border-radius: var(--radius);
     padding: var(--card-pad);
     margin-bottom: 10px;
-    backdrop-filter: blur(8px);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
     transition: border-color 0.2s, transform 0.15s;
 }
 .metric-card:hover {
@@ -788,12 +788,12 @@ html, body, [class*="css"] {
     transform: translateY(-1px) !important;
 }
 .stButton > button[kind="secondary"] {
-    background: rgba(255,255,255,0.05) !important;
-    border: 1px solid var(--border) !important;
+    background: #ffffff !important;
+    border: 1px solid rgba(0,0,0,0.15) !important;
     color: var(--text-sec) !important;
 }
 .stButton > button[kind="secondary"]:hover {
-    background: rgba(255,255,255,0.09) !important;
+    background: #f1f5f9 !important;
     color: var(--text-pri) !important;
 }
 
@@ -802,24 +802,26 @@ html, body, [class*="css"] {
 ══════════════════════════════════════ */
 .stTextInput input, .stNumberInput input,
 .stSelectbox select, textarea {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1px solid var(--border) !important;
+    background: #ffffff !important;
+    border: 1px solid rgba(0,0,0,0.15) !important;
     border-radius: 10px !important;
-    color: #f0f4ff !important;
+    color: #1e293b !important;
     font-size: var(--fs-sm) !important;
 }
+.stTextInput input::placeholder, textarea::placeholder {
+    color: #94a3b8 !important;
+}
 .stTextInput input:focus, .stNumberInput input:focus, textarea:focus {
-    border-color: rgba(99,102,241,0.5) !important;
+    border-color: rgba(99,102,241,0.6) !important;
     box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
 }
-/* 사이드바 입력창 글자색 */
 [data-testid="stSidebar"] .stTextInput input,
 [data-testid="stSidebar"] .stNumberInput input {
-    color: #f0f4ff !important;
-    background: rgba(255,255,255,0.08) !important;
+    color: #1e293b !important;
+    background: #ffffff !important;
 }
 [data-testid="stSidebar"] .stTextInput input::placeholder {
-    color: #64748b !important;
+    color: #94a3b8 !important;
 }
 
 /* ══════════════════════════════════════
