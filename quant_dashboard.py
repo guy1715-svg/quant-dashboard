@@ -1642,7 +1642,141 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 [data-testid="stMetricValue"] { color: #e2e8f0 !important; }
 """
 else:
-    _theme_css = ""  # 기본 라이트 테마 유지
+    _theme_css = """
+/* ══ 라이트 테마 전체 override ══ */
+:root {
+    --bg-base: #f0f4f8; --bg-card: #ffffff; --bg-sidebar: #f8fafc;
+    --border: #d1dbe8; --accent: #3b82f6; --accent2: #6366f1;
+    --text-pri: #0f172a; --text-sec: #334155; --text-dim: #64748b;
+    --up: #dc2626; --down: #1d4ed8; --green: #15803d;
+    --shadow-sm: 0 1px 4px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06);
+}
+html, body, [class*="css"] {
+    background-color: #f0f4f8 !important;
+    color: #0f172a !important;
+}
+.stApp { background: linear-gradient(160deg, #f0f4f8 0%, #e8eef6 100%) !important; }
+
+/* 헤더 */
+h1 { background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
+     -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important; }
+h2, h3 { color: #1e293b !important; }
+h4 { color: #334155 !important; }
+hr { border-color: #d1dbe8 !important; }
+
+/* 사이드바 */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+    border-right: 1px solid #d1dbe8 !important;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.06) !important;
+}
+[data-testid="stSidebar"] * { color: #334155 !important; }
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #1e293b !important; }
+
+/* 탭 */
+.stTabs [data-baseweb="tab-list"] {
+    background: #ffffff !important;
+    border: 1px solid #d1dbe8 !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+}
+.stTabs [data-baseweb="tab"] { color: #475569 !important; }
+.stTabs [data-baseweb="tab"]:hover { background: #eff6ff !important; color: #1d4ed8 !important; }
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 12px rgba(59,130,246,0.35) !important;
+}
+
+/* 메트릭 카드 */
+.metric-card {
+    background: #ffffff !important;
+    border: 1px solid #d1dbe8 !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07) !important;
+}
+.metric-card:hover {
+    border-color: #93c5fd !important;
+    box-shadow: 0 4px 16px rgba(59,130,246,0.15) !important;
+}
+.metric-card .label { color: #64748b !important; }
+.metric-card .value { color: #0f172a !important; }
+
+/* 버튼 */
+.stButton > button[kind="secondary"] {
+    background: #ffffff !important;
+    border: 1px solid #d1dbe8 !important;
+    color: #334155 !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07) !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background: #eff6ff !important;
+    border-color: #93c5fd !important;
+    color: #1d4ed8 !important;
+}
+
+/* 입력 필드 */
+.stTextInput input, .stNumberInput input, textarea {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #0f172a !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus, textarea:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.12) !important;
+}
+[data-baseweb="select"] > div {
+    background: #ffffff !important;
+    border-color: #cbd5e1 !important;
+    color: #0f172a !important;
+}
+
+/* 카드/Expander */
+[data-testid="stExpander"] {
+    background: #ffffff !important;
+    border: 1px solid #d1dbe8 !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
+}
+.streamlit-expanderHeader {
+    background: #f8fafc !important;
+    border-color: #d1dbe8 !important;
+    color: #1e293b !important;
+}
+
+/* Metric */
+[data-testid="stMetric"] {
+    background: #ffffff !important;
+    border: 1px solid #d1dbe8 !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+}
+[data-testid="stMetricLabel"] { color: #475569 !important; }
+[data-testid="stMetricValue"] { color: #0f172a !important; }
+[data-testid="stMetricDelta"] svg { filter: none !important; }
+
+/* 뱃지 (라이트) */
+.badge-buy     { background: rgba(21,128,61,0.10) !important; color: #15803d !important; border-color: rgba(21,128,61,0.25) !important; }
+.badge-sell    { background: rgba(220,38,38,0.08) !important; color: #dc2626 !important; border-color: rgba(220,38,38,0.2) !important; }
+.badge-watch   { background: rgba(37,99,235,0.08) !important; color: #1d4ed8 !important; border-color: rgba(37,99,235,0.2) !important; }
+.badge-neutral { background: rgba(71,85,105,0.07) !important; color: #475569 !important; border-color: rgba(71,85,105,0.15) !important; }
+
+/* Gemini 박스 */
+.gemini-box {
+    background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(99,102,241,0.03)) !important;
+    border-left: 3px solid #3b82f6 !important;
+    border-top: 1px solid rgba(59,130,246,0.15) !important;
+    border-right: 1px solid rgba(59,130,246,0.08) !important;
+    border-bottom: 1px solid rgba(59,130,246,0.08) !important;
+    color: #1e293b !important;
+}
+
+/* 알림 */
+.stAlert { border-radius: 10px !important; }
+[data-testid="stNotification"] { border-radius: 10px !important; }
+
+/* 일반 텍스트 */
+p, li, span, div { color: #334155; }
+.stCaption, caption { color: #64748b !important; }
+[data-testid="stDataFrame"] { border: 1px solid #d1dbe8 !important; }
+"""
 
 if st.session_state.ui_mobile:
     _mobile_css = """
