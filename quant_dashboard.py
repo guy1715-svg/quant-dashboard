@@ -485,14 +485,7 @@ def calc_portfolio_value(acc):
     """총 평가금액 계산 (원화 기준, 미국주식 USD→KRW 환산)"""
     # 환율 조회 (미국 포지션 있을 때만)
     _has_us = any(not is_korean_ticker(p['ticker']) for p in acc.get('positions', []))
-    _usd_krw = 1350.0
-    if _has_us:
-        try:
-            import yfinance as _yf2
-            _fxh = _yf2.Ticker("USDKRW=X").history(period="5d")
-            _usd_krw = float(_fxh['Close'].dropna().iloc[-1]) if not _fxh.empty else 1350.0
-        except:
-            pass
+    _usd_krw = get_usd_krw() if _has_us else 1350.0
     total = acc['cash']
     for pos in acc['positions']:
         _is_kr = is_korean_ticker(pos['ticker'])
@@ -1038,6 +1031,16 @@ def fetch_ohlcv(ticker, lookback=80):
         except:
             pass
     return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_usd_krw():
+    """USD/KRW 환율 — 5분 캐시로 중복 조회 방지"""
+    try:
+        import yfinance as _yf_fx
+        _h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
+        return float(_h['Close'].dropna().iloc[-1]) if not _h.empty else 1350.0
+    except:
+        return 1350.0
 
 def calc_indicators(df):
     for n in [5, 20, 60, 120]:
@@ -2891,8 +2894,9 @@ with _sub_d1:
                 # ── 모멘텀(20일 수익률) ──
                 _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
 
-                # ── 거래량 비율(20일 평균 대비) ──
-                _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
+                # ── 거래량 비율(직전 20일 평균 대비, 당일 제외) ──
+                _vol_avg20 = _vol.iloc[-21:-1].mean() if len(_vol) >= 21 else _vol.iloc[:-1].mean()
+                _vol_r = round(_vol.iloc[-1] / _vol_avg20 * 100, 0) if _vol_avg20 > 0 else 100
 
                 # ── 정배열 여부 ──
                 _ma5  = _cl.rolling(5).mean().iloc[-1]
@@ -3210,15 +3214,12 @@ with _sub_d1:
                    f"(매수 {_fee_buy+_slip:.3f}% + 매도 {_fee_sell+_slip:.3f}%)")
 
         @st.cache_data(ttl=86400, show_spinner=False)
-        def run_etf_backtest():
+        def run_etf_backtest(fee_buy, fee_sell, slip):
             import yfinance as yf
             import numpy as np
 
-            # 수수료 설정 (session_state에서)
-            _buy_cost  = (st.session_state.get('bt_fee_buy',  0.015) +
-                          st.session_state.get('bt_slip', 0.1)) / 100
-            _sell_cost = (st.session_state.get('bt_fee_sell', 0.33) +
-                          st.session_state.get('bt_slip', 0.1)) / 100
+            _buy_cost  = (fee_buy  + slip) / 100
+            _sell_cost = (fee_sell + slip) / 100
 
             # 각 ETF 월별 수익률 계산
             _monthly = {}
@@ -3353,7 +3354,7 @@ with _sub_d1:
             }
 
         with st.spinner("백테스팅 계산 중... (최초 1회)"):
-            _bt = run_etf_backtest()
+            _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip)
 
         if _bt:
             # 성과 요약
@@ -4073,13 +4074,8 @@ with tab_e:
         st.markdown("#### 📊 보유 포지션")
         st.caption("📡 현재가 기준: yfinance 캐시 5분 + 한국주식 15~20분 지연 = **최대 25분 전 가격** / 미국주식 실시간(장중) | 새로고침하면 캐시 초기화")
 
-        # 환율 1회 조회 (포지션 전체 공용)
-        try:
-            import yfinance as _yf_fx
-            _fx_h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
-            _pos_usd_krw = float(_fx_h['Close'].dropna().iloc[-1]) if not _fx_h.empty else 1350.0
-        except:
-            _pos_usd_krw = 1350.0
+        # 환율 조회 (캐시 활용)
+        _pos_usd_krw = get_usd_krw()
 
         if not _acc['positions']:
             st.info("💡 보유 포지션 없음. 아래 가상 매수를 실행해보세요.")
@@ -4191,10 +4187,11 @@ with tab_e:
             f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)" if _buy_cur > 0 else "가격 로드 실패 — 수동 입력 필요"
         )
 
+        _fx_disp = f" | 환율: <b style='color:#94a3b8'>{_usd_krw:,.0f}원/$</b>" if not _is_kr else ""
         _bc2.markdown(
             f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
             f"현재가: <b style='font-size:18px;color:#fbbf24'>{_cur_disp}</b>"
-            f"{f' | 환율: <b style=\"color:#94a3b8\">{_usd_krw:,.0f}원/$</b>' if not _is_kr else ''} | "
+            f"{_fx_disp} | "
             f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
             unsafe_allow_html=True
         )
@@ -4820,13 +4817,8 @@ with tab_e:
         else:
             st.success("✅ 10:30 변곡점 통과 — 진입 가능 구간")
 
-        # 환율 1회 조회 (현황판 전체 공용)
-        try:
-            import yfinance as _yf_dsh
-            _dsh_fx = _yf_dsh.Ticker("USDKRW=X").history(period="5d")
-            _dsh_usd_krw = float(_dsh_fx['Close'].dropna().iloc[-1]) if not _dsh_fx.empty else 1350.0
-        except:
-            _dsh_usd_krw = 1350.0
+        # 환율 조회 (캐시 활용)
+        _dsh_usd_krw = get_usd_krw()
 
         # all_data = {} 제거 — 기존 캐시 유지 (다른 탭 데이터 소멸 방지)
         is_mobile = st.toggle("📱 모바일 뷰", value=False)
@@ -4858,7 +4850,7 @@ with tab_e:
             df = all_data[ticker]['df']
             l = df.iloc[-1]; p = df.iloc[-2]
             chg  = (l['종가']/p['종가']-1)*100
-            volr = l['거래량']/df['거래량'].tail(20).mean()*100
+            volr = l['거래량']/(df['거래량'].iloc[-21:-1].mean() if len(df)>=21 else df['거래량'].iloc[:-1].mean())*100
             sigs = get_signal(df)
             chg_color = 'up' if chg > 0 else 'down' if chg < 0 else 'flat'
 
