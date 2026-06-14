@@ -263,6 +263,7 @@ def check_macro_blackout():
             pass
     return False, ""
 
+@st.cache_data(ttl=300, show_spinner=False)
 def check_index_shutdown():
     try:
         import yfinance as yf
@@ -2508,7 +2509,8 @@ with tab_c:
                         '거래량비율': round(volr,0),
                         'score':    score,
                         'reasons':  reasons,
-                        'df':       df,
+                        # df는 session_state에 저장하지 않음 (메모리 누수 방지)
+                        # 차트 필요 시 fetch_ohlcv로 재조회
                     })
             except: continue
 
