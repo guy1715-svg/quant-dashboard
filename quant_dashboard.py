@@ -1431,7 +1431,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         fig.update_yaxes(row=row, col=1,
             showgrid=True, gridcolor=GRID, gridwidth=1,
             zeroline=False, linecolor=AXIS, showline=True,
-            side='right', plot_bgcolor=_pbg,
+            side='right',
             tickfont=dict(size=10, family='IBM Plex Mono', color=TXT))
 
     for row, lbl in [(1,'캔들 · BB · MA'),(2,'거래량'),(3,'MACD'),(4,'RSI(14)')]:
