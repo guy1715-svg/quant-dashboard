@@ -1349,16 +1349,38 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**➕ 종목 추가**")
-    _sb_code = st.text_input("종목코드", placeholder="005930", key="sb_code")
-    _sb_name = st.text_input("종목명",   placeholder="삼성전자", key="sb_name")
+
+    _sb_mkt = st.radio("시장", ["🇰🇷 국내", "🇺🇸 미국"], horizontal=True, key="sb_mkt")
+
+    if _sb_mkt == "🇰🇷 국내":
+        _sb_code = st.text_input("종목코드 (6자리)", placeholder="005930", key="sb_code")
+        _sb_name = st.text_input("종목명", placeholder="삼성전자", key="sb_name")
+    else:
+        _sb_code = st.text_input("티커 (영문)", placeholder="AAPL", key="sb_code").upper().strip()
+        _sb_name = st.text_input("종목명", placeholder="Apple", key="sb_name")
+
+        # 티커 자동 조회 버튼
+        if _sb_code and not _sb_name:
+            if st.button("🔍 종목명 자동조회", key="sb_us_lookup", use_container_width=True):
+                try:
+                    import yfinance as yf
+                    _info = yf.Ticker(_sb_code).info
+                    _auto_name = _info.get("shortName") or _info.get("longName") or _sb_code
+                    st.session_state["sb_name"] = _auto_name
+                    st.rerun()
+                except Exception:
+                    st.warning("조회 실패 — 종목명을 직접 입력해주세요")
+
     if st.button("추가", key="sb_add", use_container_width=True):
-        if _sb_code and _sb_name:
+        _code_clean = _sb_code.strip()
+        _name_clean = _sb_name.strip()
+        if _code_clean and _name_clean:
             _cur_ids = [p[0].strip() for p in _sb_pairs]
-            if _sb_code.strip() not in _cur_ids:
+            if _code_clean not in _cur_ids:
                 try:
                     _ws = get_gsheet()
-                    _ws.append_row([_sb_code.strip(), _sb_name.strip()])
-                    _new_wl = _sb_wl.strip() + f"\n{_sb_code.strip()},{_sb_name.strip()}"
+                    _ws.append_row([_code_clean, _name_clean])
+                    _new_wl = _sb_wl.strip() + f"\n{_code_clean},{_name_clean}"
                     st.session_state.watchlist_data = _new_wl
                     safe_clear_cache()
                     st.rerun()
@@ -1367,7 +1389,7 @@ with st.sidebar:
             else:
                 st.warning("이미 있는 종목")
         else:
-            st.warning("코드와 이름 입력")
+            st.warning("코드/티커와 이름 입력")
 
     n = len(_sb_pairs)
     st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
