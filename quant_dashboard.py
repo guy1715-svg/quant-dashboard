@@ -1250,9 +1250,9 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     DOWN = '#3b82f6'
 
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=5, cols=1,
         shared_xaxes=True,
-        row_heights=[0.56, 0.14, 0.15, 0.15],
+        row_heights=[0.50, 0.12, 0.13, 0.13, 0.12],
         vertical_spacing=0.0,
     )
 
@@ -1382,6 +1382,29 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         textfont=dict(color=rsi_c, size=10, family='IBM Plex Mono'),
         showlegend=False, hoverinfo='skip'), row=4, col=1)
 
+    # OBV
+    if 'OBV' in df.columns:
+        obv_ser  = df['OBV']
+        obv_ma   = obv_ser.rolling(20).mean()
+        obv_cur  = float(obv_ser.iloc[-1])
+        obv_prev = float(obv_ser.iloc[-2])
+        obv_c    = UP if obv_cur >= obv_prev else DOWN
+        fig.add_trace(go.Scatter(x=idx, y=obv_ser,
+            line=dict(color='#06b6d4', width=1.5),
+            fill='tozeroy', fillcolor='rgba(6,182,212,0.07)',
+            name='OBV', showlegend=False,
+            hovertemplate='OBV: %{y:,.0f}<extra></extra>'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=idx, y=obv_ma,
+            line=dict(color='#f59e0b', width=1.0, dash='dot'),
+            name='OBV MA20', showlegend=False, hoverinfo='skip'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=[idx[-1]], y=[obv_cur],
+            mode='markers+text',
+            marker=dict(color=obv_c, size=7, line=dict(color='white', width=1.2)),
+            text=[f' {obv_cur/1e6:.1f}M' if abs(obv_cur) >= 1e6 else f' {obv_cur/1e3:.0f}K'],
+            textposition='middle right',
+            textfont=dict(color=obv_c, size=9, family='IBM Plex Mono'),
+            showlegend=False, hoverinfo='skip'), row=5, col=1)
+
     # 레이아웃
     fig.update_layout(
         title=dict(
@@ -1394,7 +1417,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         plot_bgcolor=BG,
         font=dict(color=TXT, size=11, family='IBM Plex Mono'),
         xaxis_rangeslider_visible=False,
-        height=900,
+        height=1000,
         legend=dict(
             orientation='h', y=1.045, x=0.35,
             font=dict(size=10, color=TXT2), bgcolor='rgba(0,0,0,0)',
@@ -1436,9 +1459,9 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         showspikes=True, spikecolor='rgba(148,163,184,0.4)',
         spikemode='across', spikesnap='cursor', spikedash='solid', spikethickness=1,
     )
-    # X축 — 하단 패널만 날짜 표시
-    for row in range(1, 5):
-        show_tick = (row == 4)
+    # X축 — 최하단 패널만 날짜 표시
+    for row in range(1, 6):
+        show_tick = (row == 5)
         fig.update_xaxes(row=row, col=1,
             showgrid=True, gridcolor=GRID, gridwidth=1,
             zeroline=False, linecolor=AXIS, showline=True,
@@ -1447,8 +1470,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
             **spike,
         )
 
-    # Y축 — 가격은 실제 숫자 포맷, 거래량은 K단위
-    is_kr = any(c.isdigit() for c in name)
+    # Y축
     price_fmt = ',.0f'
     fig.update_yaxes(row=1, col=1,
         showgrid=True, gridcolor=GRID, gridwidth=1,
@@ -1465,7 +1487,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
         automargin=True,
     )
-    for row in [3, 4]:
+    for row in [3, 4, 5]:
         fig.update_yaxes(row=row, col=1,
             showgrid=True, gridcolor=GRID, gridwidth=1,
             zeroline=False, linecolor=AXIS, showline=True,
@@ -1474,8 +1496,8 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
             automargin=True,
         )
 
-    # 서브패널 레이블 — 차트 좌측 상단 (겹침 없게 y=1.0 기준)
-    for row, lbl in [(2,'Vol'),(3,'MACD'),(4,'RSI')]:
+    # 서브패널 레이블
+    for row, lbl in [(2,'Vol'), (3,'MACD'), (4,'RSI'), (5,'OBV')]:
         fig.add_annotation(xref='x domain', yref='y domain',
             x=0.01, y=0.99, xanchor='left', yanchor='top',
             text=f'<b style="font-size:9px">{lbl}</b>',
@@ -1483,6 +1505,12 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
             showarrow=False, bgcolor='rgba(0,0,0,0)', row=row, col=1)
 
     fig.update_yaxes(range=[0, 100], row=4, col=1)
+
+    # 줌 리셋(홈) 버튼 — modebar에 autoScale 추가
+    fig.update_layout(
+        modebar_add=['autoScale2d', 'resetScale2d'],
+    )
+
     return fig
 
 
