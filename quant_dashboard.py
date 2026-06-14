@@ -1832,65 +1832,85 @@ with tab_a:
                 st.session_state.macro_events.append(_de)
         st.rerun()
 
-    # ── 달력 뷰: 월별 그룹 ──
+    # ── 달력 뷰: 월 탐색 ──
     _future_evs = sorted(
         [e for e in st.session_state.macro_events if e['date'] >= _today_str],
         key=lambda x: x['date']
     )
 
-    # 월별로 그룹핑
     _by_month = {}
     for _ev in _future_evs:
-        _ym = _ev['date'][:7]  # "2026-07"
-        _by_month.setdefault(_ym, []).append(_ev)
+        _by_month.setdefault(_ev['date'][:7], []).append(_ev)
+    _all_months = sorted(_by_month.keys())
 
-    _ev_type_color = {"FOMC": "#ef4444", "CPI": "#f97316", "NFP": "#eab308", "금통위": "#3b82f6"}
+    if _all_months:
+        _cur_ym = _now_dt.strftime("%Y-%m")
+        # 현재 월이 없으면 첫 번째 월로
+        _def_idx = _all_months.index(_cur_ym) if _cur_ym in _all_months else 0
+        if 'macro_cal_idx' not in st.session_state:
+            st.session_state.macro_cal_idx = _def_idx
+        # 인덱스 범위 보정
+        st.session_state.macro_cal_idx = max(0, min(st.session_state.macro_cal_idx, len(_all_months)-1))
+        _cidx = st.session_state.macro_cal_idx
+        _sel_ym = _all_months[_cidx]
 
-    for _ym, _evs in _by_month.items():
+        # 월 네비게이션
+        _nav1, _nav2, _nav3 = st.columns([1, 3, 1])
+        if _nav1.button("◀", key="cal_prev", use_container_width=True, disabled=_cidx == 0):
+            st.session_state.macro_cal_idx -= 1
+            st.rerun()
         try:
-            _month_label = _dtt2.strptime(_ym, "%Y-%m").strftime("%Y년 %m월")
+            _month_label = _dtt2.strptime(_sel_ym, "%Y-%m").strftime("%Y년 %m월")
         except:
-            _month_label = _ym
-        st.markdown(f"<div style='font-size:12px;color:#64748b;font-weight:600;margin:8px 0 4px'>{_month_label}</div>", unsafe_allow_html=True)
+            _month_label = _sel_ym
+        _nav2.markdown(f"<div style='text-align:center;font-weight:700;font-size:15px;padding:6px 0'>{_month_label}</div>", unsafe_allow_html=True)
+        if _nav3.button("▶", key="cal_next", use_container_width=True, disabled=_cidx == len(_all_months)-1):
+            st.session_state.macro_cal_idx += 1
+            st.rerun()
 
-        for _ev in _evs:
-            try:
-                _ev_dt   = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
-                _diff_h  = (_ev_dt - _now_dt).total_seconds() / 3600
-                _blackout = abs(_diff_h) <= 48
-                _soon    = 0 < _diff_h <= 72
-                _day_str = _ev_dt.strftime("%d일(%a)").replace("Mon","월").replace("Tue","화").replace("Wed","수").replace("Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
-            except:
-                _blackout = False; _soon = False; _day_str = _ev['date'][5:]
+        # 선택 월 이벤트 표시
+        _ev_type_color = {"FOMC": "#ef4444", "CPI": "#f97316", "NFP": "#eab308", "금통위": "#3b82f6"}
+        _month_evs = _by_month.get(_sel_ym, [])
+        if _month_evs:
+            for _ev in _month_evs:
+                try:
+                    _ev_dt    = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
+                    _diff_h   = (_ev_dt - _now_dt).total_seconds() / 3600
+                    _blackout = abs(_diff_h) <= 48
+                    _soon     = 0 < _diff_h <= 72
+                    _day_str  = _ev_dt.strftime("%d일(%a)").replace("Mon","월").replace("Tue","화").replace("Wed","수").replace("Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
+                except:
+                    _blackout = False; _soon = False; _day_str = _ev['date'][5:]
 
-            # 이벤트 타입별 색상
-            _tag_color = "#64748b"
-            for _kw, _c in _ev_type_color.items():
-                if _kw in _ev['name']:
-                    _tag_color = _c; break
+                _tag_color = "#64748b"
+                for _kw, _c in _ev_type_color.items():
+                    if _kw in _ev['name']:
+                        _tag_color = _c; break
 
-            _status_badge = ""
-            if _blackout:
-                _status_badge = "<span style='background:#ef4444;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>블랙아웃</span>"
-            elif _soon:
-                _status_badge = "<span style='background:#f97316;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>임박</span>"
+                _status_badge = ""
+                if _blackout:
+                    _status_badge = "<span style='background:#ef4444;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>블랙아웃</span>"
+                elif _soon:
+                    _status_badge = "<span style='background:#f97316;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>임박</span>"
 
-            _ridx = next((i for i, e in enumerate(st.session_state.macro_events)
-                          if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
-            _col_ev, _col_del = st.columns([10, 1])
-            _col_ev.markdown(
-                f"<div style='display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)'>"
-                f"<span style='font-family:IBM Plex Mono;font-size:12px;color:#94a3b8;min-width:60px'>{_day_str}</span>"
-                f"<span style='width:3px;height:14px;background:{_tag_color};border-radius:2px;display:inline-block'></span>"
-                f"<span style='font-size:13px;color:#e2e8f0'>{_ev['name']}</span>"
-                f"{_status_badge}</div>",
-                unsafe_allow_html=True
-            )
-            if _col_del.button("✕", key=f"del_ev_{_ev['date']}_{_ev['name']}", use_container_width=True):
-                if _ridx is not None:
-                    st.session_state.macro_events.pop(_ridx)
-                    st.session_state.pop('v891_cache', None)
-                    st.rerun()
+                _ridx = next((i for i, e in enumerate(st.session_state.macro_events)
+                              if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
+                _col_ev, _col_del = st.columns([10, 1])
+                _col_ev.markdown(
+                    f"<div style='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)'>"
+                    f"<span style='font-family:IBM Plex Mono;font-size:12px;color:#94a3b8;min-width:64px'>{_day_str}</span>"
+                    f"<span style='width:3px;height:14px;background:{_tag_color};border-radius:2px;display:inline-block'></span>"
+                    f"<span style='font-size:13px;color:#e2e8f0'>{_ev['name']}</span>"
+                    f"{_status_badge}</div>",
+                    unsafe_allow_html=True
+                )
+                if _col_del.button("✕", key=f"del_ev_{_ev['date']}_{_ev['name']}", use_container_width=True):
+                    if _ridx is not None:
+                        st.session_state.macro_events.pop(_ridx)
+                        st.session_state.pop('v891_cache', None)
+                        st.rerun()
+        else:
+            st.caption("이 달 예정 이벤트 없음")
 
     if not _future_evs:
         st.caption("등록된 이벤트 없음 — 초기화 버튼으로 기본 이벤트를 추가하세요.")
