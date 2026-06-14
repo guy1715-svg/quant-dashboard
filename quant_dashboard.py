@@ -4106,9 +4106,8 @@ with tab_e:
         _bc1, _bc2 = st.columns([2, 3])
         _buy_ticker_sel = _bc1.selectbox("종목 선택",
             [f"{n} ({t})" for t,n in TICKERS], key="buy_ticker_sel")
+        # 형식: "종목명 (티커)" → 괄호 안 티커 추출
         _bt = _buy_ticker_sel.split('(')[-1].replace(')','').strip()
-        if not is_korean_ticker(_bt):
-            _bt = _buy_ticker_sel.split(' ')[0].strip()
         _bn = dict([(t,n) for t,n in TICKERS]).get(_bt, _bt)
 
         # 현재가 자동 로드
