@@ -1319,7 +1319,9 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     ]:
         if val:
             fig.add_hline(y=val, line=dict(color=color, dash=dash, width=1.5),
-                annotation=dict(text=f'<b>{lbl}</b>', font=dict(color=color, size=10), x=0.01), row=1, col=1)
+                annotation=dict(text=f'<b>{lbl}</b>', font=dict(color=color, size=10),
+                    x=0.97, xanchor='right', bgcolor='rgba(11,14,23,0.65)',
+                    borderpad=2), row=1, col=1)
 
     # 거래량 — 강도별 그라디언트
     vol_max = df['거래량'].max() or 1
@@ -1398,7 +1400,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
             font=dict(size=10, color=TXT2), bgcolor='rgba(0,0,0,0)',
             traceorder='normal',
         ),
-        margin=dict(l=10, r=80, t=60, b=10),
+        margin=dict(l=10, r=90, t=60, b=10),
         hovermode='x unified',
         hoverlabel=dict(
             bgcolor='#111827' if _dark else '#ffffff',
@@ -1454,12 +1456,14 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
         side='right', tickformat=price_fmt,
         tickfont=dict(size=11, family='IBM Plex Mono', color=TXT2),
         showspikes=True, spikecolor='rgba(148,163,184,0.3)', spikethickness=1,
+        automargin=True,
     )
     fig.update_yaxes(row=2, col=1,
         showgrid=True, gridcolor=GRID, gridwidth=1,
         zeroline=False, linecolor=AXIS, showline=True,
         side='right', tickformat=',.0s',
         tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
+        automargin=True,
     )
     for row in [3, 4]:
         fig.update_yaxes(row=row, col=1,
@@ -1467,6 +1471,7 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
             zeroline=False, linecolor=AXIS, showline=True,
             side='right',
             tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
+            automargin=True,
         )
 
     # 서브패널 레이블 — 차트 좌측 상단 (겹침 없게 y=1.0 기준)
