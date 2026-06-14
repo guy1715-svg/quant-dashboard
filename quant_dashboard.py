@@ -4142,7 +4142,8 @@ with tab_e:
                 if _sc2.button("📤 가상 매도", key=f"sell_{_pi}_{_pos['ticker']}", use_container_width=True):
                     _net_p    = calc_slippage(_cur_p, False, is_korean_ticker(_pos['ticker']))
                     _proceeds = _net_p * _sell_qty
-                    _acc['cash'] += _proceeds
+                    _sell_fx  = 1.0 if is_korean_ticker(_pos['ticker']) else _pos_usd_krw
+                    _acc['cash'] += _proceeds * _sell_fx
                     if _sell_qty >= _pos['qty']:
                         _acc['positions'] = [p for p in _acc['positions'] if p['ticker'] != _pos['ticker']]
                     else:
@@ -4847,16 +4848,22 @@ with tab_e:
             col.markdown(f"<div style='font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:1px'>{h}</div>", unsafe_allow_html=True)
         st.markdown("<hr style='margin:6px 0; border-color:rgba(255,255,255,0.06)'>", unsafe_allow_html=True)
 
-        total = len(TICKERS)
-        prog_bar = st.progress(0, text="데이터 로딩 중...")
-        for idx, (ticker, name) in enumerate(TICKERS):
-            prog_bar.progress((idx)/max(total,1), text=f"📡 {name} 수집 중... ({idx+1}/{total})")
-            df = fetch_ohlcv(ticker, lookback)
-            if df is None or len(df) < 20:
-                continue  # 데이터 없는 종목 조용히 스킵
-            df = calc_indicators(df)
-            all_data[ticker] = {'name': name, 'df': df}
+        _cur_tickers_e4 = get_watchlist_tickers()
+        _e4_missing = [(t, n) for t, n in _cur_tickers_e4 if t not in all_data]
+        if _e4_missing:
+            _e4_prog = st.progress(0, text="데이터 로딩 중...")
+            for _ei, (_et, _en) in enumerate(_e4_missing):
+                _e4_prog.progress((_ei+1)/max(len(_e4_missing),1), text=f"📡 {_en} 수집 중... ({_ei+1}/{len(_e4_missing)})")
+                _edf = fetch_ohlcv(_et, lookback)
+                if _edf is not None and len(_edf) >= 20:
+                    all_data[_et] = {'name': _en, 'df': calc_indicators(_edf)}
+            st.session_state.all_data_cache = all_data
+            _e4_prog.empty()
 
+        for ticker, name in _cur_tickers_e4:
+            if ticker not in all_data:
+                continue
+            df = all_data[ticker]['df']
             l = df.iloc[-1]; p = df.iloc[-2]
             chg  = (l['종가']/p['종가']-1)*100
             volr = l['거래량']/df['거래량'].tail(20).mean()*100
@@ -4865,7 +4872,6 @@ with tab_e:
 
             # 미국 주식은 달러 표시
             _is_kr_d = is_korean_ticker(ticker)
-            _fx_d    = 1.0 if _is_kr_d else _dsh_usd_krw
             _price_disp = f"{l['종가']:,.0f}원" if _is_kr_d else f"${l['종가']:,.2f}"
             _ma5_disp   = f"{l['MA5']:,.0f}" if _is_kr_d else f"${l['MA5']:,.2f}"
             _ma20_disp  = f"{l['MA20']:,.0f}" if _is_kr_d else f"${l['MA20']:,.2f}"
@@ -4903,10 +4909,7 @@ with tab_e:
 
             # NXT 거래소 가용성 (코스피/코스닥 종목만)
             _is_kr = ticker.isdigit() and len(ticker) == 6
-            _nxt_flag = "✅ NXT가능" if _is_kr else "❌ 해당없음"
             st.markdown("<hr style='margin:4px 0; border-color:#0f1726'>", unsafe_allow_html=True)
-
-        prog_bar.progress(1.0, text="✅ 로딩 완료!")
         prog_bar.empty()
 
         # 요약 통계
