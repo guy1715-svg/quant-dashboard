@@ -1776,146 +1776,124 @@ with tab_a:
     st.divider()
 
     # ── 🗓️ 매크로 이벤트 관리 ──
-    st.markdown("#### 🗓️ 매크로 이벤트 관리")
-    st.caption("등록된 이벤트 ±48시간 이내 신규 진입 자동 차단 (V8.9.1 블랙아웃)")
+    st.markdown("#### 🗓️ 매크로 이벤트")
+    st.caption("±48시간 이내 자동 블랙아웃 (신규 진입 차단)")
 
-    # ── 2026 주요 이벤트 기본값 ──
     _DEFAULT_MACRO_EVENTS = [
-        # 🇺🇸 FOMC — 시장 최대 변동성 이벤트
-        {"date": "2026-06-18", "name": "🇺🇸 FOMC 금리결정"},
-        {"date": "2026-07-30", "name": "🇺🇸 FOMC 금리결정"},
-        {"date": "2026-09-17", "name": "🇺🇸 FOMC 금리결정"},
-        {"date": "2026-10-29", "name": "🇺🇸 FOMC 금리결정"},
-        {"date": "2026-12-10", "name": "🇺🇸 FOMC 금리결정"},
-        # 🇺🇸 CPI — 금리 방향 결정 지표
-        {"date": "2026-07-15", "name": "🇺🇸 CPI 소비자물가"},
-        {"date": "2026-08-12", "name": "🇺🇸 CPI 소비자물가"},
-        {"date": "2026-09-11", "name": "🇺🇸 CPI 소비자물가"},
-        {"date": "2026-10-15", "name": "🇺🇸 CPI 소비자물가"},
-        {"date": "2026-11-13", "name": "🇺🇸 CPI 소비자물가"},
-        {"date": "2026-12-11", "name": "🇺🇸 CPI 소비자물가"},
-        # 🇺🇸 NFP — 고용 충격 지표
-        {"date": "2026-07-03", "name": "🇺🇸 NFP 비농업고용"},
-        {"date": "2026-08-07", "name": "🇺🇸 NFP 비농업고용"},
-        {"date": "2026-09-04", "name": "🇺🇸 NFP 비농업고용"},
-        {"date": "2026-10-02", "name": "🇺🇸 NFP 비농업고용"},
-        {"date": "2026-11-06", "name": "🇺🇸 NFP 비농업고용"},
-        {"date": "2026-12-04", "name": "🇺🇸 NFP 비농업고용"},
-        # 🇰🇷 금통위 — 한국 금리 결정
-        {"date": "2026-07-17", "name": "🇰🇷 한은 금통위"},
-        {"date": "2026-08-28", "name": "🇰🇷 한은 금통위"},
-        {"date": "2026-10-16", "name": "🇰🇷 한은 금통위"},
-        {"date": "2026-11-27", "name": "🇰🇷 한은 금통위"},
+        {"date": "2026-06-18", "name": "🇺🇸 FOMC"},
+        {"date": "2026-07-03", "name": "🇺🇸 NFP"},
+        {"date": "2026-07-15", "name": "🇺🇸 CPI"},
+        {"date": "2026-07-17", "name": "🇰🇷 금통위"},
+        {"date": "2026-07-30", "name": "🇺🇸 FOMC"},
+        {"date": "2026-08-07", "name": "🇺🇸 NFP"},
+        {"date": "2026-08-12", "name": "🇺🇸 CPI"},
+        {"date": "2026-08-28", "name": "🇰🇷 금통위"},
+        {"date": "2026-09-04", "name": "🇺🇸 NFP"},
+        {"date": "2026-09-11", "name": "🇺🇸 CPI"},
+        {"date": "2026-09-17", "name": "🇺🇸 FOMC"},
+        {"date": "2026-10-02", "name": "🇺🇸 NFP"},
+        {"date": "2026-10-15", "name": "🇺🇸 CPI"},
+        {"date": "2026-10-16", "name": "🇰🇷 금통위"},
+        {"date": "2026-10-29", "name": "🇺🇸 FOMC"},
+        {"date": "2026-11-06", "name": "🇺🇸 NFP"},
+        {"date": "2026-11-13", "name": "🇺🇸 CPI"},
+        {"date": "2026-11-27", "name": "🇰🇷 금통위"},
+        {"date": "2026-12-04", "name": "🇺🇸 NFP"},
+        {"date": "2026-12-10", "name": "🇺🇸 FOMC"},
+        {"date": "2026-12-11", "name": "🇺🇸 CPI"},
     ]
 
-    # session_state 초기화 — 기본 이벤트 자동 로드
     if 'macro_events' not in st.session_state:
         st.session_state.macro_events = _DEFAULT_MACRO_EVENTS.copy()
 
-    # 기본 이벤트 초기화 버튼
-    _mab1, _mab2 = st.columns([3, 1])
-    _mab1.caption("🇺🇸 FOMC·CPI·NFP / 🇰🇷 금통위 — 주가 직결 핵심 이벤트만 자동 등록")
-    if _mab2.button("🔄 기본 이벤트 초기화", key="reset_macro", use_container_width=True):
-        _today = datetime.today().strftime("%Y-%m-%d")
-        _existing_dates = [e['date'] for e in st.session_state.macro_events]
-        for _de in _DEFAULT_MACRO_EVENTS:
-            if _de['date'] >= _today and _de['date'] not in _existing_dates:
-                st.session_state.macro_events.append(_de)
-        st.success("기본 이벤트 추가 완료!")
-        st.rerun()
+    from datetime import datetime as _dtt2
+    _now_dt    = _dtt2.now()
+    _today_str = _now_dt.strftime("%Y-%m-%d")
 
-    # 필터
-    _mf_type = st.selectbox("유형 필터", ["전체", "금리", "물가(CPI)", "고용(NFP)", "GDP", "수출입"], key="mf_type")
-
-    # 주요 이벤트 빠른 추가 버튼
-    st.markdown("**⚡ 빠른 추가**")
-    _qe_cols = st.columns(6)
-    _quick_events = ["FOMC", "CPI", "NFP", "금통위", "수출입", "PPI"]
-    for _qi, _qe in enumerate(_quick_events):
-        if _qe_cols[_qi].button(_qe, key=f"qe_{_qi}", use_container_width=True):
-            st.session_state['_qe_name'] = _qe
-
-    # 이벤트 추가 폼
+    # ── 추가 폼 (간결) ──
     with st.form("macro_add_form", clear_on_submit=True):
         _fa1, _fa2, _fa3 = st.columns([2, 3, 1])
-        _ev_date = _fa1.date_input("날짜", key="ev_date_input")
-        _ev_name_default = st.session_state.pop('_qe_name', '')
-        _ev_name = _fa2.text_input("이벤트명", value=_ev_name_default,
-                                    placeholder="예: FOMC, CPI 발표")
+        _ev_date = _fa1.date_input("날짜")
+        _ev_name = _fa2.text_input("이벤트명", placeholder="예: FOMC, CPI")
         _fa3.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
-        _ev_submit = st.form_submit_button("➕ 추가", use_container_width=True)
-        if _ev_submit and _ev_name:
+        if st.form_submit_button("➕", use_container_width=True) and _ev_name:
             _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
-            _existing = [e['date'] for e in st.session_state.macro_events]
-            if str(_ev_date) not in _existing:
+            _dup = [(e['date'], e['name']) for e in st.session_state.macro_events]
+            if (str(_ev_date), _ev_name.strip()) not in _dup:
                 st.session_state.macro_events.append(_new_ev)
                 st.session_state.pop('v891_cache', None)
-                st.success(f"✅ {_ev_name} ({_ev_date}) 추가!")
                 st.rerun()
-            else:
-                st.warning("이미 등록된 날짜입니다.")
 
-    # ── 이벤트 목록: 미국 / 한국 / 기타 3컬럼 ──
-    from datetime import datetime as _dtt2
-    _today_str = datetime.today().strftime("%Y-%m-%d")
-    _now_dt    = _dtt2.now()
-    _type_kw   = {"금리": ["FOMC","금통위","금리"], "물가(CPI)": ["CPI","물가"], "고용(NFP)": ["NFP","고용"], "GDP": ["GDP"], "수출입": ["수출입"]}
+    _mc1, _mc2 = st.columns([3, 1])
+    if _mc2.button("🔄 초기화", key="reset_macro", use_container_width=True):
+        _existing_pairs = [(e['date'], e['name']) for e in st.session_state.macro_events]
+        for _de in _DEFAULT_MACRO_EVENTS:
+            if _de['date'] >= _today_str and (_de['date'], _de['name']) not in _existing_pairs:
+                st.session_state.macro_events.append(_de)
+        st.rerun()
 
-    def _ev_cards(events, col_key_prefix):
-        for _ei, _ev in enumerate(sorted(events, key=lambda x: x['date'])):
+    # ── 달력 뷰: 월별 그룹 ──
+    _future_evs = sorted(
+        [e for e in st.session_state.macro_events if e['date'] >= _today_str],
+        key=lambda x: x['date']
+    )
+
+    # 월별로 그룹핑
+    _by_month = {}
+    for _ev in _future_evs:
+        _ym = _ev['date'][:7]  # "2026-07"
+        _by_month.setdefault(_ym, []).append(_ev)
+
+    _ev_type_color = {"FOMC": "#ef4444", "CPI": "#f97316", "NFP": "#eab308", "금통위": "#3b82f6"}
+
+    for _ym, _evs in _by_month.items():
+        try:
+            _month_label = _dtt2.strptime(_ym, "%Y-%m").strftime("%Y년 %m월")
+        except:
+            _month_label = _ym
+        st.markdown(f"<div style='font-size:12px;color:#64748b;font-weight:600;margin:8px 0 4px'>{_month_label}</div>", unsafe_allow_html=True)
+
+        for _ev in _evs:
             try:
                 _ev_dt   = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
                 _diff_h  = (_ev_dt - _now_dt).total_seconds() / 3600
-                _active  = abs(_diff_h) <= 48
-                _status  = "🔴 블랙아웃" if _active else ("⏰ 임박" if 0 < _diff_h <= 72 else "📅 예정")
-                _bg      = "#fff1f2" if _active else ("#fffbeb" if 0 < _diff_h <= 72 else "#f8fafc")
-                _border  = "#fca5a5" if _active else ("#fcd34d" if 0 < _diff_h <= 72 else "#e2e8f0")
-                _tc      = "#dc2626" if _active else ("#d97706" if 0 < _diff_h <= 72 else "#64748b")
+                _blackout = abs(_diff_h) <= 48
+                _soon    = 0 < _diff_h <= 72
+                _day_str = _ev_dt.strftime("%d일(%a)").replace("Mon","월").replace("Tue","화").replace("Wed","수").replace("Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
             except:
-                _status = "📅 예정"; _bg = "#f8fafc"; _border = "#e2e8f0"; _tc = "#64748b"; _diff_h = 999
+                _blackout = False; _soon = False; _day_str = _ev['date'][5:]
 
-            _c1, _c2 = st.columns([5, 1])
-            _c1.markdown(
-                f"<div style='background:{_bg};border:1px solid {_border};"
-                f"border-radius:8px;padding:8px 12px;margin-bottom:4px'>"
-                f"<div style='font-size:13px;font-weight:600;color:#0f172a'>{_ev['name']}</div>"
-                f"<div style='font-size:11px;color:{_tc};margin-top:2px'>{_ev['date']} · {_status}</div>"
-                f"</div>", unsafe_allow_html=True
-            )
+            # 이벤트 타입별 색상
+            _tag_color = "#64748b"
+            for _kw, _c in _ev_type_color.items():
+                if _kw in _ev['name']:
+                    _tag_color = _c; break
+
+            _status_badge = ""
+            if _blackout:
+                _status_badge = "<span style='background:#ef4444;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>블랙아웃</span>"
+            elif _soon:
+                _status_badge = "<span style='background:#f97316;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>임박</span>"
+
             _ridx = next((i for i, e in enumerate(st.session_state.macro_events)
                           if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
-            if _c2.button("✕", key=f"del_{col_key_prefix}_{_ei}", use_container_width=True):
+            _col_ev, _col_del = st.columns([10, 1])
+            _col_ev.markdown(
+                f"<div style='display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)'>"
+                f"<span style='font-family:IBM Plex Mono;font-size:12px;color:#94a3b8;min-width:60px'>{_day_str}</span>"
+                f"<span style='width:3px;height:14px;background:{_tag_color};border-radius:2px;display:inline-block'></span>"
+                f"<span style='font-size:13px;color:#e2e8f0'>{_ev['name']}</span>"
+                f"{_status_badge}</div>",
+                unsafe_allow_html=True
+            )
+            if _col_del.button("✕", key=f"del_ev_{_ev['date']}_{_ev['name']}", use_container_width=True):
                 if _ridx is not None:
                     st.session_state.macro_events.pop(_ridx)
                     st.session_state.pop('v891_cache', None)
                     st.rerun()
 
-    _future = [e for e in st.session_state.macro_events if e['date'] >= _today_str]
-    if _mf_type != "전체":
-        _kws = _type_kw.get(_mf_type, [])
-        _future = [e for e in _future if any(k in e['name'] for k in _kws)]
-
-    _us_ev   = sorted([e for e in _future if "🇺🇸" in e['name']], key=lambda x: x['date'])
-    _kr_ev   = sorted([e for e in _future if "🇰🇷" in e['name']], key=lambda x: x['date'])
-    _etc_ev  = sorted([e for e in _future if "🇺🇸" not in e['name'] and "🇰🇷" not in e['name']], key=lambda x: x['date'])
-
-    st.markdown("---")
-    _col_us, _col_kr = st.columns(2)
-    with _col_us:
-        st.markdown(f"**🇺🇸 미국 ({len(_us_ev)}건)**")
-        if _us_ev:
-            _ev_cards(_us_ev, "us")
-        else:
-            st.caption("예정 이벤트 없음")
-    with _col_kr:
-        st.markdown(f"**🇰🇷 한국 ({len(_kr_ev)}건)**")
-        if _kr_ev:
-            _ev_cards(_kr_ev, "kr")
-        else:
-            st.caption("예정 이벤트 없음")
-    if _etc_ev:
-        st.markdown(f"**📌 직접추가 ({len(_etc_ev)}건)**")
-        _ev_cards(_etc_ev, "etc")
+    if not _future_evs:
+        st.caption("등록된 이벤트 없음 — 초기화 버튼으로 기본 이벤트를 추가하세요.")
 
     st.divider()
     if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
@@ -4894,7 +4872,6 @@ with tab_e:
             # NXT 거래소 가용성 (코스피/코스닥 종목만)
             _is_kr = ticker.isdigit() and len(ticker) == 6
             st.markdown("<hr style='margin:4px 0; border-color:#0f1726'>", unsafe_allow_html=True)
-        prog_bar.empty()
 
         # 요약 통계
         if all_data:
