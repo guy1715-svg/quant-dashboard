@@ -4112,55 +4112,79 @@ with tab_e:
         _bn = dict([(t,n) for t,n in TICKERS]).get(_bt, _bt)
 
         # 현재가 자동 로드
+        _is_kr = is_korean_ticker(_bt)
         try:
             _buy_df  = fetch_ohlcv(_bt, 5)
             _buy_cur = float(_buy_df['종가'].iloc[-1]) if _buy_df is not None and not _buy_df.empty else 0
         except:
             _buy_cur = 0
 
+        # USD/KRW 환율 (미장 종목일 때만)
+        _usd_krw = 1.0
+        if not _is_kr and _buy_cur > 0:
+            try:
+                import yfinance as yf
+                _fx = yf.Ticker("USDKRW=X").history(period="2d")
+                _usd_krw = float(_fx['Close'].iloc[-1]) if not _fx.empty else 1350.0
+            except:
+                _usd_krw = 1350.0
+        _buy_cur_krw = _buy_cur * _usd_krw  # 원화 환산 현재가
+
+        _cur_sym   = "원" if _is_kr else "$"
+        _cur_disp  = f"{_buy_cur:,.0f}{_cur_sym}" if _is_kr else f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)"
+
         _bc2.markdown(
             f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
-            f"현재가: <b style='font-size:18px;color:#fbbf24'>{_buy_cur:,.0f}원</b> | "
+            f"현재가: <b style='font-size:18px;color:#fbbf24'>{_cur_disp}</b>"
+            f"{f' | 환율: <b style=\"color:#94a3b8\">{_usd_krw:,.0f}원/$</b>' if not _is_kr else ''} | "
             f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
             unsafe_allow_html=True
         )
 
-        # ── 투자금액 → 수량 자동계산 ──
+        # ── 투자금액(원) → 수량 자동계산 ──
         _inv_col1, _inv_col2 = st.columns([3, 2])
         _invest_amt = _inv_col1.number_input(
             "💰 투자금액으로 수량 계산 (원)",
             value=10000000, step=1000000, min_value=0, key="invest_amt_inp",
-            help="투자할 금액을 입력하면 현재가 기준 매수 가능 수량을 자동 계산합니다"
+            help="원화 기준 투자금액 입력 → 현재가(환율 반영) 기준 매수 가능 수량 자동 계산"
         )
-        _auto_qty = int(_invest_amt / _buy_cur) if _buy_cur > 0 and _invest_amt > 0 else 0
-        _auto_cost = _auto_qty * _buy_cur
+        _auto_qty  = int(_invest_amt / _buy_cur_krw) if _buy_cur_krw > 0 and _invest_amt > 0 else 0
+        _auto_cost_krw = _auto_qty * _buy_cur_krw
+        _auto_cost_usd = _auto_qty * _buy_cur
+        _cost_str  = f"{_auto_cost_krw:,.0f}원" if _is_kr else f"${_auto_cost_usd:,.2f} (≈{_auto_cost_krw:,.0f}원)"
         _inv_col2.markdown(
             f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin-top:28px'>"
             f"<span style='font-size:12px;color:#166534'>매수 가능 수량</span><br>"
             f"<b style='font-size:22px;color:#15803d'>{_auto_qty:,}주</b>"
-            f"<span style='font-size:12px;color:#166534'> (실투자: {_auto_cost:,.0f}원)</span></div>",
+            f"<span style='font-size:12px;color:#166534'> (실투자: {_cost_str})</span></div>",
             unsafe_allow_html=True
         )
 
         _brow1, _brow2, _brow3, _brow4 = st.columns(4)
-        _buy_price = _brow1.number_input("매수가 (원)", value=int(_buy_cur) if _buy_cur > 0 else 1,
-                                          step=100, min_value=1, key="buy_price_inp")
+        _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
+        _price_step  = 100 if _is_kr else 1
+        _price_val   = int(_buy_cur) if _is_kr else max(1, int(_buy_cur * 100) / 100) if _buy_cur > 0 else 1
+        _buy_price = _brow1.number_input(_price_label, value=_price_val if _price_val > 0 else 1,
+                                          step=_price_step, min_value=1, key="buy_price_inp")
         _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
         _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
         _buy_total = _buy_price * _buy_qty
-        _net_buy_preview = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
+        _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
+        _net_buy_preview = calc_slippage(_buy_price, True, _is_kr)
+        _total_str = f"{_buy_total:,.0f}원" if _is_kr else f"${_buy_total:,.2f} (≈{_buy_total_krw:,.0f}원)"
+        _slip_str  = f"{_net_buy_preview:,.0f}원/주" if _is_kr else f"${_net_buy_preview:,.2f}/주"
         _brow4.markdown(
             f"<div style='padding-top:28px'>"
-            f"필요금액: <b>{_buy_total:,.0f}원</b><br>"
-            f"<span style='font-size:11px;color:#64748b'>슬리피지 반영: {_net_buy_preview:,.0f}원/주</span></div>",
+            f"필요금액: <b>{_total_str}</b><br>"
+            f"<span style='font-size:11px;color:#64748b'>슬리피지 반영: {_slip_str}</span></div>",
             unsafe_allow_html=True
         )
 
         _buy_memo = st.text_input("매수 근거 (Why)", placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
 
-        _cash_ok = _acc['cash'] >= _buy_total
+        _cash_ok = _acc['cash'] >= _buy_total_krw
         if not _cash_ok:
-            st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
+            st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
 
         # V8.9.1 진입 가능 여부 확인
         _v891_check = run_v891_system_check()
