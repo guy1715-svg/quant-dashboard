@@ -614,29 +614,30 @@ st.markdown("""
    CSS 변수 (테마 토큰)
 ══════════════════════════════════════ */
 :root {
-    --bg-base:    #f0f4f8;
+    --bg-base:    #f5f7fa;
     --bg-card:    #ffffff;
-    --bg-sidebar: #e8eef5;
-    --border:     rgba(0,0,0,0.10);
-    --accent:     #6366f1;
-    --accent2:    #8b5cf6;
-    --text-pri:   #1e293b;
+    --bg-sidebar: #eef2f7;
+    --border:     #e2e8f0;
+    --accent:     #3b82f6;
+    --accent2:    #6366f1;
+    --text-pri:   #0f172a;
     --text-sec:   #475569;
     --text-dim:   #94a3b8;
-    --up:         #e11d48;
-    --down:       #0284c7;
-    --green:      #059669;
+    --up:         #dc2626;
+    --down:       #2563eb;
+    --green:      #16a34a;
+    --shadow-sm:  0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md:  0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
     --font-body:  'Noto Sans KR', sans-serif;
     --font-mono:  'IBM Plex Mono', monospace;
-    /* 데스크톱 기본값 */
     --fs-xs:   11px;
     --fs-sm:   13px;
     --fs-md:   15px;
-    --fs-lg:   18px;
-    --fs-xl:   24px;
-    --fs-2xl:  32px;
-    --card-pad: 18px 22px;
-    --radius:   14px;
+    --fs-lg:   17px;
+    --fs-xl:   22px;
+    --fs-2xl:  30px;
+    --card-pad: 16px 20px;
+    --radius:   12px;
 }
 
 /* ══════════════════════════════════════
@@ -650,15 +651,21 @@ html, body, [class*="css"] {
     line-height: 1.6;
 }
 .stApp {
-    background: linear-gradient(160deg, #f0f4f8 0%, #e8eef5 60%, #f0f4f8 100%);
+    background: #f5f7fa;
 }
+/* 섹션 헤더 스타일 */
+h1, h2, h3 { color: #0f172a !important; font-weight: 700 !important; }
+h4 { color: #1e293b !important; font-weight: 600 !important; }
+/* 구분선 */
+hr { border-color: #e2e8f0 !important; }
 
 /* ══════════════════════════════════════
    사이드바
 ══════════════════════════════════════ */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #dde6f0 0%, #e8eef5 100%);
+    background: #ffffff;
     border-right: 1px solid var(--border);
+    box-shadow: 2px 0 8px rgba(0,0,0,0.04);
 }
 [data-testid="stSidebar"] * { font-size: var(--fs-sm) !important; }
 [data-testid="stSidebar"] h2 { font-size: var(--fs-md) !important; }
@@ -667,21 +674,26 @@ html, body, [class*="css"] {
    탭
 ══════════════════════════════════════ */
 .stTabs [data-baseweb="tab-list"] {
-    background: rgba(255,255,255,0.7);
+    background: #ffffff;
     border-radius: var(--radius);
     padding: 4px;
     border: 1px solid var(--border);
-    gap: 3px;
+    box-shadow: var(--shadow-sm);
+    gap: 2px;
     flex-wrap: wrap;
 }
 .stTabs [data-baseweb="tab"] {
-    border-radius: 10px;
+    border-radius: 8px;
     color: var(--text-sec);
     font-weight: 600;
     font-size: var(--fs-sm);
-    padding: 8px 18px;
-    transition: all 0.2s;
+    padding: 7px 16px;
+    transition: all 0.18s;
     white-space: nowrap;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background: #f1f5f9;
+    color: var(--text-pri);
 }
 .stTabs [aria-selected="true"] {
     background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
@@ -694,12 +706,16 @@ html, body, [class*="css"] {
 ══════════════════════════════════════ */
 .metric-card {
     background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.09);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: var(--card-pad);
     margin-bottom: 10px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
-    transition: border-color 0.2s, transform 0.15s;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.2s, transform 0.15s;
+}
+.metric-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
 }
 .metric-card:hover {
     border-color: rgba(99,102,241,0.35);
@@ -789,11 +805,39 @@ html, body, [class*="css"] {
 }
 .stButton > button[kind="secondary"] {
     background: #ffffff !important;
-    border: 1px solid rgba(0,0,0,0.15) !important;
+    border: 1px solid var(--border) !important;
     color: var(--text-sec) !important;
+    box-shadow: var(--shadow-sm) !important;
 }
 .stButton > button[kind="secondary"]:hover {
-    background: #f1f5f9 !important;
+    background: #f8fafc !important;
+    border-color: #94a3b8 !important;
+    color: var(--text-pri) !important;
+}
+/* Streamlit 기본 메트릭 */
+[data-testid="stMetric"] {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    box-shadow: var(--shadow-sm);
+}
+[data-testid="stMetricLabel"] { color: var(--text-sec) !important; font-size: 12px !important; }
+[data-testid="stMetricValue"] { color: var(--text-pri) !important; font-weight: 700 !important; }
+/* 데이터프레임 */
+[data-testid="stDataFrame"] { border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm); }
+/* expander */
+[data-testid="stExpander"] {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    background: #ffffff !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+/* selectbox */
+[data-baseweb="select"] > div {
+    background: #ffffff !important;
+    border-color: var(--border) !important;
+    border-radius: 8px !important;
     color: var(--text-pri) !important;
 }
 
@@ -1692,17 +1736,79 @@ with tab_a:
     st.markdown("#### 🗓️ 매크로 이벤트 관리")
     st.caption("등록된 이벤트 ±48시간 이내 신규 진입 자동 차단 (V8.9.1 블랙아웃)")
 
-    # session_state 초기화
+    # ── 2026 주요 이벤트 기본값 ──
+    _DEFAULT_MACRO_EVENTS = [
+        # 🇺🇸 미국 FOMC
+        {"date": "2026-06-18", "name": "🇺🇸 FOMC 금리결정"},
+        {"date": "2026-07-30", "name": "🇺🇸 FOMC 금리결정"},
+        {"date": "2026-09-17", "name": "🇺🇸 FOMC 금리결정"},
+        {"date": "2026-10-29", "name": "🇺🇸 FOMC 금리결정"},
+        {"date": "2026-12-10", "name": "🇺🇸 FOMC 금리결정"},
+        # 🇺🇸 미국 CPI
+        {"date": "2026-07-15", "name": "🇺🇸 CPI 소비자물가"},
+        {"date": "2026-08-12", "name": "🇺🇸 CPI 소비자물가"},
+        {"date": "2026-09-11", "name": "🇺🇸 CPI 소비자물가"},
+        {"date": "2026-10-15", "name": "🇺🇸 CPI 소비자물가"},
+        {"date": "2026-11-13", "name": "🇺🇸 CPI 소비자물가"},
+        {"date": "2026-12-11", "name": "🇺🇸 CPI 소비자물가"},
+        # 🇺🇸 미국 고용지표 (NFP)
+        {"date": "2026-07-03", "name": "🇺🇸 NFP 비농업고용"},
+        {"date": "2026-08-07", "name": "🇺🇸 NFP 비농업고용"},
+        {"date": "2026-09-04", "name": "🇺🇸 NFP 비농업고용"},
+        {"date": "2026-10-02", "name": "🇺🇸 NFP 비농업고용"},
+        {"date": "2026-11-06", "name": "🇺🇸 NFP 비농업고용"},
+        {"date": "2026-12-04", "name": "🇺🇸 NFP 비농업고용"},
+        # 🇺🇸 미국 GDP
+        {"date": "2026-07-30", "name": "🇺🇸 GDP 2분기 예비"},
+        {"date": "2026-10-29", "name": "🇺🇸 GDP 3분기 예비"},
+        # 🇰🇷 한국 금통위
+        {"date": "2026-07-17", "name": "🇰🇷 한은 금통위 금리결정"},
+        {"date": "2026-08-28", "name": "🇰🇷 한은 금통위 금리결정"},
+        {"date": "2026-10-16", "name": "🇰🇷 한은 금통위 금리결정"},
+        {"date": "2026-11-27", "name": "🇰🇷 한은 금통위 금리결정"},
+        # 🇰🇷 한국 수출입
+        {"date": "2026-07-01", "name": "🇰🇷 수출입동향 (6월)"},
+        {"date": "2026-08-01", "name": "🇰🇷 수출입동향 (7월)"},
+        {"date": "2026-09-01", "name": "🇰🇷 수출입동향 (8월)"},
+        {"date": "2026-10-01", "name": "🇰🇷 수출입동향 (9월)"},
+        {"date": "2026-11-01", "name": "🇰🇷 수출입동향 (10월)"},
+        {"date": "2026-12-01", "name": "🇰🇷 수출입동향 (11월)"},
+        # 🇰🇷 한국 CPI
+        {"date": "2026-07-02", "name": "🇰🇷 소비자물가 (6월)"},
+        {"date": "2026-08-04", "name": "🇰🇷 소비자물가 (7월)"},
+        {"date": "2026-09-02", "name": "🇰🇷 소비자물가 (8월)"},
+        {"date": "2026-10-02", "name": "🇰🇷 소비자물가 (9월)"},
+        {"date": "2026-11-04", "name": "🇰🇷 소비자물가 (10월)"},
+        {"date": "2026-12-02", "name": "🇰🇷 소비자물가 (11월)"},
+    ]
+
+    # session_state 초기화 — 기본 이벤트 자동 로드
     if 'macro_events' not in st.session_state:
-        st.session_state.macro_events = []
+        st.session_state.macro_events = _DEFAULT_MACRO_EVENTS.copy()
+
+    # 기본 이벤트 불러오기 버튼
+    _mab1, _mab2 = st.columns([3, 1])
+    _mab1.caption(f"🇺🇸 미국 FOMC·CPI·NFP·GDP / 🇰🇷 한은 금통위·수출입·CPI 자동 등록")
+    if _mab2.button("🔄 기본 이벤트 초기화", key="reset_macro", use_container_width=True):
+        _today = datetime.today().strftime("%Y-%m-%d")
+        _existing_dates = [e['date'] for e in st.session_state.macro_events]
+        for _de in _DEFAULT_MACRO_EVENTS:
+            if _de['date'] >= _today and _de['date'] not in _existing_dates:
+                st.session_state.macro_events.append(_de)
+        st.success("기본 이벤트 추가 완료!")
+        st.rerun()
+
+    # 필터
+    _mf_col1, _mf_col2 = st.columns(2)
+    _mf_country = _mf_col1.selectbox("국가 필터", ["전체", "🇺🇸 미국", "🇰🇷 한국", "직접추가"], key="mf_country")
+    _mf_type    = _mf_col2.selectbox("유형 필터", ["전체", "금리", "물가(CPI)", "고용(NFP)", "GDP", "수출입"], key="mf_type")
 
     # 주요 이벤트 빠른 추가 버튼
     st.markdown("**⚡ 빠른 추가**")
     _qe_cols = st.columns(6)
-    _quick_events = ["FOMC", "CPI", "GDP", "금리발표", "실업지표", "PPI"]
+    _quick_events = ["FOMC", "CPI", "NFP", "금통위", "수출입", "PPI"]
     for _qi, _qe in enumerate(_quick_events):
         if _qe_cols[_qi].button(_qe, key=f"qe_{_qi}", use_container_width=True):
-            from datetime import datetime as _dtt
             st.session_state['_qe_name'] = _qe
 
     # 이벤트 추가 폼
@@ -1716,53 +1822,67 @@ with tab_a:
         _ev_submit = st.form_submit_button("➕ 추가", use_container_width=True)
         if _ev_submit and _ev_name:
             _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
-            # 중복 체크
             _existing = [e['date'] for e in st.session_state.macro_events]
             if str(_ev_date) not in _existing:
                 st.session_state.macro_events.append(_new_ev)
-                st.session_state.pop('v891_cache', None)  # V8.9.1 캐시 초기화
+                st.session_state.pop('v891_cache', None)
                 st.success(f"✅ {_ev_name} ({_ev_date}) 추가!")
                 st.rerun()
             else:
                 st.warning("이미 등록된 날짜입니다.")
 
     # 등록된 이벤트 목록
-    if st.session_state.macro_events:
+    _today_str = datetime.today().strftime("%Y-%m-%d")
+    _filtered_events = [
+        e for e in st.session_state.macro_events
+        if e['date'] >= _today_str  # 지난 이벤트 숨김
+    ]
+    # 국가/유형 필터 적용
+    if _mf_country != "전체":
+        _flag = "🇺🇸" if "미국" in _mf_country else ("🇰🇷" if "한국" in _mf_country else "")
+        if _flag:
+            _filtered_events = [e for e in _filtered_events if _flag in e['name']]
+        else:  # 직접추가
+            _filtered_events = [e for e in _filtered_events if "🇺🇸" not in e['name'] and "🇰🇷" not in e['name']]
+    _type_kw = {"금리": ["FOMC","금통위","금리"], "물가(CPI)": ["CPI","물가"], "고용(NFP)": ["NFP","고용"], "GDP": ["GDP"], "수출입": ["수출입"]}
+    if _mf_type != "전체" and _mf_type in _type_kw:
+        _kws = _type_kw[_mf_type]
+        _filtered_events = [e for e in _filtered_events if any(k in e['name'] for k in _kws)]
+
+    if _filtered_events:
         from datetime import datetime as _dtt2
         _now_str = _dtt2.now()
-        st.markdown("**📋 등록된 이벤트**")
-        for _ei, _ev in enumerate(sorted(st.session_state.macro_events,
-                                          key=lambda x: x['date'])):
+        st.markdown(f"**📋 예정 이벤트 {len(_filtered_events)}건**")
+        for _ei, _ev in enumerate(sorted(_filtered_events, key=lambda x: x['date'])):
             try:
                 _ev_dt2  = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
                 _diff_h  = (_ev_dt2 - _now_str).total_seconds() / 3600
                 _is_active = abs(_diff_h) <= 48
-                _status  = "🔴 블랙아웃 중" if _is_active else (
-                            "⏰ 임박" if 0 < _diff_h <= 72 else
-                            "✅ 종료" if _diff_h < 0 else "📅 예정")
-                _bg = "rgba(244,63,94,0.1)" if _is_active else "rgba(255,255,255,0.03)"
-                _border = "rgba(244,63,94,0.4)" if _is_active else "rgba(255,255,255,0.08)"
+                _status  = "🔴 블랙아웃 중" if _is_active else ("⏰ 72h 이내" if 0 < _diff_h <= 72 else "📅 예정")
+                _bg     = "rgba(225,29,72,0.08)" if _is_active else ("rgba(251,191,36,0.08)" if 0 < _diff_h <= 72 else "rgba(255,255,255,0.6)")
+                _border = "rgba(225,29,72,0.3)" if _is_active else ("rgba(251,191,36,0.3)" if 0 < _diff_h <= 72 else "rgba(0,0,0,0.08)")
             except:
-                _status = "📅 예정"; _bg = "rgba(255,255,255,0.03)"; _border = "rgba(255,255,255,0.08)"
+                _status = "📅 예정"; _bg = "rgba(255,255,255,0.6)"; _border = "rgba(0,0,0,0.08)"
                 _diff_h = 999
 
             _el1, _el2 = st.columns([5, 1])
             _el1.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border};"
                 f"border-radius:10px;padding:10px 14px;margin-bottom:4px'>"
-                f"<b>{_ev['name']}</b> "
+                f"<b style='color:#1e293b'>{_ev['name']}</b> "
                 f"<span style='color:#64748b;font-size:12px'>{_ev['date']}</span> "
                 f"<span style='font-size:12px'>{_status}</span>"
-                f"{'  <span style="color:#f43f5e;font-size:11px">신규진입 차단중</span>' if _is_active else ''}"
                 f"</div>",
                 unsafe_allow_html=True
             )
-            if _el2.button("🗑️", key=f"del_ev_{_ei}", use_container_width=True):
-                st.session_state.macro_events.pop(_ei)
-                st.session_state.pop('v891_cache', None)
-                st.rerun()
+            _real_idx = next((i for i, e in enumerate(st.session_state.macro_events) if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
+            if _el2.button("🗑️", key=f"del_ev_{_ei}_{_ev['date']}", use_container_width=True):
+                if _real_idx is not None:
+                    st.session_state.macro_events.pop(_real_idx)
+                    st.session_state.pop('v891_cache', None)
+                    st.rerun()
     else:
-        st.info("💡 등록된 이벤트 없음 — 위에서 FOMC, CPI 등 주요 이벤트를 추가하세요.")
+        st.info("💡 조건에 맞는 예정 이벤트 없음")
 
     st.divider()
     if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
