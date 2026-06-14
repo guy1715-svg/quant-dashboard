@@ -4150,12 +4150,21 @@ with tab_e:
         if not _is_kr and _buy_cur == 0:
             st.warning("⚠️ 현재가를 가져오지 못했습니다. 매수가를 직접 입력해주세요.")
 
+        # ── 빠른 투자금액 버튼 ──
+        st.markdown("**💰 투자금액 선택**")
+        _qb1, _qb2, _qb3, _qb4 = st.columns(4)
+        if _qb1.button("10만원",   key="inv_10w",   use_container_width=True): st.session_state['invest_amt_inp'] = 100000
+        if _qb2.button("100만원",  key="inv_100w",  use_container_width=True): st.session_state['invest_amt_inp'] = 1000000
+        if _qb3.button("1,000만원",key="inv_1000w", use_container_width=True): st.session_state['invest_amt_inp'] = 10000000
+        if _qb4.button("전액",     key="inv_all",   use_container_width=True): st.session_state['invest_amt_inp'] = int(_acc['cash'])
+
         # ── 투자금액(원) → 수량 자동계산 ──
         _inv_col1, _inv_col2 = st.columns([3, 2])
         _invest_amt = _inv_col1.number_input(
-            "💰 투자금액으로 수량 계산 (원)",
-            value=10000000, step=1000000, min_value=0, key="invest_amt_inp",
-            help="원화 기준 투자금액 입력 → 현재가(환율 반영) 기준 매수 가능 수량 자동 계산"
+            "또는 직접 입력 (원)",
+            value=st.session_state.get('invest_amt_inp', 10000000),
+            step=100000, min_value=0, key="invest_amt_inp",
+            help="원화 기준 투자금액 → 현재가(환율 반영) 기준 매수 가능 수량 자동 계산"
         )
         _auto_qty  = int(_invest_amt / _buy_cur_krw) if _buy_cur_krw > 0 and _invest_amt > 0 else 0
         _auto_cost_krw = _auto_qty * _buy_cur_krw
@@ -4175,6 +4184,7 @@ with tab_e:
         _price_val   = max(1, int(_buy_cur)) if _is_kr else (round(_buy_cur, 2) if _buy_cur > 0 else 1.0)
         _buy_price = _brow1.number_input(_price_label, value=float(_price_val),
                                           step=float(_price_step), min_value=0.01, key="buy_price_inp")
+        # 수량: 투자금액 기준 자동계산값 반영
         _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
         _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
         _buy_total = _buy_price * _buy_qty
