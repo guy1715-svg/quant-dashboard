@@ -1408,16 +1408,9 @@ with st.sidebar:
                 st.caption("검색 결과 없음")
 
         if st.button("➕ 추가", key="sb_add", use_container_width=True, disabled=not _sb_sel_code):
-            _cur_ids = [p[0].strip() for p in _sb_pairs]
-            if _sb_sel_code not in _cur_ids:
-                try:
-                    _ws = get_gsheet()
-                    _ws.append_row([_sb_sel_code, _sb_sel_name])
-                    st.session_state.watchlist_data = _sb_wl.strip() + f"\n{_sb_sel_code},{_sb_sel_name}"
-                    safe_clear_cache()
-                    st.rerun()
-                except Exception as _e:
-                    st.error(f"오류: {_e}")
+            if add_ticker(_sb_sel_code.strip(), _sb_sel_name.strip()):
+                st.success(f"✅ {_sb_sel_name} 추가됨")
+                st.rerun()
             else:
                 st.warning("이미 있는 종목")
 
@@ -1459,24 +1452,19 @@ with st.sidebar:
                 _sb_sel_name = _sb_query_us.strip().upper()
 
         if st.button("➕ 추가", key="sb_add_us", use_container_width=True, disabled=not _sb_sel_code):
-            _cur_ids = [p[0].strip() for p in _sb_pairs]
-            if _sb_sel_code not in _cur_ids:
-                # 이름이 티커와 같으면 yfinance로 이름 보완
-                if _sb_sel_name == _sb_sel_code:
-                    try:
-                        import yfinance as yf
-                        _full = yf.Ticker(_sb_sel_code).info
-                        _sb_sel_name = _full.get("shortName") or _full.get("longName") or _sb_sel_code
-                    except Exception:
-                        pass
+            _final_code = _sb_sel_code.strip()
+            _final_name = _sb_sel_name.strip()
+            # 이름이 티커와 같으면 yfinance로 이름 보완
+            if _final_name == _final_code:
                 try:
-                    _ws = get_gsheet()
-                    _ws.append_row([_sb_sel_code, _sb_sel_name])
-                    st.session_state.watchlist_data = _sb_wl.strip() + f"\n{_sb_sel_code},{_sb_sel_name}"
-                    safe_clear_cache()
-                    st.rerun()
-                except Exception as _e:
-                    st.error(f"오류: {_e}")
+                    import yfinance as yf
+                    _full = yf.Ticker(_final_code).info
+                    _final_name = _full.get("shortName") or _full.get("longName") or _final_code
+                except Exception:
+                    pass
+            if add_ticker(_final_code, _final_name):
+                st.success(f"✅ {_final_name} 추가됨")
+                st.rerun()
             else:
                 st.warning("이미 있는 종목")
 
