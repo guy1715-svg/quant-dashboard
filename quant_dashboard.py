@@ -23,13 +23,39 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ── Google Sheets 기반 관심종목 저장 ──
+# ── Firebase Realtime Database 기반 저장 ──
 import os
 import os as _os
 import gspread
 from google.oauth2.service_account import Credentials
 
 DEFAULT_WATCHLIST = "042700,한미반도체\n005930,삼성전자\n000660,SK하이닉스\n012450,한화에어로스페이스\n329180,HD현대중공업"
+
+# ══════════════════════════════════════════
+# Firebase Realtime Database 헬퍼
+# ══════════════════════════════════════════
+import firebase_admin
+from firebase_admin import credentials as fb_credentials, db as fb_db
+
+@st.cache_resource(show_spinner=False)
+def _get_firebase_app():
+    """Firebase Admin SDK 초기화 — 앱 전체 1회"""
+    try:
+        if not firebase_admin._apps:
+            _fb_cfg = dict(st.secrets["firebase"])
+            _fb_cred = fb_credentials.Certificate(_fb_cfg)
+            _db_url  = st.secrets["firebase_config"]["database_url"]
+            firebase_admin.initialize_app(_fb_cred, {"databaseURL": _db_url})
+        return firebase_admin.get_app()
+    except Exception as _e:
+        st.error(f"Firebase 초기화 실패: {_e}")
+        return None
+
+def _fb_ref(path):
+    """Firebase DB 레퍼런스 반환"""
+    _get_firebase_app()
+    return fb_db.reference(path)
+
 
 # ══════════════════════════════════════════
 # KIS API 연동 (한국투자증권)
@@ -315,7 +341,7 @@ def run_v891_system_check(ticker="", entry_price=0, current_price=0):
     }
 
 # ══════════════════════════════════════════
-# Google Sheets 공통 인증 헬퍼
+# Google Sheets — 관심종목용 (호환성 유지)
 # ══════════════════════════════════════════
 
 _GS_SCOPES = [
@@ -324,50 +350,18 @@ _GS_SCOPES = [
 ]
 
 @st.cache_resource(show_spinner=False)
-@st.cache_resource
 def _get_gspread_workbook():
-    """인증 + 워크북 연결 — 앱 전체에서 1회만 실행"""
     creds = Credentials.from_service_account_info(
         dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES
     )
     return gspread.authorize(creds).open_by_key(st.secrets["SHEET_ID"])
 
 def get_gsheet():
-    """관심종목 시트 (sheet1)"""
     return _get_gspread_workbook().sheet1
 
 # ══════════════════════════════════════════
-# 페이퍼 트레이딩 백엔드
+# 페이퍼 트레이딩 백엔드 (Firebase 기반)
 # ══════════════════════════════════════════
-
-def get_trading_sheet():
-    """거래 일지 시트 (trading_log) — 없으면 자동 생성"""
-    try:
-        sh = _get_gspread_workbook()
-        try:
-            return sh.worksheet("trading_log")
-        except Exception:
-            ws = sh.add_worksheet("trading_log", rows=1000, cols=20)
-            ws.append_row(["날짜","시간","종목코드","종목명","매매","수량",
-                           "체결단가","수수료","슬리피지","순체결가",
-                           "잔고","평가금액","5AI점수","ADX","Z-Score","메모"])
-            return ws
-    except Exception:
-        return None
-
-def get_account_sheet():
-    """가상 계좌 시트 (account) — 없으면 자동 생성"""
-    try:
-        sh = _get_gspread_workbook()
-        try:
-            return sh.worksheet("account")
-        except Exception:
-            ws = sh.add_worksheet("account", rows=100, cols=10)
-            ws.append_row(["초기자본","현금잔고","보유종목JSON","최고자산","최저자산"])
-            ws.append_row([10000000, 10000000, "[]", 10000000, 10000000])
-            return ws
-    except Exception:
-        return None
 
 def _safe_json(s, default=None):
     """JSON 파싱 실패 시 default 반환"""
@@ -379,41 +373,34 @@ def _safe_json(s, default=None):
         return default
 
 def load_account():
-    """가상 계좌 로드"""
+    """가상 계좌 로드 — Firebase 우선"""
     if 'paper_account' in st.session_state:
         return st.session_state.paper_account
     try:
-        ws   = get_account_sheet()
-        data = ws.get_all_values()
-        if len(data) >= 2:
-            row = data[1]
+        data = _fb_ref("/quant_account").get()
+        if data:
             acc = {
-                'initial':    float(row[0]),
-                'cash':       float(row[1]),
-                'positions':  _safe_json(row[2]),
-                'peak':       float(row[3]),
-                'trough':     float(row[4]),
+                'initial':   float(data.get('initial', 10000000)),
+                'cash':      float(data.get('cash', 10000000)),
+                'positions': data.get('positions', []),
+                'peak':      float(data.get('peak', 10000000)),
+                'trough':    float(data.get('trough', 10000000)),
             }
             st.session_state.paper_account = acc
             return acc
-    except:
+    except Exception:
         pass
     default = {'initial':10000000,'cash':10000000,'positions':[],'peak':10000000,'trough':10000000}
     st.session_state.paper_account = default
     return default
 
 def save_account(acc):
-    """가상 계좌 저장"""
+    """가상 계좌 저장 — Firebase"""
     st.session_state.paper_account = acc
     try:
-        ws = get_account_sheet()
-        ws.update("A2:E2", [[
-            acc['initial'], acc['cash'],
-            json.dumps(acc['positions'], ensure_ascii=False),
-            acc['peak'], acc['trough']
-        ]])
-    except:
-        pass
+        _fb_ref("/quant_account").set(acc)
+    except Exception as _e:
+        st.warning(f"계좌 저장 오류: {_e}")
 
 def calc_slippage(price, is_buy, is_korean=True):
     """슬리피지 + 수수료 + 세금 계산"""
@@ -426,30 +413,11 @@ def calc_slippage(price, is_buy, is_korean=True):
     else:
         return round(price * (1 - total_cost))   # 매도: 단가 내려감
 
-_TRADE_LOG_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "trading_log.json")
-
-def _load_trade_log_file():
-    """trading_log.json 로드"""
-    try:
-        if _os.path.exists(_TRADE_LOG_FILE):
-            with open(_TRADE_LOG_FILE, "r", encoding="utf-8") as f:
-                return _json.load(f)
-    except Exception:
-        pass
-    return []
-
-def _save_trade_log_file(rows):
-    """trading_log.json 저장"""
-    try:
-        with open(_TRADE_LOG_FILE, "w", encoding="utf-8") as f:
-            _json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        pass
-
 def log_trade(ticker, name, action, qty, price, net_price, cash_after,
               eval_total, ai_score=0, adx=0, zscore=0, memo=""):
-    """거래 일지 기록 — JSON파일(영구) + session_state + Sheets 백업"""
+    """거래 일지 기록 — Firebase (영구) + session_state"""
     from datetime import datetime as _dt
+    import time as _t
     now = _dt.now()
     _row = {
         '날짜':     now.strftime('%Y-%m-%d'),
@@ -469,23 +437,27 @@ def log_trade(ticker, name, action, qty, price, net_price, cash_after,
         'Z-Score':  zscore,
         '메모':     memo,
     }
-    # 1) JSON 파일 (새로고침해도 유지)
-    _existing = _load_trade_log_file()
-    _existing.append(_row)
-    _save_trade_log_file(_existing)
+    # 1) Firebase (영구 저장)
+    try:
+        _key = now.strftime('%Y%m%d_%H%M%S_') + ticker
+        _fb_ref(f"/quant_trades/{_key}").set(_row)
+    except Exception as _e:
+        st.session_state['_trade_log_err'] = str(_e)
 
     # 2) session_state 캐시
     if 'local_trade_log' not in st.session_state:
         st.session_state.local_trade_log = []
     st.session_state.local_trade_log.append(_row)
 
-    # 3) Sheets 백업 (실패해도 무관)
+def _load_trade_log_firebase():
+    """Firebase에서 거래기록 전체 로드"""
     try:
-        ws = get_trading_sheet()
-        if ws:
-            ws.append_row(list(_row.values()))
-    except Exception as _e:
-        st.session_state['_trade_log_err'] = str(_e)
+        data = _fb_ref("/quant_trades").get()
+        if data:
+            return sorted(data.values(), key=lambda x: x.get('날짜','') + x.get('시간',''))
+    except Exception:
+        pass
+    return []
 
 def get_position(acc, ticker):
     """보유 포지션 조회"""
@@ -522,12 +494,25 @@ def _pairs_to_text(pairs):
     return "\n".join(f"{t},{n}" for t, n in pairs)
 
 def load_watchlist():
-    """Google Sheets에서 관심종목 로드"""
+    """Firebase에서 관심종목 로드 — Sheets 폴백"""
+    # 1) Firebase 우선
+    try:
+        data = _fb_ref("/quant_watchlist").get()
+        if data:
+            lines = [f"{v['ticker']},{v['name']}" for v in data.values()
+                     if isinstance(v, dict) and v.get('ticker')]
+            if lines:
+                return "\n".join(lines)
+    except Exception:
+        pass
+    # 2) Google Sheets 폴백
     try:
         ws = get_gsheet()
-        data = ws.get_all_values()
-        if data:
-            return "\n".join([",".join(row[:2]) for row in data if len(row) >= 2 and row[0].strip()])
+        rows = ws.get_all_values()
+        if rows:
+            parsed = "\n".join([",".join(r[:2]) for r in rows if len(r) >= 2 and r[0].strip()])
+            if parsed.strip():
+                return parsed
     except Exception:
         pass
     return DEFAULT_WATCHLIST
@@ -563,19 +548,27 @@ def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
 
 def add_ticker(ticker, name):
-    """관심종목 1개 추가 — append_row로 안전하게"""
+    """관심종목 1개 추가 — Firebase 저장"""
     wl = get_watchlist()
     existing = [t for t, _ in _parse_watchlist(wl)]
     if ticker in existing:
         return False
+    new_wl = wl.strip() + f"\n{ticker},{name}"
     # session_state 즉시 반영
-    st.session_state.watchlist_data = wl.strip() + f"\n{ticker},{name}"
-    # Sheets에 한 줄 추가 (clear 없이 안전)
+    st.session_state.watchlist_data = new_wl
+    # Firebase 저장
     try:
-        get_gsheet().append_row([ticker, name], value_input_option="RAW")
+        _fb_ref(f"/quant_watchlist/{ticker}").set({"ticker": ticker, "name": name})
     except Exception as _e:
-        st.warning(f"⚠️ Sheets 저장 오류 (앱은 정상): {_e}")
+        st.error(f"⚠️ Firebase 저장 실패: {_e}")
     return True
+
+def remove_ticker_from_firebase(ticker):
+    """Firebase에서 종목 삭제"""
+    try:
+        _fb_ref(f"/quant_watchlist/{ticker}").delete()
+    except Exception:
+        pass
 
 def remove_ticker_from_sheets(text):
     """삭제 후 Sheets 전체 갱신"""
@@ -1344,7 +1337,7 @@ with st.sidebar:
             _new_lines = [l for l in _sb_lines if not l.startswith(_t + ",")]
             _new_text = "\n".join(_new_lines)
             st.session_state.watchlist_data = _new_text
-            remove_ticker_from_sheets(_new_text)
+            remove_ticker_from_firebase(_t)
             st.rerun()
 
     st.markdown("---")
@@ -2479,13 +2472,11 @@ with tab_c:
         else:
             if _ab1.button("⭐ 관심종목 추가", key="scan_ind_add", use_container_width=True):
                 try:
-                    _ws2 = get_gsheet()
-                    _ws2.append_row([_sel_scan_item['ticker'], _sel_scan_item['name']])
-                    _cur2 = (get_watchlist()).strip()
-                    st.session_state.watchlist_data = _cur2 + f"\n{_sel_scan_item['ticker']},{_sel_scan_item['name']}"
-                    safe_clear_cache()
-                    st.success(f"✅ {_sel_scan_item['name']} 추가!")
-                    st.rerun()
+                    if add_ticker(_sel_scan_item['ticker'], _sel_scan_item['name']):
+                        st.success(f"✅ {_sel_scan_item['name']} 추가!")
+                        st.rerun()
+                    else:
+                        st.warning("이미 등록된 종목입니다.")
                 except Exception as _e:
                     st.error(f"오류: {_e}")
 
@@ -3798,14 +3789,9 @@ with tab_e:
                 _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
                 if _code not in _cur_ids:
                     # append_rows 방식으로 변경 (clear 없이 한 줄만 추가)
-                    ws = get_gsheet()
-                    ws.append_row([_code, _name])
-                    # session_state 업데이트
-                    _new_wl = _cur_wl.strip() + f"\n{_code},{_name}"
-                    st.session_state.watchlist_data = _new_wl
-                    safe_clear_cache()
-                    st.success(f"✅ {_name} 추가 완료!")
-                    st.rerun()
+                    if add_ticker(_code, _name):
+                        st.success(f"✅ {_name} 추가 완료!")
+                        st.rerun()
                 else:
                     st.warning("이미 등록된 종목입니다.")
             except Exception as _e:
@@ -4041,21 +4027,17 @@ with tab_e:
         # ── 4. 성과 분석 ──
         st.markdown("#### 📈 성과 분석 (vs 벤치마크)")
 
-        # Sheets 오류 알림
         if st.session_state.get('_trade_log_err'):
-            st.warning(f"⚠️ Sheets 거래일지 저장 오류 (로컬에는 기록됨): {st.session_state['_trade_log_err']}")
+            st.warning(f"⚠️ Firebase 거래일지 저장 오류: {st.session_state['_trade_log_err']}")
 
         try:
-            # JSON파일(영구) + session_state + Sheets 3단계 합치기
-            _file_log    = _load_trade_log_file()
+            # Firebase(영구) + session_state 합치기
+            _fb_log      = _load_trade_log_firebase()
             _session_log = st.session_state.get('local_trade_log', [])
-            _log_df_local = pd.DataFrame(_file_log + _session_log) if (_file_log or _session_log) else pd.DataFrame()
+            _all_rows    = _fb_log + _session_log
+            _log_df      = pd.DataFrame(_all_rows) if _all_rows else pd.DataFrame()
 
-            _log_ws   = get_trading_sheet()
-            _log_data = _log_ws.get_all_values() if _log_ws else []
-            _log_df_sheets = pd.DataFrame(_log_data[1:], columns=_log_data[0]) if len(_log_data) > 1 else pd.DataFrame()
-
-            _log_df = pd.concat([_log_df_sheets, _log_df_local], ignore_index=True)
+            _log_df = pd.concat([_log_df], ignore_index=True)
             if not _log_df.empty and {'날짜','시간','종목코드'}.issubset(_log_df.columns):
                 _log_df = _log_df.drop_duplicates(subset=['날짜','시간','종목코드'], keep='last')
             if not _log_df.empty:
