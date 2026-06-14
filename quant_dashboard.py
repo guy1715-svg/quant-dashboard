@@ -1383,65 +1383,101 @@ def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
     # 레이아웃
     fig.update_layout(
         title=dict(
-            text=(f'<span style="font-size:15px;font-weight:700;color:{TXT2}">{name}</span>'
-                  f'&nbsp;&nbsp;<span style="font-size:14px;font-weight:700;color:{cur_c}">{cur:,.0f}</span>'
-                  f'&nbsp;<span style="font-size:12px;color:{cur_c}">{chg_p:+.2f}%</span>'),
-            x=0.01,
+            text=(f'<b style="font-size:16px;color:{TXT2}">{name}</b>'
+                  f'&nbsp;&nbsp;<b style="font-size:15px;color:{cur_c}">{cur:,.0f}</b>'
+                  f'&nbsp;<span style="font-size:13px;color:{cur_c}">{chg_p:+.2f}%</span>'),
+            x=0.01, y=0.99, xanchor='left', yanchor='top',
         ),
         paper_bgcolor=BG,
+        plot_bgcolor=BG,
         font=dict(color=TXT, size=11, family='IBM Plex Mono'),
         xaxis_rangeslider_visible=False,
         height=900,
-        legend=dict(orientation='h', y=1.04, x=0,
-                    font=dict(size=10, color=TXT2), bgcolor='rgba(0,0,0,0)'),
-        margin=dict(l=8, r=90, t=55, b=10),
+        legend=dict(
+            orientation='h', y=1.045, x=0.35,
+            font=dict(size=10, color=TXT2), bgcolor='rgba(0,0,0,0)',
+            traceorder='normal',
+        ),
+        margin=dict(l=10, r=80, t=60, b=10),
         hovermode='x unified',
         hoverlabel=dict(
-            bgcolor='#1a2030' if _dark else '#ffffff',
-            bordercolor='rgba(255,255,255,0.12)' if _dark else '#d1dbe8',
-            font=dict(color='#e2e8f0' if _dark else '#0f172a', size=11, family='IBM Plex Mono'),
+            bgcolor='#111827' if _dark else '#ffffff',
+            bordercolor='rgba(255,255,255,0.15)' if _dark else '#cbd5e1',
+            font=dict(color='#f1f5f9' if _dark else '#0f172a', size=11, family='IBM Plex Mono'),
             namelength=-1,
         ),
-        xaxis=dict(
-            rangeselector=dict(
-                buttons=[
-                    dict(count=1,  label='1M',  step='month', stepmode='backward'),
-                    dict(count=3,  label='3M',  step='month', stepmode='backward'),
-                    dict(count=6,  label='6M',  step='month', stepmode='backward'),
-                    dict(step='all', label='전체'),
-                ],
-                bgcolor='rgba(255,255,255,0.05)' if _dark else 'rgba(0,0,0,0.04)',
-                activecolor='#3b82f6',
-                font=dict(color=TXT2, size=10, family='IBM Plex Mono'),
-                x=0.0, y=1.01,
-            ),
+        modebar=dict(
+            bgcolor='rgba(0,0,0,0)', color=TXT, activecolor='#3b82f6',
+            remove=['toImage','sendDataToCloud','editInChartStudio','lasso2d','select2d','autoScale2d'],
         ),
-        modebar=dict(bgcolor='rgba(0,0,0,0)', color=TXT, activecolor='#3b82f6'),
     )
 
-    spike = dict(showspikes=True, spikecolor='rgba(148,163,184,0.35)',
-                 spikemode='across', spikesnap='cursor', spikedash='solid', spikethickness=1)
+    # 레인지 버튼은 update_xaxes로 별도 적용 (shared x축이므로 row=1에만)
+    fig.update_xaxes(row=1, col=1,
+        rangeselector=dict(
+            buttons=[
+                dict(count=1,  label='1M',  step='month', stepmode='backward'),
+                dict(count=3,  label='3M',  step='month', stepmode='backward'),
+                dict(count=6,  label='6M',  step='month', stepmode='backward'),
+                dict(step='all', label='ALL'),
+            ],
+            bgcolor='rgba(30,41,59,0.8)' if _dark else 'rgba(241,245,249,0.9)',
+            activecolor='#3b82f6',
+            bordercolor='rgba(255,255,255,0.1)' if _dark else '#cbd5e1',
+            borderwidth=1,
+            font=dict(color=TXT2, size=10, family='IBM Plex Mono'),
+            x=0, y=1.0,
+        ),
+    )
+
+    spike = dict(
+        showspikes=True, spikecolor='rgba(148,163,184,0.4)',
+        spikemode='across', spikesnap='cursor', spikedash='solid', spikethickness=1,
+    )
+    # X축 — 하단 패널만 날짜 표시
     for row in range(1, 5):
-        _pbg = BG if row == 1 else (
-            'rgba(255,255,255,0.012)' if _dark else 'rgba(0,0,0,0.012)')
+        show_tick = (row == 4)
         fig.update_xaxes(row=row, col=1,
             showgrid=True, gridcolor=GRID, gridwidth=1,
             zeroline=False, linecolor=AXIS, showline=True,
-            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT), **spike)
+            showticklabels=show_tick,
+            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
+            **spike,
+        )
+
+    # Y축 — 가격은 실제 숫자 포맷, 거래량은 K단위
+    is_kr = any(c.isdigit() for c in name)
+    price_fmt = ',.0f'
+    fig.update_yaxes(row=1, col=1,
+        showgrid=True, gridcolor=GRID, gridwidth=1,
+        zeroline=False, linecolor=AXIS, showline=True,
+        side='right', tickformat=price_fmt,
+        tickfont=dict(size=11, family='IBM Plex Mono', color=TXT2),
+        showspikes=True, spikecolor='rgba(148,163,184,0.3)', spikethickness=1,
+    )
+    fig.update_yaxes(row=2, col=1,
+        showgrid=True, gridcolor=GRID, gridwidth=1,
+        zeroline=False, linecolor=AXIS, showline=True,
+        side='right', tickformat=',.0s',
+        tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
+    )
+    for row in [3, 4]:
         fig.update_yaxes(row=row, col=1,
             showgrid=True, gridcolor=GRID, gridwidth=1,
             zeroline=False, linecolor=AXIS, showline=True,
             side='right',
-            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT))
+            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT),
+        )
 
-    for row, lbl in [(1,'캔들 · BB · MA'),(2,'거래량'),(3,'MACD'),(4,'RSI(14)')]:
+    # 서브패널 레이블 — 차트 좌측 상단 (겹침 없게 y=1.0 기준)
+    for row, lbl in [(2,'Vol'),(3,'MACD'),(4,'RSI')]:
         fig.add_annotation(xref='x domain', yref='y domain',
-            x=0.005, y=0.97, xanchor='left', yanchor='top',
-            text=f'<b>{lbl}</b>',
+            x=0.01, y=0.99, xanchor='left', yanchor='top',
+            text=f'<b style="font-size:9px">{lbl}</b>',
             font=dict(size=9, color=TXT, family='IBM Plex Mono'),
-            showarrow=False, row=row, col=1)
+            showarrow=False, bgcolor='rgba(0,0,0,0)', row=row, col=1)
 
-    fig.update_yaxes(range=[0,100], row=4, col=1)
+    fig.update_yaxes(range=[0, 100], row=4, col=1)
     return fig
 
 
