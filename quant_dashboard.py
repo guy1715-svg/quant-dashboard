@@ -1610,7 +1610,56 @@ TICKERS = get_watchlist_tickers()
 # 메인
 # ══════════════════════════════════════════
 
-st.markdown("""
+# ── UI 설정 초기화 ──
+if 'ui_dark' not in st.session_state:
+    st.session_state.ui_dark = True
+if 'ui_mobile' not in st.session_state:
+    st.session_state.ui_mobile = False
+
+# ── 다크/라이트 + 모바일/데스크탑 CSS 동적 적용 ──
+if st.session_state.ui_dark:
+    _theme_css = """
+:root {
+    --bg-base: #0a0f1e; --bg-card: #0f1726; --bg-sidebar: #0d1424;
+    --border: rgba(255,255,255,0.08); --text-pri: #e2e8f0;
+    --text-sec: #94a3b8; --text-dim: #64748b;
+}
+html, body, [class*="css"] { background-color: #0a0f1e !important; color: #e2e8f0 !important; }
+.stApp { background: #0a0f1e !important; }
+h1,h2,h3,h4 { color: #e2e8f0 !important; }
+hr { border-color: rgba(255,255,255,0.08) !important; }
+[data-testid="stSidebar"] { background: #0d1424 !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
+.stTabs [data-baseweb="tab-list"] { background: rgba(255,255,255,0.04) !important; border-color: rgba(255,255,255,0.08) !important; }
+.stTabs [data-baseweb="tab"] { color: #94a3b8 !important; }
+.metric-card { background: #0f1726 !important; border-color: rgba(255,255,255,0.08) !important; }
+.metric-card .value { color: #e2e8f0 !important; }
+.stButton > button[kind="secondary"] { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.12) !important; color: #94a3b8 !important; }
+[data-testid="stExpander"] { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; }
+.streamlit-expanderHeader { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; }
+[data-baseweb="select"] > div { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
+.stTextInput input, .stNumberInput input, textarea { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
+[data-testid="stMetric"] { background: #0f1726 !important; border-color: rgba(255,255,255,0.08) !important; }
+[data-testid="stMetricValue"] { color: #e2e8f0 !important; }
+"""
+else:
+    _theme_css = ""  # 기본 라이트 테마 유지
+
+if st.session_state.ui_mobile:
+    _mobile_css = """
+:root { --fs-xs:10px; --fs-sm:12px; --fs-md:13px; --fs-lg:15px; --fs-xl:19px; --fs-2xl:22px; --card-pad:12px 14px; --radius:10px; }
+.stTabs [data-baseweb="tab"] { padding: 7px 10px !important; font-size: 11px !important; }
+.stButton > button { padding: 7px 10px !important; font-size: 11px !important; }
+.stDataFrame { font-size: 11px !important; }
+"""
+else:
+    _mobile_css = ""
+
+if _theme_css or _mobile_css:
+    st.markdown(f"<style>{_theme_css}{_mobile_css}</style>", unsafe_allow_html=True)
+
+# ── 헤더 + UI 토글 버튼 ──
+_h1, _h2, _h3 = st.columns([4, 1, 1])
+_h1.markdown("""
 <div style='display:flex; align-items:center; gap:12px; margin-bottom:8px'>
     <span style='font-size:28px; font-weight:800; font-family:"IBM Plex Mono",monospace;
                  background:linear-gradient(90deg,#4da6ff,#a78bfa); -webkit-background-clip:text;
@@ -1618,6 +1667,15 @@ st.markdown("""
     <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V8.9</span>
 </div>
 """, unsafe_allow_html=True)
+
+_dark_label  = "☀️ 라이트" if st.session_state.ui_dark  else "🌙 다크"
+_mobile_label = "🖥 데스크탑" if st.session_state.ui_mobile else "📱 모바일"
+if _h2.button(_dark_label,   key="toggle_dark",   use_container_width=True):
+    st.session_state.ui_dark = not st.session_state.ui_dark
+    st.rerun()
+if _h3.button(_mobile_label, key="toggle_mobile", use_container_width=True):
+    st.session_state.ui_mobile = not st.session_state.ui_mobile
+    st.rerun()
 
 now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
 st.markdown(f"<div style='font-size:12px; color:#64748b; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
