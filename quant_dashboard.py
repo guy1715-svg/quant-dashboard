@@ -317,6 +317,13 @@ def check_smart_killswitch(ticker, entry_price, current_price):
     return 'SAFE', ""
 
 def run_v891_system_check(ticker="", entry_price=0, current_price=0):
+    # 무인수 호출(진입 여부만 체크)은 5분 캐시 재사용
+    _cache_key = '_v891_base_cache'
+    import time as _t
+    _cached = st.session_state.get(_cache_key)
+    if _cached and _t.time() - _cached.get('_ts', 0) < 300 and not ticker:
+        return _cached
+
     _alerts = []; _can_enter = True; _killswitch = 'SAFE'
     _bo, _bo_msg = check_macro_blackout()
     if _bo:
@@ -331,7 +338,7 @@ def run_v891_system_check(ticker="", entry_price=0, current_price=0):
         _killswitch = _ks_action
         if _ks_action != 'SAFE':
             _alerts.append(_ks_msg)
-    return {
+    _result = {
         'can_enter':  _can_enter,
         'killswitch': _killswitch,
         'alerts':     _alerts,
@@ -339,7 +346,11 @@ def run_v891_system_check(ticker="", entry_price=0, current_price=0):
         'shutdown':   _sd,
         'kospi_chg':  _kospi_chg,
         'kosdaq_chg': _kosdaq_chg,
+        '_ts':        _t.time(),
     }
+    if not ticker:
+        st.session_state[_cache_key] = _result
+    return _result
 
 # ══════════════════════════════════════════
 # Google Sheets — 관심종목용 (호환성 유지)
@@ -1718,15 +1729,17 @@ with tab_a:
 
     # 관심종목 현황 요약
     st.markdown("#### 📊 관심종목 현황")
-    _wl_home = get_watchlist()
-    _tickers_home = [(l.split(',')[0].strip(), l.split(',')[1].strip())
-                     for l in _wl_home.split('\n') if ',' in l]
+    _tickers_home = get_watchlist_tickers()
 
     for _th, _nh in _tickers_home:
         try:
-            _df_h = fetch_ohlcv(_th, 30)
-            if _df_h is None or len(_df_h) < 5: continue
-            _df_h = calc_indicators(_df_h)
+            # all_data 캐시 우선 사용, 없으면 fetch
+            if _th in all_data:
+                _df_h = all_data[_th]['df']
+            else:
+                _df_h = fetch_ohlcv(_th, 30)
+                if _df_h is None or len(_df_h) < 5: continue
+                _df_h = calc_indicators(_df_h)
             _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
             _chgh = (_lh['종가']/_ph['종가']-1)*100
             _cch  = '#ff4d6d' if _chgh>0 else '#4da6ff'
@@ -2525,8 +2538,7 @@ with tab_c:
 
     # ── 결과 표시 ──
     if st.session_state.passed is not None and st.session_state.passed:
-        _sc_wl  = get_watchlist()
-        _sc_ids = [l.split(',')[0].strip() for l in _sc_wl.split('\n') if ',' in l]
+        _sc_ids = [t for t, _ in get_watchlist_tickers()]
         _p_list = st.session_state.passed
 
         st.success(f"✅ {len(_p_list)}개 종목 발굴!")
@@ -3103,8 +3115,7 @@ with _sub_d1:
         st.markdown("### 📊 ETF 로테이션 종합 랭킹판")
 
         # 현재 관심종목 목록
-        _etf_wl_now  = get_watchlist()
-        _etf_wl_ids  = [l.split(',')[0].strip() for l in _etf_wl_now.split('\n') if ',' in l]
+        _etf_wl_ids  = [t for t, _ in get_watchlist_tickers()]
 
         for _i, row in _ranked.iterrows():
             _is_top  = (_i == 0 and row['상태'] == '활성')
@@ -3957,9 +3968,7 @@ with tab_e:
             st.session_state.form_code = ''
             st.session_state.form_name = ''
             try:
-                _cur_wl  = get_watchlist()
-                _cur_ids = [l.split(",")[0].strip() for l in _cur_wl.split("\n") if "," in l]
-                if _code not in _cur_ids:
+                if _code not in [t for t, _ in get_watchlist_tickers()]:
                     # append_rows 방식으로 변경 (clear 없이 한 줄만 추가)
                     if add_ticker(_code, _name):
                         st.success(f"✅ {_name} 추가 완료!")
