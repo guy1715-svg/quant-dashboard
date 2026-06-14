@@ -4125,10 +4125,27 @@ with tab_e:
             unsafe_allow_html=True
         )
 
+        # ── 투자금액 → 수량 자동계산 ──
+        _inv_col1, _inv_col2 = st.columns([3, 2])
+        _invest_amt = _inv_col1.number_input(
+            "💰 투자금액으로 수량 계산 (원)",
+            value=10000000, step=1000000, min_value=0, key="invest_amt_inp",
+            help="투자할 금액을 입력하면 현재가 기준 매수 가능 수량을 자동 계산합니다"
+        )
+        _auto_qty = int(_invest_amt / _buy_cur) if _buy_cur > 0 and _invest_amt > 0 else 0
+        _auto_cost = _auto_qty * _buy_cur
+        _inv_col2.markdown(
+            f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin-top:28px'>"
+            f"<span style='font-size:12px;color:#166534'>매수 가능 수량</span><br>"
+            f"<b style='font-size:22px;color:#15803d'>{_auto_qty:,}주</b>"
+            f"<span style='font-size:12px;color:#166534'> (실투자: {_auto_cost:,.0f}원)</span></div>",
+            unsafe_allow_html=True
+        )
+
         _brow1, _brow2, _brow3, _brow4 = st.columns(4)
         _buy_price = _brow1.number_input("매수가 (원)", value=int(_buy_cur) if _buy_cur > 0 else 1,
                                           step=100, min_value=1, key="buy_price_inp")
-        _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=1, key="buy_qty_inp")
+        _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
         _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
         _buy_total = _buy_price * _buy_qty
         _net_buy_preview = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
