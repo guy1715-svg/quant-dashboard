@@ -1231,256 +1231,219 @@ def calc_entry_point(df, preset=None):
     }
 
 def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
-    import pandas as pd
-
-    # 테마 색상
     _dark = st.session_state.get('ui_dark', True)
-    _bg_paper  = '#0b0f1a' if _dark else '#ffffff'
-    _bg_plot   = '#0e1520' if _dark else '#fafbfd'
-    _grid_col  = 'rgba(255,255,255,0.04)' if _dark else 'rgba(0,0,0,0.06)'
-    _text_col  = '#94a3b8' if _dark else '#475569'
-    _title_col = '#e2e8f0' if _dark else '#0f172a'
-    _axis_col  = 'rgba(255,255,255,0.06)' if _dark else 'rgba(0,0,0,0.08)'
 
-    # 캔들 색상 (한국식: 상승=빨강, 하락=파랑)
-    _up_color   = '#f63d68'   # 상승
-    _down_color = '#3b82f6'   # 하락
-    _up_fill    = '#f63d68'
-    _down_fill  = 'rgba(59,130,246,0.85)'
+    if _dark:
+        BG    = '#0b0e17'
+        GRID  = 'rgba(255,255,255,0.035)'
+        AXIS  = 'rgba(255,255,255,0.07)'
+        TXT   = '#7a8ba8'
+        TXT2  = '#c8d4e3'
+    else:
+        BG    = '#f8fafc'
+        GRID  = 'rgba(0,0,0,0.045)'
+        AXIS  = 'rgba(0,0,0,0.10)'
+        TXT   = '#64748b'
+        TXT2  = '#1e293b'
+
+    UP   = '#f63d68'
+    DOWN = '#3b82f6'
 
     fig = make_subplots(
         rows=4, cols=1,
         shared_xaxes=True,
-        row_heights=[0.55, 0.15, 0.15, 0.15],
-        vertical_spacing=0.008,
-        subplot_titles=None,
+        row_heights=[0.56, 0.14, 0.15, 0.15],
+        vertical_spacing=0.0,
     )
 
-    _idx = df.index
+    idx    = df.index
+    closes = df['종가']
+    opens  = df['시가']
 
-    # ── 볼린저밴드 (캔들 아래 레이어) ──
-    fig.add_trace(go.Scatter(
-        x=_idx, y=df['BB_upper'],
-        line=dict(color='rgba(148,163,184,0.3)' if _dark else 'rgba(100,116,139,0.3)', width=1, dash='dot'),
-        name='BB상단', showlegend=False, hoverinfo='skip'
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=_idx, y=df['BB_lower'],
-        line=dict(color='rgba(148,163,184,0.3)' if _dark else 'rgba(100,116,139,0.3)', width=1, dash='dot'),
-        fill='tonexty',
-        fillcolor='rgba(148,163,184,0.05)' if _dark else 'rgba(100,116,139,0.04)',
-        name='BB밴드', showlegend=False, hoverinfo='skip'
-    ), row=1, col=1)
+    # 볼린저밴드
+    bb_c = 'rgba(100,116,139,0.25)' if _dark else 'rgba(100,116,139,0.20)'
+    bb_f = 'rgba(100,116,139,0.06)' if _dark else 'rgba(100,116,139,0.05)'
+    fig.add_trace(go.Scatter(x=idx, y=df['BB_upper'],
+        line=dict(color=bb_c, width=0.8, dash='dot'),
+        name='BB상단', showlegend=False, hoverinfo='skip'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=idx, y=df['BB_lower'],
+        line=dict(color=bb_c, width=0.8, dash='dot'),
+        fill='tonexty', fillcolor=bb_f,
+        name='BB밴드', showlegend=False, hoverinfo='skip'), row=1, col=1)
 
-    # ── 이평선 (캔들 아래 레이어) ──
-    ma_styles = {
-        'MA5':  ('#fbbf24', 1.4, 'solid'),   # 황금
-        'MA20': ('#34d399', 1.4, 'solid'),   # 에메랄드
-        'MA60': ('#a78bfa', 1.2, 'solid'),   # 보라
-        'MA120':('#38bdf8', 1.0, 'dot'),     # 하늘
-    }
-    for ma, (c, w, dash) in ma_styles.items():
+    # 이평선
+    for ma, c, w, d in [
+        ('MA5',  '#f59e0b', 1.5, 'solid'),
+        ('MA20', '#10b981', 1.5, 'solid'),
+        ('MA60', '#8b5cf6', 1.2, 'solid'),
+        ('MA120','#0ea5e9', 1.0, 'dot'),
+    ]:
         if ma in df.columns:
-            fig.add_trace(go.Scatter(
-                x=_idx, y=df[ma],
-                line=dict(color=c, width=w, dash=dash),
-                name=ma, opacity=0.9,
-                hovertemplate=f'{ma}: %{{y:,.0f}}<extra></extra>'
-            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=idx, y=df[ma],
+                line=dict(color=c, width=w, dash=d),
+                name=ma, hovertemplate=f'{ma}: %{{y:,.0f}}<extra></extra>'), row=1, col=1)
 
-    # ── 캔들스틱 ──
+    # 캔들
     fig.add_trace(go.Candlestick(
-        x=_idx,
-        open=df['시가'], high=df['고가'], low=df['저가'], close=df['종가'],
-        increasing=dict(
-            line=dict(color=_up_color, width=1),
-            fillcolor=_up_fill,
-        ),
-        decreasing=dict(
-            line=dict(color=_down_color, width=1),
-            fillcolor=_down_fill,
-        ),
-        name='캔들',
-        showlegend=False,
+        x=idx, open=opens, high=df['고가'], low=df['저가'], close=closes,
+        increasing=dict(line=dict(color=UP, width=1.2), fillcolor=UP),
+        decreasing=dict(line=dict(color=DOWN, width=1.2), fillcolor=DOWN),
+        name='캔들', showlegend=False,
         hovertext=[
-            f"시가: {o:,.0f}  고가: {h:,.0f}<br>저가: {l:,.0f}  종가: {c:,.0f}<br>등락: {(c/o-1)*100:+.2f}%"
-            for o, h, l, c in zip(df['시가'], df['고가'], df['저가'], df['종가'])
+            f"<b>{str(d)[:10]}</b><br>시가 {o:,.0f} · 고가 {h:,.0f}<br>저가 {l:,.0f} · 종가 {c:,.0f}<br>등락 {(c/o-1)*100:+.2f}%"
+            for d, o, h, l, c in zip(idx, opens, df['고가'], df['저가'], closes)
         ],
-        hoverinfo='text+x',
+        hoverinfo='text',
     ), row=1, col=1)
 
-    # ── 현재가 수평선 + 레이블 ──
-    _cur = df['종가'].iloc[-1]
-    _prev = df['종가'].iloc[-2]
-    _cur_c = _up_color if _cur >= _prev else _down_color
-    fig.add_hline(
-        y=_cur,
-        line=dict(color=_cur_c, width=1, dash='dot'),
-        annotation=dict(
-            text=f"<b>{_cur:,.0f}</b>",
-            font=dict(color='#ffffff', size=11, family='IBM Plex Mono'),
-            bgcolor=_cur_c,
-            borderpad=4,
-            x=1.0, xanchor='left',
-        ),
-        row=1, col=1,
-    )
+    # 현재가 점선 + Y축 박스
+    cur   = float(closes.iloc[-1])
+    prev  = float(closes.iloc[-2])
+    cur_c = UP if cur >= prev else DOWN
+    chg_p = (cur / prev - 1) * 100
+    fig.add_shape(type='line', x0=0, x1=1, xref='x domain',
+        y0=cur, y1=cur, yref='y',
+        line=dict(color=cur_c, width=1.2, dash='dot'), row=1, col=1)
+    fig.add_annotation(x=1.002, y=cur, xref='x domain', yref='y',
+        text=f"<b>{cur:,.0f}</b>",
+        showarrow=False, xanchor='left',
+        font=dict(color='#ffffff', size=11, family='IBM Plex Mono'),
+        bgcolor=cur_c, borderpad=3, bordercolor=cur_c, row=1, col=1)
 
-    # ── 매수/손절/목표가 ──
-    _hlines = [
-        (entry,    '#fbbf24', 'solid', 1.8, f'매수 {entry:,.0f}')    if entry    else None,
-        (stoploss, _up_color, 'dash',  1.5, f'손절 {stoploss:,.0f}') if stoploss else None,
-        (target1,  '#34d399', 'solid', 1.8, f'1차목표 {target1:,.0f}') if target1 else None,
-        (target2,  '#a78bfa', 'dot',   1.4, f'2차목표 {target2:,.0f}') if target2 else None,
-    ]
-    for _hl in _hlines:
-        if _hl:
-            _y, _c, _d, _w, _lbl = _hl
-            fig.add_hline(y=_y, line=dict(color=_c, dash=_d, width=_w),
-                          annotation=dict(text=f'<b>{_lbl}</b>', font=dict(color=_c, size=10),
-                                         x=0, xanchor='left'),
-                          row=1, col=1)
+    # 매수/손절/목표가
+    for val, color, dash, lbl in [
+        (entry,    '#f59e0b', 'solid', f'매수 {entry:,.0f}')    if entry    else (None,)*4,
+        (stoploss, UP,        'dash',  f'손절 {stoploss:,.0f}') if stoploss else (None,)*4,
+        (target1,  '#10b981', 'solid', f'1차목표 {target1:,.0f}') if target1 else (None,)*4,
+        (target2,  '#8b5cf6', 'dot',   f'2차목표 {target2:,.0f}') if target2 else (None,)*4,
+    ]:
+        if val:
+            fig.add_hline(y=val, line=dict(color=color, dash=dash, width=1.5),
+                annotation=dict(text=f'<b>{lbl}</b>', font=dict(color=color, size=10), x=0.01), row=1, col=1)
 
-    # ── 거래량 ──
-    _vol_colors = [
-        _up_color if df['종가'].iloc[i] >= df['시가'].iloc[i] else _down_color
-        for i in range(len(df))
-    ]
-    # 20일 평균 거래량 라인
-    _vol_ma20 = df['거래량'].rolling(20).mean()
-    fig.add_trace(go.Bar(
-        x=_idx, y=df['거래량'],
-        marker=dict(color=_vol_colors, opacity=0.7, line=dict(width=0)),
+    # 거래량 — 강도별 그라디언트
+    vol_max = df['거래량'].max() or 1
+    vol_colors = []
+    for i in range(len(df)):
+        ratio = df['거래량'].iloc[i] / vol_max
+        is_up = closes.iloc[i] >= opens.iloc[i]
+        r,g,b = (246,61,104) if is_up else (59,130,246)
+        vol_colors.append(f'rgba({r},{g},{b},{0.35+ratio*0.55:.2f})')
+    fig.add_trace(go.Bar(x=idx, y=df['거래량'],
+        marker=dict(color=vol_colors, line=dict(width=0)),
         name='거래량', showlegend=False,
-        hovertemplate='거래량: %{y:,.0f}<extra></extra>',
-    ), row=2, col=1)
-    fig.add_trace(go.Scatter(
-        x=_idx, y=_vol_ma20,
-        line=dict(color='#fbbf24', width=1, dash='dot'),
-        name='거래량MA20', showlegend=False, hoverinfo='skip'
-    ), row=2, col=1)
+        hovertemplate='거래량: %{y:,.0f}<extra></extra>'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=idx, y=df['거래량'].rolling(20).mean(),
+        line=dict(color='#f59e0b', width=1.2, dash='dot'),
+        name='거래량MA20', showlegend=False, hoverinfo='skip'), row=2, col=1)
 
-    # ── MACD ──
-    _hist_c = [_up_color if v >= 0 else _down_color for v in df['MACD_hist']]
-    # 히스토그램 투명도 — 강도별 시각화
-    _hist_opacity = [min(1.0, abs(v) / (df['MACD_hist'].abs().max() + 1e-9) * 0.9 + 0.3)
-                     for v in df['MACD_hist']]
-    fig.add_trace(go.Bar(
-        x=_idx, y=df['MACD_hist'],
-        marker=dict(color=_hist_c, opacity=0.75, line=dict(width=0)),
-        name='MACD히스토그램', showlegend=False,
-        hovertemplate='히스토그램: %{y:,.1f}<extra></extra>',
-    ), row=3, col=1)
-    fig.add_trace(go.Scatter(
-        x=_idx, y=df['MACD'],
-        line=dict(color='#38bdf8', width=1.5),
-        name='MACD',
-        hovertemplate='MACD: %{y:,.1f}<extra></extra>',
-    ), row=3, col=1)
-    fig.add_trace(go.Scatter(
-        x=_idx, y=df['Signal'],
-        line=dict(color='#f472b6', width=1.5),
-        name='Signal',
-        hovertemplate='Signal: %{y:,.1f}<extra></extra>',
-    ), row=3, col=1)
-    fig.add_hline(y=0, line=dict(color=_axis_col, width=1), row=3, col=1)
+    # MACD
+    macd_max = df['MACD_hist'].abs().max() or 1
+    hist_colors = []
+    for v in df['MACD_hist']:
+        ratio = abs(v) / macd_max
+        a = 0.4 + ratio * 0.55
+        hist_colors.append(f'rgba(246,61,104,{a:.2f})' if v >= 0 else f'rgba(59,130,246,{a:.2f})')
+    fig.add_trace(go.Bar(x=idx, y=df['MACD_hist'],
+        marker=dict(color=hist_colors, line=dict(width=0)),
+        name='히스토그램', showlegend=False,
+        hovertemplate='히스토: %{y:.1f}<extra></extra>'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=idx, y=df['MACD'],
+        line=dict(color='#38bdf8', width=1.5), name='MACD',
+        hovertemplate='MACD: %{y:.1f}<extra></extra>'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=idx, y=df['Signal'],
+        line=dict(color='#f472b6', width=1.5), name='Signal',
+        hovertemplate='Signal: %{y:.1f}<extra></extra>'), row=3, col=1)
+    fig.add_shape(type='line', x0=0, x1=1, xref='x domain',
+        y0=0, y1=0, yref='y3', line=dict(color=AXIS, width=1))
 
-    # ── RSI ──
-    _rsi_cur = df['RSI'].iloc[-1]
-    _rsi_c   = _up_color if _rsi_cur >= 70 else (_down_color if _rsi_cur <= 30 else '#a78bfa')
-    fig.add_hrect(y0=70, y1=100, fillcolor=f'rgba(246,61,104,0.07)', line_width=0, row=4, col=1)
-    fig.add_hrect(y0=0,  y1=30,  fillcolor=f'rgba(59,130,246,0.07)',  line_width=0, row=4, col=1)
-    fig.add_hline(y=70, line=dict(color=_up_color,   width=0.7, dash='dot'), row=4, col=1)
-    fig.add_hline(y=30, line=dict(color=_down_color, width=0.7, dash='dot'), row=4, col=1)
-    fig.add_hline(y=50, line=dict(color=_grid_col,   width=0.5),             row=4, col=1)
-    # RSI 라인 — 과매수/과매도 구간 색상 변환
-    fig.add_trace(go.Scatter(
-        x=_idx, y=df['RSI'],
-        line=dict(color='#a78bfa', width=1.8),
-        fill='tozeroy', fillcolor='rgba(167,139,250,0.06)',
+    # RSI
+    rsi_cur = float(df['RSI'].iloc[-1])
+    rsi_c   = UP if rsi_cur >= 70 else (DOWN if rsi_cur <= 30 else '#8b5cf6')
+    fig.add_hrect(y0=70, y1=80, fillcolor='rgba(246,61,104,0.08)', line_width=0, row=4, col=1)
+    fig.add_hrect(y0=20, y1=30, fillcolor='rgba(59,130,246,0.08)',  line_width=0, row=4, col=1)
+    fig.add_shape(type='line', x0=0, x1=1, xref='x domain', y0=70, y1=70, yref='y4',
+        line=dict(color=UP,   width=0.8, dash='dot'))
+    fig.add_shape(type='line', x0=0, x1=1, xref='x domain', y0=30, y1=30, yref='y4',
+        line=dict(color=DOWN, width=0.8, dash='dot'))
+    fig.add_shape(type='line', x0=0, x1=1, xref='x domain', y0=50, y1=50, yref='y4',
+        line=dict(color=GRID, width=0.7))
+    fig.add_trace(go.Scatter(x=idx, y=df['RSI'],
+        line=dict(color='#8b5cf6', width=1.8),
+        fill='tozeroy', fillcolor='rgba(139,92,246,0.07)',
         name='RSI', showlegend=False,
-        hovertemplate='RSI: %{y:.1f}<extra></extra>',
-    ), row=4, col=1)
-    # 현재 RSI 점
-    fig.add_trace(go.Scatter(
-        x=[_idx[-1]], y=[_rsi_cur],
+        hovertemplate='RSI: %{y:.1f}<extra></extra>'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=[idx[-1]], y=[rsi_cur],
         mode='markers+text',
-        marker=dict(color=_rsi_c, size=7, symbol='circle',
-                    line=dict(color='white', width=1)),
-        text=[f' {_rsi_cur:.0f}'],
-        textposition='middle right',
-        textfont=dict(color=_rsi_c, size=10, family='IBM Plex Mono'),
-        name='RSI현재', showlegend=False, hoverinfo='skip',
-    ), row=4, col=1)
+        marker=dict(color=rsi_c, size=8, line=dict(color='white', width=1.5)),
+        text=[f' {rsi_cur:.1f}'], textposition='middle right',
+        textfont=dict(color=rsi_c, size=10, family='IBM Plex Mono'),
+        showlegend=False, hoverinfo='skip'), row=4, col=1)
 
-    # ── 레이아웃 ──
+    # 레이아웃
     fig.update_layout(
         title=dict(
-            text=f'<b style="font-size:15px">{name}</b>'
-                 f'  <span style="font-size:12px; color:{_cur_c}">{_cur:,.0f}</span>'
-                 f'  <span style="font-size:11px; color:#64748b">'
-                 f'{((_cur/_prev)-1)*100:+.2f}%</span>',
-            font=dict(color=_title_col, family='IBM Plex Mono'),
+            text=(f'<span style="font-size:15px;font-weight:700;color:{TXT2}">{name}</span>'
+                  f'&nbsp;&nbsp;<span style="font-size:14px;font-weight:700;color:{cur_c}">{cur:,.0f}</span>'
+                  f'&nbsp;<span style="font-size:12px;color:{cur_c}">{chg_p:+.2f}%</span>'),
             x=0.01,
         ),
-        paper_bgcolor=_bg_paper,
-        plot_bgcolor=_bg_plot,
-        font=dict(color=_text_col, size=11, family='IBM Plex Mono'),
+        paper_bgcolor=BG,
+        font=dict(color=TXT, size=11, family='IBM Plex Mono'),
         xaxis_rangeslider_visible=False,
-        height=860,
-        legend=dict(
-            orientation='h', y=1.03, x=0,
-            font=dict(size=10), itemwidth=40,
-            bgcolor='rgba(0,0,0,0)', bordercolor='rgba(0,0,0,0)',
-        ),
-        margin=dict(l=10, r=100, t=60, b=20),
-        # 크로스헤어
+        height=900,
+        legend=dict(orientation='h', y=1.04, x=0,
+                    font=dict(size=10, color=TXT2), bgcolor='rgba(0,0,0,0)'),
+        margin=dict(l=8, r=90, t=55, b=10),
         hovermode='x unified',
         hoverlabel=dict(
-            bgcolor='#1e293b' if _dark else '#ffffff',
-            bordercolor='rgba(255,255,255,0.15)' if _dark else '#d1dbe8',
+            bgcolor='#1a2030' if _dark else '#ffffff',
+            bordercolor='rgba(255,255,255,0.12)' if _dark else '#d1dbe8',
             font=dict(color='#e2e8f0' if _dark else '#0f172a', size=11, family='IBM Plex Mono'),
+            namelength=-1,
         ),
+        xaxis=dict(
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1,  label='1M',  step='month', stepmode='backward'),
+                    dict(count=3,  label='3M',  step='month', stepmode='backward'),
+                    dict(count=6,  label='6M',  step='month', stepmode='backward'),
+                    dict(step='all', label='전체'),
+                ],
+                bgcolor='rgba(255,255,255,0.05)' if _dark else 'rgba(0,0,0,0.04)',
+                activecolor='#3b82f6',
+                font=dict(color=TXT2, size=10, family='IBM Plex Mono'),
+                x=0.0, y=1.01,
+            ),
+        ),
+        modebar=dict(bgcolor='rgba(0,0,0,0)', color=TXT, activecolor='#3b82f6'),
     )
 
-    # ── 서브플롯 레이블 ──
-    _label_style = dict(font=dict(color=_text_col, size=10, family='IBM Plex Mono'))
+    spike = dict(showspikes=True, spikecolor='rgba(148,163,184,0.35)',
+                 spikemode='across', spikesnap='cursor', spikedash='solid', spikethickness=1)
+    for row in range(1, 5):
+        _pbg = BG if row == 1 else (
+            'rgba(255,255,255,0.012)' if _dark else 'rgba(0,0,0,0.012)')
+        fig.update_xaxes(row=row, col=1,
+            showgrid=True, gridcolor=GRID, gridwidth=1,
+            zeroline=False, linecolor=AXIS, showline=True,
+            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT), **spike)
+        fig.update_yaxes(row=row, col=1,
+            showgrid=True, gridcolor=GRID, gridwidth=1,
+            zeroline=False, linecolor=AXIS, showline=True,
+            side='right', plot_bgcolor=_pbg,
+            tickfont=dict(size=10, family='IBM Plex Mono', color=TXT))
 
-    # ── X/Y 축 스타일 ──
-    for i in range(1, 5):
-        fig.update_xaxes(
-            row=i, col=1,
-            gridcolor=_grid_col, showgrid=True,
-            zeroline=False,
-            linecolor=_axis_col, linewidth=1, showline=True,
-            tickfont=dict(size=10, family='IBM Plex Mono', color=_text_col),
-            showspikes=True, spikecolor='rgba(148,163,184,0.4)',
-            spikemode='across', spikesnap='cursor', spikedash='solid', spikethickness=1,
-        )
-        fig.update_yaxes(
-            row=i, col=1,
-            gridcolor=_grid_col, showgrid=True,
-            zeroline=False,
-            linecolor=_axis_col, linewidth=1, showline=True,
-            side='right',
-            tickfont=dict(size=10, family='IBM Plex Mono', color=_text_col),
-            showspikes=True, spikecolor='rgba(148,163,184,0.3)',
-            spikemode='across', spikesnap='cursor', spikedash='dot', spikethickness=1,
-        )
+    for row, lbl in [(1,'캔들 · BB · MA'),(2,'거래량'),(3,'MACD'),(4,'RSI(14)')]:
+        fig.add_annotation(xref='x domain', yref='y domain',
+            x=0.005, y=0.97, xanchor='left', yanchor='top',
+            text=f'<b>{lbl}</b>',
+            font=dict(size=9, color=TXT, family='IBM Plex Mono'),
+            showarrow=False, row=row, col=1)
 
-    # 서브플롯 Y축 레이블 (오른쪽 위에 텍스트로 표기)
-    _row_labels = {1: '가격', 2: '거래량', 3: 'MACD', 4: 'RSI'}
-    for _r, _lbl in _row_labels.items():
-        fig.add_annotation(
-            xref='x domain', yref='y domain',
-            x=0.01, y=0.97, xanchor='left', yanchor='top',
-            text=f'<b>{_lbl}</b>',
-            font=dict(size=10, color=_text_col, family='IBM Plex Mono'),
-            showarrow=False, row=_r, col=1,
-        )
-
-    fig.update_yaxes(range=[0, 100], row=4, col=1)
+    fig.update_yaxes(range=[0,100], row=4, col=1)
     return fig
+
 
 
 # ══════════════════════════════════════════
