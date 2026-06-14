@@ -3720,10 +3720,30 @@ with tab_e:
             try:
                 _ws = get_gsheet()
                 st.success("✅ Google Sheets 연결 성공!")
-                _test = _ws.get_all_values()
-                st.write(f"현재 데이터: {_test}")
             except Exception as e:
-                st.error(f"❌ Sheets 연결 오류 상세: {e}")
+                st.error(f"❌ Sheets 연결 오류: {e}")
+
+            # ── Firebase 연결 상태 ──
+            st.markdown("---")
+            try:
+                _fb_cfg = st.secrets["firebase"]
+                st.success(f"✅ Firebase 계정 확인: {_fb_cfg['client_email']}")
+            except Exception as e:
+                st.error(f"❌ Firebase secrets 없음: {e}")
+
+            try:
+                _db_url = st.secrets["firebase_config"]["database_url"]
+                st.success(f"✅ Firebase DB URL: {_db_url}")
+            except Exception as e:
+                st.error(f"❌ firebase_config 없음: {e}")
+
+            try:
+                _get_firebase_app()
+                _test_ref = _fb_ref("/quant_watchlist")
+                _test_data = _test_ref.get()
+                st.success(f"✅ Firebase 연결 성공! (관심종목 {len(_test_data) if _test_data else 0}개)")
+            except Exception as e:
+                st.error(f"❌ Firebase 연결 오류: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
