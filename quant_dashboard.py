@@ -1799,9 +1799,7 @@ with tab_a:
         st.rerun()
 
     # 필터
-    _mf_col1, _mf_col2 = st.columns(2)
-    _mf_country = _mf_col1.selectbox("국가 필터", ["전체", "🇺🇸 미국", "🇰🇷 한국", "직접추가"], key="mf_country")
-    _mf_type    = _mf_col2.selectbox("유형 필터", ["전체", "금리", "물가(CPI)", "고용(NFP)", "GDP", "수출입"], key="mf_type")
+    _mf_type = st.selectbox("유형 필터", ["전체", "금리", "물가(CPI)", "고용(NFP)", "GDP", "수출입"], key="mf_type")
 
     # 주요 이벤트 빠른 추가 버튼
     st.markdown("**⚡ 빠른 추가**")
@@ -1831,58 +1829,67 @@ with tab_a:
             else:
                 st.warning("이미 등록된 날짜입니다.")
 
-    # 등록된 이벤트 목록
+    # ── 이벤트 목록: 미국 / 한국 / 기타 3컬럼 ──
+    from datetime import datetime as _dtt2
     _today_str = datetime.today().strftime("%Y-%m-%d")
-    _filtered_events = [
-        e for e in st.session_state.macro_events
-        if e['date'] >= _today_str  # 지난 이벤트 숨김
-    ]
-    # 국가/유형 필터 적용
-    if _mf_country != "전체":
-        _flag = "🇺🇸" if "미국" in _mf_country else ("🇰🇷" if "한국" in _mf_country else "")
-        if _flag:
-            _filtered_events = [e for e in _filtered_events if _flag in e['name']]
-        else:  # 직접추가
-            _filtered_events = [e for e in _filtered_events if "🇺🇸" not in e['name'] and "🇰🇷" not in e['name']]
-    _type_kw = {"금리": ["FOMC","금통위","금리"], "물가(CPI)": ["CPI","물가"], "고용(NFP)": ["NFP","고용"], "GDP": ["GDP"], "수출입": ["수출입"]}
-    if _mf_type != "전체" and _mf_type in _type_kw:
-        _kws = _type_kw[_mf_type]
-        _filtered_events = [e for e in _filtered_events if any(k in e['name'] for k in _kws)]
+    _now_dt    = _dtt2.now()
+    _type_kw   = {"금리": ["FOMC","금통위","금리"], "물가(CPI)": ["CPI","물가"], "고용(NFP)": ["NFP","고용"], "GDP": ["GDP"], "수출입": ["수출입"]}
 
-    if _filtered_events:
-        from datetime import datetime as _dtt2
-        _now_str = _dtt2.now()
-        st.markdown(f"**📋 예정 이벤트 {len(_filtered_events)}건**")
-        for _ei, _ev in enumerate(sorted(_filtered_events, key=lambda x: x['date'])):
+    def _ev_cards(events, col_key_prefix):
+        for _ei, _ev in enumerate(sorted(events, key=lambda x: x['date'])):
             try:
-                _ev_dt2  = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
-                _diff_h  = (_ev_dt2 - _now_str).total_seconds() / 3600
-                _is_active = abs(_diff_h) <= 48
-                _status  = "🔴 블랙아웃 중" if _is_active else ("⏰ 72h 이내" if 0 < _diff_h <= 72 else "📅 예정")
-                _bg     = "rgba(225,29,72,0.08)" if _is_active else ("rgba(251,191,36,0.08)" if 0 < _diff_h <= 72 else "rgba(255,255,255,0.6)")
-                _border = "rgba(225,29,72,0.3)" if _is_active else ("rgba(251,191,36,0.3)" if 0 < _diff_h <= 72 else "rgba(0,0,0,0.08)")
+                _ev_dt   = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
+                _diff_h  = (_ev_dt - _now_dt).total_seconds() / 3600
+                _active  = abs(_diff_h) <= 48
+                _status  = "🔴 블랙아웃" if _active else ("⏰ 임박" if 0 < _diff_h <= 72 else "📅 예정")
+                _bg      = "#fff1f2" if _active else ("#fffbeb" if 0 < _diff_h <= 72 else "#f8fafc")
+                _border  = "#fca5a5" if _active else ("#fcd34d" if 0 < _diff_h <= 72 else "#e2e8f0")
+                _tc      = "#dc2626" if _active else ("#d97706" if 0 < _diff_h <= 72 else "#64748b")
             except:
-                _status = "📅 예정"; _bg = "rgba(255,255,255,0.6)"; _border = "rgba(0,0,0,0.08)"
-                _diff_h = 999
+                _status = "📅 예정"; _bg = "#f8fafc"; _border = "#e2e8f0"; _tc = "#64748b"; _diff_h = 999
 
-            _el1, _el2 = st.columns([5, 1])
-            _el1.markdown(
+            _c1, _c2 = st.columns([5, 1])
+            _c1.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border};"
-                f"border-radius:10px;padding:10px 14px;margin-bottom:4px'>"
-                f"<b style='color:#1e293b'>{_ev['name']}</b> "
-                f"<span style='color:#64748b;font-size:12px'>{_ev['date']}</span> "
-                f"<span style='font-size:12px'>{_status}</span>"
-                f"</div>",
-                unsafe_allow_html=True
+                f"border-radius:8px;padding:8px 12px;margin-bottom:4px'>"
+                f"<div style='font-size:13px;font-weight:600;color:#0f172a'>{_ev['name']}</div>"
+                f"<div style='font-size:11px;color:{_tc};margin-top:2px'>{_ev['date']} · {_status}</div>"
+                f"</div>", unsafe_allow_html=True
             )
-            _real_idx = next((i for i, e in enumerate(st.session_state.macro_events) if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
-            if _el2.button("🗑️", key=f"del_ev_{_ei}_{_ev['date']}", use_container_width=True):
-                if _real_idx is not None:
-                    st.session_state.macro_events.pop(_real_idx)
+            _ridx = next((i for i, e in enumerate(st.session_state.macro_events)
+                          if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
+            if _c2.button("✕", key=f"del_{col_key_prefix}_{_ei}", use_container_width=True):
+                if _ridx is not None:
+                    st.session_state.macro_events.pop(_ridx)
                     st.session_state.pop('v891_cache', None)
                     st.rerun()
-    else:
-        st.info("💡 조건에 맞는 예정 이벤트 없음")
+
+    _future = [e for e in st.session_state.macro_events if e['date'] >= _today_str]
+    if _mf_type != "전체":
+        _kws = _type_kw.get(_mf_type, [])
+        _future = [e for e in _future if any(k in e['name'] for k in _kws)]
+
+    _us_ev   = sorted([e for e in _future if "🇺🇸" in e['name']], key=lambda x: x['date'])
+    _kr_ev   = sorted([e for e in _future if "🇰🇷" in e['name']], key=lambda x: x['date'])
+    _etc_ev  = sorted([e for e in _future if "🇺🇸" not in e['name'] and "🇰🇷" not in e['name']], key=lambda x: x['date'])
+
+    st.markdown("---")
+    _col_us, _col_kr = st.columns(2)
+    with _col_us:
+        st.markdown(f"**🇺🇸 미국 ({len(_us_ev)}건)**")
+        if _us_ev:
+            _ev_cards(_us_ev, "us")
+        else:
+            st.caption("예정 이벤트 없음")
+    with _col_kr:
+        st.markdown(f"**🇰🇷 한국 ({len(_kr_ev)}건)**")
+        if _kr_ev:
+            _ev_cards(_kr_ev, "kr")
+        else:
+            st.caption("예정 이벤트 없음")
+    if _etc_ev:
+        st.markdown(f"**📌 직접추가 ({len(_etc_ev)}건)**")
+        _ev_cards(_etc_ev, "etc")
 
     st.divider()
     if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
