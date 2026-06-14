@@ -4827,6 +4827,14 @@ with tab_e:
         else:
             st.success("✅ 10:30 변곡점 통과 — 진입 가능 구간")
 
+        # 환율 1회 조회 (현황판 전체 공용)
+        try:
+            import yfinance as _yf_dsh
+            _dsh_fx = _yf_dsh.Ticker("USDKRW=X").history(period="5d")
+            _dsh_usd_krw = float(_dsh_fx['Close'].dropna().iloc[-1]) if not _dsh_fx.empty else 1350.0
+        except:
+            _dsh_usd_krw = 1350.0
+
         # all_data = {} 제거 — 기존 캐시 유지 (다른 탭 데이터 소멸 방지)
         is_mobile = st.toggle("📱 모바일 뷰", value=False)
         if is_mobile:
@@ -4855,6 +4863,13 @@ with tab_e:
             sigs = get_signal(df)
             chg_color = 'up' if chg > 0 else 'down' if chg < 0 else 'flat'
 
+            # 미국 주식은 달러 표시
+            _is_kr_d = is_korean_ticker(ticker)
+            _fx_d    = 1.0 if _is_kr_d else _dsh_usd_krw
+            _price_disp = f"{l['종가']:,.0f}원" if _is_kr_d else f"${l['종가']:,.2f}"
+            _ma5_disp   = f"{l['MA5']:,.0f}" if _is_kr_d else f"${l['MA5']:,.2f}"
+            _ma20_disp  = f"{l['MA20']:,.0f}" if _is_kr_d else f"${l['MA20']:,.2f}"
+
             rsi_color = '#ff4d6d' if l['RSI']>=70 else '#4da6ff' if l['RSI']<=30 else '#a0b0c8'
             vol_color = '#ff4d6d' if volr >= 200 else '#8899bb'
             badge_html = ''
@@ -4868,7 +4883,7 @@ with tab_e:
                     f"<span style='font-size:10px; color:#64748b'>{ticker}</span>",
                     unsafe_allow_html=True)
                 cols[1].markdown(
-                    f"<span style='font-family:IBM Plex Mono; font-size:14px; font-weight:700'>{l['종가']:,.0f}</span><br>"
+                    f"<span style='font-family:IBM Plex Mono; font-size:14px; font-weight:700'>{_price_disp}</span><br>"
                     f"<span class='{chg_color}' style='font-size:12px'>{chg:+.2f}%</span>",
                     unsafe_allow_html=True)
                 cols[2].markdown(
@@ -4878,11 +4893,11 @@ with tab_e:
             else:
                 cols = st.columns([2, 1.2, 1, 0.8, 1, 1, 1, 2.5])
                 cols[0].markdown(f"<b style='font-size:13px'>{name}</b><br><span style='font-size:10px; color:#64748b; font-family:IBM Plex Mono'>{ticker}</span>", unsafe_allow_html=True)
-                cols[1].markdown(f"<span style='font-family:IBM Plex Mono; font-size:13px; font-weight:600'>{l['종가']:,.0f}</span>", unsafe_allow_html=True)
+                cols[1].markdown(f"<span style='font-family:IBM Plex Mono; font-size:13px; font-weight:600'>{_price_disp}</span>", unsafe_allow_html=True)
                 cols[2].markdown(f"<span class='{chg_color}' style='font-family:IBM Plex Mono; font-size:13px'>{chg:+.2f}%</span>", unsafe_allow_html=True)
                 cols[3].markdown(f"<span style='color:{rsi_color}; font-family:IBM Plex Mono; font-size:13px'>{l['RSI']:.1f}</span>", unsafe_allow_html=True)
-                cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{l['MA5']:,.0f}</span>", unsafe_allow_html=True)
-                cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{l['MA20']:,.0f}</span>", unsafe_allow_html=True)
+                cols[4].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{_ma5_disp}</span>", unsafe_allow_html=True)
+                cols[5].markdown(f"<span style='font-family:IBM Plex Mono; font-size:12px; color:#94a3b8'>{_ma20_disp}</span>", unsafe_allow_html=True)
                 cols[6].markdown(f"<span style='color:{vol_color}; font-family:IBM Plex Mono; font-size:12px'>{volr:.0f}%</span>", unsafe_allow_html=True)
                 cols[7].markdown(badge_html, unsafe_allow_html=True)
 
