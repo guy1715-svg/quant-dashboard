@@ -437,17 +437,20 @@ def log_trade(ticker, name, action, qty, price, net_price, cash_after,
         'Z-Score':  zscore,
         '메모':     memo,
     }
-    # 1) Firebase (영구 저장)
+    # Firebase 저장 성공 시 session_state에는 저장 안 함 (중복 표시 방지)
+    _fb_ok = False
     try:
         _key = now.strftime('%Y%m%d_%H%M%S_') + ticker
         _fb_ref(f"/quant_trades/{_key}").set(_row)
+        _fb_ok = True
     except Exception as _e:
         st.session_state['_trade_log_err'] = str(_e)
 
-    # 2) session_state 캐시
-    if 'local_trade_log' not in st.session_state:
-        st.session_state.local_trade_log = []
-    st.session_state.local_trade_log.append(_row)
+    # Firebase 실패 시에만 session_state에 임시 저장 (폴백)
+    if not _fb_ok:
+        if 'local_trade_log' not in st.session_state:
+            st.session_state.local_trade_log = []
+        st.session_state.local_trade_log.append(_row)
 
 def _load_trade_log_firebase():
     """Firebase에서 거래기록 전체 로드"""
@@ -531,8 +534,19 @@ def safe_clear_cache():
     st.session_state.pop('watchlist_data', None)
 
 def save_watchlist(text):
-    """관심종목 전체 저장 — session_state + Sheets 동시 저장"""
+    """관심종목 전체 저장 — session_state + Firebase + Sheets 동시 저장"""
     st.session_state.watchlist_data = text
+    # Firebase 저장 (주 저장소)
+    try:
+        pairs = [l.strip().split(",", 1) for l in text.strip().split("\n")
+                 if "," in l.strip()]
+        _fb_ref("/quant_watchlist").set(
+            {p[0].strip(): {"ticker": p[0].strip(), "name": p[1].strip()}
+             for p in pairs if len(p) == 2}
+        )
+    except Exception as _fe:
+        st.warning(f"⚠️ Firebase 저장 오류: {_fe}")
+    # Sheets 폴백 저장
     try:
         ws = get_gsheet()
         rows = [[p.strip() for p in l.split(",", 1)]
@@ -541,8 +555,8 @@ def save_watchlist(text):
         ws.clear()
         if rows:
             ws.update("A1", rows)
-    except Exception as _e:
-        st.warning(f"⚠️ Sheets 저장 오류 (앱은 정상): {_e}")
+    except Exception:
+        pass
 
 def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
@@ -4291,11 +4305,13 @@ with tab_e:
             st.warning(f"⚠️ Firebase 거래일지 저장 오류: {st.session_state['_trade_log_err']}")
 
         try:
-            # Firebase(영구) + session_state 합치기
-            _fb_log      = _load_trade_log_firebase()
-            _session_log = st.session_state.get('local_trade_log', [])
-            _all_rows    = _fb_log + _session_log
-            _log_df      = pd.DataFrame(_all_rows) if _all_rows else pd.DataFrame()
+            # Firebase 우선, 실패 시에만 session_state 폴백 사용 (중복 방지)
+            _fb_log   = _load_trade_log_firebase()
+            if _fb_log:
+                _all_rows = _fb_log
+            else:
+                _all_rows = st.session_state.get('local_trade_log', [])
+            _log_df   = pd.DataFrame(_all_rows) if _all_rows else pd.DataFrame()
 
             _log_df = pd.concat([_log_df], ignore_index=True)
             if not _log_df.empty and {'날짜','시간','종목코드'}.issubset(_log_df.columns):
@@ -4767,7 +4783,7 @@ with tab_e:
         else:
             st.success("✅ 10:30 변곡점 통과 — 진입 가능 구간")
 
-        all_data = {}
+        # all_data = {} 제거 — 기존 캐시 유지 (다른 탭 데이터 소멸 방지)
         is_mobile = st.toggle("📱 모바일 뷰", value=False)
         if is_mobile:
             cols_header = st.columns([2, 1.5, 1, 2])
