@@ -482,18 +482,30 @@ def get_position(acc, ticker):
     return None
 
 def calc_portfolio_value(acc):
-    """총 평가금액 계산"""
+    """총 평가금액 계산 (원화 기준, 미국주식 USD→KRW 환산)"""
+    # 환율 조회 (미국 포지션 있을 때만)
+    _has_us = any(not is_korean_ticker(p['ticker']) for p in acc.get('positions', []))
+    _usd_krw = 1350.0
+    if _has_us:
+        try:
+            import yfinance as _yf2
+            _fxh = _yf2.Ticker("USDKRW=X").history(period="5d")
+            _usd_krw = float(_fxh['Close'].dropna().iloc[-1]) if not _fxh.empty else 1350.0
+        except:
+            pass
     total = acc['cash']
     for pos in acc['positions']:
+        _is_kr = is_korean_ticker(pos['ticker'])
+        _fx = 1.0 if _is_kr else _usd_krw
         try:
             df = fetch_ohlcv(pos['ticker'], 5)
             if df is not None and not df.empty:
                 cur_price = df['종가'].iloc[-1]
-                total += cur_price * pos['qty']
+                total += cur_price * pos['qty'] * _fx
             else:
-                total += pos['avg_price'] * pos['qty']
+                total += pos['avg_price'] * pos['qty'] * _fx
         except:
-            total += pos['avg_price'] * pos['qty']
+            total += pos['avg_price'] * pos['qty'] * _fx
     return total
 
 def _parse_watchlist(wl):
@@ -4060,28 +4072,49 @@ with tab_e:
         # ── 2. 보유 포지션 ──
         st.markdown("#### 📊 보유 포지션")
         st.caption("📡 현재가 기준: yfinance 캐시 5분 + 한국주식 15~20분 지연 = **최대 25분 전 가격** / 미국주식 실시간(장중) | 새로고침하면 캐시 초기화")
+
+        # 환율 1회 조회 (포지션 전체 공용)
+        try:
+            import yfinance as _yf_fx
+            _fx_h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
+            _pos_usd_krw = float(_fx_h['Close'].dropna().iloc[-1]) if not _fx_h.empty else 1350.0
+        except:
+            _pos_usd_krw = 1350.0
+
         if not _acc['positions']:
             st.info("💡 보유 포지션 없음. 아래 가상 매수를 실행해보세요.")
         else:
             for _pi, _pos in enumerate(_acc['positions']):
+                _pos_is_kr = is_korean_ticker(_pos['ticker'])
                 try:
                     _cur_df = fetch_ohlcv(_pos['ticker'], 5)
                     _cur_p  = float(_cur_df['종가'].iloc[-1]) if _cur_df is not None and not _cur_df.empty else float(_pos['avg_price'])
                 except:
                     _cur_p = float(_pos['avg_price'])
 
-                _pos_val = _cur_p * _pos['qty']
-                _pos_pnl = (_cur_p - _pos['avg_price']) * _pos['qty']
-                _pos_pct = (_cur_p / _pos['avg_price'] - 1) * 100
-                _pc      = 'up' if _pos_pnl >= 0 else 'down'
-                _kill    = _pos['avg_price'] * 0.93
-                _kill_alert = _cur_p <= _kill
+                # 원화 환산 (미국주식은 USD → KRW)
+                _fx       = 1.0 if _pos_is_kr else _pos_usd_krw
+                _cur_p_krw    = _cur_p * _fx
+                _avg_p_krw    = float(_pos['avg_price']) * _fx
+                _pos_val_krw  = _cur_p_krw * _pos['qty']
+                _pos_pnl_krw  = (_cur_p_krw - _avg_p_krw) * _pos['qty']
+                _pos_pct      = (_cur_p / _pos['avg_price'] - 1) * 100 if _pos['avg_price'] > 0 else 0
+                _pc           = 'up' if _pos_pnl_krw >= 0 else 'down'
+                _kill_krw     = _avg_p_krw * 0.93
+                _kill_alert   = _cur_p_krw <= _kill_krw
+
+                # 표시 포맷
+                _sym = "원" if _pos_is_kr else "$"
+                _avg_disp = f"{_pos['avg_price']:,.0f}원" if _pos_is_kr else f"${_pos['avg_price']:,.2f}\n(≈{_avg_p_krw:,.0f}원)"
+                _cur_disp = f"{_cur_p:,.0f}원" if _pos_is_kr else f"${_cur_p:,.2f}\n(≈{_cur_p_krw:,.0f}원)"
+                _val_disp = f"{_pos_val_krw:,.0f}원"
+                _pnl_disp = f"{_pos_pnl_krw:+,.0f}원"
 
                 # V8.9.1 스마트 킬스위치 체크
                 _ks_result = run_v891_system_check(
                     ticker=_pos['ticker'],
-                    entry_price=float(_pos['avg_price']),
-                    current_price=float(_cur_p)
+                    entry_price=float(_avg_p_krw),
+                    current_price=float(_cur_p_krw)
                 )
                 _ks_action = _ks_result['killswitch']
 
@@ -4092,12 +4125,12 @@ with tab_e:
                     f"<span class='{_pc}' style='font-size:16px;font-weight:700'>{_pos_pct:+.2f}%</span></div>"
                     f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px'>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>수량</div><div style='font-weight:700'>{_pos['qty']:,}주</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평단가</div><div style='font-weight:700'>{_pos['avg_price']:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-weight:700'>{_cur_p:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가금액</div><div style='font-weight:700'>{_pos_val:,.0f}원</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가손익</div><div class='{_pc}' style='font-weight:700'>{_pos_pnl:+,.0f}원</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평단가</div><div style='font-weight:700;white-space:pre-line'>{_avg_disp}</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-weight:700;white-space:pre-line'>{_cur_disp}</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가금액(원)</div><div style='font-weight:700'>{_val_disp}</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가손익(원)</div><div class='{_pc}' style='font-weight:700'>{_pnl_disp}</div></div>"
                     f"</div>"
-                    f"<div style='margin-top:8px;font-size:12px;color:#f43f5e'>킬스위치 기준: {_kill:,.0f}원 (-7%)"
+                    f"<div style='margin-top:8px;font-size:12px;color:#f43f5e'>킬스위치 기준: {_kill_krw:,.0f}원 (-7%)"
                     f"{'  🚨 킬스위치 발동! 즉각 매도 검토' if _kill_alert else ''}</div>"
                     f"</div>",
                     unsafe_allow_html=True
