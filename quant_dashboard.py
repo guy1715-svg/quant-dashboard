@@ -603,8 +603,7 @@ def remove_ticker(ticker):
 # session_state 초기화
 if 'passed' not in st.session_state:
     st.session_state.passed = None
-if 'watchlist_data' not in st.session_state:
-    st.session_state.watchlist_data = DEFAULT_WATCHLIST
+# watchlist_data는 get_watchlist() 첫 호출 시 Firebase에서 자동 로드
 
 # ── 스타일 (반응형 — Desktop / Mobile) ──
 st.markdown("""
@@ -806,12 +805,21 @@ html, body, [class*="css"] {
     background: rgba(255,255,255,0.04) !important;
     border: 1px solid var(--border) !important;
     border-radius: 10px !important;
-    color: var(--text-pri) !important;
+    color: #f0f4ff !important;
     font-size: var(--fs-sm) !important;
 }
 .stTextInput input:focus, .stNumberInput input:focus, textarea:focus {
     border-color: rgba(99,102,241,0.5) !important;
     box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
+}
+/* 사이드바 입력창 글자색 */
+[data-testid="stSidebar"] .stTextInput input,
+[data-testid="stSidebar"] .stNumberInput input {
+    color: #f0f4ff !important;
+    background: rgba(255,255,255,0.08) !important;
+}
+[data-testid="stSidebar"] .stTextInput input::placeholder {
+    color: #64748b !important;
 }
 
 /* ══════════════════════════════════════
