@@ -1738,57 +1738,40 @@ with tab_a:
 
     # ── 2026 주요 이벤트 기본값 ──
     _DEFAULT_MACRO_EVENTS = [
-        # 🇺🇸 미국 FOMC
+        # 🇺🇸 FOMC — 시장 최대 변동성 이벤트
         {"date": "2026-06-18", "name": "🇺🇸 FOMC 금리결정"},
         {"date": "2026-07-30", "name": "🇺🇸 FOMC 금리결정"},
         {"date": "2026-09-17", "name": "🇺🇸 FOMC 금리결정"},
         {"date": "2026-10-29", "name": "🇺🇸 FOMC 금리결정"},
         {"date": "2026-12-10", "name": "🇺🇸 FOMC 금리결정"},
-        # 🇺🇸 미국 CPI
+        # 🇺🇸 CPI — 금리 방향 결정 지표
         {"date": "2026-07-15", "name": "🇺🇸 CPI 소비자물가"},
         {"date": "2026-08-12", "name": "🇺🇸 CPI 소비자물가"},
         {"date": "2026-09-11", "name": "🇺🇸 CPI 소비자물가"},
         {"date": "2026-10-15", "name": "🇺🇸 CPI 소비자물가"},
         {"date": "2026-11-13", "name": "🇺🇸 CPI 소비자물가"},
         {"date": "2026-12-11", "name": "🇺🇸 CPI 소비자물가"},
-        # 🇺🇸 미국 고용지표 (NFP)
+        # 🇺🇸 NFP — 고용 충격 지표
         {"date": "2026-07-03", "name": "🇺🇸 NFP 비농업고용"},
         {"date": "2026-08-07", "name": "🇺🇸 NFP 비농업고용"},
         {"date": "2026-09-04", "name": "🇺🇸 NFP 비농업고용"},
         {"date": "2026-10-02", "name": "🇺🇸 NFP 비농업고용"},
         {"date": "2026-11-06", "name": "🇺🇸 NFP 비농업고용"},
         {"date": "2026-12-04", "name": "🇺🇸 NFP 비농업고용"},
-        # 🇺🇸 미국 GDP
-        {"date": "2026-07-30", "name": "🇺🇸 GDP 2분기 예비"},
-        {"date": "2026-10-29", "name": "🇺🇸 GDP 3분기 예비"},
-        # 🇰🇷 한국 금통위
-        {"date": "2026-07-17", "name": "🇰🇷 한은 금통위 금리결정"},
-        {"date": "2026-08-28", "name": "🇰🇷 한은 금통위 금리결정"},
-        {"date": "2026-10-16", "name": "🇰🇷 한은 금통위 금리결정"},
-        {"date": "2026-11-27", "name": "🇰🇷 한은 금통위 금리결정"},
-        # 🇰🇷 한국 수출입
-        {"date": "2026-07-01", "name": "🇰🇷 수출입동향 (6월)"},
-        {"date": "2026-08-01", "name": "🇰🇷 수출입동향 (7월)"},
-        {"date": "2026-09-01", "name": "🇰🇷 수출입동향 (8월)"},
-        {"date": "2026-10-01", "name": "🇰🇷 수출입동향 (9월)"},
-        {"date": "2026-11-01", "name": "🇰🇷 수출입동향 (10월)"},
-        {"date": "2026-12-01", "name": "🇰🇷 수출입동향 (11월)"},
-        # 🇰🇷 한국 CPI
-        {"date": "2026-07-02", "name": "🇰🇷 소비자물가 (6월)"},
-        {"date": "2026-08-04", "name": "🇰🇷 소비자물가 (7월)"},
-        {"date": "2026-09-02", "name": "🇰🇷 소비자물가 (8월)"},
-        {"date": "2026-10-02", "name": "🇰🇷 소비자물가 (9월)"},
-        {"date": "2026-11-04", "name": "🇰🇷 소비자물가 (10월)"},
-        {"date": "2026-12-02", "name": "🇰🇷 소비자물가 (11월)"},
+        # 🇰🇷 금통위 — 한국 금리 결정
+        {"date": "2026-07-17", "name": "🇰🇷 한은 금통위"},
+        {"date": "2026-08-28", "name": "🇰🇷 한은 금통위"},
+        {"date": "2026-10-16", "name": "🇰🇷 한은 금통위"},
+        {"date": "2026-11-27", "name": "🇰🇷 한은 금통위"},
     ]
 
     # session_state 초기화 — 기본 이벤트 자동 로드
     if 'macro_events' not in st.session_state:
         st.session_state.macro_events = _DEFAULT_MACRO_EVENTS.copy()
 
-    # 기본 이벤트 불러오기 버튼
+    # 기본 이벤트 초기화 버튼
     _mab1, _mab2 = st.columns([3, 1])
-    _mab1.caption(f"🇺🇸 미국 FOMC·CPI·NFP·GDP / 🇰🇷 한은 금통위·수출입·CPI 자동 등록")
+    _mab1.caption("🇺🇸 FOMC·CPI·NFP / 🇰🇷 금통위 — 주가 직결 핵심 이벤트만 자동 등록")
     if _mab2.button("🔄 기본 이벤트 초기화", key="reset_macro", use_container_width=True):
         _today = datetime.today().strftime("%Y-%m-%d")
         _existing_dates = [e['date'] for e in st.session_state.macro_events]
@@ -3522,7 +3505,7 @@ def _calc_etf_indicators(ticker_sym):
     except Exception:
         return None
 
-def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf'):
+def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
     """ETF 랭킹 카드 렌더링 공용 함수."""
     for _i, row in df_ranked.iterrows():
         _is_top  = (_i == 0 and row['상태'] == '활성')
@@ -3536,27 +3519,43 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf'):
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
         _dead_tag = ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
         _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
-        st.markdown(
-            f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
-            f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
-            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-            f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
-            f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-            f"{_tag}{_dead_tag}</div>"
-            f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
-            f"</div>"
-            f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
-            f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
-            f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
-            f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
-            f"</div></div>",
-            unsafe_allow_html=True
-        )
+        if show_add_btn:
+            _card_col, _btn_col = st.columns([9, 1])
+        else:
+            _card_col = st.container()
+        with _card_col:
+            st.markdown(
+                f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
+                f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
+                f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
+                f"{_tag}{_dead_tag}</div>"
+                f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
+                f"</div>"
+                f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
+                f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
+                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+        if show_add_btn:
+            with _btn_col:
+                st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+                _ticker_key = row['코드']
+                _name_key   = row['ETF명']
+                if st.button("➕ 추가", key=f"{key_prefix}_add_{_ticker_key}_{_i}", help=f"{_name_key} 관심종목 추가"):
+                    _ok = add_ticker(_ticker_key, _name_key)
+                    if _ok:
+                        st.success(f"✅ {_name_key} 추가됨")
+                    else:
+                        st.info("이미 추가된 종목입니다")
         st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════
@@ -3671,7 +3670,7 @@ with _sub_d2:
             _kr_m4.metric("1위 점수", f"{int(_kr_top['종합점수'])}점")
 
         st.markdown("---")
-        _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf')
+        _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
         st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
 # ══════════════════════════════════════════
@@ -3826,7 +3825,7 @@ with _sub_d3:
                 st.plotly_chart(_hm_fig, use_container_width=True)
 
         st.markdown("---")
-        _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf')
+        _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
         st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
 # ══════════════════════════════════════════
