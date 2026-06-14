@@ -4239,7 +4239,10 @@ with tab_e:
             unsafe_allow_html=True
         )
 
-        _buy_memo = st.text_input("매수 근거 (Why)", placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
+        if 'buy_memo_val' not in st.session_state:
+            st.session_state['buy_memo_val'] = ''
+        _buy_memo = st.text_input("매수 근거 (Why)", value=st.session_state['buy_memo_val'],
+                                   placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
 
         _cash_ok = _acc['cash'] >= _buy_total_krw
         if not _cash_ok:
@@ -4274,7 +4277,8 @@ with tab_e:
             _acc['trough'] = min(_acc['trough'], _tv_now)
             save_account(_acc)
             log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
-                      _acc['cash'], _tv_now, ai_score=_ai_score, memo=_buy_memo)
+                      _acc['cash'], _tv_now, ai_score=_ai_score, memo=st.session_state.get('buy_memo',''))
+            st.session_state['buy_memo_val'] = ''
             st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
             st.rerun()
 
@@ -4329,9 +4333,75 @@ with tab_e:
                 _mc3.metric("최종 수익률", f"{_log_df['수익률(%)'].iloc[-1]:+.2f}%")
 
                 # 거래 일지
-                st.markdown("##### 📋 거래 일지")
+                _jl1, _jl2 = st.columns([4, 1])
+                _jl1.markdown("##### 📋 거래 일지")
+
+                # 전체 삭제
+                if _jl2.button("🗑️ 전체삭제", key="del_all_trades", use_container_width=True):
+                    st.session_state['_confirm_del_all'] = True
+                if st.session_state.get('_confirm_del_all'):
+                    st.warning("⚠️ 모든 거래기록을 삭제합니다. 정말 삭제하시겠습니까?")
+                    _dc1, _dc2 = st.columns(2)
+                    if _dc1.button("✅ 확인 삭제", key="confirm_del_yes", use_container_width=True):
+                        try:
+                            _fb_ref("/quant_trades").delete()
+                            st.session_state.pop('local_trade_log', None)
+                            st.session_state['_confirm_del_all'] = False
+                            st.success("✅ 전체 거래기록 삭제 완료")
+                            st.rerun()
+                        except Exception as _de:
+                            st.error(f"삭제 오류: {_de}")
+                    if _dc2.button("❌ 취소", key="confirm_del_no", use_container_width=True):
+                        st.session_state['_confirm_del_all'] = False
+                        st.rerun()
+
                 _show_cols = [c for c in ['날짜','시간','종목명','매매','수량','순체결가','평가금액','메모'] if c in _log_df.columns]
-                st.dataframe(_log_df[_show_cols], use_container_width=True)
+
+                # 개별 삭제 — Firebase key 기반
+                try:
+                    _fb_raw = _fb_ref("/quant_trades").get() or {}
+                except:
+                    _fb_raw = {}
+
+                for _ri, _row_r in _log_df.iterrows():
+                    _rc1, _rc2, _rc3 = st.columns([1, 5, 1])
+                    _action_c = "#16a34a" if _row_r.get('매매') == '매수' else "#dc2626"
+                    _rc2.markdown(
+                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px'>"
+                        f"<span style='font-size:11px;color:#64748b'>{_row_r.get('날짜','')} {_row_r.get('시간','')}</span>&nbsp;"
+                        f"<b style='color:{_action_c}'>{_row_r.get('매매','')}</b>&nbsp;"
+                        f"<b>{_row_r.get('종목명','')}</b>&nbsp;"
+                        f"{int(_row_r.get('수량',0)):,}주&nbsp;@&nbsp;"
+                        f"{float(_row_r.get('순체결가',0)):,.0f}&nbsp;"
+                        f"{'원' if str(_row_r.get('종목코드','')).isdigit() else '$'}"
+                        f"{'&nbsp;📝 ' + str(_row_r.get('메모','')) if _row_r.get('메모') else ''}"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                    # Firebase에서 해당 레코드 키 찾기
+                    _match_key = None
+                    for _fk, _fv in _fb_raw.items():
+                        if (str(_fv.get('날짜','')) == str(_row_r.get('날짜','')) and
+                            str(_fv.get('시간','')) == str(_row_r.get('시간','')) and
+                            str(_fv.get('종목코드','')) == str(_row_r.get('종목코드',''))):
+                            _match_key = _fk
+                            break
+                    if _rc3.button("🗑️", key=f"del_trade_{_ri}", help="이 기록 삭제"):
+                        if _match_key:
+                            try:
+                                _fb_ref(f"/quant_trades/{_match_key}").delete()
+                            except:
+                                pass
+                        # session_state 캐시에서도 제거
+                        _local = st.session_state.get('local_trade_log', [])
+                        st.session_state['local_trade_log'] = [
+                            r for r in _local
+                            if not (r.get('날짜') == str(_row_r.get('날짜','')) and
+                                    r.get('시간') == str(_row_r.get('시간','')) and
+                                    r.get('종목코드') == str(_row_r.get('종목코드','')))
+                        ]
+                        st.success("✅ 삭제 완료")
+                        st.rerun()
 
                 _csv = _log_df[_show_cols].to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
