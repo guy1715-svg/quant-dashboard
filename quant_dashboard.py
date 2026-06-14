@@ -1048,8 +1048,8 @@ def calc_indicators(df):
     df['BB_lower'] = (df['BB_mid'] - 2*std).round(0)
     df['BB_mid']   = df['BB_mid'].round(0)
     delta = df['종가'].diff()
-    gain  = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-    loss  = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
     df['RSI'] = (100 - 100/(1 + gain/loss.replace(0, np.nan))).round(1)
     ema12 = df['종가'].ewm(span=12, adjust=False).mean()
     ema26 = df['종가'].ewm(span=26, adjust=False).mean()
@@ -1728,9 +1728,8 @@ with tab_a:
 
     # 10:30 매매 가능 여부
     from datetime import datetime as _dt_h
-    _kst_now = _dt_h.utcnow() + timedelta(hours=9)
-    _kh = _kst_now.hour
-    _km = _kst_now.minute
+    _kh = (_dt_h.utcnow().hour + 9) % 24
+    _km = _dt_h.utcnow().minute
     if (9 <= _kh < 10) or (_kh == 10 and _km <= 30):
         st.error("🔒 09:00~10:30 진입 금지 구간")
     elif 9 <= _kh < 16:
@@ -1844,14 +1843,14 @@ with tab_a:
         _ev_submit = st.form_submit_button("➕ 추가", use_container_width=True)
         if _ev_submit and _ev_name:
             _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
-            _existing = [(e['date'], e['name']) for e in st.session_state.macro_events]
-            if (str(_ev_date), _ev_name.strip()) not in _existing:
+            _existing = [e['date'] for e in st.session_state.macro_events]
+            if str(_ev_date) not in _existing:
                 st.session_state.macro_events.append(_new_ev)
                 st.session_state.pop('v891_cache', None)
                 st.success(f"✅ {_ev_name} ({_ev_date}) 추가!")
                 st.rerun()
             else:
-                st.warning("이미 동일한 이벤트가 등록되어 있습니다.")
+                st.warning("이미 등록된 날짜입니다.")
 
     # ── 이벤트 목록: 미국 / 한국 / 기타 3컬럼 ──
     from datetime import datetime as _dtt2
@@ -2892,7 +2891,7 @@ with _sub_d1:
                 # ── 모멘텀(20일 수익률) ──
                 _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
 
-                # ── 거래량 비율(5일 평균 대비) ──
+                # ── 거래량 비율(20일 평균 대비) ──
                 _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
 
                 # ── 정배열 여부 ──
@@ -4173,16 +4172,8 @@ with tab_e:
         # 현재가 자동 로드
         _is_kr = is_korean_ticker(_bt)
 
-        # USD/KRW 환율 — 미장 종목이면 항상 먼저 가져옴
-        _usd_krw = 1350.0
-        if not _is_kr:
-            try:
-                import yfinance as yf
-                _fx = yf.Ticker("USDKRW=X").history(period="5d")
-                if not _fx.empty:
-                    _usd_krw = float(_fx['Close'].dropna().iloc[-1])
-            except:
-                _usd_krw = 1350.0
+        # USD/KRW 환율 — 포지션 카드에서 조회한 값 재사용
+        _usd_krw = _pos_usd_krw
 
         # 종목 변경 시 매수가 session_state 초기화
         if st.session_state.get('_last_buy_ticker') != _bt:
