@@ -4113,25 +4113,33 @@ with tab_e:
 
         # 현재가 자동 로드
         _is_kr = is_korean_ticker(_bt)
+
+        # USD/KRW 환율 — 미장 종목이면 항상 먼저 가져옴
+        _usd_krw = 1350.0
+        if not _is_kr:
+            try:
+                import yfinance as yf
+                _fx = yf.Ticker("USDKRW=X").history(period="5d")
+                if not _fx.empty:
+                    _usd_krw = float(_fx['Close'].dropna().iloc[-1])
+            except:
+                _usd_krw = 1350.0
+
+        # 종목 변경 시 매수가 session_state 초기화
+        if st.session_state.get('_last_buy_ticker') != _bt:
+            st.session_state['_last_buy_ticker'] = _bt
+            st.session_state.pop('buy_price_inp', None)
+
         try:
             _buy_df  = fetch_ohlcv(_bt, 5)
             _buy_cur = float(_buy_df['종가'].iloc[-1]) if _buy_df is not None and not _buy_df.empty else 0
         except:
             _buy_cur = 0
 
-        # USD/KRW 환율 (미장 종목일 때만)
-        _usd_krw = 1.0
-        if not _is_kr and _buy_cur > 0:
-            try:
-                import yfinance as yf
-                _fx = yf.Ticker("USDKRW=X").history(period="2d")
-                _usd_krw = float(_fx['Close'].iloc[-1]) if not _fx.empty else 1350.0
-            except:
-                _usd_krw = 1350.0
-        _buy_cur_krw = _buy_cur * _usd_krw  # 원화 환산 현재가
-
-        _cur_sym   = "원" if _is_kr else "$"
-        _cur_disp  = f"{_buy_cur:,.0f}{_cur_sym}" if _is_kr else f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)"
+        _buy_cur_krw = _buy_cur * (_usd_krw if not _is_kr else 1.0)
+        _cur_disp = f"{_buy_cur:,.0f}원" if _is_kr else (
+            f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)" if _buy_cur > 0 else "가격 로드 실패 — 수동 입력 필요"
+        )
 
         _bc2.markdown(
             f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
@@ -4140,6 +4148,8 @@ with tab_e:
             f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
             unsafe_allow_html=True
         )
+        if not _is_kr and _buy_cur == 0:
+            st.warning("⚠️ 현재가를 가져오지 못했습니다. 매수가를 직접 입력해주세요.")
 
         # ── 투자금액(원) → 수량 자동계산 ──
         _inv_col1, _inv_col2 = st.columns([3, 2])
@@ -4163,9 +4173,9 @@ with tab_e:
         _brow1, _brow2, _brow3, _brow4 = st.columns(4)
         _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
         _price_step  = 100 if _is_kr else 1
-        _price_val   = int(_buy_cur) if _is_kr else max(1, int(_buy_cur * 100) / 100) if _buy_cur > 0 else 1
-        _buy_price = _brow1.number_input(_price_label, value=_price_val if _price_val > 0 else 1,
-                                          step=_price_step, min_value=1, key="buy_price_inp")
+        _price_val   = max(1, int(_buy_cur)) if _is_kr else (round(_buy_cur, 2) if _buy_cur > 0 else 1.0)
+        _buy_price = _brow1.number_input(_price_label, value=float(_price_val),
+                                          step=float(_price_step), min_value=0.01, key="buy_price_inp")
         _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
         _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
         _buy_total = _buy_price * _buy_qty
