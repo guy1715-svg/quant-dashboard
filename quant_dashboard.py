@@ -4150,13 +4150,45 @@ with tab_e:
         if not _is_kr and _buy_cur == 0:
             st.warning("⚠️ 현재가를 가져오지 못했습니다. 매수가를 직접 입력해주세요.")
 
+        # ── 5AI 점수 자동계산 (RSI·MACD·MA·모멘텀·거래량) ──
+        def _calc_5ai(_df):
+            if _df is None or len(_df) < 20:
+                return 0
+            try:
+                _cl = _df['종가']; _vol = _df['거래량']
+                _score = 0
+                # RSI
+                _d = _cl.diff(); _g = _d.clip(lower=0).rolling(14).mean(); _l = (-_d.clip(upper=0)).rolling(14).mean()
+                _rsi = (100 - 100/(1+_g/_l.replace(0,np.nan))).iloc[-1]
+                if _rsi >= 60: _score += 1
+                elif _rsi <= 40: _score -= 1
+                # MACD
+                _m = _cl.ewm(span=12).mean() - _cl.ewm(span=26).mean()
+                _s = _m.ewm(span=9).mean()
+                if _m.iloc[-1] > _s.iloc[-1] and _m.iloc[-2] <= _s.iloc[-2]: _score += 2
+                elif _m.iloc[-1] > _s.iloc[-1]: _score += 1
+                elif _m.iloc[-1] < _s.iloc[-1]: _score -= 1
+                # MA 정배열
+                if _cl.iloc[-1] > _cl.rolling(20).mean().iloc[-1] > _cl.rolling(60).mean().iloc[-1]: _score += 1
+                elif _cl.iloc[-1] < _cl.rolling(20).mean().iloc[-1]: _score -= 1
+                # 모멘텀
+                _mom = (_cl.iloc[-1]/_cl.iloc[-20]-1)*100
+                if _mom >= 5: _score += 1
+                elif _mom <= -5: _score -= 1
+                # 거래량
+                if _vol.iloc[-1] > _vol.tail(20).mean()*1.5: _score += 1
+                return max(-5, min(5, _score))
+            except:
+                return 0
+        _auto_5ai = _calc_5ai(_buy_df)
+
         # ── 빠른 투자금액 버튼 ──
         st.markdown("**💰 투자금액 선택**")
         _qb1, _qb2, _qb3, _qb4 = st.columns(4)
-        if _qb1.button("10만원",   key="inv_10w",   use_container_width=True): st.session_state['invest_amt_inp'] = 100000
-        if _qb2.button("100만원",  key="inv_100w",  use_container_width=True): st.session_state['invest_amt_inp'] = 1000000
-        if _qb3.button("1,000만원",key="inv_1000w", use_container_width=True): st.session_state['invest_amt_inp'] = 10000000
-        if _qb4.button("전액",     key="inv_all",   use_container_width=True): st.session_state['invest_amt_inp'] = int(_acc['cash'])
+        if _qb1.button("10만원",    key="inv_10w",   use_container_width=True): st.session_state['invest_amt_inp'] = 100000
+        if _qb2.button("100만원",   key="inv_100w",  use_container_width=True): st.session_state['invest_amt_inp'] = 1000000
+        if _qb3.button("1,000만원", key="inv_1000w", use_container_width=True): st.session_state['invest_amt_inp'] = 10000000
+        if _qb4.button("전액",      key="inv_all",   use_container_width=True): st.session_state['invest_amt_inp'] = int(_acc['cash'])
 
         # ── 투자금액(원) → 수량 자동계산 ──
         _inv_col1, _inv_col2 = st.columns([3, 2])
@@ -4178,15 +4210,23 @@ with tab_e:
             unsafe_allow_html=True
         )
 
+        # 매수가·수량·5AI 를 session_state에 항상 동기화 (종목/금액 변경 즉시 반영)
+        _price_val = max(1, int(_buy_cur)) if _is_kr else (round(_buy_cur, 2) if _buy_cur > 0 else 1.0)
+        st.session_state['buy_price_inp'] = float(_price_val)
+        st.session_state['buy_qty_inp']   = max(1, _auto_qty)
+        st.session_state['buy_ai']        = _auto_5ai
+
         _brow1, _brow2, _brow3, _brow4 = st.columns(4)
         _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
         _price_step  = 100 if _is_kr else 1
-        _price_val   = max(1, int(_buy_cur)) if _is_kr else (round(_buy_cur, 2) if _buy_cur > 0 else 1.0)
         _buy_price = _brow1.number_input(_price_label, value=float(_price_val),
                                           step=float(_price_step), min_value=0.01, key="buy_price_inp")
-        # 수량: 투자금액 기준 자동계산값 반영
         _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
-        _ai_score  = _brow3.number_input("5AI 점수", min_value=-5, max_value=5, value=0, key="buy_ai")
+        _ai_color  = "#16a34a" if _auto_5ai > 0 else "#dc2626" if _auto_5ai < 0 else "#64748b"
+        _brow3.markdown(f"<div style='font-size:11px;color:#64748b;margin-bottom:4px'>5AI 점수 (자동계산)</div>"
+                        f"<div style='font-size:26px;font-weight:700;color:{_ai_color}'>{_auto_5ai:+d}점</div>",
+                        unsafe_allow_html=True)
+        _ai_score  = _auto_5ai
         _buy_total = _buy_price * _buy_qty
         _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
         _net_buy_preview = calc_slippage(_buy_price, True, _is_kr)
