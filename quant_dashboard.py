@@ -2507,7 +2507,180 @@ with tab_b:
 
 with tab_c:
     st.markdown("### 🔍 V8.9 단기 스윙 스캐너")
-    st.caption("동적 변동성(ATR) · 스마트 눌림목 · OBV 수급 · 5일 누적 모멘텀 — 6대 조건 AND 충족 종목만 포착")
+    st.caption("동적 변동성(ATR) · 스마트 눌림목 · CMF 수급 · 5일 누적 모멘텀 — 6대 조건 AND 충족 종목만 포착")
+
+    # ══════════════════════════════════════════
+    # 🔥 AI 파라미터 자동 최적화 섹션
+    # ══════════════════════════════════════════
+    with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward)", expanded=False):
+        st.markdown("""
+**Walk-Forward Grid Search** — cond5(5일 누적 수익률 하한)와 cond6(거래량 비율 상한)을
+최근 6개월 백테스트로 자동 튜닝합니다.
+
+| 설정 | 범위 |
+|---|---|
+| cond5 탐색 | 5% ~ 15% (1% 단위) |
+| cond6 탐색 | 20% ~ 50% (5% 단위) |
+| In-sample 윈도우 | 4개월 |
+| Out-of-sample 검증 | 2개월 |
+| MDD 필터 | 10% 초과 파라미터 자동 제외 |
+        """)
+
+        _opt_col1, _opt_col2, _opt_col3 = st.columns([2, 1, 1])
+        with _opt_col1:
+            _opt_months = st.slider("백테스트 기간 (개월)", 3, 12, 6, key="opt_months")
+            _opt_topn   = st.slider("최적화 대상 종목 수", 10, 50, 20, key="opt_topn",
+                                     help="종목이 많을수록 정확하지만 시간이 오래 걸립니다")
+        with _opt_col2:
+            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ"], key="opt_market")
+        with _opt_col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _run_opt = st.button("🔥 최적화 시작", use_container_width=True,
+                                  type="primary", key="run_optimizer")
+
+        # ── 현재 적용된 파라미터 표시 ──
+        _cur_c5 = st.session_state.get("opt_best_cond5", 0.08)
+        _cur_c6 = st.session_state.get("opt_best_cond6", 0.50)
+        st.info(f"📌 현재 스캐너 적용 파라미터 — cond5: **{_cur_c5*100:.0f}%** | cond6: **{_cur_c6*100:.0f}%**")
+
+        if _run_opt:
+            try:
+                from optimizer import run_walk_forward, fetch_ohlcv_for_optimization
+
+                # 종목 리스트 로드 (기존 스캐너와 동일 로직)
+                try:
+                    _oj = _os.path.join(_os.path.dirname(__file__), 'scanner_tickers.json')
+                    with open(_oj, 'r', encoding='utf-8') as _f:
+                        _tj = json.load(_f)
+                    _opt_kospi  = [tuple(x) for x in _tj.get('KOSPI',  [])]
+                    _opt_kosdaq = [tuple(x) for x in _tj.get('KOSDAQ', [])]
+                except Exception:
+                    _opt_kospi  = [("005930","삼성전자"),("000660","SK하이닉스"),
+                                   ("042700","한미반도체"),("012450","한화에어로스페이스"),
+                                   ("329180","HD현대중공업"),("005380","현대차"),
+                                   ("000270","기아"),("035420","NAVER"),
+                                   ("051910","LG화학"),("006400","삼성SDI")]
+                    _opt_kosdaq = [("086520","에코프로"),("247540","에코프로비엠"),
+                                   ("196170","알테오젠"),("357780","솔브레인"),
+                                   ("058470","리노공업"),("095340","ISC"),
+                                   ("036930","주성엔지니어링"),("039030","이오테크닉스"),
+                                   ("240810","원익IPS"),("035900","JYP엔터테인먼트")]
+
+                if _opt_market == "KOSPI":
+                    _opt_tickers = _opt_kospi[:_opt_topn]
+                elif _opt_market == "KOSDAQ":
+                    _opt_tickers = _opt_kosdaq[:_opt_topn]
+                else:
+                    _half = _opt_topn // 2
+                    _opt_tickers = _opt_kospi[:_half] + _opt_kosdaq[:_half]
+
+                # ── Step 1: 데이터 다운로드 ──
+                st.markdown("**① 데이터 다운로드 중...**")
+                _dl_prog  = st.progress(0)
+                _dl_status = st.empty()
+
+                def _dl_cb(cur, tot):
+                    _dl_prog.progress(cur / tot)
+                    _dl_status.caption(f"{cur}/{tot} 종목 다운로드 중...")
+
+                _ticker_dfs = fetch_ohlcv_for_optimization(
+                    _opt_tickers, months=_opt_months, progress_cb=_dl_cb
+                )
+                _dl_prog.progress(1.0)
+                _dl_status.caption(f"✅ {len(_ticker_dfs)}/{len(_opt_tickers)} 종목 데이터 로드 완료")
+
+                if len(_ticker_dfs) < 3:
+                    st.error("데이터를 충분히 가져오지 못했습니다. 네트워크를 확인하거나 종목 수를 줄여주세요.")
+                    st.stop()
+
+                # ── Step 2: Walk-Forward 최적화 ──
+                st.markdown("**② Walk-Forward Grid Search 실행 중...**")
+                _wf_prog   = st.progress(0)
+                _wf_status = st.empty()
+
+                def _wf_cb(cur, tot):
+                    _wf_prog.progress(cur / tot)
+                    _wf_status.caption(f"그리드 탐색: {cur}/{tot}")
+
+                _report = run_walk_forward(
+                    _ticker_dfs,
+                    in_months=4,
+                    out_months=2,
+                    progress_cb=_wf_cb,
+                )
+                _wf_prog.progress(1.0)
+                _wf_status.caption("✅ 최적화 완료!")
+
+                # ── Step 3: 결과 저장 ──
+                st.session_state["opt_best_cond5"]  = _report.best_cond5
+                st.session_state["opt_best_cond6"]  = _report.best_cond6
+                st.session_state["opt_report"]      = _report
+                st.session_state["opt_applied"]     = True
+
+                st.success(
+                    f"🎯 최적 파라미터 도출 — "
+                    f"**cond5: {_report.best_cond5*100:.0f}%** | "
+                    f"**cond6: {_report.best_cond6*100:.0f}%** — "
+                    f"스캐너에 즉시 반영됩니다!"
+                )
+
+            except Exception as _oe:
+                st.error(f"최적화 오류: {_oe}")
+                import traceback; st.code(traceback.format_exc())
+
+        # ── 최적화 결과 표시 ──
+        if "opt_report" in st.session_state:
+            _rep = st.session_state["opt_report"]
+            st.divider()
+            st.markdown(f"#### 📊 최적화 결과 ({_rep.timestamp})")
+
+            _res_c1, _res_c2, _res_c3, _res_c4, _res_c5 = st.columns(5)
+            _res_c1.metric("최적 cond5", f"{_rep.best_cond5*100:.0f}%")
+            _res_c2.metric("최적 cond6", f"{_rep.best_cond6*100:.0f}%")
+            _res_c3.metric("OOS 승률",   f"{_rep.oos_win_rate:.1f}%")
+            _res_c4.metric("OOS 샤프",   f"{_rep.oos_sharpe:.2f}")
+            _res_c5.metric("OOS MDD",    f"{_rep.oos_mdd:.1f}%")
+
+            _mc1, _mc2 = st.columns(2)
+
+            with _mc1:
+                st.markdown("**윈도우별 Walk-Forward 결과**")
+                if _rep.window_results:
+                    _wf_df = pd.DataFrame(_rep.window_results).rename(columns={
+                        "window": "기간", "best_cond5": "cond5", "best_cond6": "cond6",
+                        "is_score": "IS 점수", "oos_win_rate": "OOS 승률(%)",
+                        "oos_sharpe": "OOS 샤프", "oos_mdd": "OOS MDD(%)",
+                        "oos_trades": "OOS 신호수",
+                    })
+                    _wf_df["cond5"] = (_wf_df["cond5"] * 100).astype(int).astype(str) + "%"
+                    _wf_df["cond6"] = (_wf_df["cond6"] * 100).astype(int).astype(str) + "%"
+                    st.dataframe(_wf_df, use_container_width=True, hide_index=True)
+
+            with _mc2:
+                st.markdown("**그리드 서치 히트맵 (마지막 윈도우)**")
+                if not _rep.grid_summary.empty:
+                    import plotly.graph_objects as _go_opt
+                    _gs = _rep.grid_summary.copy()
+                    _c5_labels = [f"{v*100:.0f}%" for v in sorted(_gs["cond5"].unique())]
+                    _c6_labels = [f"{v*100:.0f}%" for v in sorted(_gs["cond6"].unique())]
+                    _pivot = _gs.pivot_table(index="cond6", columns="cond5", values="score")
+                    _fig_hm = _go_opt.Figure(_go_opt.Heatmap(
+                        z=_pivot.values.tolist(),
+                        x=[f"{v*100:.0f}%" for v in _pivot.columns],
+                        y=[f"{v*100:.0f}%" for v in _pivot.index],
+                        colorscale="RdYlGn",
+                        colorbar_title="점수",
+                        hovertemplate="cond5=%{x}<br>cond6=%{y}<br>점수=%{z:.3f}<extra></extra>",
+                    ))
+                    _fig_hm.update_layout(
+                        title="Sharpe×승률 스코어 히트맵",
+                        xaxis_title="cond5 (5일 누적 수익률 하한)",
+                        yaxis_title="cond6 (거래량 비율 상한)",
+                        height=350, margin=dict(l=50, r=20, t=40, b=40),
+                    )
+                    st.plotly_chart(_fig_hm, use_container_width=True)
+
+    st.divider()
 
     # ── 프리셋 버튼 ──
     st.markdown("#### ⚡ 전략 프리셋")
@@ -2890,12 +3063,16 @@ with tab_c:
                 cond3_fin = None
 
             # ── 6대 조건 평가 ──
+            # AI 최적화 파라미터 반영 (없으면 V8.9.2 기본값 사용)
+            _p_c5 = st.session_state.get("opt_best_cond5", 0.08)
+            _p_c6 = st.session_state.get("opt_best_cond6", 0.50)
+
             cond1 = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True  # 데이터 없으면 통과
             cond2 = (atr14 / cur) >= 0.035 if cur > 0 else False
             cond3 = cond3_fin if cond3_fin is not None else True
             cond4 = cond4_obv
-            cond5 = cum5 >= 0.15
-            cond6 = vol_t < (max_vol_20 * 0.30) if max_vol_20 > 0 else False
+            cond5 = cum5 >= _p_c5
+            cond6 = vol_t < (max_vol_20 * _p_c6) if max_vol_20 > 0 else False
 
             passed_all = all([cond1, cond2, cond3, cond4, cond5, cond6])
 
@@ -2905,6 +3082,8 @@ with tab_c:
                 '거래량비율': round(vol_t/max_vol_20*100, 1) if max_vol_20 > 0 else 0,
                 '시총(억)':   round(mktcap_b) if mktcap_b else '?',
                 'OBV상승':    '✅' if cond4 else '❌',
+                f'cond5({_p_c5*100:.0f}%)': '✅' if cond5 else '❌',
+                f'cond6({_p_c6*100:.0f}%)': '✅' if cond6 else '❌',
                 '조건':       f"C1({'✅' if cond1 else '❌'}) C2({'✅' if cond2 else '❌'}) "
                               f"C3({'✅' if cond3 else '❌'}) C4({'✅' if cond4 else '❌'}) "
                               f"C5({'✅' if cond5 else '❌'}) C6({'✅' if cond6 else '❌'})",
