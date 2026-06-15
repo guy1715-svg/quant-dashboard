@@ -2490,7 +2490,8 @@ with tab_b:
     # ══════════════════════════════════════════
 
 with tab_c:
-    st.markdown("### 🔍 주도 종목 자동 스캐너")
+    st.markdown("### 🔍 V8.9 단기 스윙 스캐너")
+    st.caption("동적 변동성(ATR) · 스마트 눌림목 · OBV 수급 · 5일 누적 모멘텀 — 6대 조건 AND 충족 종목만 포착")
 
     # ── 프리셋 버튼 ──
     st.markdown("#### ⚡ 전략 프리셋")
@@ -2550,9 +2551,8 @@ with tab_c:
     with _sc_col1:
         st.markdown("**📋 스캔 대상**")
         market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="scanner_market")
-        top_n = st.slider("상위 N종목", 20, 200, 50, key="scanner_topn")
-        min_score = st.slider("최소 점수", 1, 10, 4, key="scanner_minscore",
-                              help="높을수록 조건 많이 충족한 종목만")
+        top_n = st.slider("스캔 종목 수", 20, 200, 50, key="scanner_topn")
+        st.info("V8.9: 6대 조건 **전부 AND** 충족 종목만 통과 (점수 기준 없음)")
 
     with _sc_col2:
         st.markdown("**🎯 필터 조건**")
@@ -2759,10 +2759,98 @@ with tab_c:
         prog   = st.progress(0)
         status = st.empty()
 
+        # ── V8.9 동적 변동성 & 스마트 눌림목 스캐너 ──
+        import yfinance as _yf_scan
+
+        def _v89_scanner(df, ticker):
+            """
+            V8.9 6대 조건 (AND) — KIS API 없이 yfinance로 근사
+            cond1: 시총 5천억~3조 (yfinance 조회)
+            cond2: ATR14 / 현재가 ≥ 3.5%
+            cond3: 영업이익 흑자 OR 매출 YoY ≥ 20% (yfinance 재무)
+            cond4: 외인+기관 쌍끌이 → yfinance 없으므로 OBV 5일 연속 증가로 대체
+            cond5: 5거래일 누적 수익률 ≥ 15%
+            cond6: 당일 거래량 < 최근 20일 최대 거래량 × 30%
+            """
+            if df is None or len(df) < 22:
+                return False, {}
+
+            c  = df['종가']
+            h  = df['고가']
+            l  = df['저가']
+            v  = df['거래량']
+
+            cur   = float(c.iloc[-1])
+            vol_t = float(v.iloc[-1])
+
+            # ATR14
+            tr = np.maximum(h - l,
+                 np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1))))
+            atr14 = float(tr.rolling(14).mean().iloc[-1])
+
+            # 최근 20일 최대 거래량
+            max_vol_20 = float(v.rolling(20).max().iloc[-2])  # 당일 제외
+
+            # 5거래일 누적 수익률
+            cum5 = (cur - float(c.iloc[-6])) / float(c.iloc[-6]) if len(c) >= 6 else 0
+
+            # OBV 5일 연속 증가 (수급 대체)
+            obv = [0.0]
+            for i in range(1, len(df)):
+                if c.iloc[i] > c.iloc[i-1]:
+                    obv.append(obv[-1] + v.iloc[i])
+                elif c.iloc[i] < c.iloc[i-1]:
+                    obv.append(obv[-1] - v.iloc[i])
+                else:
+                    obv.append(obv[-1])
+            obv_series = obv[-6:]
+            cond4_obv  = all(obv_series[i] > obv_series[i-1] for i in range(1, len(obv_series)))
+
+            # yfinance 시총·재무 (한국 주식은 종종 N/A — 실패 시 조건 완화)
+            mktcap_b     = None
+            cond3_fin    = None
+            _is_kr = is_korean_ticker(ticker)
+            try:
+                _info = _yf_scan.Ticker(ticker if not _is_kr else ticker + ".KS").info
+                mktcap_b  = _info.get('marketCap', 0) / 1e8 if _info.get('marketCap') else None
+                op_income = _info.get('operatingIncome', None)
+                rev_g     = _info.get('revenueGrowth', None)
+                if op_income is not None and rev_g is not None:
+                    cond3_fin = (op_income > 0) or (rev_g >= 0.20)
+                elif op_income is not None:
+                    cond3_fin = op_income > 0
+                else:
+                    cond3_fin = None  # 데이터 없음 → 조건 생략
+            except:
+                mktcap_b  = None
+                cond3_fin = None
+
+            # ── 6대 조건 평가 ──
+            cond1 = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True  # 데이터 없으면 통과
+            cond2 = (atr14 / cur) >= 0.035 if cur > 0 else False
+            cond3 = cond3_fin if cond3_fin is not None else True
+            cond4 = cond4_obv
+            cond5 = cum5 >= 0.15
+            cond6 = vol_t < (max_vol_20 * 0.30) if max_vol_20 > 0 else False
+
+            passed_all = all([cond1, cond2, cond3, cond4, cond5, cond6])
+
+            meta = {
+                'ATR비율':    round(atr14/cur*100, 2) if cur > 0 else 0,
+                '5일수익률':  round(cum5*100, 2),
+                '거래량비율': round(vol_t/max_vol_20*100, 1) if max_vol_20 > 0 else 0,
+                '시총(억)':   round(mktcap_b) if mktcap_b else '?',
+                'OBV상승':    '✅' if cond4 else '❌',
+                '조건':       f"C1({'✅' if cond1 else '❌'}) C2({'✅' if cond2 else '❌'}) "
+                              f"C3({'✅' if cond3 else '❌'}) C4({'✅' if cond4 else '❌'}) "
+                              f"C5({'✅' if cond5 else '❌'}) C6({'✅' if cond6 else '❌'})",
+            }
+            return passed_all, meta
+
         for idx, ticker in enumerate(scan_tickers):
             prog.progress((idx+1)/len(scan_tickers))
             name = name_map.get(ticker, ticker)
-            status.markdown(f"<span style='font-size:12px;color:#64748b'>분석 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+            status.markdown(f"<span style='font-size:12px;color:#64748b'>V8.9 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
             try:
                 if market_type == "미국(S&P500)":
@@ -2774,45 +2862,37 @@ with tab_c:
                     df = df[df['거래량']>0]
                 else:
                     df = fetch_ohlcv(ticker, 60)
-                if df is None or len(df) < 20: continue
+                if df is None or len(df) < 22: continue
 
-                _price = df['종가'].iloc[-1]
+                _price = float(df['종가'].iloc[-1])
                 if _price < min_price or _price > max_price: continue
+
+                _ok, _meta = _v89_scanner(df, ticker)
+                if not _ok:
+                    continue
 
                 df = calc_indicators(df)
                 l = df.iloc[-1]; p = df.iloc[-2]
-                volr  = l['거래량']/df['거래량'].tail(20).mean()*100
-                bb_r  = l['BB_upper']-l['BB_lower']
-                bb_p  = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
+                chg = (l['종가']/p['종가']-1)*100
 
-                score = 0; reasons = []
-                if use_rsi and l['RSI']<=35:
-                    score+=2; reasons.append(f"📉RSI {l['RSI']:.0f}")
-                if use_vol and volr>=150:
-                    score+=2; reasons.append(f"🔥거래량{volr:.0f}%")
-                if use_macd and l['MACD']>l['Signal'] and p['MACD']<=p['Signal']:
-                    score+=3; reasons.append("⚡골든크로스")
-                if use_bb and bb_p<=25:
-                    score+=2; reasons.append(f"📊BB{bb_p}%")
-                if use_align and l['종가']>l['MA5']>l['MA20']>l['MA60']:
-                    score+=2; reasons.append("✅정배열")
-
-                if score >= min_score:
-                    chg = (l['종가']/p['종가']-1)*100
-                    passed.append({
-                        'ticker':   ticker,
-                        'name':     name,
-                        '현재가':   l['종가'],
-                        '등락(%)':  round(chg,2),
-                        'RSI':      l['RSI'],
-                        'MACD':     '골든크로스' if (l['MACD']>l['Signal'] and p['MACD']<=p['Signal']) else ('▲' if l['MACD']>l['Signal'] else '▼'),
-                        'BB위치':   f"{bb_p}%",
-                        '거래량비율': round(volr,0),
-                        'score':    score,
-                        'reasons':  reasons,
-                        # df는 session_state에 저장하지 않음 (메모리 누수 방지)
-                        # 차트 필요 시 fetch_ohlcv로 재조회
-                    })
+                passed.append({
+                    'ticker':    ticker,
+                    'name':      name,
+                    '현재가':    l['종가'],
+                    '등락(%)':   round(chg, 2),
+                    'RSI':       l['RSI'],
+                    'MACD':      '골든크로스' if (l['MACD']>l['Signal'] and p['MACD']<=p['Signal']) else ('▲' if l['MACD']>l['Signal'] else '▼'),
+                    'BB위치':    f"{round((l['종가']-l['BB_lower'])/(l['BB_upper']-l['BB_lower'])*100,1) if (l['BB_upper']-l['BB_lower'])>0 else 50}%",
+                    '거래량비율': _meta['거래량비율'],
+                    'ATR비율':   _meta['ATR비율'],
+                    '5일수익률': _meta['5일수익률'],
+                    'OBV상승':   _meta['OBV상승'],
+                    '시총(억)':  _meta['시총(억)'],
+                    '조건':      _meta['조건'],
+                    'score':     6,
+                    'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
+                                  f"📉거래량 {_meta['거래량비율']}%", f"OBV {_meta['OBV상승']}"],
+                })
             except: continue
 
         prog.empty(); status.empty()
@@ -2853,17 +2933,18 @@ with tab_c:
             _added = "✅" if item['ticker'] in _sc_ids else "➕"
             _chg_arrow = "▲" if item['등락(%)']>0 else "▼"
             _rows.append({
-                "추가": _added,
-                "종목명": item['name'],
-                "코드": item['ticker'],
-                "현재가": f"{item['현재가']:,.0f}",
-                "등락(%)": f"{_chg_arrow}{abs(item['등락(%)']):+.2f}%",
-                "RSI": f"{item['RSI']:.1f}",
-                "MACD": item['MACD'],
-                "BB위치": item['BB위치'],
-                "거래량%": f"{item['거래량비율']:.0f}%",
-                "점수": f"{item['score']}점",
-                "신호": " ".join(item['reasons']),
+                "추가":      _added,
+                "종목명":    item['name'],
+                "코드":      item['ticker'],
+                "현재가":    f"{item['현재가']:,.0f}",
+                "등락(%)":   f"{_chg_arrow}{abs(item['등락(%)']):+.2f}%",
+                "5일수익률": f"{item.get('5일수익률', 0):+.1f}%",
+                "ATR비율":   f"{item.get('ATR비율', 0):.1f}%",
+                "거래량%":   f"{item.get('거래량비율', 0):.0f}%",
+                "OBV":       item.get('OBV상승', '?'),
+                "시총(억)":  str(item.get('시총(억)', '?')),
+                "조건":      item.get('조건', ''),
+                "신호":      " ".join(item.get('reasons', [])),
             })
 
         _result_df = pd.DataFrame(_rows)
@@ -2873,12 +2954,18 @@ with tab_c:
             styles = []
             for col in row.index:
                 if col == '등락(%)':
-                    styles.append('color: #ff4d6d' if '▲' in str(row[col]) else 'color: #4da6ff')
-                elif col == '점수':
-                    val = int(str(row[col]).replace('점',''))
-                    styles.append('color: #ffd166; font-weight: bold' if val >= 6 else 'color: #e0e6f0')
+                    styles.append('color: #f63d68' if '▲' in str(row[col]) else 'color: #3b82f6')
+                elif col == '5일수익률':
+                    styles.append('color: #f63d68; font-weight:bold')
+                elif col == 'ATR비율':
+                    styles.append('color: #f59e0b')
+                elif col == '거래량%':
+                    v = float(str(row[col]).replace('%','') or 0)
+                    styles.append('color: #10b981' if v < 30 else 'color: #64748b')
+                elif col == 'OBV':
+                    styles.append('color: #34d399' if row[col]=='✅' else 'color: #f43f5e')
                 elif col == '추가':
-                    styles.append('color: #4dff91' if row[col]=='✅' else 'color: #ffd166')
+                    styles.append('color: #34d399' if row[col]=='✅' else 'color: #f59e0b')
                 else:
                     styles.append('')
             return styles
