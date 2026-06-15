@@ -2532,7 +2532,7 @@ with tab_c:
             _opt_topn   = st.slider("최적화 대상 종목 수", 10, 50, 20, key="opt_topn",
                                      help="종목이 많을수록 정확하지만 시간이 오래 걸립니다")
         with _opt_col2:
-            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ"], key="opt_market")
+            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="opt_market")
         with _opt_col3:
             st.markdown("<br>", unsafe_allow_html=True)
             _run_opt = st.button("🔥 최적화 시작", use_container_width=True,
@@ -2554,6 +2554,7 @@ with tab_c:
                         _tj = json.load(_f)
                     _opt_kospi  = [tuple(x) for x in _tj.get('KOSPI',  [])]
                     _opt_kosdaq = [tuple(x) for x in _tj.get('KOSDAQ', [])]
+                    _opt_sp500  = [tuple(x) for x in _tj.get('SP500',  [])]
                 except Exception:
                     _opt_kospi  = [("005930","삼성전자"),("000660","SK하이닉스"),
                                    ("042700","한미반도체"),("012450","한화에어로스페이스"),
@@ -2565,11 +2566,23 @@ with tab_c:
                                    ("058470","리노공업"),("095340","ISC"),
                                    ("036930","주성엔지니어링"),("039030","이오테크닉스"),
                                    ("240810","원익IPS"),("035900","JYP엔터테인먼트")]
+                    _opt_sp500  = [("AAPL","Apple"),("MSFT","Microsoft"),
+                                   ("NVDA","NVIDIA"),("GOOGL","Alphabet"),
+                                   ("AMZN","Amazon"),("META","Meta"),
+                                   ("TSLA","Tesla"),("AVGO","Broadcom"),
+                                   ("AMD","AMD"),("NFLX","Netflix"),
+                                   ("CRM","Salesforce"),("ORCL","Oracle"),
+                                   ("ADBE","Adobe"),("QCOM","Qualcomm"),
+                                   ("MU","Micron"),("INTC","Intel"),
+                                   ("COIN","Coinbase"),("SHOP","Shopify"),
+                                   ("UBER","Uber"),("SNOW","Snowflake")]
 
                 if _opt_market == "KOSPI":
                     _opt_tickers = _opt_kospi[:_opt_topn]
                 elif _opt_market == "KOSDAQ":
                     _opt_tickers = _opt_kosdaq[:_opt_topn]
+                elif _opt_market == "미국(S&P500)":
+                    _opt_tickers = _opt_sp500[:_opt_topn]
                 else:
                     _half = _opt_topn // 2
                     _opt_tickers = _opt_kospi[:_half] + _opt_kosdaq[:_half]
