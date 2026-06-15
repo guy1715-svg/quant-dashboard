@@ -4680,9 +4680,11 @@ with tab_e:
             if not _log_df.empty and {'날짜','시간','종목코드'}.issubset(_log_df.columns):
                 _log_df = _log_df.drop_duplicates(subset=['날짜','시간','종목코드'], keep='last')
             if not _log_df.empty:
+                # 날짜를 문자열로 정규화 (YYYY-MM-DD) — datetime 변환 전에 저장
+                _log_df['날짜_str'] = _log_df['날짜'].astype(str).str[:10]
                 _log_df['날짜']     = pd.to_datetime(_log_df['날짜'], errors='coerce')
                 _log_df['평가금액'] = pd.to_numeric(_log_df['평가금액'], errors='coerce')
-                _log_df = _log_df.dropna(subset=['날짜']).sort_values('날짜')
+                _log_df = _log_df.dropna(subset=['날짜']).sort_values('날짜', ascending=True).reset_index(drop=True)
 
             if not _log_df.empty and '평가금액' in _log_df.columns and _log_df['평가금액'].notna().any():
                 _log_df['수익률(%)'] = (_log_df['평가금액'] / _acc['initial'] - 1) * 100
@@ -4773,7 +4775,7 @@ with tab_e:
                 _jl_br   = 'rgba(255,255,255,0.09)' if _is_dark_jl else 'rgba(0,0,0,0.10)'
                 _jl_sub  = '#64748b'
 
-                for _ri, _row_r in _log_df.sort_values('날짜', ascending=False).iterrows():
+                for _ri, _row_r in _log_df.iloc[::-1].iterrows():
                     _is_buy   = _row_r.get('매매') == '매수'
                     _action_c = '#f63d68' if _is_buy else '#3b82f6'
                     _action_bg= 'rgba(246,61,104,0.12)' if _is_buy else 'rgba(59,130,246,0.12)'
@@ -4783,7 +4785,7 @@ with tab_e:
                     _price_str= f"{_price_j:,.0f}원" if _is_kr_j else f"${_price_j:,.2f}"
                     _eval_j   = float(_row_r.get('평가금액', 0))
                     _memo_j   = str(_row_r.get('메모','')) if _row_r.get('메모') else ''
-                    _date_j   = str(_row_r.get('날짜',''))[:10]
+                    _date_j   = str(_row_r.get('날짜_str', _row_r.get('날짜','')))[:10]
                     _time_j   = str(_row_r.get('시간',''))[:5]
                     _qty_j    = int(_row_r.get('수량', 0))
 
@@ -4811,10 +4813,13 @@ with tab_e:
 
                     # Firebase에서 해당 레코드 키 찾기
                     _match_key = None
+                    _del_date = _date_j  # YYYY-MM-DD 문자열
+                    _del_time = str(_row_r.get('시간',''))
+                    _del_code = str(_row_r.get('종목코드',''))
                     for _fk, _fv in _fb_raw.items():
-                        if (str(_fv.get('날짜','')) == str(_row_r.get('날짜','')) and
-                            str(_fv.get('시간','')) == str(_row_r.get('시간','')) and
-                            str(_fv.get('종목코드','')) == str(_row_r.get('종목코드',''))):
+                        if (str(_fv.get('날짜',''))[:10] == _del_date and
+                            str(_fv.get('시간','')) == _del_time and
+                            str(_fv.get('종목코드','')) == _del_code):
                             _match_key = _fk
                             break
                     if _rc3.button("🗑️", key=f"del_trade_{_ri}", help="이 기록 삭제"):
@@ -4826,9 +4831,9 @@ with tab_e:
                         _local = st.session_state.get('local_trade_log', [])
                         st.session_state['local_trade_log'] = [
                             r for r in _local
-                            if not (r.get('날짜') == str(_row_r.get('날짜','')) and
-                                    r.get('시간') == str(_row_r.get('시간','')) and
-                                    r.get('종목코드') == str(_row_r.get('종목코드','')))
+                            if not (str(r.get('날짜',''))[:10] == _del_date and
+                                    str(r.get('시간','')) == _del_time and
+                                    str(r.get('종목코드','')) == _del_code)
                         ]
                         st.success("✅ 삭제 완료")
                         st.rerun()
