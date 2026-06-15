@@ -4696,9 +4696,35 @@ with tab_e:
                     _bm_r.index = pd.to_datetime(_bm_r.index).tz_localize(None)
                     _port = _log_df.set_index('날짜')['수익률(%)']
                     _port.index = pd.to_datetime(_port.index).tz_localize(None)
-                    _cmp  = pd.DataFrame({'내 포트폴리오(%)': _port, '코스피(%)': _bm_r})
-                    _cmp  = _cmp.ffill().dropna()
-                    st.line_chart(_cmp)
+                    _cmp  = pd.DataFrame({'포트폴리오': _port, '코스피': _bm_r}).ffill().dropna()
+                    _is_dark_perf = st.session_state.get('ui_dark', True)
+                    _perf_bg = '#0b0e17' if _is_dark_perf else '#f8fafc'
+                    _perf_grid = 'rgba(255,255,255,0.05)' if _is_dark_perf else 'rgba(0,0,0,0.05)'
+                    _perf_txt = '#7a8ba8' if _is_dark_perf else '#64748b'
+                    _fig_perf = go.Figure()
+                    _fig_perf.add_trace(go.Scatter(
+                        x=_cmp.index, y=_cmp['포트폴리오'],
+                        name='내 포트폴리오', line=dict(color='#f63d68', width=2),
+                        fill='tozeroy', fillcolor='rgba(246,61,104,0.07)',
+                        hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>포트폴리오</extra>'
+                    ))
+                    _fig_perf.add_trace(go.Scatter(
+                        x=_cmp.index, y=_cmp['코스피'],
+                        name='코스피', line=dict(color='#3b82f6', width=1.5, dash='dot'),
+                        hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>코스피</extra>'
+                    ))
+                    _fig_perf.add_shape(type='line', x0=_cmp.index[0], x1=_cmp.index[-1],
+                        y0=0, y1=0, line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'))
+                    _fig_perf.update_layout(
+                        paper_bgcolor=_perf_bg, plot_bgcolor=_perf_bg,
+                        height=280, margin=dict(l=10, r=10, t=10, b=10),
+                        legend=dict(orientation='h', y=1.08, x=0, font=dict(size=11, color=_perf_txt)),
+                        xaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10)),
+                        yaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10),
+                                   ticksuffix='%', side='right'),
+                        hovermode='x unified',
+                    )
+                    st.plotly_chart(_fig_perf, use_container_width=True)
                 except:
                     st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
 
@@ -4742,21 +4768,47 @@ with tab_e:
                 except:
                     _fb_raw = {}
 
-                for _ri, _row_r in _log_df.iterrows():
-                    _rc1, _rc2, _rc3 = st.columns([1, 5, 1])
-                    _action_c = "#16a34a" if _row_r.get('매매') == '매수' else "#dc2626"
+                _is_dark_jl = st.session_state.get('ui_dark', True)
+                _jl_bg   = 'rgba(255,255,255,0.04)' if _is_dark_jl else 'rgba(0,0,0,0.025)'
+                _jl_br   = 'rgba(255,255,255,0.09)' if _is_dark_jl else 'rgba(0,0,0,0.10)'
+                _jl_sub  = '#64748b'
+
+                for _ri, _row_r in _log_df.sort_values('날짜', ascending=False).iterrows():
+                    _is_buy   = _row_r.get('매매') == '매수'
+                    _action_c = '#f63d68' if _is_buy else '#3b82f6'
+                    _action_bg= 'rgba(246,61,104,0.12)' if _is_buy else 'rgba(59,130,246,0.12)'
+                    _action_lbl = '매수' if _is_buy else '매도'
+                    _is_kr_j  = str(_row_r.get('종목코드','')).isdigit()
+                    _price_j  = float(_row_r.get('순체결가', 0))
+                    _price_str= f"{_price_j:,.0f}원" if _is_kr_j else f"${_price_j:,.2f}"
+                    _eval_j   = float(_row_r.get('평가금액', 0))
+                    _memo_j   = str(_row_r.get('메모','')) if _row_r.get('메모') else ''
+                    _date_j   = str(_row_r.get('날짜',''))[:10]
+                    _time_j   = str(_row_r.get('시간',''))[:5]
+                    _qty_j    = int(_row_r.get('수량', 0))
+
+                    _rc2, _rc3 = st.columns([11, 1])
                     _rc2.markdown(
-                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;margin-bottom:4px'>"
-                        f"<span style='font-size:11px;color:#64748b'>{_row_r.get('날짜','')} {_row_r.get('시간','')}</span>&nbsp;"
-                        f"<b style='color:{_action_c}'>{_row_r.get('매매','')}</b>&nbsp;"
-                        f"<b>{_row_r.get('종목명','')}</b>&nbsp;"
-                        f"{int(_row_r.get('수량',0)):,}주&nbsp;@&nbsp;"
-                        f"{float(_row_r.get('순체결가',0)):,.0f}&nbsp;"
-                        f"{'원' if str(_row_r.get('종목코드','')).isdigit() else '$'}"
-                        f"{'&nbsp;📝 ' + str(_row_r.get('메모','')) if _row_r.get('메모') else ''}"
-                        f"</div>",
+                        f"<div style='background:{_jl_bg};border:1px solid {_jl_br};"
+                        f"border-left:3px solid {_action_c};"
+                        f"border-radius:8px;padding:10px 14px;margin-bottom:5px;"
+                        f"display:flex;justify-content:space-between;align-items:center'>"
+                        f"<div style='display:flex;align-items:center;gap:12px'>"
+                        f"<span style='background:{_action_bg};color:{_action_c};font-weight:700;"
+                        f"font-size:12px;padding:2px 8px;border-radius:4px'>{_action_lbl}</span>"
+                        f"<div>"
+                        f"<div style='font-weight:600;font-size:14px'>{_row_r.get('종목명','')}"
+                        f"<span style='color:{_jl_sub};font-size:11px;margin-left:6px'>{_row_r.get('종목코드','')}</span></div>"
+                        f"<div style='font-size:11px;color:{_jl_sub};margin-top:2px'>{_date_j} {_time_j}"
+                        f"{'&nbsp;·&nbsp;📝 ' + _memo_j if _memo_j else ''}</div>"
+                        f"</div></div>"
+                        f"<div style='text-align:right'>"
+                        f"<div style='font-family:IBM Plex Mono;font-size:14px;font-weight:600'>{_price_str} × {_qty_j:,}주</div>"
+                        f"<div style='font-size:11px;color:{_jl_sub};margin-top:2px'>잔고 {_eval_j:,.0f}원</div>"
+                        f"</div></div>",
                         unsafe_allow_html=True
                     )
+
                     # Firebase에서 해당 레코드 키 찾기
                     _match_key = None
                     for _fk, _fv in _fb_raw.items():
@@ -4771,7 +4823,6 @@ with tab_e:
                                 _fb_ref(f"/quant_trades/{_match_key}").delete()
                             except:
                                 pass
-                        # session_state 캐시에서도 제거
                         _local = st.session_state.get('local_trade_log', [])
                         st.session_state['local_trade_log'] = [
                             r for r in _local
