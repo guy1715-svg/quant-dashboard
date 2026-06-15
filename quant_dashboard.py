@@ -1052,45 +1052,52 @@ def get_usd_krw():
         return 1350.0
 
 def calc_indicators(df):
-    for n in [5, 20, 60, 120]:
-        df[f'MA{n}'] = df['종가'].rolling(n).mean().round(0)
-    df['BB_mid']   = df['종가'].rolling(20).mean()
-    std            = df['종가'].rolling(20).std()
-    df['BB_upper'] = (df['BB_mid'] + 2*std).round(0)
-    df['BB_lower'] = (df['BB_mid'] - 2*std).round(0)
-    df['BB_mid']   = df['BB_mid'].round(0)
-    delta = df['종가'].diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    df['RSI'] = (100 - 100/(1 + gain/loss.replace(0, np.nan))).round(1)
-    ema12 = df['종가'].ewm(span=12, adjust=False).mean()
-    ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-    df['MACD']      = (ema12 - ema26).round(0)
-    df['Signal']    = df['MACD'].ewm(span=9, adjust=False).mean().round(0)
-    df['MACD_hist'] = (df['MACD'] - df['Signal']).round(0)
-    low10  = df['저가'].rolling(10).min()
-    high10 = df['고가'].rolling(10).max()
-    df['Sto_K'] = (100*(df['종가']-low10)/(high10-low10).replace(0,np.nan)).round(1)
-    df['Sto_D'] = df['Sto_K'].rolling(5).mean().round(1)
-    df['거래량_비율'] = (df['거래량']/df['거래량'].shift(1)*100).round(1)
-    # 52주 고저
-    df['52W_high'] = df['고가'].rolling(min(252, len(df))).max()
-    df['52W_low']  = df['저가'].rolling(min(252, len(df))).min()
-    # OBV (On Balance Volume)
-    obv = [0]
-    for i in range(1, len(df)):
-        if df['종가'].iloc[i] > df['종가'].iloc[i-1]:
-            obv.append(obv[-1] + df['거래량'].iloc[i])
-        elif df['종가'].iloc[i] < df['종가'].iloc[i-1]:
-            obv.append(obv[-1] - df['거래량'].iloc[i])
-        else:
-            obv.append(obv[-1])
-    df['OBV'] = obv
-    df['OBV_MA'] = df['OBV'].rolling(9).mean()
-    # 지지/저항선 자동 감지 (최근 20일 고저점)
-    df['지지선'] = df['저가'].rolling(20).min()
-    df['저항선'] = df['고가'].rolling(20).max()
-    return df
+    """V8.9.2 — indicators.py 위임 (Wilder RSI, CMF20, ATR14)."""
+    try:
+        from indicators import calc_indicators as _calc
+        result = _calc(df)
+        # 하위 호환: Sto_K/D, 지지/저항선 유지
+        low10  = df['저가'].rolling(10).min()
+        high10 = df['고가'].rolling(10).max()
+        result['Sto_K']  = (100*(df['종가']-low10)/(high10-low10).replace(0,np.nan)).round(1)
+        result['Sto_D']  = result['Sto_K'].rolling(5).mean().round(1)
+        result['지지선'] = df['저가'].rolling(20).min()
+        result['저항선'] = df['고가'].rolling(20).max()
+        return result
+    except Exception:
+        # indicators.py 로드 실패 시 기존 로직 폴백
+        for n in [5, 20, 60, 120]:
+            df[f'MA{n}'] = df['종가'].rolling(n).mean().round(0)
+        df['BB_mid']   = df['종가'].rolling(20).mean()
+        std            = df['종가'].rolling(20).std()
+        df['BB_upper'] = (df['BB_mid'] + 2*std).round(0)
+        df['BB_lower'] = (df['BB_mid'] - 2*std).round(0)
+        df['BB_mid']   = df['BB_mid'].round(0)
+        delta = df['종가'].diff()
+        gain  = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+        loss  = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+        df['RSI'] = (100 - 100/(1 + gain/loss.replace(0, np.nan))).round(1)
+        ema12 = df['종가'].ewm(span=12, adjust=False).mean()
+        ema26 = df['종가'].ewm(span=26, adjust=False).mean()
+        df['MACD']      = (ema12 - ema26).round(0)
+        df['Signal']    = df['MACD'].ewm(span=9, adjust=False).mean().round(0)
+        df['MACD_hist'] = (df['MACD'] - df['Signal']).round(0)
+        low10  = df['저가'].rolling(10).min()
+        high10 = df['고가'].rolling(10).max()
+        df['Sto_K'] = (100*(df['종가']-low10)/(high10-low10).replace(0,np.nan)).round(1)
+        df['Sto_D'] = df['Sto_K'].rolling(5).mean().round(1)
+        df['거래량_비율'] = (df['거래량']/df['거래량'].shift(1)*100).round(1)
+        df['52W_high'] = df['고가'].rolling(min(252, len(df))).max()
+        df['52W_low']  = df['저가'].rolling(min(252, len(df))).min()
+        df['ATR14']    = np.maximum(df['고가']-df['저가'],
+                         np.maximum(abs(df['고가']-df['종가'].shift(1)),
+                                    abs(df['저가']-df['종가'].shift(1)))
+                         ).rolling(14).mean()
+        df['CMF20']    = 0.0
+        df['OBV']      = 0.0
+        df['지지선']    = df['저가'].rolling(20).min()
+        df['저항선']    = df['고가'].rolling(20).max()
+        return df
 
 def get_signal(df):
     l = df.iloc[-1]
@@ -4516,8 +4523,20 @@ with tab_e:
                 _kill_krw     = _avg_p_krw * 0.93
                 _kill_alert   = _cur_p_krw <= _kill_krw
 
-                # 표시 포맷
-                _sym = "원" if _pos_is_kr else "$"
+                # V8.9.2 동적 손절가 (ATR 기반) + 하드 서킷 -10% 병행
+                try:
+                    from paper_trading import calc_dynamic_stoploss, check_killswitch, format_stoploss_label
+                    _atr14_pos = float(all_data.get(_pos['ticker'], {}).get('df', pd.DataFrame()).get('ATR14', pd.Series([0])).iloc[-1]) if _pos['ticker'] in all_data else 0
+                    _kill_action, _kill_msg = check_killswitch(float(_avg_p_krw), float(_cur_p_krw), _atr14_pos if _atr14_pos > 0 else None)
+                    _kill_alert = _kill_action != "HOLD"
+                    _stop_label = format_stoploss_label(float(_avg_p_krw), _atr14_pos if _atr14_pos > 0 else None, _pos_is_kr)
+                    _dynamic_stop, _hard_circuit = calc_dynamic_stoploss(float(_avg_p_krw), _atr14_pos) if _atr14_pos > 0 else (float(_avg_p_krw) * 0.93, float(_avg_p_krw) * 0.90)
+                    _kill_krw = max(_dynamic_stop, _hard_circuit)
+                except Exception:
+                    _kill_krw   = _avg_p_krw * 0.93
+                    _kill_alert = _cur_p_krw <= _kill_krw
+                    _kill_msg   = f"🚨 킬스위치 발동! 즉각 매도 검토" if _kill_alert else ""
+                    _stop_label = f"손절가: {_kill_krw:,.0f}원 (-7%)"
                 _avg_disp = f"{_pos['avg_price']:,.0f}원" if _pos_is_kr else f"${_pos['avg_price']:,.2f}\n(≈{_avg_p_krw:,.0f}원)"
                 _cur_disp = f"{_cur_p:,.0f}원" if _pos_is_kr else f"${_cur_p:,.2f}\n(≈{_cur_p_krw:,.0f}원)"
                 _val_disp = f"{_pos_val_krw:,.0f}원"
@@ -4543,8 +4562,8 @@ with tab_e:
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가금액(원)</div><div style='font-weight:700'>{_val_disp}</div></div>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가손익(원)</div><div class='{_pc}' style='font-weight:700'>{_pnl_disp}</div></div>"
                     f"</div>"
-                    f"<div style='margin-top:8px;font-size:12px;color:#f43f5e'>킬스위치 기준: {_kill_krw:,.0f}원 (-7%)"
-                    f"{'  🚨 킬스위치 발동! 즉각 매도 검토' if _kill_alert else ''}</div>"
+                    f"<div style='margin-top:8px;font-size:12px;color:#f43f5e'>{_stop_label}"
+                    f"{'  ' + _kill_msg if _kill_alert and _kill_msg else ''}</div>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
