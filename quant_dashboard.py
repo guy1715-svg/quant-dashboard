@@ -2014,17 +2014,38 @@ with tab_a:
     st.markdown("### 🏠 오늘의 퀀트 관제탑")
 
     # 시장 요약
-    import yfinance as _yf2
     @st.cache_data(ttl=300, show_spinner=False)
     def _get_market():
         _r = {}
-        for _n, _s in [("코스피","^KS11"),("코스닥","^KQ11"),("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
-            try:
-                _h = _yf2.Ticker(_s).history(period="2d",interval="1d")
-                if len(_h)>=2:
-                    _c = _h['Close'].iloc[-1]; _p = _h['Close'].iloc[-2]
-                    _r[_n] = {'현재':_c,'등락':(_c/_p-1)*100}
-            except: pass
+        try:
+            import FinanceDataReader as _fdr
+            from datetime import datetime as _dt_fdr, timedelta as _td_fdr
+            _end = _dt_fdr.now().strftime('%Y-%m-%d')
+            _start = (_dt_fdr.now() - _td_fdr(days=7)).strftime('%Y-%m-%d')
+            for _n, _s in [("코스피","KS11"), ("코스닥","KQ11")]:
+                try:
+                    _h = _fdr.DataReader(_s, _start, _end)
+                    _h = _h.dropna(subset=['Close'])
+                    if len(_h) >= 2:
+                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                        if _c > 0 and _p > 0:
+                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+                except: pass
+        except ImportError:
+            pass
+        # 미국 지수는 yfinance로 시도 (클라우드 환경에서 안 될 수 있음)
+        try:
+            import yfinance as _yf2
+            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
+                try:
+                    _h = _yf2.Ticker(_s).history(period="5d",interval="1d")
+                    _h = _h.dropna(subset=['Close'])
+                    if len(_h) >= 2:
+                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                        if _c > 0 and _p > 0:
+                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+                except: pass
+        except: pass
         return _r
 
     _mkt2 = _get_market()
@@ -2033,10 +2054,15 @@ with tab_a:
         for _i_m, (_nm_m, _d_m) in enumerate(_mkt2.items()):
             _up = _d_m['등락'] > 0
             _cc_m = 'up' if (_up and _nm_m != 'VIX') or (not _up and _nm_m == 'VIX') else 'down'
+            _cur_val = _d_m.get('현재', float('nan'))
+            _chg_val = _d_m.get('등락', float('nan'))
+            import math as _math
+            _cur_str = f"{_cur_val:,.2f}" if not _math.isnan(_cur_val) else "-"
+            _chg_str = f"{'▲' if _up else '▼'}{abs(_chg_val):.2f}%" if not _math.isnan(_chg_val) else "-"
             _cols_m[_i_m].markdown(
                 f"<div class='metric-card'><div class='label'>{_nm_m}</div>"
-                f"<div class='value flat' style='font-size:16px'>{_d_m['현재']:,.2f}</div>"
-                f"<div class='{_cc_m}'>{'▲' if _up else '▼'}{abs(_d_m['등락']):.2f}%</div></div>",
+                f"<div class='value flat' style='font-size:16px'>{_cur_str}</div>"
+                f"<div class='{_cc_m}'>{_chg_str}</div></div>",
                 unsafe_allow_html=True)
 
     # 환율 경고
