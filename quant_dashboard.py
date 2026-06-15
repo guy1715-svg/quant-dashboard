@@ -3027,6 +3027,44 @@ with tab_c:
         # ── yfinance 폴백 스캐너 ──────────────────────────────────────────────
         import yfinance as _yf_scan
 
+        # 하드 필터 상수
+        _ETF_KEYWORDS = [
+            "KODEX","TIGER","KBSTAR","HANARO","ARIRANG","KOSEF",
+            "RISE","ACE","SOL","PLUS","ETF","레버리지","인버스",
+            "스팩","SPAC","리츠","REITS","우선주",
+        ]
+        _BLOCKED_SECTORS = [
+            "유통","은행","금융","보험","전력","유틸리티","통신","지주",
+            "Banks","Insurance","Financial Services","Electric Utilities",
+            "Utilities","Telecom","Telecommunication","Communication Services",
+            "Retail","Food & Staples Retailing","Conglomerates","Holding Companies",
+        ]
+
+        def _hard_filter(ticker, name, yf_info):
+            """ETF/SPAC/우선주/저변동성 섹터 즉시 차단. True=통과."""
+            # 필터1: 종목명 키워드
+            for kw in _ETF_KEYWORDS:
+                if kw.upper() in name.upper():
+                    return False, f"ETF/SPAC: {kw}"
+            # 필터2: 한국 우선주 코드 패턴 (5번째 자리 = 5)
+            if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
+                return False, "우선주 코드 패턴"
+            # 필터3: quoteType ETF
+            qt = str(yf_info.get("quoteType","") or "").upper()
+            if qt in ("ETF","MUTUALFUND","FUTURE","INDEX"):
+                return False, f"quoteType={qt}"
+            # 필터4: 시총 0/None
+            mktcap = yf_info.get("marketCap", None)
+            if mktcap is None or mktcap == 0:
+                return False, "시총 0/None"
+            # 필터5: 금지 섹터
+            combined = (str(yf_info.get("sector","") or "") + " " +
+                        str(yf_info.get("industry","") or ""))
+            for blk in _BLOCKED_SECTORS:
+                if blk.lower() in combined.lower():
+                    return False, f"금지섹터: {blk}"
+            return True, ""
+
         def _v89_scanner(df, ticker):
             """
             V8.9.2 6대 조건 (AND) — KIS API 없이 yfinance로 근사
@@ -3069,21 +3107,27 @@ with tab_c:
             cmf20 = float(mfv.rolling(20).sum().iloc[-1] / v.rolling(20).sum().iloc[-1]) if v.rolling(20).sum().iloc[-1] > 0 else 0.0
             cond4_cmf = cmf20 > 0   # 0 초과면 매집 우세 (yfinance 근사 — 임계값 완화)
 
-            # yfinance 시총·재무 (실패 시 조건 생략)
+            # yfinance 시총·재무 + 하드 필터
             mktcap_b  = None
             cond3_fin = None
             _is_kr    = is_korean_ticker(ticker)
+            _yf_info  = {}
             try:
-                _suffix = ".KS" if _is_kr else ""
-                _info   = _yf_scan.Ticker(ticker + _suffix).info
-                mktcap_b  = _info.get('marketCap', 0) / 1e8 if _info.get('marketCap') else None
-                op_income = _info.get('operatingIncome', None)
-                rev_g     = _info.get('revenueGrowth', None)
+                _suffix  = ".KS" if _is_kr else ""
+                _yf_info = _yf_scan.Ticker(ticker + _suffix).info
+                mktcap_b  = _yf_info.get('marketCap', 0) / 1e8 if _yf_info.get('marketCap') else None
+                op_income = _yf_info.get('operatingIncome', None)
+                rev_g     = _yf_info.get('revenueGrowth', None)
                 if op_income is not None:
                     cond3_fin = (op_income > 0) or (rev_g >= 0.20 if rev_g is not None else False)
             except Exception:
                 mktcap_b  = None
                 cond3_fin = None
+
+            # ── 하드 필터: ETF/SPAC/저변동성 섹터 즉시 차단 ──
+            _hf_ok, _hf_reason = _hard_filter(ticker, name, _yf_info)
+            if not _hf_ok:
+                return False, {'조건': f'하드필터 차단: {_hf_reason}'}
 
             # AI 최적화 파라미터 반영 (없으면 V8.9.2 기본값)
             _p_c5 = st.session_state.get("opt_best_cond5", 0.08)
