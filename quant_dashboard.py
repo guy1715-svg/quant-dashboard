@@ -1978,59 +1978,7 @@ with tab_a:
 
     st.divider()
 
-    # ── V8.9.1 시스템 상태 요약 카드 ──
-    st.markdown("#### 🛡️ V8.9.1 방어 시스템 상태")
-    _v891_home = run_v891_system_check()
-    _h_bo  = _v891_home['blackout']
-    _h_sd  = _v891_home['shutdown']
-    _h_kp  = _v891_home['kospi_chg']
-    _h_kq  = _v891_home['kosdaq_chg']
-    _h_ok  = _v891_home['can_enter']
-
-    _sc1, _sc2, _sc3, _sc4 = st.columns(4)
-
-    # 진입 가능 여부
-    _sc1.markdown(
-        f"<div class='metric-card' style='border-color:{'rgba(52,211,153,0.4)' if _h_ok else 'rgba(244,63,94,0.4)'}'>"
-        f"<div class='label'>진입 가능 여부</div>"
-        f"<div class='value' style='color:{'#34d399' if _h_ok else '#f43f5e'};font-size:18px'>"
-        f"{'✅ 진입 가능' if _h_ok else '🚫 진입 차단'}</div></div>",
-        unsafe_allow_html=True)
-
-    # 블랙아웃
-    _sc2.markdown(
-        f"<div class='metric-card' style='border-color:{'rgba(244,63,94,0.4)' if _h_bo else 'rgba(255,255,255,0.08)'}'>"
-        f"<div class='label'>매크로 블랙아웃</div>"
-        f"<div class='value' style='color:{'#f43f5e' if _h_bo else '#34d399'};font-size:18px'>"
-        f"{'🚫 차단 중' if _h_bo else '✅ 정상'}</div></div>",
-        unsafe_allow_html=True)
-
-    # 지수 셧다운
-    _sc3.markdown(
-        f"<div class='metric-card' style='border-color:{'rgba(244,63,94,0.4)' if _h_sd else 'rgba(255,255,255,0.08)'}'>"
-        f"<div class='label'>지수 셧다운</div>"
-        f"<div class='value' style='color:{'#f43f5e' if _h_sd else '#34d399'};font-size:18px'>"
-        f"{'🚨 발동' if _h_sd else '✅ 정상'}</div></div>",
-        unsafe_allow_html=True)
-
-    # 지수 현황
-    _kp_c = '#f43f5e' if _h_kp < 0 else '#34d399'
-    _kq_c = '#f43f5e' if _h_kq < 0 else '#34d399'
-    _sc4.markdown(
-        f"<div class='metric-card'>"
-        f"<div class='label'>지수 등락</div>"
-        f"<div style='font-size:13px;margin-top:6px'>"
-        f"코스피 <b style='color:{_kp_c}'>{_h_kp:+.2f}%</b><br>"
-        f"코스닥 <b style='color:{_kq_c}'>{_h_kq:+.2f}%</b></div></div>",
-        unsafe_allow_html=True)
-
-    # 경고 메시지
-    for _alert in _v891_home['alerts']:
-        st.error(_alert)
-
-    st.divider()
-
-    # 10:30 매매 가능 여부
+    # 장 시간 상태 인라인 표시
     from datetime import datetime as _dt_h
     _kh = (_dt_h.utcnow().hour + 9) % 24
     _km = _dt_h.utcnow().minute
@@ -2044,35 +1992,61 @@ with tab_a:
     st.divider()
 
     # 관심종목 현황 요약
-    st.markdown("#### 📊 관심종목 현황")
-    _tickers_home = get_watchlist_tickers()
+    _col_wl_hdr, _col_wl_refresh = st.columns([5, 1])
+    _col_wl_hdr.markdown("#### 📊 관심종목 현황")
 
-    for _th, _nh in _tickers_home:
-        try:
-            # all_data 캐시 우선 사용, 없으면 fetch
-            if _th in all_data:
-                _df_h = all_data[_th]['df']
-            else:
-                _df_h = fetch_ohlcv(_th, 30)
-                if _df_h is None or len(_df_h) < 5: continue
-                _df_h = calc_indicators(_df_h)
-            _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
-            _chgh = (_lh['종가']/_ph['종가']-1)*100
-            _cch  = '#ff4d6d' if _chgh>0 else '#4da6ff'
-            _sigh = get_signal(_df_h)
-            _bdgh = ' '.join([f"<span class='badge badge-{s[1]}'>{s[0]}</span>" for s in _sigh])
-            _rsi_ch = '#ff4d6d' if _lh['RSI']>=70 else '#4da6ff' if _lh['RSI']<=30 else '#6b7fa3'
+    _tickers_home = get_watchlist_tickers()
+    if not _tickers_home:
+        st.info("관심종목을 추가해주세요. (사이드바 또는 관리 탭)")
+    else:
+        _rows_home = []
+        for _th, _nh in _tickers_home:
+            try:
+                if _th in all_data:
+                    _df_h = all_data[_th]['df']
+                else:
+                    _df_h = fetch_ohlcv(_th, 30)
+                    if _df_h is None or len(_df_h) < 5: continue
+                    _df_h = calc_indicators(_df_h)
+                _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
+                _chgh = (_lh['종가']/_ph['종가']-1)*100
+                _sigh = get_signal(_df_h)
+                _rows_home.append((_th, _nh, _lh, _chgh, _sigh))
+            except: pass
+
+        # 등락 기준 정렬 (상승 → 하락)
+        _rows_home.sort(key=lambda x: x[3], reverse=True)
+
+        _is_dark_h = st.session_state.get('ui_dark', True)
+        _card_bg   = 'rgba(255,255,255,0.04)' if _is_dark_h else 'rgba(0,0,0,0.03)'
+        _card_br   = 'rgba(255,255,255,0.09)' if _is_dark_h else 'rgba(0,0,0,0.10)'
+        _txt_sub   = '#64748b'
+
+        for _th, _nh, _lh, _chgh, _sigh in _rows_home:
+            _cch    = '#f63d68' if _chgh > 0 else '#3b82f6'
+            _rsi_v  = _lh['RSI']
+            _rsi_ch = '#f63d68' if _rsi_v >= 70 else '#3b82f6' if _rsi_v <= 30 else '#8b5cf6'
+            _arrow  = '▲' if _chgh > 0 else '▼'
+            _bdgh   = ' '.join([f"<span class='badge badge-{s[1]}'>{s[0]}</span>" for s in _sigh[:2]])
+            _vol_r  = _lh.get('거래량_비율', 100)
+            _vol_str = f"거래량 {_vol_r:.0f}%" if _vol_r else ""
+            _vol_c  = '#f63d68' if _vol_r and _vol_r >= 150 else _txt_sub
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                f"padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;margin-bottom:4px;border:1px solid rgba(255,255,255,0.08)'>"
-                f"<span><b>{_nh}</b> <span style='color:#64748b;font-size:11px'>({_th})</span></span>"
-                f"<span style='display:flex;gap:10px;align-items:center'>"
-                f"<span style='font-family:IBM Plex Mono'>{format_price(_lh['종가'],_th)}</span>"
-                f"<span style='color:{_cch}'>{_chgh:+.2f}%</span>"
-                f"<span style='color:{_rsi_ch};font-size:12px'>RSI {_lh['RSI']:.0f}</span>"
-                f"{_bdgh}</span></div>",
+                f"padding:10px 14px;background:{_card_bg};border-radius:10px;"
+                f"margin-bottom:5px;border:1px solid {_card_br}'>"
+                f"<div style='display:flex;align-items:center;gap:10px'>"
+                f"<span style='font-size:14px;font-weight:600'>{_nh}</span>"
+                f"<span style='color:{_txt_sub};font-size:11px'>{_th}</span>"
+                f"{_bdgh}"
+                f"</div>"
+                f"<div style='display:flex;align-items:center;gap:16px'>"
+                f"<span style='color:{_vol_c};font-size:11px'>{_vol_str}</span>"
+                f"<span style='color:{_rsi_ch};font-size:12px;font-family:IBM Plex Mono'>RSI {_rsi_v:.0f}</span>"
+                f"<span style='font-family:IBM Plex Mono;font-size:14px'>{format_price(_lh['종가'],_th)}</span>"
+                f"<span style='color:{_cch};font-weight:600;min-width:60px;text-align:right'>{_arrow}{abs(_chgh):.2f}%</span>"
+                f"</div></div>",
                 unsafe_allow_html=True)
-        except: pass
 
     st.divider()
 
