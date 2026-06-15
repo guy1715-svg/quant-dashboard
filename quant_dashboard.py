@@ -1000,15 +1000,41 @@ caption, .stCaption { font-size: var(--fs-xs) !important; color: var(--text-dim)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
-    import yfinance as yf
     end   = datetime.today()
     start = end - timedelta(days=lookback*2)
+    _start_str = start.strftime('%Y-%m-%d')
+    _end_str   = end.strftime('%Y-%m-%d')
 
     # 한국 종목 여부 판단 (숫자 6자리)
     is_korean = ticker.isdigit() and len(ticker) == 6
 
     if is_korean:
-        # 한국 종목 — KS, KQ 순으로 시도
+        # 1순위: FinanceDataReader (Streamlit Cloud 환경에서 안정적)
+        try:
+            import FinanceDataReader as _fdr
+            _df = _fdr.DataReader(ticker, _start_str, _end_str)
+            if _df is not None and not _df.empty and len(_df) >= 5:
+                # FDR 컬럼명 정규화
+                _col_map = {}
+                for _c in _df.columns:
+                    _cl = _c.lower()
+                    if _cl in ('open', '시가'): _col_map[_c] = '시가'
+                    elif _cl in ('high', '고가'): _col_map[_c] = '고가'
+                    elif _cl in ('low', '저가'): _col_map[_c] = '저가'
+                    elif _cl in ('close', '종가'): _col_map[_c] = '종가'
+                    elif _cl in ('volume', '거래량'): _col_map[_c] = '거래량'
+                _df = _df.rename(columns=_col_map)
+                _needed = ['시가','고가','저가','종가','거래량']
+                if all(c in _df.columns for c in _needed):
+                    _df = _df[_needed]
+                    _df = _df[_df['거래량'] > 0].tail(lookback)
+                    if len(_df) >= 5:
+                        return _df
+        except Exception:
+            pass
+
+        # 2순위: yfinance fallback
+        import yfinance as yf
         for suffix in ['.KS', '.KQ']:
             try:
                 yt = yf.Ticker(ticker + suffix)
@@ -1025,7 +1051,8 @@ def fetch_ohlcv(ticker, lookback=80):
             except:
                 continue
     else:
-        # 미국 종목 — suffix 없이 직접 조회
+        # 미국 종목 — yfinance
+        import yfinance as yf
         try:
             yt = yf.Ticker(ticker)
             df = yt.history(start=start, end=end, interval='1d')
