@@ -3008,98 +3008,91 @@ with tab_c:
         else:
             KIS_ENABLED_FALLBACK = False
 
-        if not KIS_ENABLED or KIS_ENABLED_FALLBACK or market_type == "미국(S&P500)":
-            # ── yfinance 폴백 (기존 V8.9 로직) ──────────────────────────────
-            import yfinance as _yf_scan
+        # ── yfinance 폴백 스캐너 ──────────────────────────────────────────────
+        import yfinance as _yf_scan
 
         def _v89_scanner(df, ticker):
             """
-            V8.9 6대 조건 (AND) — KIS API 없이 yfinance로 근사
-            cond1: 시총 5천억~3조 (yfinance 조회)
+            V8.9.2 6대 조건 (AND) — KIS API 없이 yfinance로 근사
+            cond1: 시총 5천억~3조 (yfinance 조회, 없으면 통과)
             cond2: ATR14 / 현재가 ≥ 3.5%
-            cond3: 영업이익 흑자 OR 매출 YoY ≥ 20% (yfinance 재무)
-            cond4: 외인+기관 쌍끌이 → yfinance 없으므로 OBV 5일 연속 증가로 대체
-            cond5: 5거래일 누적 수익률 ≥ 15%
-            cond6: 당일 거래량 < 최근 20일 최대 거래량 × 30%
+            cond3: 영업이익 흑자 OR 매출 YoY ≥ 20% (없으면 통과)
+            cond4: CMF20 > 0 (yfinance OHLCV로 계산, OBV 대체)
+            cond5: 5거래일 누적 수익률 ≥ AI 최적화 파라미터 (기본 8%)
+            cond6: 당일 거래량 < 20일 최대 × AI 최적화 파라미터 (기본 50%)
             """
             if df is None or len(df) < 22:
                 return False, {}
 
-            c  = df['종가']
-            h  = df['고가']
-            l  = df['저가']
-            v  = df['거래량']
+            c  = df['종가'].astype(float)
+            h  = df['고가'].astype(float)
+            l  = df['저가'].astype(float)
+            v  = df['거래량'].astype(float)
 
             cur   = float(c.iloc[-1])
             vol_t = float(v.iloc[-1])
 
-            # ATR14
-            tr = np.maximum(h - l,
-                 np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1))))
-            atr14 = float(tr.rolling(14).mean().iloc[-1])
+            # ATR14 (Wilder)
+            tr = pd.concat([
+                h - l,
+                (h - c.shift(1)).abs(),
+                (l - c.shift(1)).abs(),
+            ], axis=1).max(axis=1)
+            atr14 = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
 
-            # 최근 20일 최대 거래량
-            max_vol_20 = float(v.rolling(20).max().iloc[-2])  # 당일 제외
+            # 최근 20일 최대 거래량 (당일 제외)
+            max_vol_20 = float(v.iloc[:-1].rolling(20).max().iloc[-1]) if len(v) >= 21 else float(v.rolling(20).max().iloc[-1])
 
             # 5거래일 누적 수익률
             cum5 = (cur - float(c.iloc[-6])) / float(c.iloc[-6]) if len(c) >= 6 else 0
 
-            # OBV 5일 연속 증가 (수급 대체)
-            obv = [0.0]
-            for i in range(1, len(df)):
-                if c.iloc[i] > c.iloc[i-1]:
-                    obv.append(obv[-1] + v.iloc[i])
-                elif c.iloc[i] < c.iloc[i-1]:
-                    obv.append(obv[-1] - v.iloc[i])
-                else:
-                    obv.append(obv[-1])
-            obv_series = obv[-6:]
-            cond4_obv  = all(obv_series[i] > obv_series[i-1] for i in range(1, len(obv_series)))
+            # CMF20 간이 계산 (OBV 대체)
+            hl_range = (h - l).replace(0, np.nan)
+            mfm = ((c - l) - (h - c)) / hl_range
+            mfv = mfm * v
+            cmf20 = float(mfv.rolling(20).sum().iloc[-1] / v.rolling(20).sum().iloc[-1]) if v.rolling(20).sum().iloc[-1] > 0 else 0.0
+            cond4_cmf = cmf20 > 0   # 0 초과면 매집 우세 (yfinance 근사 — 임계값 완화)
 
-            # yfinance 시총·재무 (한국 주식은 종종 N/A — 실패 시 조건 완화)
-            mktcap_b     = None
-            cond3_fin    = None
-            _is_kr = is_korean_ticker(ticker)
+            # yfinance 시총·재무 (실패 시 조건 생략)
+            mktcap_b  = None
+            cond3_fin = None
+            _is_kr    = is_korean_ticker(ticker)
             try:
-                _info = _yf_scan.Ticker(ticker if not _is_kr else ticker + ".KS").info
+                _suffix = ".KS" if _is_kr else ""
+                _info   = _yf_scan.Ticker(ticker + _suffix).info
                 mktcap_b  = _info.get('marketCap', 0) / 1e8 if _info.get('marketCap') else None
                 op_income = _info.get('operatingIncome', None)
                 rev_g     = _info.get('revenueGrowth', None)
-                if op_income is not None and rev_g is not None:
-                    cond3_fin = (op_income > 0) or (rev_g >= 0.20)
-                elif op_income is not None:
-                    cond3_fin = op_income > 0
-                else:
-                    cond3_fin = None  # 데이터 없음 → 조건 생략
-            except:
+                if op_income is not None:
+                    cond3_fin = (op_income > 0) or (rev_g >= 0.20 if rev_g is not None else False)
+            except Exception:
                 mktcap_b  = None
                 cond3_fin = None
 
-            # ── 6대 조건 평가 ──
-            # AI 최적화 파라미터 반영 (없으면 V8.9.2 기본값 사용)
+            # AI 최적화 파라미터 반영 (없으면 V8.9.2 기본값)
             _p_c5 = st.session_state.get("opt_best_cond5", 0.08)
             _p_c6 = st.session_state.get("opt_best_cond6", 0.50)
 
-            cond1 = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True  # 데이터 없으면 통과
+            cond1 = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True
             cond2 = (atr14 / cur) >= 0.035 if cur > 0 else False
             cond3 = cond3_fin if cond3_fin is not None else True
-            cond4 = cond4_obv
+            cond4 = cond4_cmf
             cond5 = cum5 >= _p_c5
-            cond6 = vol_t < (max_vol_20 * _p_c6) if max_vol_20 > 0 else False
+            cond6 = (vol_t < max_vol_20 * _p_c6) if max_vol_20 > 0 else False
 
             passed_all = all([cond1, cond2, cond3, cond4, cond5, cond6])
 
             meta = {
-                'ATR비율':    round(atr14/cur*100, 2) if cur > 0 else 0,
-                '5일수익률':  round(cum5*100, 2),
-                '거래량비율': round(vol_t/max_vol_20*100, 1) if max_vol_20 > 0 else 0,
+                'ATR비율':    round(atr14 / cur * 100, 2) if cur > 0 else 0,
+                '5일수익률':  round(cum5 * 100, 2),
+                '거래량비율': round(vol_t / max_vol_20 * 100, 1) if max_vol_20 > 0 else 0,
                 '시총(억)':   round(mktcap_b) if mktcap_b else '?',
-                'OBV상승':    '✅' if cond4 else '❌',
+                'CMF':        round(cmf20, 3),
                 f'cond5({_p_c5*100:.0f}%)': '✅' if cond5 else '❌',
                 f'cond6({_p_c6*100:.0f}%)': '✅' if cond6 else '❌',
-                '조건':       f"C1({'✅' if cond1 else '❌'}) C2({'✅' if cond2 else '❌'}) "
-                              f"C3({'✅' if cond3 else '❌'}) C4({'✅' if cond4 else '❌'}) "
-                              f"C5({'✅' if cond5 else '❌'}) C6({'✅' if cond6 else '❌'})",
+                '조건': (f"C1({'✅' if cond1 else '❌'}) C2({'✅' if cond2 else '❌'}) "
+                         f"C3({'✅' if cond3 else '❌'}) C4({'✅' if cond4 else '❌'}) "
+                         f"C5({'✅' if cond5 else '❌'}) C6({'✅' if cond6 else '❌'})"),
             }
             return passed_all, meta
 
@@ -3142,12 +3135,12 @@ with tab_c:
                     '거래량비율': _meta['거래량비율'],
                     'ATR비율':   _meta['ATR비율'],
                     '5일수익률': _meta['5일수익률'],
-                    'OBV상승':   _meta['OBV상승'],
+                    'CMF':       _meta.get('CMF', 0),
                     '시총(억)':  _meta['시총(억)'],
                     '조건':      _meta['조건'],
                     'score':     6,
                     'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
-                                  f"📉거래량 {_meta['거래량비율']}%", f"OBV {_meta['OBV상승']}"],
+                                  f"📉거래량 {_meta['거래량비율']}%", f"CMF {_meta.get('CMF', 0):.3f}"],
                 })
             except: continue
 
@@ -3197,7 +3190,7 @@ with tab_c:
                 "5일수익률": f"{item.get('5일수익률', 0):+.1f}%",
                 "ATR비율":   f"{item.get('ATR비율', 0):.1f}%",
                 "거래량%":   f"{item.get('거래량비율', 0):.0f}%",
-                "OBV":       item.get('OBV상승', '?'),
+                "CMF":        f"{item.get('CMF', 0):.3f}",
                 "시총(억)":  str(item.get('시총(억)', '?')),
                 "조건":      item.get('조건', ''),
                 "신호":      " ".join(item.get('reasons', [])),
