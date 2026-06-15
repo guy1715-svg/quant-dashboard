@@ -5033,7 +5033,14 @@ with tab_e:
         )
 
         # 매수가·수량·5AI 를 session_state에 항상 동기화 (종목/금액 변경 즉시 반영)
-        _price_val = max(1, int(_buy_cur)) if _is_kr else (round(_buy_cur, 2) if _buy_cur > 0 else 1.0)
+        try:
+            _buy_cur_safe = float(_buy_cur) if _buy_cur and not (isinstance(_buy_cur, float) and np.isnan(_buy_cur)) else 0.0
+            if _is_kr:
+                _price_val = max(1, int(_buy_cur_safe)) if _buy_cur_safe > 0 else 1
+            else:
+                _price_val = round(_buy_cur_safe, 2) if _buy_cur_safe > 0 else 1.0
+        except (TypeError, ValueError):
+            _price_val = 1 if _is_kr else 1.0
         st.session_state['buy_price_inp'] = float(_price_val)
         st.session_state['buy_qty_inp']   = max(1, _auto_qty)
         st.session_state['buy_ai']        = _auto_5ai
