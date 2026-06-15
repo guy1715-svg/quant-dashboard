@@ -1102,40 +1102,56 @@ def calc_indicators(df):
 def get_signal(df):
     l = df.iloc[-1]
     signals = []
-    if l['RSI'] <= 30:               signals.append(('📉 과매도', 'watch'))
-    if l['RSI'] >= 70:               signals.append(('📈 과매수', 'sell'))
-    if l['거래량_비율'] >= 200:       signals.append(('🔥 거래량폭발', 'buy'))
-    if l['종가'] > l['MA5'] > l['MA20']: signals.append(('✅ 정배열', 'buy'))
-    if l['종가'] < l['MA5'] < l['MA20']: signals.append(('❌ 역배열', 'sell'))
-    if l['MACD'] > l['Signal'] and df.iloc[-2]['MACD'] <= df.iloc[-2]['Signal']:
-        signals.append(('⚡ 골든크로스', 'buy'))
-    if l['MACD'] < l['Signal'] and df.iloc[-2]['MACD'] >= df.iloc[-2]['Signal']:
-        signals.append(('💀 데드크로스', 'sell'))
+    if l.get('RSI', 50) <= 30:               signals.append(('📉 과매도', 'watch'))
+    if l.get('RSI', 50) >= 70:               signals.append(('📈 과매수', 'sell'))
+    if l.get('거래량_비율', 0) >= 200:       signals.append(('🔥 거래량폭발', 'buy'))
+    if l['종가'] > l.get('MA5', 0) > l.get('MA20', 0) > 0: signals.append(('✅ 정배열', 'buy'))
+    if 0 < l['종가'] < l.get('MA5', 0) < l.get('MA20', 0): signals.append(('❌ 역배열', 'sell'))
+    _macd  = l.get('MACD', None)
+    _sig   = l.get('Signal', None)
+    _macd2 = df.iloc[-2].get('MACD', None) if len(df) >= 2 else None
+    _sig2  = df.iloc[-2].get('Signal', None) if len(df) >= 2 else None
+    if _macd is not None and _sig is not None and _macd2 is not None and _sig2 is not None:
+        if _macd > _sig and _macd2 <= _sig2:
+            signals.append(('⚡ 골든크로스', 'buy'))
+        if _macd < _sig and _macd2 >= _sig2:
+            signals.append(('💀 데드크로스', 'sell'))
     if not signals: signals.append(('➖ 중립', 'neutral'))
     return signals
 
 def build_prompt(df, name, ticker):
     l = df.iloc[-1]; p = df.iloc[-2]
-    w = df.iloc[-6] if len(df)>=6 else df.iloc[0]
-    macd_sig = ('골든크로스' if l['MACD']>l['Signal'] and p['MACD']<=p['Signal'] else
-                '데드크로스' if l['MACD']<l['Signal'] and p['MACD']>=p['Signal'] else
-                'MACD>Signal' if l['MACD']>l['Signal'] else 'MACD<Signal')
-    rsi_s = '과매수' if l['RSI']>=70 else '과매도' if l['RSI']<=30 else '중립'
-    bb_r  = l['BB_upper']-l['BB_lower']
-    bb_p  = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
+    w = df.iloc[-6] if len(df) >= 6 else df.iloc[0]
+
+    def _g(row, key, default=0):
+        v = row.get(key, default) if hasattr(row, 'get') else getattr(row, key, default)
+        return v if (v is not None and not (isinstance(v, float) and np.isnan(v))) else default
+
+    macd_v  = _g(l, 'MACD', 0); sig_v = _g(l, 'Signal', 0)
+    macd_p  = _g(p, 'MACD', 0); sig_p = _g(p, 'Signal', 0)
+    macd_sig = ('골든크로스' if macd_v > sig_v and macd_p <= sig_p else
+                '데드크로스' if macd_v < sig_v and macd_p >= sig_p else
+                'MACD>Signal' if macd_v > sig_v else 'MACD<Signal')
+
+    rsi_v = _g(l, 'RSI', 50)
+    rsi_s = '과매수' if rsi_v >= 70 else '과매도' if rsi_v <= 30 else '중립'
+    bb_u  = _g(l, 'BB_upper', 0); bb_lo = _g(l, 'BB_lower', 0); bb_mi = _g(l, 'BB_mid', 0)
+    bb_r  = bb_u - bb_lo
+    bb_p  = round((l['종가'] - bb_lo) / bb_r * 100, 1) if bb_r > 0 else 50
     cur   = l['종가']
     lines = [
         f'종목: {name} ({ticker}) | 분석일: {str(df.index[-1])[:10]}',
         f'현재가: {cur:,.0f}원 | 전일대비: {round((cur/p["종가"]-1)*100,2)}% | 1주일대비: {round((cur/w["종가"]-1)*100,2)}%',
         f'시가: {l["시가"]:,.0f} | 고가: {l["고가"]:,.0f} | 저가: {l["저가"]:,.0f}',
-        f'MA5: {l["MA5"]:,.0f} | MA20: {l["MA20"]:,.0f} | MA60: {l["MA60"]:,.0f} | MA120: {l["MA120"]:,.0f}',
-        f'BB 상단: {l["BB_upper"]:,.0f} | 중단: {l["BB_mid"]:,.0f} | 하단: {l["BB_lower"]:,.0f} | 위치: {bb_p}%',
-        f'MACD: {l["MACD"]:,.0f} / Signal: {l["Signal"]:,.0f} -> {macd_sig}',
-        f'RSI(14): {l["RSI"]} -> {rsi_s} | Sto K: {l["Sto_K"]} D: {l["Sto_D"]}',
-        f'거래량: {l["거래량"]:,}주 | 전일대비: {l["거래량_비율"]:.0f}% | 20일평균: {df["거래량"].tail(20).mean():,.0f}주',
-        f'52주 고가: {l["52W_high"]:,.0f} | 52주 저가: {l["52W_low"]:,.0f}',
+        f'MA5: {_g(l,"MA5"):,.0f} | MA20: {_g(l,"MA20"):,.0f} | MA60: {_g(l,"MA60"):,.0f} | MA120: {_g(l,"MA120"):,.0f}',
+        f'BB 상단: {bb_u:,.0f} | 중단: {bb_mi:,.0f} | 하단: {bb_lo:,.0f} | 위치: {bb_p}%',
+        f'MACD: {macd_v:,.2f} / Signal: {sig_v:,.2f} -> {macd_sig}',
+        f'RSI(14): {rsi_v} -> {rsi_s} | Sto K: {_g(l,"Sto_K","N/A")} D: {_g(l,"Sto_D","N/A")}',
+        f'거래량: {l["거래량"]:,}주 | 전일대비: {_g(l,"거래량_비율",0):.0f}% | 20일평균: {df["거래량"].tail(20).mean():,.0f}주',
+        f'52주 고가: {_g(l,"52W_high",0):,.0f} | 52주 저가: {_g(l,"52W_low",0):,.0f}',
+        f'ATR14: {_g(l,"ATR14",0):,.0f} | CMF20: {_g(l,"CMF20",0):.3f}',
         '',
-        '분석 요청 (R:R 2.0이상 / 손절 -7% 적용):',
+        '분석 요청 (R:R 2.0이상 / ATR 동적 손절 적용):',
         '1.추세판정  2.지지/저항  3.매수조건  4.손절가  5.목표가(R:R포함)  6.리스크  7.최종판정[매수검토/관망/매수불가]',
     ]
     return '\n'.join(lines)
