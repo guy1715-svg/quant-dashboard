@@ -4405,7 +4405,7 @@ with tab_e:
                     unsafe_allow_html=True
                 )
 
-                _sc1, _sc2, _sc3 = st.columns([1, 1, 3])
+                _sc1, _sc2, _sc3, _sc4 = st.columns([1, 1, 1, 2])
                 _sell_qty = _sc1.number_input("매도수량", min_value=1, max_value=_pos['qty'],
                                                value=_pos['qty'], key=f"sq_{_pi}_{_pos['ticker']}")
                 if _sc2.button("📤 가상 매도", key=f"sell_{_pi}_{_pos['ticker']}", use_container_width=True):
@@ -4426,9 +4426,65 @@ with tab_e:
                     st.success(f"✅ {_pos['name']} {_sell_qty}주 매도 @ {_net_p:,.0f}원 (세금+수수료 차감)")
                     st.rerun()
 
+                # ── 포지션 직접 편집 버튼 ──
+                _edit_key = f"edit_pos_{_pi}_{_pos['ticker']}"
+                if _sc3.button("✏️ 편집", key=f"btn_{_edit_key}", use_container_width=True):
+                    st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+
+                if st.session_state.get(_edit_key, False):
+                    with st.container():
+                        st.markdown(f"<div style='background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:12px;margin:6px 0'>", unsafe_allow_html=True)
+                        _e1, _e2, _e3, _e4 = st.columns([2, 2, 2, 1])
+                        _new_name = _e1.text_input("종목명", value=_pos['name'], key=f"en_{_edit_key}")
+                        _new_qty  = _e2.number_input("수량 (주)", value=int(_pos['qty']), min_value=1, key=f"eq_{_edit_key}")
+                        _new_avg  = _e3.number_input(
+                            "평단가", value=float(_pos['avg_price']),
+                            min_value=0.01, format="%.4f" if not is_korean_ticker(_pos['ticker']) else "%.0f",
+                            key=f"ea_{_edit_key}"
+                        )
+                        _e4.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
+                        if _e4.button("💾 저장", key=f"save_{_edit_key}", use_container_width=True):
+                            _acc['positions'][_pi]['name']      = _new_name.strip()
+                            _acc['positions'][_pi]['qty']       = int(_new_qty)
+                            _acc['positions'][_pi]['avg_price'] = float(_new_avg)
+                            save_account(_acc)
+                            st.session_state[_edit_key] = False
+                            st.success(f"✅ {_new_name} 포지션 업데이트 완료")
+                            st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+
         st.divider()
 
-        # ── 3. 가상 매수 ──
+        # ── 3. 포지션 직접 추가 (실제 보유 종목 수기 등록) ──
+        with st.expander("➕ 포지션 직접 추가 (수기 등록)"):
+            st.caption("실제 증권사에서 보유 중인 종목을 수동으로 등록합니다. 현금 차감 없이 포지션만 추가됩니다.")
+            _m1, _m2, _m3, _m4 = st.columns([2, 2, 2, 2])
+            _man_ticker = _m1.text_input("티커", placeholder="예: 005930, AAPL", key="man_ticker").strip().upper()
+            _man_name   = _m2.text_input("종목명", placeholder="예: 삼성전자", key="man_name").strip()
+            _man_qty    = _m3.number_input("수량 (주)", min_value=1, value=1, key="man_qty")
+            _man_avg    = _m4.number_input("평단가", min_value=0.01, value=0.01, format="%.2f", key="man_avg",
+                                           help="한국주식: 원화 / 미국주식: 달러")
+            if st.button("📌 포지션 등록", key="man_add_pos", use_container_width=True):
+                if _man_ticker and _man_name and _man_avg > 0:
+                    _dup_tickers = [p['ticker'] for p in _acc['positions']]
+                    if _man_ticker in _dup_tickers:
+                        st.warning(f"⚠️ {_man_ticker} 이미 보유 중 — 편집 버튼으로 수정해주세요.")
+                    else:
+                        _acc['positions'].append({
+                            'ticker':    _man_ticker,
+                            'name':      _man_name,
+                            'qty':       int(_man_qty),
+                            'avg_price': float(_man_avg),
+                        })
+                        save_account(_acc)
+                        st.success(f"✅ {_man_name} ({_man_ticker}) {_man_qty}주 @ {_man_avg:,.2f} 등록 완료!")
+                        st.rerun()
+                else:
+                    st.error("티커·종목명·평단가를 모두 입력해주세요.")
+
+        st.divider()
+
+        # ── 4. 가상 매수 ──
         st.markdown("#### 📥 가상 매수 실행")
 
         _bc1, _bc2 = st.columns([2, 3])
