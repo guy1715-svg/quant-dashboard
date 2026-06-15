@@ -1,8 +1,17 @@
 # ============================================================
-# 퀀트 대시보드 — Streamlit + pykrx + Gemini
+# 퀀트 대시보드 — Streamlit + pykrx + Gemini + KIS API (V8.9)
 # 실행: streamlit run quant_dashboard.py
-# 설치: pip install streamlit pykrx plotly google-generativeai pandas numpy
+# 설치: pip install -r requirements.txt
 # ============================================================
+
+# ── 통합 캐시 TTL 상수 ──────────────────────────────────────
+GLOBAL_CACHE_TTL    = 300     # 기본 5분 (호가·기술지표)
+FINANCIAL_CACHE_TTL = 86400   # 재무·시총 1일
+REALTIME_CACHE_TTL  = 30      # 수급·체결 30초
+
+# ── KIS API 활성화 여부 (환경변수 KIS_APP_KEY가 있으면 자동 활성화) ──
+import os as _os_init
+KIS_ENABLED = bool(_os_init.environ.get("KIS_APP_KEY", ""))
 
 import streamlit as st
 import pandas as pd
@@ -2753,14 +2762,62 @@ with tab_c:
         scan_tickers = [t for t,n in scan_list]
         name_map     = {t:n for t,n in scan_list}
 
-        st.info(f"📋 스캔 대상: {len(scan_tickers)}종목")
+        st.info(f"📋 스캔 대상: {len(scan_tickers)}종목 | 엔진: {'🔥 KIS API (실시간)' if KIS_ENABLED else '📡 yfinance (지연)'}")
 
         passed = []
         prog   = st.progress(0)
         status = st.empty()
 
-        # ── V8.9 동적 변동성 & 스마트 눌림목 스캐너 ──
-        import yfinance as _yf_scan
+        # ── KIS API 모드 (환경변수 KIS_APP_KEY 설정 시) ──────────────────────
+        if KIS_ENABLED and market_type != "미국(S&P500)":
+            try:
+                from scanner import run_v89_scan, results_to_df
+                status.markdown("<span style='color:#34d399'>🔥 KIS API 비동기 스캔 중...</span>", unsafe_allow_html=True)
+                _kis_results = run_v89_scan(
+                    tickers   = scan_list,
+                    min_price = min_price,
+                    max_price = max_price,
+                    concurrency = 10,
+                )
+                prog.empty(); status.empty()
+                for _kr in _kis_results:
+                    passed.append({
+                        'ticker':      _kr.ticker,
+                        'name':        _kr.name,
+                        '현재가':      _kr.price,
+                        '등락(%)':     round(_kr.change_pct, 2),
+                        'RSI':         _kr.rsi,
+                        'MACD':        '골든크로스' if _kr.macd_cross else '—',
+                        'BB위치':      '—',
+                        '거래량비율':  _kr.vol_ratio,
+                        'ATR비율':     _kr.atr_ratio,
+                        '5일수익률':   _kr.cum5_ret,
+                        'OBV상승':     '✅' if _kr.foreign_net > 0 else '❌',
+                        '시총(억)':    _kr.market_cap_bil,
+                        'NXT':         '✅' if _kr.tradable_nxt else '⚠️',
+                        '조건':        _kr.cond_detail,
+                        'score':       6,
+                        'reasons':     _kr.reasons,
+                    })
+                # KIS 모드에서는 아래 yfinance 루프 건너뜀
+                prog.empty(); status.empty()
+                passed = sorted(passed, key=lambda x: x['5일수익률'], reverse=True)
+                st.session_state.passed = passed
+                if not passed:
+                    st.warning("⚠️ V8.9 조건(6개 AND) 충족 종목 없음.")
+                else:
+                    st.success(f"✅ {len(passed)}개 종목 발굴! (KIS 실시간)")
+            except Exception as _kis_err:
+                st.warning(f"⚠️ KIS API 오류 ({_kis_err}) — yfinance 폴백으로 전환")
+                KIS_ENABLED_FALLBACK = False
+            else:
+                KIS_ENABLED_FALLBACK = True
+        else:
+            KIS_ENABLED_FALLBACK = False
+
+        if not KIS_ENABLED or KIS_ENABLED_FALLBACK or market_type == "미국(S&P500)":
+            # ── yfinance 폴백 (기존 V8.9 로직) ──────────────────────────────
+            import yfinance as _yf_scan
 
         def _v89_scanner(df, ticker):
             """
@@ -2895,14 +2952,14 @@ with tab_c:
                 })
             except: continue
 
+        # yfinance 폴백 결과 저장
         prog.empty(); status.empty()
-        passed = sorted(passed, key=lambda x: x['score'], reverse=True)
+        passed = sorted(passed, key=lambda x: x.get('5일수익률', 0), reverse=True)
         st.session_state.passed = passed
-
         if not passed:
-            st.warning(f"⚠️ 조건 충족 종목 없음 — 최소점수({min_score}점)를 낮추거나 조건을 완화하세요.")
+            st.warning("⚠️ V8.9 조건(6개 AND) 충족 종목 없음.")
         else:
-            st.success(f"✅ {len(passed)}개 종목 발굴!")
+            st.success(f"✅ {len(passed)}개 종목 발굴! (yfinance 근사)")
 
     # ── 결과 표시 ──
     if st.session_state.passed is not None and st.session_state.passed:
