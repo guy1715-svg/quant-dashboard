@@ -121,9 +121,10 @@ def kis_get_price(ticker):
             "tr_id":         "FHKST01010100",
         }, params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}, timeout=5)
         _data = _res.json().get("output", {})
-        if _data:
+        _price = int(_data.get("stck_prpr", 0)) if _data else 0
+        if _data and _price > 0:
             return {
-                "현재가":    int(_data.get("stck_prpr", 0)),
+                "현재가":    _price,
                 "전일대비":  int(_data.get("prdy_vrss", 0)),
                 "등락률":    float(_data.get("prdy_ctrt", 0)),
                 "거래량":    int(_data.get("acml_vol", 0)),
@@ -135,7 +136,7 @@ def kis_get_price(ticker):
                 "PER":       float(_data.get("per", 0)),
                 "PBR":       float(_data.get("pbr", 0)),
             }
-    except Exception as _e:
+    except Exception:
         pass
     return None
 
@@ -210,14 +211,15 @@ def kis_get_investor(ticker):
             "fid_input_iscd":         ticker
         }, timeout=5)
         _out = _res.json().get("output", [])
-        if _out:
+        if _out and isinstance(_out, list) and len(_out) > 0:
             _latest = _out[0]
-            return {
-                "외인순매수":  int(_latest.get("frgn_ntby_qty", 0)),
-                "기관순매수":  int(_latest.get("orgn_ntby_qty", 0)),
-                "개인순매수":  int(_latest.get("prsn_ntby_qty", 0)),
-            }
-    except:
+            if isinstance(_latest, dict):
+                return {
+                    "외인순매수":  int(_latest.get("frgn_ntby_qty", 0)),
+                    "기관순매수":  int(_latest.get("orgn_ntby_qty", 0)),
+                    "개인순매수":  int(_latest.get("prsn_ntby_qty", 0)),
+                }
+    except Exception:
         pass
     return None
 
@@ -5429,13 +5431,18 @@ with tab_e:
                         )
                         _e4.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
                         if _e4.button("💾 저장", key=f"save_{_edit_key}", use_container_width=True):
-                            _acc['positions'][_pi]['name']      = _new_name.strip()
-                            _acc['positions'][_pi]['qty']       = int(_new_qty)
-                            _acc['positions'][_pi]['avg_price'] = float(_new_avg)
-                            save_account(_acc)
-                            st.session_state[_edit_key] = False
-                            st.success(f"✅ {_new_name} 포지션 업데이트 완료")
-                            st.rerun()
+                            if not _new_name.strip():
+                                st.error("❌ 종목명을 입력하세요.")
+                            elif float(_new_avg) <= 0:
+                                st.error("❌ 평단가는 0보다 커야 합니다.")
+                            else:
+                                _acc['positions'][_pi]['name']      = _new_name.strip()
+                                _acc['positions'][_pi]['qty']       = int(_new_qty)
+                                _acc['positions'][_pi]['avg_price'] = float(_new_avg)
+                                save_account(_acc)
+                                st.session_state[_edit_key] = False
+                                st.success(f"✅ {_new_name} 포지션 업데이트 완료")
+                                st.rerun()
                         st.markdown("</div>", unsafe_allow_html=True)
 
         st.divider()
@@ -5450,7 +5457,13 @@ with tab_e:
             _man_avg    = _m4.number_input("평단가", min_value=0.01, value=0.01, format="%.2f", key="man_avg",
                                            help="한국주식: 원화 / 미국주식: 달러")
             if st.button("📌 포지션 등록", key="man_add_pos", use_container_width=True):
-                if _man_ticker and _man_name and _man_avg > 0:
+                if not _man_ticker:
+                    st.error("❌ 티커를 입력하세요.")
+                elif not _man_name:
+                    st.error("❌ 종목명을 입력하세요.")
+                elif _man_avg <= 0:
+                    st.error("❌ 평단가는 0보다 커야 합니다.")
+                elif True:
                     _dup_tickers = [p['ticker'] for p in _acc['positions']]
                     if _man_ticker in _dup_tickers:
                         st.warning(f"⚠️ {_man_ticker} 이미 보유 중 — 편집 버튼으로 수정해주세요.")
