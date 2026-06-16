@@ -5310,11 +5310,51 @@ with tab_e:
         # 초기화
         with st.expander("⚙️ 가상 계좌 설정"):
             _new_cap = st.number_input("초기자본 (원)", value=int(_acc['initial']), step=1000000, min_value=1000000)
-            if st.button("🔄 계좌 초기화 (전체 리셋)", key="reset_account"):
+            _rst_col1, _rst_col2 = st.columns(2)
+            if _rst_col1.button("🔄 계좌 초기화 (전체 리셋)", key="reset_account"):
                 _new_acc = {'initial':_new_cap,'cash':_new_cap,'positions':[],'peak':_new_cap,'trough':_new_cap}
                 save_account(_new_acc)
                 st.success(f"✅ {_new_cap:,.0f}원으로 초기화!")
                 st.rerun()
+            if _rst_col2.button("🔁 거래일지로 포지션 복구", key="restore_positions",
+                                help="거래 일지(BUY/SELL 기록)를 분석해 현재 보유 포지션을 재구성합니다"):
+                _trades = _load_trade_log_firebase()
+                if not _trades:
+                    st.warning("⚠️ 거래 일지가 비어있거나 불러올 수 없습니다.")
+                else:
+                    # BUY/SELL 기록으로 포지션 재구성
+                    _rebuilt = {}  # ticker → {name, qty, avg_price, entry_date}
+                    _cash = float(_acc['initial'])
+                    for _t in _trades:
+                        _tk  = _t.get('ticker', '')
+                        _act = _t.get('액션', '')
+                        _qty = int(_t.get('수량', 0))
+                        _net = float(_t.get('순매수가', _t.get('가격', 0)))
+                        _nm  = _t.get('종목명', _tk)
+                        _dt  = _t.get('날짜', '')
+                        if not _tk or _qty <= 0 or _net <= 0:
+                            continue
+                        if _act == 'BUY':
+                            if _tk in _rebuilt:
+                                _old = _rebuilt[_tk]
+                                _tot_qty = _old['qty'] + _qty
+                                _old['avg_price'] = round((_old['avg_price']*_old['qty'] + _net*_qty) / _tot_qty, 4)
+                                _old['qty'] = _tot_qty
+                            else:
+                                _rebuilt[_tk] = {'ticker':_tk,'name':_nm,'qty':_qty,'avg_price':_net,'entry_date':_dt}
+                            _cash -= _net * _qty * (1 + 0.00015 + 0.003)  # 수수료/세금 반영
+                        elif _act == 'SELL':
+                            if _tk in _rebuilt:
+                                _rebuilt[_tk]['qty'] -= _qty
+                                if _rebuilt[_tk]['qty'] <= 0:
+                                    del _rebuilt[_tk]
+                            _cash += _net * _qty * (1 - 0.00015 - 0.003)
+                    _pos_list = list(_rebuilt.values())
+                    _acc['positions'] = _pos_list
+                    _acc['cash'] = max(_cash, 0)
+                    save_account(_acc)
+                    st.success(f"✅ {len(_pos_list)}개 포지션 복구 완료! (현금 {_acc['cash']:,.0f}원)")
+                    st.rerun()
 
         st.divider()
 
