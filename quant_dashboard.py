@@ -598,6 +598,8 @@ def add_ticker(ticker, name):
     new_wl = wl.strip() + f"\n{ticker},{name}"
     # session_state 즉시 반영
     st.session_state.watchlist_data = new_wl
+    # all_data 캐시 무효화 (새 종목은 다음 로드 시 신규 데이터 취득)
+    st.session_state.get('all_data_cache', {}).pop(ticker, None)
     # Firebase 저장
     try:
         _fb_ref(f"/quant_watchlist/{ticker}").set({"ticker": ticker, "name": name})
@@ -640,6 +642,8 @@ def remove_ticker(ticker):
     pairs = _parse_watchlist(get_watchlist())
     new_text = "\n".join(f"{t},{n}" for t, n in pairs if t != ticker)
     st.session_state.watchlist_data = new_text
+    # 캐시에서도 즉시 제거
+    st.session_state.get('all_data_cache', {}).pop(ticker, None)
     remove_ticker_from_sheets(new_text)
 
 # session_state 초기화
@@ -5382,13 +5386,25 @@ with tab_e:
         if not _acc['positions']:
             st.info("💡 보유 포지션 없음. 아래 가상 매수를 실행해보세요.")
         else:
+            # 가격 데이터 취득 시각 기록
+            import time as _pos_time
+            _price_fetched_at = _pos_time.time()
             for _pi, _pos in enumerate(_acc['positions']):
                 _pos_is_kr = is_korean_ticker(_pos['ticker'])
+                _price_is_stale = False
                 try:
                     _cur_df = fetch_ohlcv(_pos['ticker'], 5)
-                    _cur_p  = float(_cur_df['종가'].iloc[-1]) if _cur_df is not None and not _cur_df.empty else float(_pos['avg_price'])
-                except:
+                    if _cur_df is not None and not _cur_df.empty:
+                        _cur_p = float(_cur_df['종가'].iloc[-1])
+                        # 5분 캐시 기준: 취득 시각이 5분 초과면 stale 표시
+                        _cache_age = _pos_time.time() - st.session_state.get('all_data_time', _pos_time.time())
+                        _price_is_stale = _cache_age > 300
+                    else:
+                        _cur_p = float(_pos['avg_price'])
+                        _price_is_stale = True
+                except Exception:
                     _cur_p = float(_pos['avg_price'])
+                    _price_is_stale = True
 
                 # 원화 환산 (미국주식은 USD → KRW)
                 _fx       = 1.0 if _pos_is_kr else _pos_usd_krw
@@ -5436,7 +5452,7 @@ with tab_e:
                     f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px'>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>수량</div><div style='font-weight:700'>{_pos['qty']:,}주</div></div>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평단가</div><div style='font-weight:700;white-space:pre-line'>{_avg_disp}</div></div>"
-                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-weight:700;white-space:pre-line'>{_cur_disp}</div></div>"
+                    f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>현재가{'  ⏱지연' if _price_is_stale else ''}</div><div style='font-weight:700;white-space:pre-line'>{_cur_disp}</div></div>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가금액(원)</div><div style='font-weight:700'>{_val_disp}</div></div>"
                     f"<div style='text-align:center'><div style='font-size:10px;color:#64748b'>평가손익(원)</div><div class='{_pc}' style='font-weight:700'>{_pnl_disp}</div></div>"
                     f"</div>"
