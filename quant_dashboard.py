@@ -4127,6 +4127,101 @@ with tab_d:
   </div>
 </div>""", unsafe_allow_html=True)
 
+            # ── ETF 차트 + 매도 신호 ──
+            try:
+                _is_kr_etf = _hold_code.isdigit()
+                _chart_sym  = f"{_hold_code}.KS" if _is_kr_etf else _hold_code
+                _ch = fetch_ohlcv(_hold_code if _is_kr_etf else _hold_code, 120)
+                if _ch is None or len(_ch) < 30:
+                    import yfinance as _yf_ec
+                    _raw = _yf_ec.Ticker(_chart_sym).history(period="6mo", interval="1d")
+                    if _raw is not None and not _raw.empty:
+                        _ch = _raw.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']]
+                if _ch is not None and len(_ch) >= 30:
+                    _ch_c = _ch['종가'].astype(float)
+                    _ch_h = _ch['고가'].astype(float)
+                    _ch_l = _ch['저가'].astype(float)
+                    _ch_o = _ch['시가'].astype(float)
+                    _ch_v = _ch['거래량'].astype(float)
+                    _ch_idx = _ch.index
+
+                    # MA 계산
+                    _ma5  = _ch_c.rolling(5).mean()
+                    _ma20 = _ch_c.rolling(20).mean()
+                    _ma60 = _ch_c.rolling(60).mean()
+
+                    # ADX(14) for sell signal
+                    _tr2 = pd.concat([_ch_h-_ch_l,(_ch_h-_ch_c.shift()).abs(),(_ch_l-_ch_c.shift()).abs()],axis=1).max(axis=1)
+                    _atr2 = _tr2.rolling(14).mean().replace(0, float('nan'))
+                    _pdm2 = _ch_h.diff().clip(lower=0)
+                    _ndm2 = (-_ch_l.diff()).clip(lower=0)
+                    _pdi2 = 100*_pdm2.rolling(14).mean()/_atr2
+                    _ndi2 = 100*_ndm2.rolling(14).mean()/_atr2
+                    _dx2  = 100*(_pdi2-_ndi2).abs()/(_pdi2+_ndi2).replace(0,float('nan'))
+                    _adx2 = float(_dx2.rolling(14).mean().iloc[-1])
+
+                    # RSI(14)
+                    _d2   = _ch_c.diff()
+                    _rsi2 = float((100 - 100/(1+_d2.clip(lower=0).rolling(14).mean()/_d2.clip(upper=0).abs().rolling(14).mean().replace(0,float('nan')))).iloc[-1])
+
+                    # MACD
+                    _macd2    = _ch_c.ewm(span=12).mean() - _ch_c.ewm(span=26).mean()
+                    _macd2sig = _macd2.ewm(span=9).mean()
+                    _macd2_v  = float(_macd2.iloc[-1]); _macd2_p = float(_macd2.iloc[-2])
+                    _sig2_v   = float(_macd2sig.iloc[-1]); _sig2_p = float(_macd2sig.iloc[-2])
+                    _macd_dead = (_macd2_v < _sig2_v and _macd2_p >= _sig2_p)
+
+                    # 매도 신호 판단
+                    _sell_signals = []
+                    if _adx2 < 25:
+                        _sell_signals.append(("🔴 ADX 추세 소멸", f"ADX {_adx2:.1f} < 25 — 추세 종료, 전량 현금화 검토"))
+                    if _rsi2 >= 78:
+                        _sell_signals.append(("🟠 RSI 과매수", f"RSI {_rsi2:.1f} ≥ 78 — 단기 과열, 부분 익절 검토"))
+                    if _macd_dead:
+                        _sell_signals.append(("🟡 MACD 데드크로스", "추세 전환 신호 — 다음날 재확인"))
+                    if _buy_price > 0 and _pnl_pct >= 15:
+                        _sell_signals.append(("💰 +15% 익절 구간", f"수익률 {_pnl_pct:+.1f}% — 절반 익절 후 나머지 추세 추종"))
+
+                    if _sell_signals:
+                        for _stitle, _smsg in _sell_signals:
+                            st.warning(f"**{_stitle}** — {_smsg}")
+                    else:
+                        st.success("✅ 매도 신호 없음 — 현재 추세 지속 중")
+
+                    # 차트
+                    with st.expander(f"📈 {_hold_name} 차트 보기", expanded=True):
+                        _cf = go.Figure()
+                        _cf.add_trace(go.Candlestick(x=_ch_idx, open=_ch_o, high=_ch_h, low=_ch_l, close=_ch_c,
+                            increasing_line_color='#f63d68', decreasing_line_color='#4da6ff',
+                            increasing_fillcolor='#f63d68', decreasing_fillcolor='#4da6ff', name='가격'))
+                        _cf.add_trace(go.Scatter(x=_ch_idx, y=_ma5,  line=dict(color='#ffd166',width=1), name='MA5'))
+                        _cf.add_trace(go.Scatter(x=_ch_idx, y=_ma20, line=dict(color='#a78bfa',width=1.5), name='MA20'))
+                        _cf.add_trace(go.Scatter(x=_ch_idx, y=_ma60, line=dict(color='#38bdf8',width=1.5), name='MA60'))
+                        # 매수가 라인
+                        if _buy_price > 0:
+                            _cf.add_hline(y=_buy_price, line_color='#34d399', line_dash='dash', line_width=1.5,
+                                annotation_text=f"매수가 {_buy_price:,.0f}", annotation_position="left")
+                            _cf.add_hline(y=_buy_price*0.93, line_color='#f87171', line_dash='dot', line_width=1,
+                                annotation_text="손절 -7%", annotation_position="left")
+                        _cur_p = float(_ch_c.iloc[-1])
+                        _n60 = min(60, len(_ch_c))
+                        _ylo = float(_ch_l.iloc[-_n60:].min()); _yhi = float(_ch_h.iloc[-_n60:].max())
+                        _ypad = (_yhi - _ylo) * 0.08
+                        if _buy_price > 0:
+                            _ylo = min(_ylo, _buy_price * 0.91)
+                            _yhi = max(_yhi, _buy_price * 1.05)
+                        _cf.update_layout(
+                            height=380, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='#0d1117',
+                            font_color='#f0f4ff', xaxis_rangeslider_visible=False,
+                            margin=dict(l=0,r=0,t=10,b=0),
+                            legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                            yaxis=dict(range=[_ylo-_ypad, _yhi+_ypad*1.5], gridcolor='rgba(255,255,255,0.05)')
+                        )
+                        _cf.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+                        st.plotly_chart(_cf, use_container_width=True)
+            except Exception as _ec:
+                st.caption(f"차트 로딩 실패: {_ec}")
+
             # 스위칭 대상 안내
             if _signal in ("SWITCH", "WATCH") and _top1['종목코드'] != _hold_code:
                 st.markdown(f"""
