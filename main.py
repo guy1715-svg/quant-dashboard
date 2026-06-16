@@ -282,7 +282,7 @@ async def _scan_one(ticker: str) -> dict | None:
         }
     except Exception as e:
         log.warning(f"스캔 오류 {ticker}: {e}")
-        return None
+        return {"ticker": ticker, "_error": str(e)}
 
 # ════════════════════════════════════════════════════════════
 # Pydantic 요청 모델
@@ -371,13 +371,15 @@ async def get_scanner(
     tickers = [t.strip() for t in watchlist.split(",") if t.strip()]
     tasks   = [_scan_one(t) for t in tickers]
     results = await asyncio.gather(*tasks)
-    hits    = [r for r in results if r is not None]
+    errors  = [r for r in results if r and "_error" in r]
+    hits    = [r for r in results if r and "_error" not in r]
     hits.sort(key=lambda x: x["score"], reverse=True)
     return {
         "count": len(hits),
         "scanned": len(tickers),
         "timestamp": datetime.now().isoformat(),
         "results": hits,
+        "debug_errors": errors,  # 임시 디버그 — 배포 확인 후 제거
     }
 
 
