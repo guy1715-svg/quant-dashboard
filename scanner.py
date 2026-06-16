@@ -232,8 +232,12 @@ def _evaluate_scoring(
 
     # C4: 수급 — 외인+기관 쌍끌이 순매수 > 0 (30점)
     # KIS 데이터 있을 때: 외인 AND 기관 둘 다 순매수 양수
-    # yfinance 폴백: 데이터 없으므로 0점
-    c4_ok = (foreign_net > 0) and (inst_net > 0)
+    # yfinance 폴백: KIS 데이터 없으면 CMF20 > 0으로 대체 (수급 방향성 대리)
+    _has_kis_data = (foreign_net != 0) or (inst_net != 0)
+    if _has_kis_data:
+        c4_ok = (foreign_net > 0) and (inst_net > 0)
+    else:
+        c4_ok = ind.get("cmf20", 0) > 0  # CMF20 대체 지표
     if c4_ok:
         score += SCORE_C4_INV
         reasons.append(f"💰쌍끌이+{SCORE_C4_INV}점")

@@ -2329,6 +2329,16 @@ with tab_a:
             _vol_r  = _lh.get('거래량_비율', 100)
             _vol_str = f"거래량 {_vol_r:.0f}%" if _vol_r else ""
             _vol_c  = '#f63d68' if _vol_r and _vol_r >= 150 else _txt_sub
+            # 52주 신고가 근접 (95% 이상)
+            _52w_h  = _lh.get('52W_high', None)
+            _52w_tag = ""
+            if _52w_h and float(_52w_h) > 0:
+                _52w_pct = float(_lh['종가']) / float(_52w_h) * 100
+                if _52w_pct >= 95:
+                    _52w_tag = "<span style='background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;margin-left:4px'>52W고가</span>"
+            # RSI 레이블
+            _rsi_lbl = "과매수" if _rsi_v >= 70 else "과매도" if _rsi_v <= 30 else ""
+            _rsi_str = f"RSI {_rsi_v:.0f}" + (f" ({_rsi_lbl})" if _rsi_lbl else "")
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;align-items:center;"
                 f"padding:10px 14px;background:{_card_bg};border-radius:10px;"
@@ -2336,11 +2346,11 @@ with tab_a:
                 f"<div style='display:flex;align-items:center;gap:10px'>"
                 f"<span style='font-size:14px;font-weight:600'>{_nh}</span>"
                 f"<span style='color:{_txt_sub};font-size:11px'>{_th}</span>"
-                f"{_bdgh}"
+                f"{_bdgh}{_52w_tag}"
                 f"</div>"
                 f"<div style='display:flex;align-items:center;gap:16px'>"
                 f"<span style='color:{_vol_c};font-size:11px'>{_vol_str}</span>"
-                f"<span style='color:{_rsi_ch};font-size:12px;font-family:IBM Plex Mono'>RSI {_rsi_v:.0f}</span>"
+                f"<span style='color:{_rsi_ch};font-size:12px;font-family:IBM Plex Mono'>{_rsi_str}</span>"
                 f"<span style='font-family:IBM Plex Mono;font-size:14px'>{format_price(_lh['종가'],_th)}</span>"
                 f"<span style='color:{_cch};font-weight:600;min-width:60px;text-align:right'>{_arrow}{abs(_chgh):.2f}%</span>"
                 f"</div></div>",
@@ -2796,8 +2806,18 @@ with tab_b:
                         with st.spinner(f'{name} 분석 중...'):
                             try:
                                 res = _gemini_safe_call(_b2_model, _B2_SYSTEM + '\n\n' + prompt)
-                                st.markdown(f"<div class='gemini-box'>{res.text}</div>",
+                                _ai_txt = res.text
+                                st.markdown(f"<div class='gemini-box'>{_ai_txt}</div>",
                                             unsafe_allow_html=True)
+                                # 결과 텍스트 복사/다운로드
+                                st.download_button(
+                                    "📋 분석 결과 저장",
+                                    data=_ai_txt,
+                                    file_name=f"AI분석_{name}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                                    mime="text/plain",
+                                    key=f"dl_ai_{ticker}",
+                                    use_container_width=True,
+                                )
                             except Exception as e:
                                 st.error(f"오류: {e}")
 
