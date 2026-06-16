@@ -66,10 +66,17 @@ BLOCKED_SECTORS = [
     "Conglomerates", "Holding Companies",
 ]
 
+# ── 영구 블랙리스트 (API 오분류 종목) ─────────────────────────────────────────
+BLACKLIST_TICKERS = [
+    '002790',  # 아모레퍼시픽 (지주사 - API에서 화장품/제조업으로 오분류)
+]
+
 
 # ── 하드 필터 함수 ────────────────────────────────────────────────────────────
 def _hard_filter_name_only(name: str, ticker: str) -> Tuple[bool, str]:
     """종목명·코드만으로 빠른 1차 필터 (API 불필요)."""
+    if ticker in BLACKLIST_TICKERS:
+        return False, f"블랙리스트: {ticker}"
     _name_upper = name.upper()
     for kw in ETF_NAME_KEYWORDS:
         if kw.upper() in _name_upper:
@@ -243,10 +250,11 @@ def _evaluate_scoring(
         score += SCORE_C6_VOL
         reasons.append(f"📉눌림목+{SCORE_C6_VOL}점")
 
-    # ── 등급 판정 ──
-    if hard_pass and score >= GRADE_A:
+    # ── 등급 판정 (Target_Locked: C1~C6 전부 True 필수) ──
+    all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
+    if all6_pass and score >= GRADE_A:
         grade = "A-Grade 주도주"
-    elif hard_pass and score >= GRADE_LOCK:
+    elif all6_pass and score >= GRADE_LOCK:
         grade = "Target_Locked"
     else:
         grade = "Filtered"
@@ -409,8 +417,8 @@ def scan_one_yfinance(
             ind, price_info, fin_info, inv_info
         )
 
-        # yfinance 모드: C4 데이터 없어서 최대 70점 → 70점 이상이면 통과
-        if not hard_pass or score < GRADE_LOCK:
+        # yfinance 모드: C4 데이터 없어서 최대 70점 → all6_pass + 70점 이상이면 통과
+        if grade == "Filtered":
             return None
 
         return ScanResult(

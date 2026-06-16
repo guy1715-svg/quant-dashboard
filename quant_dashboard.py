@@ -5884,6 +5884,26 @@ with tab_e:
                         st.session_state['_confirm_del_all'] = False
                         st.rerun()
 
+                # ── 필터 ──
+                _jf1, _jf2, _jf3 = st.columns([2, 2, 2])
+                _filter_ticker = _jf1.selectbox(
+                    "종목 필터", ["전체"] + sorted(_log_df['종목명'].dropna().unique().tolist()),
+                    key="jl_filter_ticker"
+                )
+                _filter_action = _jf2.selectbox("매매 유형", ["전체", "매수", "매도"], key="jl_filter_action")
+                _filter_days   = _jf3.selectbox("기간", ["전체", "최근 7일", "최근 30일", "최근 90일"], key="jl_filter_days")
+
+                _log_view = _log_df.copy()
+                if _filter_ticker != "전체":
+                    _log_view = _log_view[_log_view['종목명'] == _filter_ticker]
+                if _filter_action != "전체":
+                    _log_view = _log_view[_log_view['매매'] == _filter_action]
+                if _filter_days != "전체":
+                    _days_map = {"최근 7일": 7, "최근 30일": 30, "최근 90일": 90}
+                    _cutoff = pd.Timestamp.now() - pd.Timedelta(days=_days_map[_filter_days])
+                    _log_view = _log_view[_log_view['날짜'] >= _cutoff]
+                _log_view = _log_view.reset_index(drop=True)
+
                 _show_cols = [c for c in ['날짜','시간','종목명','매매','수량','순체결가','평가금액','메모'] if c in _log_df.columns]
 
                 # 개별 삭제 — Firebase key 기반
@@ -5897,7 +5917,9 @@ with tab_e:
                 _jl_br   = 'rgba(255,255,255,0.09)' if _is_dark_jl else 'rgba(0,0,0,0.10)'
                 _jl_sub  = '#64748b'
 
-                for _ri, _row_r in _log_df.iloc[::-1].iterrows():
+                if _log_view.empty:
+                    st.info("필터 조건에 맞는 거래 기록이 없습니다.")
+                for _ri, _row_r in _log_view.iloc[::-1].iterrows():
                     _is_buy   = _row_r.get('매매') == '매수'
                     _action_c = '#f63d68' if _is_buy else '#3b82f6'
                     _action_bg= 'rgba(246,61,104,0.12)' if _is_buy else 'rgba(59,130,246,0.12)'
