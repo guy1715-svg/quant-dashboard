@@ -3986,6 +3986,8 @@ def _calc_etf_indicators(ticker_sym):
             '상태': '활성' if _adx >= 25 else '탈락',
             '갭(%)': round(_gap_pct * 100, 2),
             'MA5이격(%)': round(_cur_vs_ma5 * 100, 2),
+            'MA5가격': round(_ma5, 2),
+            '전일종가': round(_prev_close, 2),
         }
     except Exception:
         return None
@@ -4041,22 +4043,82 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                         st.success(f"✅ {_name_key} 추가됨")
                     else:
                         st.info("이미 추가된 종목입니다")
-        # ── 1위 ETF 갭상승 뇌동매매 차단 배지 ──
+        # ── 1위 ETF 갭상승 차단 + 매수 타점 카드 ──
         if _is_top:
-            _gap_v   = row.get('갭(%)', 0)
-            _ma5_v   = row.get('MA5이격(%)', 0)
-            _is_gap  = _gap_v >= 3.0
-            _is_hot  = _ma5_v >= 3.0
-            _is_cool = -1.0 <= _ma5_v <= 1.0
-            if _is_gap or _is_hot:
-                _reason = []
-                if _is_gap: _reason.append(f"갭상승 +{_gap_v:.1f}%")
-                if _is_hot: _reason.append(f"5MA 이격 +{_ma5_v:.1f}%")
-                st.warning(f"⛔ **매수 차단** — {' / '.join(_reason)} 과열 상태. 눌림목 대기 필요.")
+            _gap_v      = row.get('갭(%)', 0)
+            _ma5_v      = row.get('MA5이격(%)', 0)
+            _ma5_price  = float(row.get('MA5가격', row['현재가']))
+            _prev_close = float(row.get('전일종가', row['현재가']))
+            _cur_price  = float(row['현재가'])
+            _is_gap     = _gap_v >= 3.0
+            _is_hot     = _ma5_v >= 3.0
+            _is_cool    = -1.0 <= _ma5_v <= 1.0
+            _is_kr_etf  = str(row['코드']).isdigit()
+            _sym        = '원' if _is_kr_etf else '$'
+            _fmt        = lambda v: f"{v:,.0f}{_sym}" if _is_kr_etf else f"{_sym}{v:,.2f}"
+
+            # 상황별 타점 계산
+            if _is_gap and _is_hot:
+                _entry     = round(_ma5_price * 0.99, 2)
+                _status    = "⛔ 매수 차단"
+                _status_c  = "#f43f5e"
+                _comment   = f"갭상승+과열. 타점: MA5({_fmt(_ma5_price)}) -1% 눌림목 대기"
+            elif _is_gap:
+                _entry     = round(_prev_close * 1.001, 2)
+                _status    = "⛔ 갭상승 차단"
+                _status_c  = "#f97316"
+                _comment   = f"갭상승 +{_gap_v:.1f}%. 전일 종가({_fmt(_prev_close)}) 복귀 시 진입"
+            elif _is_hot:
+                _entry     = round(_ma5_price * 0.99, 2)
+                _status    = "⚠️ 과열 대기"
+                _status_c  = "#f97316"
+                _comment   = f"MA5 이격 +{_ma5_v:.1f}% 과열. MA5 -1% 수준 눌림목 대기"
             elif _is_cool:
-                st.success(f"✅ **눌림목 진입 타점** — 5MA 이격 {_ma5_v:+.1f}% (±1% 이내). 진입 검토 가능.")
+                _entry     = round(_cur_price, 2)
+                _status    = "✅ 진입 타점"
+                _status_c  = "#22c55e"
+                _comment   = f"MA5 이격 {_ma5_v:+.1f}% — 현재가가 타점 구간"
             else:
-                st.info(f"⏳ **관심(Target Lock)** — 5MA 이격 {_ma5_v:+.1f}%. 눌림목(-1%~+1%) 도달 시 진입.")
+                _entry     = round(_ma5_price, 2)
+                _status    = "⏳ 눌림목 대기"
+                _status_c  = "#60a5fa"
+                _comment   = f"MA5({_fmt(_ma5_price)}) 도달(-1%~+1%) 시 진입"
+
+            _stop     = round(_entry * 0.93, 2)
+            _target1  = round(_entry * 1.08, 2)
+            _target2  = round(_entry * 1.15, 2)
+            _risk     = _entry - _stop
+            _rr       = round((_target1 - _entry) / _risk, 1) if _risk > 0 else 0
+
+            st.markdown(f"""
+<div style='background:rgba(30,30,50,0.7);border:2px solid {_status_c};border-radius:12px;padding:16px 20px;margin:8px 0'>
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>
+    <span style='font-size:16px;font-weight:800;color:{_status_c}'>{_status}</span>
+    <span style='font-size:12px;color:#94a3b8'>{_comment}</span>
+  </div>
+  <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center'>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🎯 매수 타점</div>
+      <div style='font-size:16px;font-weight:700;color:#fbbf24'>{_fmt(_entry)}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🛑 손절가 (-7%)</div>
+      <div style='font-size:16px;font-weight:700;color:#f43f5e'>{_fmt(_stop)}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🎯 1차 목표 (+8%)</div>
+      <div style='font-size:16px;font-weight:700;color:#22c55e'>{_fmt(_target1)}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🚀 2차 목표 (+15%)</div>
+      <div style='font-size:16px;font-weight:700;color:#34d399'>{_fmt(_target2)}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>⚖️ R:R</div>
+      <div style='font-size:16px;font-weight:700;color:{"#22c55e" if _rr >= 2 else "#f97316"}'>{_rr:.1f}</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
         st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
 
