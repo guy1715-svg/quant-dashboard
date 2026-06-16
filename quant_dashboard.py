@@ -3460,6 +3460,11 @@ with tab_c:
             except Exception:
                 pass
 
+            # ── 블랙리스트: 영구 배제 종목 ──
+            _BLACKLIST = ['002790']  # 아모레퍼시픽(지주사 - API 오분류)
+            if ticker in _BLACKLIST:
+                return False, {'조건': f'블랙리스트: {ticker}', '점수': 0, '등급': 'Filtered'}
+
             # ── 하드 필터: ETF/SPAC/섹터 즉시 차단 ──
             _hf_ok, _hf_reason = _hard_filter(ticker, name, _yf_info)
             if not _hf_ok:
@@ -3495,10 +3500,14 @@ with tab_c:
             if c6_ok: score += 25; score_detail.append("눌림목+25")
 
             # ── 등급 판정 ──
-            if hard_pass and score >= 90:
+            # Target_Locked는 C1~C6 모두 True일 때만 (점수 맹신 방지)
+            all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
+            if all6_pass and score >= 90:
                 grade = "🏆 A-Grade 주도주"
-            elif hard_pass and score >= 70:
+            elif all6_pass and score >= 70:
                 grade = "🎯 Target_Locked"
+            elif hard_pass and score >= 70:
+                grade = "📋 관심후보"
             else:
                 grade = "Filtered"
 
@@ -3926,6 +3935,11 @@ def _calc_etf_indicators(ticker_sym):
         elif _vol_r >= 100: _score += 4
 
         _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
+        # 갭상승 뇌동매매 차단용 데이터
+        _open_today    = float(_df['Open'].iloc[-1])
+        _prev_close    = float(_cl.iloc[-2])
+        _gap_pct       = (_open_today - _prev_close) / _prev_close if _prev_close > 0 else 0
+        _cur_vs_ma5    = (float(_cl.iloc[-1]) - _ma5) / _ma5 if _ma5 > 0 else 0
         return {
             'ADX': _adx, 'RSI': _rsi, 'MACD': _macd_sig,
             'Z-Score': _zs, '모멘텀(%)': _mom, '거래량%': _vol_r,
@@ -3933,6 +3947,8 @@ def _calc_etf_indicators(ticker_sym):
             '종합점수': _score, '등락(%)': _chg,
             '현재가': round(_cl.iloc[-1], 2),
             '상태': '활성' if _adx >= 25 else '탈락',
+            '갭(%)': round(_gap_pct * 100, 2),
+            'MA5이격(%)': round(_cur_vs_ma5 * 100, 2),
         }
     except Exception:
         return None
@@ -3988,6 +4004,22 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                         st.success(f"✅ {_name_key} 추가됨")
                     else:
                         st.info("이미 추가된 종목입니다")
+        # ── 1위 ETF 갭상승 뇌동매매 차단 배지 ──
+        if _is_top:
+            _gap_v   = row.get('갭(%)', 0)
+            _ma5_v   = row.get('MA5이격(%)', 0)
+            _is_gap  = _gap_v >= 3.0
+            _is_hot  = _ma5_v >= 3.0
+            _is_cool = -1.0 <= _ma5_v <= 1.0
+            if _is_gap or _is_hot:
+                _reason = []
+                if _is_gap: _reason.append(f"갭상승 +{_gap_v:.1f}%")
+                if _is_hot: _reason.append(f"5MA 이격 +{_ma5_v:.1f}%")
+                st.warning(f"⛔ **매수 차단** — {' / '.join(_reason)} 과열 상태. 눌림목 대기 필요.")
+            elif _is_cool:
+                st.success(f"✅ **눌림목 진입 타점** — 5MA 이격 {_ma5_v:+.1f}% (±1% 이내). 진입 검토 가능.")
+            else:
+                st.info(f"⏳ **관심(Target Lock)** — 5MA 이격 {_ma5_v:+.1f}%. 눌림목(-1%~+1%) 도달 시 진입.")
         st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
 
