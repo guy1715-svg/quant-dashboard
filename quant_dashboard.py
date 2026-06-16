@@ -1096,7 +1096,8 @@ def calc_indicators(df):
         # 하위 호환: Sto_K/D, 지지/저항선 유지
         low10  = df['저가'].rolling(10).min()
         high10 = df['고가'].rolling(10).max()
-        result['Sto_K']  = (100*(df['종가']-low10)/(high10-low10).replace(0,np.nan)).round(1)
+        denom = (high10 - low10).replace(0, np.nan)
+        result['Sto_K']  = (100*(df['종가']-low10)/denom).round(1)
         result['Sto_D']  = result['Sto_K'].rolling(5).mean().round(1)
         result['지지선'] = df['저가'].rolling(20).min()
         result['저항선'] = df['고가'].rolling(20).max()
@@ -1130,8 +1131,19 @@ def calc_indicators(df):
                          np.maximum(abs(df['고가']-df['종가'].shift(1)),
                                     abs(df['저가']-df['종가'].shift(1)))
                          ).rolling(14).mean()
-        df['CMF20']    = 0.0
-        df['OBV']      = 0.0
+        # CMF/OBV: 거래량 컬럼 있을 때만 계산, 없으면 NaN으로 skip
+        if '거래량' in df.columns and df['거래량'].sum() > 0:
+            mfm = ((df['종가'] - df['저가']) - (df['고가'] - df['종가'])) / \
+                  (df['고가'] - df['저가']).replace(0, np.nan)
+            df['CMF20'] = (mfm * df['거래량']).rolling(20).sum() / \
+                          df['거래량'].rolling(20).sum().replace(0, np.nan)
+            df['OBV']   = (np.where(df['종가'] > df['종가'].shift(1),
+                                    df['거래량'],
+                                    np.where(df['종가'] < df['종가'].shift(1),
+                                             -df['거래량'], 0))).cumsum()
+        else:
+            df['CMF20'] = np.nan
+            df['OBV']   = np.nan
         df['지지선']    = df['저가'].rolling(20).min()
         df['저항선']    = df['고가'].rolling(20).max()
         return df
@@ -2725,23 +2737,25 @@ with tab_b:
                 'No entry 09:00-09:30 KST / No averaging down'
             )
 
-            def _gemini_safe_call(mdl, prompt_text, max_retries=2):
-                """429 rate-limit 에러 시 retry_delay 만큼 대기 후 재시도"""
-                import time as _time
+            def _gemini_safe_call(mdl, prompt_text, max_retries=4):
+                """429 rate-limit 에러 시 지수 백오프로 재시도"""
+                import time as _time, random as _random, re as _re
                 for attempt in range(max_retries):
                     try:
                         return mdl.generate_content(prompt_text)
                     except Exception as _e:
                         err_str = str(_e)
                         if '429' in err_str:
-                            import re as _re
+                            # API가 명시한 대기 시간 우선, 없으면 지수 백오프
                             m = _re.search(r'seconds:\s*(\d+)', err_str)
-                            wait = int(m.group(1)) + 2 if m else 20
+                            base_wait = int(m.group(1)) + 2 if m else (10 * (2 ** attempt))
+                            jitter = _random.uniform(0, 3)
+                            wait = min(int(base_wait + jitter), 120)
                             st.warning(f"⏳ API 한도 초과 — {wait}초 대기 후 재시도 ({attempt+1}/{max_retries})")
                             _time.sleep(wait)
                         else:
                             raise
-                raise Exception("최대 재시도 횟수 초과 (429 rate limit). 내일 다시 시도하거나 유료 플랜을 확인하세요.")
+                raise Exception("최대 재시도 횟수 초과 (429 rate limit). 잠시 후 다시 시도하세요.")
 
             _b2_tickers = get_watchlist_tickers()
             # all_data에 없는 종목 즉시 로드
