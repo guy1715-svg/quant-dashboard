@@ -3511,7 +3511,7 @@ with tab_c:
             else:
                 grade = "Filtered"
 
-            passed = hard_pass and score >= 70
+            passed = all6_pass and score >= 70
 
             def _e(b): return "✅" if b else "❌"
             meta = {
