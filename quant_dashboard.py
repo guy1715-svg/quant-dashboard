@@ -2120,7 +2120,7 @@ for _ss_key, _ss_default in [
     ('ui_dark', True),
     ('opt_best_cond5', 0.08),
     ('opt_best_cond6', 0.50),
-    ('paper_account', None),
+    ('paper_account', {'initial':10000000,'cash':10000000,'positions':[],'peak':10000000,'trough':10000000}),
     ('watchlist_data', None),
     ('gemini_model_global', 'gemini-1.5-flash'),
     ('etf_market_sel', '🇰🇷 국장 ETF'),
