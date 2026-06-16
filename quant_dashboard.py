@@ -3599,12 +3599,282 @@ with tab_c:
                     st.info("💡 페이퍼 트레이딩 탭에서 매수하세요!")
 
 
-with tab_d:
-    _sub_d1, _sub_d2, _sub_d3 = st.tabs(["🔄 ETF 로테이션", "🇰🇷 국장ETF", "🇺🇸 미장ETF"])
+# ══════════════════════════════════════════
+# 국장ETF / 미장ETF 공용 지표 계산 함수
+# ══════════════════════════════════════════
 
-with _sub_d1:
+def _calc_etf_indicators(ticker_sym):
+    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
+    import yfinance as yf
+    import numpy as np
+    try:
+        _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
+        if _df is None or len(_df) < 60:
+            return None
+        _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
+
+        _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
+        _atr  = _tr.rolling(14).mean()
+        _pdm  = _hi.diff().clip(lower=0); _ndm = (-_lo.diff()).clip(lower=0)
+        _pdi  = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
+        _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
+        _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
+        _adx  = round(_dx.rolling(14).mean().iloc[-1], 1)
+
+        _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
+        _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
+        _rsi   = round((100 - 100/(1+_gain/_loss.replace(0,np.nan))).iloc[-1], 1)
+
+        _ema12 = _cl.ewm(span=12).mean(); _ema26 = _cl.ewm(span=26).mean()
+        _macd  = _ema12 - _ema26; _signal = _macd.ewm(span=9).mean()
+        _mv = _macd.iloc[-1]; _sv = _signal.iloc[-1]; _mp = _macd.iloc[-2]; _sp = _signal.iloc[-2]
+        if _mv > _sv and _mp <= _sp:   _macd_sig = '🟢골든크로스'
+        elif _mv > _sv:                _macd_sig = '▲상승'
+        elif _mv < _sv and _mp >= _sp: _macd_sig = '🔴데드크로스'
+        else:                          _macd_sig = '▼하락'
+
+        _ret = _cl.pct_change()
+        _zs  = round((_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1]
+                     if _ret.rolling(20).std().iloc[-1] > 0 else 0, 2)
+        _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
+        _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
+
+        _ma5 = _cl.rolling(5).mean().iloc[-1]; _ma20 = _cl.rolling(20).mean().iloc[-1]; _ma60 = _cl.rolling(60).mean().iloc[-1]
+        _aligned = bool(_cl.iloc[-1] > _ma5 > _ma20 > _ma60)
+
+        _score = 0
+        if _adx >= 40: _score += 25
+        elif _adx >= 30: _score += 18
+        elif _adx >= 25: _score += 12
+        if 40 <= _rsi <= 60: _score += 15
+        elif 30 <= _rsi < 40: _score += 10
+        elif 60 < _rsi <= 70: _score += 8
+        elif _rsi < 30: _score += 5
+        if '골든크로스' in _macd_sig: _score += 20
+        elif '상승' in _macd_sig: _score += 12
+        elif '하락' in _macd_sig: _score += 4
+        if _zs >= 1.5: _score += 15
+        elif _zs >= 0.5: _score += 10
+        elif _zs >= -0.5: _score += 6
+        elif _zs >= -1.5: _score += 2
+        if _mom >= 10: _score += 15
+        elif _mom >= 5: _score += 10
+        elif _mom >= 0: _score += 6
+        elif _mom >= -5: _score += 2
+        if _aligned: _score += 10
+        if _vol_r >= 200: _score += 10
+        elif _vol_r >= 150: _score += 7
+        elif _vol_r >= 100: _score += 4
+
+        _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
+        return {
+            'ADX': _adx, 'RSI': _rsi, 'MACD': _macd_sig,
+            'Z-Score': _zs, '모멘텀(%)': _mom, '거래량%': _vol_r,
+            '정배열': '✅' if _aligned else '❌',
+            '종합점수': _score, '등락(%)': _chg,
+            '현재가': round(_cl.iloc[-1], 2),
+            '상태': '활성' if _adx >= 25 else '탈락',
+        }
+    except Exception:
+        return None
+
+def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
+    """ETF 랭킹 카드 렌더링 공용 함수."""
+    for _i, row in df_ranked.iterrows():
+        _is_top  = (_i == 0 and row['상태'] == '활성')
+        _is_dead = (row['상태'] != '활성')
+        _bg     = '#1a1400' if _is_top else '#0d0d0d' if _is_dead else '#111827'
+        _border = '#ffd166' if _is_top else '#2d3a55' if _is_dead else '#1e3a5f'
+        _op     = '0.4' if _is_dead else '1.0'
+        _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
+        _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
+        _rank   = '🥇' if _is_top else f"{_i+1}위"
+        _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
+        _dead_tag = ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
+        _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
+        if show_add_btn:
+            _card_col, _btn_col = st.columns([9, 1])
+        else:
+            _card_col = st.container()
+        with _card_col:
+            st.markdown(
+                f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
+                f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
+                f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
+                f"{_tag}{_dead_tag}</div>"
+                f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
+                f"</div>"
+                f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
+                f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
+                f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
+                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+        if show_add_btn:
+            with _btn_col:
+                st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+                _ticker_key = row['코드']
+                _name_key   = row['ETF명']
+                if st.button("➕ 추가", key=f"{key_prefix}_add_{_ticker_key}_{_i}", help=f"{_name_key} 관심종목 추가"):
+                    _ok = add_ticker(_ticker_key, _name_key)
+                    if _ok:
+                        st.success(f"✅ {_name_key} 추가됨")
+                    else:
+                        st.info("이미 추가된 종목입니다")
+        st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
+
+
+with tab_d:
     st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
     st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
+    _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
+
+    # ── ETF 리스트 정의 (국장 / 미장) ──
+    _KR_ETF_LIST = [
+        # ── 국내 지수 ──
+        ("069500", "KODEX 200"),
+        ("102110", "TIGER 200"),
+        ("229200", "KODEX 코스닥150"),
+        ("233740", "KODEX 코스닥150레버리지"),
+        ("153130", "KODEX 단기채권PLUS"),
+        # ── 미국 지수 추종 (국내상장) ──
+        ("133690", "TIGER 나스닥100"),
+        ("379800", "KODEX 미국S&P500TR"),
+        ("360750", "TIGER 미국S&P500"),
+        ("161490", "TIGER 미국나스닥100"),
+        ("299030", "KODEX 미국나스닥100TR"),
+        # ── 반도체 / IT ──
+        ("091160", "KODEX 반도체"),
+        ("395160", "KODEX AI반도체TOP2+"),
+        ("441680", "TIGER Fn반도체TOP10"),
+        ("457450", "KODEX AI테크TOP10"),
+        # ── 방산 / 중공업 ──
+        ("463250", "TIGER K방산&우주"),
+        ("329180", "HD현대중공업"),
+        ("364980", "TIGER 조선TOP10"),
+        # ── 에너지 / 전력 ──
+        ("459580", "KODEX AI전력핵심설비"),
+        ("140710", "TIGER 원자력테마"),
+        ("455890", "KODEX 원자력"),
+        # ── 2차전지 ──
+        ("305720", "KODEX 2차전지산업"),
+        # ── 금 / 원자재 ──
+        ("411060", "ACE KRX금현물"),
+        ("132030", "KODEX 골드선물(H)"),
+        # ── 채권 ──
+        ("385560", "TIGER 미국채10년선물"),
+        ("308620", "KODEX 미국채울트라30년선물(H)"),
+        # ── 배당 ──
+        ("266160", "KODEX 코스피고배당"),
+        ("161510", "TIGER 배당성장"),
+        # ── 헬스케어 / 바이오 ──
+        ("143460", "TIGER 헬스케어"),
+        ("143850", "TIGER 200 헬스케어"),
+    ]
+    _KR_ETF_LIST = [(c, n) for c, n in _KR_ETF_LIST if c.isdigit() and len(c) == 6]
+
+    _US_ETF_LIST = [
+        # ── 주요 지수 ──
+        ("SPY",  "SPDR S&P500"),
+        ("QQQ",  "Invesco 나스닥100"),
+        ("IWM",  "iShares 러셀2000"),
+        ("DIA",  "SPDR 다우존스"),
+        ("VTI",  "Vanguard 전체주식시장"),
+        ("VOO",  "Vanguard S&P500"),
+        # ── 섹터 ──
+        ("XLK",  "Technology Select"),
+        ("XLF",  "Financial Select"),
+        ("XLE",  "Energy Select"),
+        ("XLV",  "Health Care Select"),
+        ("XLI",  "Industrials Select"),
+        ("XLC",  "Communication Services"),
+        ("XLY",  "Consumer Discretionary"),
+        ("XLP",  "Consumer Staples"),
+        ("XLU",  "Utilities Select"),
+        ("XLB",  "Materials Select"),
+        ("XLRE", "Real Estate Select"),
+        # ── 테마 / 성장 ──
+        ("SOXX", "iShares 반도체"),
+        ("SMH",  "VanEck 반도체"),
+        ("ARKK", "ARK 혁신"),
+        ("ARKG", "ARK 유전체혁명"),
+        ("BOTZ", "글로벌 로보틱스AI"),
+        ("CIBR", "사이버보안"),
+        ("HACK", "ETFMG 사이버보안"),
+        ("CLOU", "글로벌 클라우드"),
+        ("AIQ",  "글로벌 AI&테크"),
+        ("ROBO", "Robo Global 로보틱스"),
+        # ── 방산 ──
+        ("ITA",  "iShares 방산항공"),
+        ("PPA",  "Invesco 방산"),
+        ("XAR",  "SPDR 방산항공"),
+        # ── 에너지 / 원자재 ──
+        ("GLD",  "SPDR 금"),
+        ("SLV",  "iShares 은"),
+        ("USO",  "미국 원유"),
+        ("UNG",  "US 천연가스"),
+        ("PDBC", "원자재 선물"),
+        # ── 채권 ──
+        ("TLT",  "iShares 장기국채 20+Y"),
+        ("IEF",  "iShares 중기국채 7-10Y"),
+        ("SHY",  "iShares 단기국채 1-3Y"),
+        ("BND",  "Vanguard 총채권"),
+        ("HYG",  "iShares 하이일드"),
+        ("LQD",  "iShares 투자등급"),
+        # ── 레버리지 / 인버스 ──
+        ("TQQQ", "ProShares 나스닥100 3x"),
+        ("SQQQ", "ProShares 나스닥100 -3x"),
+        ("SPXL", "Direxion S&P500 3x"),
+        ("SPXS", "Direxion S&P500 -3x"),
+        ("SOXL", "Direxion 반도체 3x"),
+        ("SOXS", "Direxion 반도체 -3x"),
+        # ── 배당 ──
+        ("JEPI", "JPMorgan 배당성장"),
+        ("SCHD", "Schwab 배당"),
+        ("VYM",  "Vanguard 고배당"),
+        ("DVY",  "iShares 고배당"),
+        # ── 국제 ──
+        ("EWY",  "iShares MSCI 한국"),
+        ("FXI",  "iShares MSCI 중국"),
+        ("EWJ",  "iShares MSCI 일본"),
+        ("VGK",  "Vanguard 유럽"),
+        ("EEM",  "iShares 이머징"),
+    ]
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def fetch_kr_etf_data():
+        results = []
+        for ticker, name in _KR_ETF_LIST:
+            _sym = f"{ticker}.KS"
+            _ind = _calc_etf_indicators(_sym)
+            if _ind:
+                results.append({'코드': ticker, 'ETF명': name, **_ind})
+            else:
+                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
+                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
+                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+        return results
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def fetch_us_etf_data():
+        results = []
+        for ticker, name in _US_ETF_LIST:
+            _ind = _calc_etf_indicators(ticker)
+            if _ind:
+                results.append({'코드': ticker, 'ETF명': name, **_ind})
+            else:
+                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
+                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
+                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+        return results
 
     ETF_LIST = [
         # 삼성증권 HTS 기준 ETF 종목코드
@@ -4251,407 +4521,204 @@ with _sub_d1:
         else:
             st.warning("백테스팅 데이터 부족 (2년 데이터 필요)")
 
-# ══════════════════════════════════════════
-# 국장ETF / 미장ETF 공용 지표 계산 함수
-# ══════════════════════════════════════════
+    st.divider()
 
-def _calc_etf_indicators(ticker_sym):
-    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
-    import yfinance as yf
-    import numpy as np
-    try:
-        _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
-        if _df is None or len(_df) < 60:
-            return None
-        _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
+    # ── 시장별 분기: 라디오 토글에 따라 국장/미장/전체 랭킹판 표시 ──
+    if _etf_market == "🇰🇷 국장 ETF":
+        st.markdown("### 🇰🇷 국장ETF 종합 랭킹판")
+        st.caption("한국 상장 ETF 전체 카테고리 랭킹. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
 
-        _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
-        _atr  = _tr.rolling(14).mean()
-        _pdm  = _hi.diff().clip(lower=0); _ndm = (-_lo.diff()).clip(lower=0)
-        _pdi  = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
-        _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
-        _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
-        _adx  = round(_dx.rolling(14).mean().iloc[-1], 1)
+        _cc1, _cc2 = st.columns([4, 1])
+        with _cc2:
+            if st.button("🔄 새로고침", key="kr_etf_refresh"):
+                fetch_kr_etf_data.clear()
+                st.rerun()
 
-        _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
-        _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
-        _rsi   = round((100 - 100/(1+_gain/_loss.replace(0,np.nan))).iloc[-1], 1)
+        with st.spinner("국장ETF 데이터 로딩 중..."):
+            _kr_data = fetch_kr_etf_data()
 
-        _ema12 = _cl.ewm(span=12).mean(); _ema26 = _cl.ewm(span=26).mean()
-        _macd  = _ema12 - _ema26; _signal = _macd.ewm(span=9).mean()
-        _mv = _macd.iloc[-1]; _sv = _signal.iloc[-1]; _mp = _macd.iloc[-2]; _sp = _signal.iloc[-2]
-        if _mv > _sv and _mp <= _sp:   _macd_sig = '🟢골든크로스'
-        elif _mv > _sv:                _macd_sig = '▲상승'
-        elif _mv < _sv and _mp >= _sp: _macd_sig = '🔴데드크로스'
-        else:                          _macd_sig = '▼하락'
+        if _kr_data:
+            _df_kr = pd.DataFrame(_kr_data)
+            _kr_active  = _df_kr[_df_kr['상태'] == '활성'].sort_values('종합점수', ascending=False)
+            _kr_passive = _df_kr[_df_kr['상태'] != '활성']
+            _kr_ranked  = pd.concat([_kr_active, _kr_passive]).reset_index(drop=True)
 
-        _ret = _cl.pct_change()
-        _zs  = round((_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1]
-                     if _ret.rolling(20).std().iloc[-1] > 0 else 0, 2)
-        _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
-        _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
+            _kr_cat = st.selectbox("카테고리 필터", ["전체", "국내지수", "미국지수추종", "반도체/IT", "방산/중공업", "에너지/전력", "2차전지", "금/원자재", "채권", "배당", "헬스케어"], key="kr_etf_cat")
 
-        _ma5 = _cl.rolling(5).mean().iloc[-1]; _ma20 = _cl.rolling(20).mean().iloc[-1]; _ma60 = _cl.rolling(60).mean().iloc[-1]
-        _aligned = bool(_cl.iloc[-1] > _ma5 > _ma20 > _ma60)
+            _cat_map = {
+                "국내지수":    ["069500","102110","229200","233740","153130"],
+                "미국지수추종":["133690","379800","360750","161490","299030"],
+                "반도체/IT":   ["091160","395160","441680","457450"],
+                "방산/중공업": ["463250","364980"],
+                "에너지/전력": ["459580","140710","455890"],
+                "2차전지":     ["305720"],
+                "금/원자재":   ["411060","132030"],
+                "채권":        ["385560","308620"],
+                "배당":        ["266160","161510"],
+                "헬스케어":    ["143460","143850"],
+            }
 
-        _score = 0
-        if _adx >= 40: _score += 25
-        elif _adx >= 30: _score += 18
-        elif _adx >= 25: _score += 12
-        if 40 <= _rsi <= 60: _score += 15
-        elif 30 <= _rsi < 40: _score += 10
-        elif 60 < _rsi <= 70: _score += 8
-        elif _rsi < 30: _score += 5
-        if '골든크로스' in _macd_sig: _score += 20
-        elif '상승' in _macd_sig: _score += 12
-        elif '하락' in _macd_sig: _score += 4
-        if _zs >= 1.5: _score += 15
-        elif _zs >= 0.5: _score += 10
-        elif _zs >= -0.5: _score += 6
-        elif _zs >= -1.5: _score += 2
-        if _mom >= 10: _score += 15
-        elif _mom >= 5: _score += 10
-        elif _mom >= 0: _score += 6
-        elif _mom >= -5: _score += 2
-        if _aligned: _score += 10
-        if _vol_r >= 200: _score += 10
-        elif _vol_r >= 150: _score += 7
-        elif _vol_r >= 100: _score += 4
+            if _kr_cat != "전체":
+                _filter_codes = _cat_map.get(_kr_cat, [])
+                _kr_ranked = _kr_ranked[_kr_ranked['코드'].isin(_filter_codes)].reset_index(drop=True)
 
-        _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
-        return {
-            'ADX': _adx, 'RSI': _rsi, 'MACD': _macd_sig,
-            'Z-Score': _zs, '모멘텀(%)': _mom, '거래량%': _vol_r,
-            '정배열': '✅' if _aligned else '❌',
-            '종합점수': _score, '등락(%)': _chg,
-            '현재가': round(_cl.iloc[-1], 2),
-            '상태': '활성' if _adx >= 25 else '탈락',
-        }
-    except Exception:
-        return None
+            _kr_m1, _kr_m2, _kr_m3, _kr_m4 = st.columns(4)
+            _kr_m1.metric("전체 종목", len(_df_kr))
+            _kr_m2.metric("활성 (ADX≥25)", len(_kr_active))
+            _kr_top = _kr_active.iloc[0] if not _kr_active.empty else None
+            if _kr_top is not None:
+                _kr_m3.metric("1위 ETF", _kr_top['ETF명'])
+                _kr_m4.metric("1위 점수", f"{int(_kr_top['종합점수'])}점")
 
-def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
-    """ETF 랭킹 카드 렌더링 공용 함수."""
-    for _i, row in df_ranked.iterrows():
-        _is_top  = (_i == 0 and row['상태'] == '활성')
-        _is_dead = (row['상태'] != '활성')
-        _bg     = '#1a1400' if _is_top else '#0d0d0d' if _is_dead else '#111827'
-        _border = '#ffd166' if _is_top else '#2d3a55' if _is_dead else '#1e3a5f'
-        _op     = '0.4' if _is_dead else '1.0'
-        _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
-        _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
-        _rank   = '🥇' if _is_top else f"{_i+1}위"
-        _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
-        _dead_tag = ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
-        _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
-        if show_add_btn:
-            _card_col, _btn_col = st.columns([9, 1])
-        else:
-            _card_col = st.container()
-        with _card_col:
-            st.markdown(
-                f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
-                f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
-                f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-                f"{_tag}{_dead_tag}</div>"
-                f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
-                f"</div>"
-                f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
-                f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
-                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
-                f"</div></div>",
-                unsafe_allow_html=True
-            )
-        if show_add_btn:
-            with _btn_col:
-                st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
-                _ticker_key = row['코드']
-                _name_key   = row['ETF명']
-                if st.button("➕ 추가", key=f"{key_prefix}_add_{_ticker_key}_{_i}", help=f"{_name_key} 관심종목 추가"):
-                    _ok = add_ticker(_ticker_key, _name_key)
-                    if _ok:
-                        st.success(f"✅ {_name_key} 추가됨")
-                    else:
-                        st.info("이미 추가된 종목입니다")
-        st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
+            st.markdown("---")
+            _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
+            st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
-# ══════════════════════════════════════════
-# 국장ETF 탭
-# ══════════════════════════════════════════
-with _sub_d2:
-    st.markdown("### 🇰🇷 국장ETF 종합 랭킹판")
-    st.caption("한국 상장 ETF 전체 카테고리 랭킹. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
+    elif _etf_market == "🇺🇸 미장 ETF":
+        st.markdown("### 🇺🇸 미장ETF 종합 랭킹판")
+        st.caption("미국 직상장 ETF 랭킹. 가격 단위: USD. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
 
-    _KR_ETF_LIST = [
-        # ── 국내 지수 ──
-        ("069500", "KODEX 200"),
-        ("102110", "TIGER 200"),
-        ("229200", "KODEX 코스닥150"),
-        ("233740", "KODEX 코스닥150레버리지"),
-        ("153130", "KODEX 단기채권PLUS"),
-        # ── 미국 지수 추종 (국내상장) ──
-        ("133690", "TIGER 나스닥100"),
-        ("379800", "KODEX 미국S&P500TR"),
-        ("360750", "TIGER 미국S&P500"),
-        ("161490", "TIGER 미국나스닥100"),
-        ("299030", "KODEX 미국나스닥100TR"),
-        # ── 반도체 / IT ──
-        ("091160", "KODEX 반도체"),
-        ("395160", "KODEX AI반도체TOP2+"),
-        ("441680", "TIGER Fn반도체TOP10"),
-        ("457450", "KODEX AI테크TOP10"),
-        # ── 방산 / 중공업 ──
-        ("463250", "TIGER K방산&우주"),
-        ("329180", "HD현대중공업"),
-        ("364980", "TIGER 조선TOP10"),
-        # ── 에너지 / 전력 ──
-        ("459580", "KODEX AI전력핵심설비"),
-        ("140710", "TIGER 원자력테마"),
-        ("455890", "KODEX 원자력"),
-        # ── 2차전지 ──
-        ("305720", "KODEX 2차전지산업"),
-        ("철강배터리", "TIGER 2차전지TOP10"),  # placeholder: 실코드확인필요
-        # ── 금 / 원자재 ──
-        ("411060", "ACE KRX금현물"),
-        ("132030", "KODEX 골드선물(H)"),
-        # ── 채권 ──
-        ("385560", "TIGER 미국채10년선물"),
-        ("308620", "KODEX 미국채울트라30년선물(H)"),
-        # ── 배당 ──
-        ("266160", "KODEX 코스피고배당"),
-        ("161510", "TIGER 배당성장"),
-        # ── 헬스케어 / 바이오 ──
-        ("143460", "TIGER 헬스케어"),
-        ("143850", "TIGER 200 헬스케어"),
-    ]
+        _uc1, _uc2 = st.columns([4, 1])
+        with _uc2:
+            if st.button("🔄 새로고침", key="us_etf_refresh"):
+                fetch_us_etf_data.clear()
+                st.rerun()
 
-    # 잘못된 코드 필터링 (숫자 6자리만)
-    _KR_ETF_LIST = [(c, n) for c, n in _KR_ETF_LIST if c.isdigit() and len(c) == 6]
+        _us_cat_options = ["전체", "주요지수", "섹터", "테마/성장", "방산", "에너지/원자재", "채권", "레버리지/인버스", "배당", "국제"]
+        _us_cat = st.selectbox("카테고리 필터", _us_cat_options, key="us_etf_cat")
 
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_kr_etf_data():
-        results = []
-        for ticker, name in _KR_ETF_LIST:
-            _sym = f"{ticker}.KS"
-            _ind = _calc_etf_indicators(_sym)
-            if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
-            else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
-        return results
-
-    _cc1, _cc2 = st.columns([4, 1])
-    with _cc2:
-        if st.button("🔄 새로고침", key="kr_etf_refresh"):
-            fetch_kr_etf_data.clear()
-            st.rerun()
-
-    with st.spinner("국장ETF 데이터 로딩 중..."):
-        _kr_data = fetch_kr_etf_data()
-
-    if _kr_data:
-        _df_kr = pd.DataFrame(_kr_data)
-        _kr_active  = _df_kr[_df_kr['상태'] == '활성'].sort_values('종합점수', ascending=False)
-        _kr_passive = _df_kr[_df_kr['상태'] != '활성']
-        _kr_ranked  = pd.concat([_kr_active, _kr_passive]).reset_index(drop=True)
-
-        # 카테고리 필터
-        _kr_cat = st.selectbox("카테고리 필터", ["전체", "국내지수", "미국지수추종", "반도체/IT", "방산/중공업", "에너지/전력", "2차전지", "금/원자재", "채권", "배당", "헬스케어"], key="kr_etf_cat")
-
-        _cat_map = {
-            "국내지수":    ["069500","102110","229200","233740","153130"],
-            "미국지수추종":["133690","379800","360750","161490","299030"],
-            "반도체/IT":   ["091160","395160","441680","457450"],
-            "방산/중공업": ["463250","364980"],
-            "에너지/전력": ["459580","140710","455890"],
-            "2차전지":     ["305720"],
-            "금/원자재":   ["411060","132030"],
-            "채권":        ["385560","308620"],
-            "배당":        ["266160","161510"],
-            "헬스케어":    ["143460","143850"],
+        _us_cat_map = {
+            "주요지수":      ["SPY","QQQ","IWM","DIA","VTI","VOO"],
+            "섹터":          ["XLK","XLF","XLE","XLV","XLI","XLC","XLY","XLP","XLU","XLB","XLRE"],
+            "테마/성장":     ["SOXX","SMH","ARKK","ARKG","BOTZ","CIBR","HACK","CLOU","AIQ","ROBO"],
+            "방산":          ["ITA","PPA","XAR"],
+            "에너지/원자재": ["GLD","SLV","USO","UNG","PDBC"],
+            "채권":          ["TLT","IEF","SHY","BND","HYG","LQD"],
+            "레버리지/인버스":["TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS"],
+            "배당":          ["JEPI","SCHD","VYM","DVY"],
+            "국제":          ["EWY","FXI","EWJ","VGK","EEM"],
         }
 
-        if _kr_cat != "전체":
-            _filter_codes = _cat_map.get(_kr_cat, [])
-            _kr_ranked = _kr_ranked[_kr_ranked['코드'].isin(_filter_codes)].reset_index(drop=True)
+        with st.spinner("미장ETF 데이터 로딩 중... (최대 30초)"):
+            _us_data = fetch_us_etf_data()
 
-        # 요약 메트릭
-        _kr_m1, _kr_m2, _kr_m3, _kr_m4 = st.columns(4)
-        _kr_m1.metric("전체 종목", len(_df_kr))
-        _kr_m2.metric("활성 (ADX≥25)", len(_kr_active))
-        _kr_top = _kr_active.iloc[0] if not _kr_active.empty else None
-        if _kr_top is not None:
-            _kr_m3.metric("1위 ETF", _kr_top['ETF명'])
-            _kr_m4.metric("1위 점수", f"{int(_kr_top['종합점수'])}점")
+        if _us_data:
+            _df_us = pd.DataFrame(_us_data)
+            _us_active  = _df_us[_df_us['상태'] == '활성'].sort_values('종합점수', ascending=False)
+            _us_passive = _df_us[_df_us['상태'] != '활성']
+            _us_ranked  = pd.concat([_us_active, _us_passive]).reset_index(drop=True)
 
-        st.markdown("---")
-        _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
-        st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
+            if _us_cat != "전체":
+                _us_filter = _us_cat_map.get(_us_cat, [])
+                _us_ranked = _us_ranked[_us_ranked['코드'].isin(_us_filter)].reset_index(drop=True)
 
-# ══════════════════════════════════════════
-# 미장ETF 탭
-# ══════════════════════════════════════════
-with _sub_d3:
-    st.markdown("### 🇺🇸 미장ETF 종합 랭킹판")
-    st.caption("미국 직상장 ETF 랭킹. 가격 단위: USD. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
+            _us_m1, _us_m2, _us_m3, _us_m4 = st.columns(4)
+            _us_m1.metric("전체 종목", len(_df_us))
+            _us_m2.metric("활성 (ADX≥25)", len(_us_active))
+            _us_top = _us_active.iloc[0] if not _us_active.empty else None
+            if _us_top is not None:
+                _us_m3.metric("1위 ETF", f"{_us_top['ETF명']} ({_us_top['코드']})")
+                _us_m4.metric("1위 점수", f"{int(_us_top['종합점수'])}점")
 
-    _US_ETF_LIST = [
-        # ── 주요 지수 ──
-        ("SPY",  "SPDR S&P500"),
-        ("QQQ",  "Invesco 나스닥100"),
-        ("IWM",  "iShares 러셀2000"),
-        ("DIA",  "SPDR 다우존스"),
-        ("VTI",  "Vanguard 전체주식시장"),
-        ("VOO",  "Vanguard S&P500"),
-        # ── 섹터 ──
-        ("XLK",  "Technology Select"),
-        ("XLF",  "Financial Select"),
-        ("XLE",  "Energy Select"),
-        ("XLV",  "Health Care Select"),
-        ("XLI",  "Industrials Select"),
-        ("XLC",  "Communication Services"),
-        ("XLY",  "Consumer Discretionary"),
-        ("XLP",  "Consumer Staples"),
-        ("XLU",  "Utilities Select"),
-        ("XLB",  "Materials Select"),
-        ("XLRE", "Real Estate Select"),
-        # ── 테마 / 성장 ──
-        ("SOXX", "iShares 반도체"),
-        ("SMH",  "VanEck 반도체"),
-        ("ARKK", "ARK 혁신"),
-        ("ARKG", "ARK 유전체혁명"),
-        ("BOTZ", "글로벌 로보틱스AI"),
-        ("CIBR", "사이버보안"),
-        ("HACK", "ETFMG 사이버보안"),
-        ("CLOU", "글로벌 클라우드"),
-        ("AIQ",  "글로벌 AI&테크"),
-        ("ROBO", "Robo Global 로보틱스"),
-        # ── 방산 ──
-        ("ITA",  "iShares 방산항공"),
-        ("PPA",  "Invesco 방산"),
-        ("XAR",  "SPDR 방산항공"),
-        # ── 에너지 / 원자재 ──
-        ("GLD",  "SPDR 금"),
-        ("SLV",  "iShares 은"),
-        ("USO",  "미국 원유"),
-        ("UNG",  "US 천연가스"),
-        ("PDBC", "원자재 선물"),
-        # ── 채권 ──
-        ("TLT",  "iShares 장기국채 20+Y"),
-        ("IEF",  "iShares 중기국채 7-10Y"),
-        ("SHY",  "iShares 단기국채 1-3Y"),
-        ("BND",  "Vanguard 총채권"),
-        ("HYG",  "iShares 하이일드"),
-        ("LQD",  "iShares 투자등급"),
-        # ── 레버리지 / 인버스 ──
-        ("TQQQ", "ProShares 나스닥100 3x"),
-        ("SQQQ", "ProShares 나스닥100 -3x"),
-        ("SPXL", "Direxion S&P500 3x"),
-        ("SPXS", "Direxion S&P500 -3x"),
-        ("SOXL", "Direxion 반도체 3x"),
-        ("SOXS", "Direxion 반도체 -3x"),
-        # ── 배당 ──
-        ("JEPI", "JPMorgan 배당성장"),
-        ("SCHD", "Schwab 배당"),
-        ("VYM",  "Vanguard 고배당"),
-        ("DVY",  "iShares 고배당"),
-        # ── 국제 ──
-        ("EWY",  "iShares MSCI 한국"),
-        ("FXI",  "iShares MSCI 중국"),
-        ("EWJ",  "iShares MSCI 일본"),
-        ("VGK",  "Vanguard 유럽"),
-        ("EEM",  "iShares 이머징"),
-    ]
+            if not _us_active.empty:
+                with st.expander("📊 TOP10 히트맵 보기", expanded=False):
+                    _top10 = _us_active.head(10)
+                    _hm_fig = go.Figure(go.Bar(
+                        x=_top10['종합점수'],
+                        y=[f"{r['ETF명']} ({r['코드']})" for _, r in _top10.iterrows()],
+                        orientation='h',
+                        marker_color=['#ffd166' if i==0 else '#4da6ff' for i in range(len(_top10))],
+                        text=[f"{v}점" for v in _top10['종합점수']],
+                        textposition='inside',
+                    ))
+                    _hm_fig.update_layout(
+                        height=320, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        font_color='#f0f4ff', xaxis_title='종합점수', yaxis_autorange='reversed',
+                        margin=dict(l=0,r=0,t=10,b=0)
+                    )
+                    st.plotly_chart(_hm_fig, use_container_width=True)
 
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_us_etf_data():
-        results = []
-        for ticker, name in _US_ETF_LIST:
-            _ind = _calc_etf_indicators(ticker)
-            if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
-            else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
-        return results
+            st.markdown("---")
+            _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
+            st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
-    _uc1, _uc2 = st.columns([4, 1])
-    with _uc2:
-        if st.button("🔄 새로고침", key="us_etf_refresh"):
-            fetch_us_etf_data.clear()
-            st.rerun()
+    else:  # 🌐 전체 통합
+        st.markdown("### 🌐 국장+미장 ETF 통합 랭킹판")
+        st.caption("국장ETF(원화) + 미장ETF(USD) 전체 통합 랭킹. 동일한 스코어링 엔진 적용.")
 
-    # 카테고리 필터
-    _us_cat_options = ["전체", "주요지수", "섹터", "테마/성장", "방산", "에너지/원자재", "채권", "레버리지/인버스", "배당", "국제"]
-    _us_cat = st.selectbox("카테고리 필터", _us_cat_options, key="us_etf_cat")
+        _all_col1, _all_col2 = st.columns([4, 1])
+        with _all_col2:
+            if st.button("🔄 전체 새로고침", key="all_etf_refresh"):
+                fetch_kr_etf_data.clear()
+                fetch_us_etf_data.clear()
+                st.rerun()
 
-    _us_cat_map = {
-        "주요지수":      ["SPY","QQQ","IWM","DIA","VTI","VOO"],
-        "섹터":          ["XLK","XLF","XLE","XLV","XLI","XLC","XLY","XLP","XLU","XLB","XLRE"],
-        "테마/성장":     ["SOXX","SMH","ARKK","ARKG","BOTZ","CIBR","HACK","CLOU","AIQ","ROBO"],
-        "방산":          ["ITA","PPA","XAR"],
-        "에너지/원자재": ["GLD","SLV","USO","UNG","PDBC"],
-        "채권":          ["TLT","IEF","SHY","BND","HYG","LQD"],
-        "레버리지/인버스":["TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS"],
-        "배당":          ["JEPI","SCHD","VYM","DVY"],
-        "국제":          ["EWY","FXI","EWJ","VGK","EEM"],
-    }
+        with st.spinner("국장+미장 ETF 데이터 로딩 중... (최대 60초)"):
+            _kr_data_all = fetch_kr_etf_data()
+            _us_data_all = fetch_us_etf_data()
 
-    with st.spinner("미장ETF 데이터 로딩 중... (최대 30초)"):
-        _us_data = fetch_us_etf_data()
+        _all_rows = []
+        for r in (_kr_data_all or []):
+            _all_rows.append({**r, '시장': '🇰🇷 국장'})
+        for r in (_us_data_all or []):
+            _all_rows.append({**r, '시장': '🇺🇸 미장'})
 
-    if _us_data:
-        _df_us = pd.DataFrame(_us_data)
-        _us_active  = _df_us[_df_us['상태'] == '활성'].sort_values('종합점수', ascending=False)
-        _us_passive = _df_us[_df_us['상태'] != '활성']
-        _us_ranked  = pd.concat([_us_active, _us_passive]).reset_index(drop=True)
+        if _all_rows:
+            _df_all = pd.DataFrame(_all_rows)
+            _all_active  = _df_all[_df_all['상태'] == '활성'].sort_values('종합점수', ascending=False)
+            _all_passive = _df_all[_df_all['상태'] != '활성']
+            _all_ranked  = pd.concat([_all_active, _all_passive]).reset_index(drop=True)
 
-        if _us_cat != "전체":
-            _us_filter = _us_cat_map.get(_us_cat, [])
-            _us_ranked = _us_ranked[_us_ranked['코드'].isin(_us_filter)].reset_index(drop=True)
+            _am1, _am2, _am3, _am4 = st.columns(4)
+            _am1.metric("전체 종목", len(_df_all))
+            _am2.metric("활성 (ADX≥25)", len(_all_active))
+            _all_top = _all_active.iloc[0] if not _all_active.empty else None
+            if _all_top is not None:
+                _am3.metric("1위 ETF", f"{_all_top['ETF명']} ({_all_top['코드']})")
+                _am4.metric("1위 점수", f"{int(_all_top['종합점수'])}점")
 
-        # 요약 메트릭
-        _us_m1, _us_m2, _us_m3, _us_m4 = st.columns(4)
-        _us_m1.metric("전체 종목", len(_df_us))
-        _us_m2.metric("활성 (ADX≥25)", len(_us_active))
-        _us_top = _us_active.iloc[0] if not _us_active.empty else None
-        if _us_top is not None:
-            _us_m3.metric("1위 ETF", f"{_us_top['ETF명']} ({_us_top['코드']})")
-            _us_m4.metric("1위 점수", f"{int(_us_top['종합점수'])}점")
+            _mkt_filter = st.selectbox("시장 필터", ["전체", "🇰🇷 국장", "🇺🇸 미장"], key="all_etf_mkt_filter")
+            if _mkt_filter != "전체":
+                _all_ranked = _all_ranked[_all_ranked['시장'] == _mkt_filter].reset_index(drop=True)
 
-        # TOP5 섹터 히트맵
-        if not _us_active.empty:
-            with st.expander("📊 TOP10 히트맵 보기", expanded=False):
-                _top10 = _us_active.head(10)
-                _hm_fig = go.Figure(go.Bar(
-                    x=_top10['종합점수'],
-                    y=[f"{r['ETF명']} ({r['코드']})" for _, r in _top10.iterrows()],
-                    orientation='h',
-                    marker_color=['#ffd166' if i==0 else '#4da6ff' for i in range(len(_top10))],
-                    text=[f"{v}점" for v in _top10['종합점수']],
-                    textposition='inside',
-                ))
-                _hm_fig.update_layout(
-                    height=320, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font_color='#f0f4ff', xaxis_title='종합점수', yaxis_autorange='reversed',
-                    margin=dict(l=0,r=0,t=10,b=0)
+            st.markdown("---")
+            for _i, row in _all_ranked.iterrows():
+                _is_top  = (_i == 0 and row['상태'] == '활성')
+                _is_dead = (row['상태'] != '활성')
+                _bg     = '#1a1400' if _is_top else '#0d0d0d' if _is_dead else '#111827'
+                _border = '#ffd166' if _is_top else '#2d3a55' if _is_dead else '#1e3a5f'
+                _op     = '0.4' if _is_dead else '1.0'
+                _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
+                _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
+                _rank   = '🥇' if _is_top else f"{_i+1}위"
+                _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
+                _dead_tag = ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
+                _cur    = '$' if row.get('시장') == '🇺🇸 미장' else '원'
+                _price_str = f"{row['현재가']:,.2f}{_cur}" if _cur == '$' else f"{row['현재가']:,.0f}{_cur}"
+                _mkt_badge = f"<span style='font-size:11px;margin-left:6px'>{row.get('시장','')}</span>"
+                st.markdown(
+                    f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
+                    f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                    f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
+                    f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
+                    f"{_mkt_badge}{_tag}{_dead_tag}</div>"
+                    f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
+                    f"</div>"
+                    f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
+                    f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
+                    f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
+                    f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
+                    f"</div></div>",
+                    unsafe_allow_html=True
                 )
-                st.plotly_chart(_hm_fig, use_container_width=True)
-
-        st.markdown("---")
-        _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
-        st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
+                st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
+            st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
 # ══════════════════════════════════════════
 # 탭 7: 페이퍼 트레이딩
