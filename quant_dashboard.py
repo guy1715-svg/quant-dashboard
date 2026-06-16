@@ -1698,7 +1698,25 @@ with st.sidebar:
                     _sb_sel_name = _chosen.split(" (")[0]
                     _sb_sel_code = _chosen.split("(")[-1].replace(")", "")
             else:
-                st.caption("검색 결과 없음")
+                # DB 조회 실패 시 직접 입력 fallback
+                _q_strip = _sb_query.strip()
+                if _q_strip.isdigit() and len(_q_strip) == 6:
+                    # 6자리 코드 직접 입력 → yfinance로 이름 조회
+                    _fb_name = _q_strip
+                    try:
+                        import yfinance as _yf_sb
+                        for _sfx in [".KS", ".KQ"]:
+                            _info_sb = _yf_sb.Ticker(_q_strip + _sfx).info
+                            if _info_sb and _info_sb.get("shortName"):
+                                _fb_name = _info_sb["shortName"].replace(" Ordinary Shares", "").strip()
+                                break
+                    except Exception:
+                        pass
+                    _sb_sel_code = _q_strip
+                    _sb_sel_name = _fb_name
+                    st.info(f"✅ 코드 직접 입력: {_fb_name} ({_q_strip})")
+                else:
+                    st.caption("검색 결과 없음 — 6자리 종목코드를 직접 입력해보세요 (예: 005930)")
 
         if st.button("➕ 추가", key="sb_add", use_container_width=True, disabled=not _sb_sel_code):
             if add_ticker(_sb_sel_code.strip(), _sb_sel_name.strip()):
