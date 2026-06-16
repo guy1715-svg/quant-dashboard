@@ -239,22 +239,12 @@ async def _scan_one(ticker: str) -> dict | None:
         ag, al = sum(gains)/14, sum(losses)/14
         rsi = 100 - 100/(1 + ag/(al+1e-9))
 
-        # C1 추세: ADX≥20 (완화) + 단기 상승 (ma5 > ma20)
+        # 조건 평가
         c1 = adx >= 20 and ma5 > ma20
-
-        # C2 눌림목: MA5이격 -5%~+5% (완화)
         c2 = -5 <= ma5_diff <= 5
-
-        # C3 재무: yfinance 모드 간이 통과
         c3 = True
-
-        # C4 수급: CMF20 > 0
         c4 = cmf20 > 0
-
-        # C5 모멘텀: RSI 35~75 (완화)
         c5 = 35 <= rsi <= 75
-
-        # C6 눌림목: MA5이격 -3%~+3%
         c6 = -3 <= ma5_diff <= 3
 
         score = (
@@ -263,18 +253,8 @@ async def _scan_one(ticker: str) -> dict | None:
             (25 if c5 else 0) +
             (20 if c6 else 0)
         )
-
         all6 = c1 and c2 and c3 and c4 and c5 and c6
-
-        # C1+C2 하드필터
-        if not (c1 and c2):
-            return None
-
         grade = "A" if all6 and score >= 70 else "B"
-
-        # B등급도 표시 (score >= 50 이상이면 반환)
-        if score < 50:
-            return None
 
         return {
             "ticker": ticker,
@@ -286,7 +266,9 @@ async def _scan_one(ticker: str) -> dict | None:
             "rsi": round(rsi, 1),
             "score": score,
             "grade": grade,
+            "passed": all6 and score >= 70,
             "conditions": {"c1": c1, "c2": c2, "c3": c3, "c4": c4, "c5": c5, "c6": c6},
+            "_debug": {"adx": round(adx,2), "ma5_diff": round(ma5_diff,2), "rsi": round(rsi,1), "cmf": round(cmf20,3)},
         }
     except Exception as e:
         log.warning(f"스캔 오류 {ticker}: {e}")
@@ -372,6 +354,28 @@ async def get_quote(ticker: str):
 
 
 # ── 2. 스캐너 결과 ──────────────────────────────────────────
+@app.get("/api/debug/yfinance")
+async def debug_yfinance():
+    try:
+        import yfinance as yf
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(
+            None, lambda: yf.download("005930.KS", period="5d", interval="1d",
+                                       auto_adjust=True, progress=False)
+        )
+        if df is None or len(df) == 0:
+            return {"status": "empty", "rows": 0}
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return {
+            "status": "ok",
+            "rows": len(df),
+            "columns": list(df.columns),
+            "last_close": float(df["Close"].iloc[-1]) if "Close" in df.columns else None,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/scanner/results")
 async def get_scanner(
     watchlist: str = "005930,000660,042700,012450,329180,247540,373220,196170,112610"
@@ -380,14 +384,17 @@ async def get_scanner(
     tasks   = [_scan_one(t) for t in tickers]
     results = await asyncio.gather(*tasks)
     errors  = [r for r in results if r and "_error" in r]
-    hits    = [r for r in results if r and "_error" not in r]
+    all_ok  = [r for r in results if r and "_error" not in r]
+    hits    = [r for r in all_ok if r.get("passed")]
+    all_ok.sort(key=lambda x: x["score"], reverse=True)
     hits.sort(key=lambda x: x["score"], reverse=True)
     return {
         "count": len(hits),
         "scanned": len(tickers),
         "timestamp": datetime.now().isoformat(),
         "results": hits,
-        "debug_errors": errors,  # 임시 디버그 — 배포 확인 후 제거
+        "debug_all": all_ok,   # 필터 통과 여부 상관없이 전체 결과
+        "debug_errors": errors,
     }
 
 
