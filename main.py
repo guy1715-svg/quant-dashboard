@@ -239,9 +239,8 @@ async def _scan_one(ticker: str) -> dict | None:
         ag, al = sum(gains)/14, sum(losses)/14
         rsi = 100 - 100/(1 + ag/(al+1e-9))
 
-        # 조건 평가
         c1 = adx >= 20 and ma5 > ma20
-        c2 = -5 <= ma5_diff <= 5
+        c2 = True  # 임시 제거 — 디버그용
         c3 = True
         c4 = cmf20 > 0
         c5 = 35 <= rsi <= 75
