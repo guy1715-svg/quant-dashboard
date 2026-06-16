@@ -2288,19 +2288,25 @@ with tab_a:
         st.info("관심종목을 추가해주세요. (사이드바 또는 관리 탭)")
     else:
         _rows_home = []
+        _home_failed = []
         for _th, _nh in _tickers_home:
             try:
                 if _th in all_data:
                     _df_h = all_data[_th]['df']
                 else:
                     _df_h = fetch_ohlcv(_th, 30)
-                    if _df_h is None or len(_df_h) < 5: continue
+                    if _df_h is None or len(_df_h) < 5:
+                        _home_failed.append(f"{_nh}({_th})")
+                        continue
                     _df_h = calc_indicators(_df_h)
                 _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
                 _chgh = (_lh['종가']/_ph['종가']-1)*100
                 _sigh = get_signal(_df_h)
                 _rows_home.append((_th, _nh, _lh, _chgh, _sigh))
-            except: pass
+            except Exception:
+                _home_failed.append(f"{_nh}({_th})")
+        if _home_failed:
+            st.warning(f"⚠️ 데이터 로드 실패: {', '.join(_home_failed)} — 티커 확인 또는 새로고침")
 
         # 등락 기준 정렬 (상승 → 하락)
         _rows_home.sort(key=lambda x: x[3], reverse=True)
@@ -2513,12 +2519,18 @@ with tab_b:
             # all_data에 없는 종목 즉시 로드 (관리 탭을 안 열어도 동작)
             _b1_missing = [(_bt, _bn) for _bt, _bn in _b1_tickers if _bt not in all_data]
             if _b1_missing:
+                _load_failed = []
                 with st.spinner(f"📡 {len(_b1_missing)}개 종목 데이터 로딩 중..."):
                     for _bt, _bn in _b1_missing:
                         _bdf = fetch_ohlcv(_bt, 80)
                         if _bdf is not None and len(_bdf) >= 20:
                             all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+                        else:
+                            _load_failed.append(f"{_bn}({_bt})")
                     st.session_state.all_data_cache = all_data
+                if _load_failed:
+                    st.warning(f"⚠️ 다음 종목 데이터를 불러오지 못했습니다: {', '.join(_load_failed)}\n"
+                               f"티커를 확인하거나 잠시 후 새로고침하세요.")
 
             _b1_opts = [_display_name(t, n) for t, n in _b1_tickers if t in all_data]
             if not _b1_opts:
@@ -5323,15 +5335,19 @@ with tab_e:
                     st.warning("⚠️ 거래 일지가 비어있거나 불러올 수 없습니다.")
                 else:
                     # BUY/SELL 기록으로 포지션 재구성
+                    # 실제 저장 필드: 종목코드, 종목명, 매매(BUY/SELL), 수량, 순체결가, 잔고
                     _rebuilt = {}  # ticker → {name, qty, avg_price, entry_date}
                     _cash = float(_acc['initial'])
                     for _t in _trades:
-                        _tk  = _t.get('ticker', '')
-                        _act = _t.get('액션', '')
+                        _tk  = _t.get('종목코드', _t.get('ticker', ''))
+                        _act = _t.get('매매', _t.get('액션', ''))
                         _qty = int(_t.get('수량', 0))
-                        _net = float(_t.get('순매수가', _t.get('가격', 0)))
+                        _net = float(_t.get('순체결가', _t.get('순매수가', _t.get('체결단가', 0))))
                         _nm  = _t.get('종목명', _tk)
                         _dt  = _t.get('날짜', '')
+                        # 잔고 직접 기록이 있으면 현금으로 활용 (마지막 값 사용)
+                        if _t.get('잔고', 0):
+                            _cash = float(_t['잔고'])
                         if not _tk or _qty <= 0 or _net <= 0:
                             continue
                         if _act == 'BUY':
@@ -5342,13 +5358,11 @@ with tab_e:
                                 _old['qty'] = _tot_qty
                             else:
                                 _rebuilt[_tk] = {'ticker':_tk,'name':_nm,'qty':_qty,'avg_price':_net,'entry_date':_dt}
-                            _cash -= _net * _qty * (1 + 0.00015 + 0.003)  # 수수료/세금 반영
                         elif _act == 'SELL':
                             if _tk in _rebuilt:
                                 _rebuilt[_tk]['qty'] -= _qty
                                 if _rebuilt[_tk]['qty'] <= 0:
                                     del _rebuilt[_tk]
-                            _cash += _net * _qty * (1 - 0.00015 - 0.003)
                     _pos_list = list(_rebuilt.values())
                     _acc['positions'] = _pos_list
                     _acc['cash'] = max(_cash, 0)
