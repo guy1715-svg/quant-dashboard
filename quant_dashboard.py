@@ -3129,13 +3129,31 @@ with tab_c:
             "Utilities","Telecom","Telecommunication","Communication Services",
             "Retail","Food & Staples Retailing","Conglomerates","Holding Companies",
         ]
+        # 종목명 기반 섹터 블랙리스트 (yfinance sector 누락 보완)
+        _BLOCKED_NAME_KEYWORDS = [
+            # 지주사
+            "지주","홀딩스","홀딩","holding","holdings",
+            # 유통
+            "리테일","마트","쇼핑","유통","편의점","홈쇼핑","백화점","면세",
+            # 은행/금융/보험
+            "은행","뱅크","증권","보험","캐피탈","카드","저축","투자","자산운용","신탁",
+            # 통신
+            "텔레콤","통신","SKT","KT","LGU",
+            # 전력/유틸리티
+            "한전","발전","전력","가스",
+        ]
 
         def _hard_filter(ticker, name, yf_info):
             """ETF/SPAC/우선주/저변동성 섹터 즉시 차단. True=통과."""
-            # 필터1: 종목명 키워드
+            _name_up = name.upper()
+            # 필터1: 종목명 ETF/SPAC 키워드
             for kw in _ETF_KEYWORDS:
-                if kw.upper() in name.upper():
+                if kw.upper() in _name_up:
                     return False, f"ETF/SPAC: {kw}"
+            # 필터1-B: 종목명 섹터 키워드 (yfinance 누락 보완)
+            for kw in _BLOCKED_NAME_KEYWORDS:
+                if kw.upper() in _name_up:
+                    return False, f"종목명 섹터차단: {kw}"
             # 필터2: 한국 우선주 코드 패턴 (5번째 자리 = 5)
             if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
                 return False, "우선주 코드 패턴"
@@ -3147,7 +3165,7 @@ with tab_c:
             mktcap = yf_info.get("marketCap", None)
             if mktcap is None or mktcap == 0:
                 return False, "시총 0/None"
-            # 필터5: 금지 섹터
+            # 필터5: 금지 섹터 (yfinance sector/industry)
             combined = (str(yf_info.get("sector","") or "") + " " +
                         str(yf_info.get("industry","") or ""))
             for blk in _BLOCKED_SECTORS:
@@ -3203,8 +3221,16 @@ with tab_c:
             _is_kr    = is_korean_ticker(ticker)
             _yf_info  = {}
             try:
-                _suffix  = ".KS" if _is_kr else ""
-                _yf_info = _yf_scan.Ticker(ticker + _suffix).info
+                # .KS 먼저 시도, 실패 시 .KQ
+                _yf_info = {}
+                for _sfx in ([".KS", ".KQ"] if _is_kr else [""]):
+                    try:
+                        _tmp = _yf_scan.Ticker(ticker + _sfx).info
+                        if _tmp and _tmp.get("regularMarketPrice"):
+                            _yf_info = _tmp
+                            break
+                    except Exception:
+                        continue
                 mktcap_b  = _yf_info.get('marketCap', 0) / 1e8 if _yf_info.get('marketCap') else None
                 op_income = _yf_info.get('operatingIncome', None)
                 rev_g     = _yf_info.get('revenueGrowth', None)
