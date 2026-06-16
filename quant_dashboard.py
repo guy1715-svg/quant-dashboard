@@ -5350,7 +5350,7 @@ with tab_e:
                             _cash = float(_t['잔고'])
                         if not _tk or _qty <= 0 or _net <= 0:
                             continue
-                        if _act == 'BUY':
+                        if _act in ('BUY', '매수'):
                             if _tk in _rebuilt:
                                 _old = _rebuilt[_tk]
                                 _tot_qty = _old['qty'] + _qty
@@ -5358,7 +5358,7 @@ with tab_e:
                                 _old['qty'] = _tot_qty
                             else:
                                 _rebuilt[_tk] = {'ticker':_tk,'name':_nm,'qty':_qty,'avg_price':_net,'entry_date':_dt}
-                        elif _act == 'SELL':
+                        elif _act in ('SELL', '매도'):
                             if _tk in _rebuilt:
                                 _rebuilt[_tk]['qty'] -= _qty
                                 if _rebuilt[_tk]['qty'] <= 0:
