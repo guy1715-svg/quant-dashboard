@@ -25,13 +25,23 @@ log = logging.getLogger("quant")
 # ── 앱 인스턴스 ──
 app = FastAPI(title="Quant Dashboard API", version="1.0.0")
 
-# ── CORS — 프론트엔드 어느 도메인에서도 호출 가능 ──
+# ── CORS 설정 ──
+# 환경변수 ALLOWED_ORIGINS 에 콤마로 도메인 나열 (프로덕션)
+# 미설정 시 개발 편의상 전체 허용
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*")
+if _raw_origins == "*":
+    _origins = ["*"]
+else:
+    _origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_origins,
+    allow_credentials=(_origins != ["*"]),  # wildcard일 때 credentials 비활성화
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    expose_headers=["X-Process-Time"],
+    max_age=600,  # preflight 캐시 10분
 )
 
 # ════════════════════════════════════════════════════════════
@@ -56,12 +66,25 @@ from firebase_admin import credentials as fb_credentials, db as fb_db
 def _init_firebase():
     if firebase_admin._apps:
         return
-    if not os.path.exists(FIREBASE_CRED_PATH):
-        log.warning("Firebase 인증 파일 없음 — DB 기능 비활성화")
+    # 우선순위 1: 환경변수 FIREBASE_CRED_JSON (Render 배포용 — JSON 문자열)
+    _cred_json_str = os.environ.get("FIREBASE_CRED_JSON", "")
+    if _cred_json_str:
+        import json as _json
+        try:
+            _cred_dict = _json.loads(_cred_json_str)
+            cred = fb_credentials.Certificate(_cred_dict)
+            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+            log.info("Firebase 초기화 완료 (환경변수)")
+            return
+        except Exception as e:
+            log.error(f"Firebase 환경변수 파싱 실패: {e}")
+    # 우선순위 2: 로컬 파일 (개발용)
+    if os.path.exists(FIREBASE_CRED_PATH):
+        cred = fb_credentials.Certificate(FIREBASE_CRED_PATH)
+        firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+        log.info("Firebase 초기화 완료 (파일)")
         return
-    cred = fb_credentials.Certificate(FIREBASE_CRED_PATH)
-    firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
-    log.info("Firebase 초기화 완료")
+    log.warning("Firebase 인증 정보 없음 — DB 기능 비활성화")
 
 _init_firebase()
 
@@ -166,6 +189,14 @@ def _calc_cmf(high, low, close, volume, n=20) -> float:
            for h, l, c, v in zip(high, low, close, volume)]
     return float(sum(mfv[-n:]) / (sum(volume[-n:]) + 1e-9))
 
+_NAME_MAP = {
+    "005930": "삼성전자", "000660": "SK하이닉스", "042700": "한미반도체",
+    "012450": "한화에어로스페이스", "329180": "HD현대중공업", "247540": "에코프로비엠",
+    "373220": "LG에너지솔루션", "196170": "알테오젠", "122630": "KODEX 레버리지",
+    "069500": "KODEX 200", "114800": "KODEX 인버스", "005380": "현대차",
+    "035420": "NAVER", "035720": "카카오", "051910": "LG화학",
+}
+
 async def _scan_one(ticker: str) -> dict | None:
     if ticker in BLACKLIST:
         return None
@@ -236,6 +267,7 @@ async def _scan_one(ticker: str) -> dict | None:
 
         return {
             "ticker": ticker,
+            "name": _NAME_MAP.get(ticker, ticker),
             "price": round(price, 0),
             "ma5_diff": round(ma5_diff, 2),
             "adx": round(adx, 2),
