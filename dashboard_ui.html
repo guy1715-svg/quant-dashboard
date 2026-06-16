@@ -675,60 +675,58 @@
 
 <script>
 /* ─────────────────────────────────────────────
-   MOCK DATA — 실제 서비스에서는 Python 백엔드 API로 교체
+   API 설정
    ─────────────────────────────────────────────*/
+const API_BASE = 'https://quant-dashboard-loxs.onrender.com';
+
+const WATCHLIST = '005930,000660,042700,012450,329180,247540,373220,196170,122630';
+
+/* 티커바 — KIS 없을 때 폴백용 정적 데이터 */
 const TICKERS = [
-  { name:'나스닥',   price:'19,842', chg:'+1.23%', up:true  },
-  { name:'S&P 500', price:'5,521',  chg:'+0.87%', up:true  },
-  { name:'코스피',   price:'2,731',  chg:'-0.34%', up:false },
-  { name:'코스닥',   price:'820.4',  chg:'+0.12%', up:true  },
-  { name:'USD/KRW', price:'1,383',  chg:'-0.22%', up:false },
-  { name:'WTI 원유', price:'78.42',  chg:'+0.56%', up:true  },
-  { name:'금',       price:'2,321',  chg:'+0.41%', up:true  },
-  { name:'비트코인', price:'68,200', chg:'+2.10%', up:true  },
+  { name:'나스닥',   price:'--',  chg:'--', up:true  },
+  { name:'S&P 500', price:'--',  chg:'--', up:true  },
+  { name:'코스피',   price:'--',  chg:'--', up:false },
+  { name:'코스닥',   price:'--',  chg:'--', up:true  },
+  { name:'USD/KRW', price:'--',  chg:'--', up:false },
 ];
 
-const STOCKS = [
-  {
-    rank:1, name:'에코프로비엠', code:'247540', sector:'이차전지',
-    price:'142,500', chg:'+4.32%', up:true,
-    grade:'A', score:92,
-    adx:38.2, cmf:0.24, rsi:61, gap:-0.3, ma5diff:1.2, vol:'2.1M',
-    c1:true, c2:true, c3:true, c4:true, c5:true, c6:true,
-    c3v:'ROE 28%', c4v:'외국인+기관 동반매수', c5v:'ADX 38', c6v:'MA5 이격 1.2%',
-    entryStatus:'ok', entryMsg:'✅ 진입 타점',
-    target:158000, stop:133000, entry:142500, rr:1.7,
-    cash:9540000
-  },
-  {
-    rank:2, name:'삼성SDI', code:'006400', sector:'이차전지',
-    price:'398,500', chg:'+2.10%', up:true,
-    grade:'A', score:85,
-    adx:31.5, cmf:0.18, rsi:55, gap:0.2, ma5diff:2.8, vol:'820K',
-    c1:true, c2:true, c3:true, c4:true, c5:true, c6:false,
-    c3v:'ROE 18%', c4v:'외국인 순매수', c5v:'ADX 31', c6v:'MA5 이격 2.8% ⚠️',
-    entryStatus:'wait', entryMsg:'⏳ 눌림목 대기',
-    target:445000, stop:375000, entry:398500, rr:1.96,
-    cash:9540000
-  },
-  {
-    rank:3, name:'KODEX 레버리지', code:'122630', sector:'ETF',
-    price:'17,220', chg:'+1.88%', up:true,
-    grade:'B', score:74,
-    adx:25.1, cmf:0.09, rsi:63, gap:3.2, ma5diff:3.5, vol:'15.2M',
-    c1:true, c2:true, c3:false, c4:true, c5:true, c6:true,
-    c3v:'ETF 해당없음', c4v:'기관 순매수', c5v:'ADX 25', c6v:'MA5 이격 3.5%',
-    entryStatus:'block', entryMsg:'⛔ 갭상승 — 매수 차단',
-    target:18900, stop:16200, entry:17220, rr:1.52,
-    cash:9540000
-  },
-];
+/* 스캔 결과 저장 */
+let STOCKS = [];
+let _accountCash = 10000000;
+
+/* ─── API 호출 헬퍼 ─── */
+async function apiFetch(path) {
+  try {
+    const res = await fetch(API_BASE + path);
+    if (!res.ok) throw new Error(res.status);
+    return await res.json();
+  } catch(e) {
+    console.warn('API 오류:', path, e);
+    return null;
+  }
+}
+
+async function apiPost(path, body) {
+  try {
+    const res = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(res.status);
+    return await res.json();
+  } catch(e) {
+    console.warn('API POST 오류:', path, e);
+    return null;
+  }
+}
 
 /* ─── Ticker Bar ─── */
-function buildTicker() {
+function buildTicker(items = TICKERS) {
   const track = document.getElementById('tickerTrack');
-  const items = [...TICKERS, ...TICKERS]; // duplicate for seamless loop
-  items.forEach(t => {
+  track.innerHTML = '';
+  const doubled = [...items, ...items];
+  doubled.forEach(t => {
     const el = document.createElement('div');
     el.className = 'ticker-item';
     el.innerHTML = `
@@ -737,6 +735,23 @@ function buildTicker() {
       <span class="t-chg ${t.up ? 'up' : 'down'}">${t.chg}</span>`;
     track.appendChild(el);
   });
+}
+
+/* 티커바 — 주요 종목 실시간 시세 */
+async function loadTicker() {
+  buildTicker(); // 폴백 먼저 렌더
+  const codes = ['005930','000660','005380']; // 삼성/SK하이/현대차
+  const labels = ['삼성전자','SK하이닉스','현대차'];
+  const results = await Promise.all(codes.map(c => apiFetch(`/api/market/quote/${c}`)));
+  const live = results
+    .map((d, i) => d ? {
+      name: labels[i],
+      price: d.price?.toLocaleString() ?? '--',
+      chg: d.change_pct >= 0 ? `+${d.change_pct}%` : `${d.change_pct}%`,
+      up: d.change_pct >= 0,
+    } : null)
+    .filter(Boolean);
+  if (live.length) buildTicker([...TICKERS, ...live]);
 }
 
 /* ─── Scanner List ─── */
@@ -779,6 +794,73 @@ function buildScanner(stocks) {
     row.addEventListener('click', () => selectStock(i, row));
     list.appendChild(row);
   });
+}
+
+/* ─── 스캐너 API 로드 ─── */
+async function loadScanner() {
+  const list = document.getElementById('scannerList');
+  list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:12px;">🔍 스캔 중...</div>';
+
+  const data = await apiFetch(`/api/scanner/results?watchlist=${WATCHLIST}`);
+  if (!data || !data.results) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:12px;">⚠️ 스캐너 연결 실패</div>';
+    return;
+  }
+
+  // API 결과를 UI 형식으로 변환
+  STOCKS = data.results.map((r, i) => {
+    const conds = r.conditions || {};
+    const ma5d = r.ma5_diff ?? 0;
+    const entryStatus = Math.abs(ma5d) <= 1 ? 'ok' : Math.abs(ma5d) <= 3 ? 'wait' : 'block';
+    const entryMsg = entryStatus === 'ok' ? '✅ 진입 타점' : entryStatus === 'wait' ? '⏳ 눌림목 대기' : '⛔ 과열 — 매수 차단';
+    const entry = r.price ?? 0;
+    return {
+      rank: i + 1,
+      name: r.name ?? r.ticker,
+      code: r.ticker,
+      sector: r.sector ?? '국내주식',
+      price: (r.price ?? 0).toLocaleString(),
+      chg: '+0.00%',
+      up: true,
+      grade: r.grade ?? 'B',
+      score: r.score ?? 0,
+      adx: r.adx ?? 0,
+      cmf: r.cmf ?? 0,
+      rsi: r.rsi ?? 50,
+      gap: 0,
+      ma5diff: ma5d,
+      vol: '--',
+      c1: conds.c1 ?? false,
+      c2: conds.c2 ?? false,
+      c3: conds.c3 ?? false,
+      c4: conds.c4 ?? false,
+      c5: conds.c5 ?? false,
+      c6: conds.c6 ?? false,
+      c3v: `재무 ${conds.c3 ? '✓' : '✗'}`,
+      c4v: `CMF ${(r.cmf ?? 0).toFixed(2)}`,
+      c5v: `ADX ${r.adx ?? '--'}`,
+      c6v: `MA5이격 ${ma5d.toFixed(1)}%`,
+      entryStatus, entryMsg,
+      target: Math.round(entry * 1.1),
+      stop:   Math.round(entry * 0.93),
+      entry,
+      cash: _accountCash,
+    };
+  });
+
+  document.querySelector('.panel-header span').textContent = `${STOCKS.length}종목`;
+  currentStocks = STOCKS;
+  buildScanner(STOCKS);
+}
+
+/* ─── 계좌 로드 ─── */
+async function loadAccount() {
+  const data = await apiFetch('/api/account');
+  if (data && data.cash != null) {
+    _accountCash = data.cash;
+    const el = document.getElementById('cashDisplay');
+    if (el) el.textContent = _accountCash.toLocaleString() + '원';
+  }
 }
 
 /* ─── Select Stock → Right Panel ─── */
@@ -1008,12 +1090,34 @@ function setQtyPct(pct) {
   calcTotal();
 }
 
-function submitOrder() {
-  const price = document.getElementById('orderPrice')?.value;
-  const qty   = document.getElementById('orderQty')?.value;
+async function submitOrder() {
+  const price = parseInt(document.getElementById('orderPrice')?.value || 0);
+  const qty   = parseInt(document.getElementById('orderQty')?.value   || 0);
   const side  = window._orderSide === 'buy' ? '매수' : '매도';
-  const name  = window._currentStock?.name;
-  alert(`[가상매매] ${name} ${side} ${qty}주 @ ${parseInt(price).toLocaleString()}원\n\n실제 Python 백엔드에 연결 시 Firebase에 기록됩니다.`);
+  const s     = window._currentStock;
+  if (!s || !price || !qty) return;
+
+  const btn = document.getElementById('orderBtn');
+  btn.disabled = true;
+  btn.textContent = '처리 중...';
+
+  const result = await apiPost('/api/trade/paper', {
+    ticker: s.code,
+    name:   s.name,
+    action: side,
+    price,
+    qty,
+    memo: `UI 주문 — ${new Date().toLocaleString()}`,
+  });
+
+  if (result && result.status === 'ok') {
+    btn.textContent = '✅ 체결 완료';
+    setTimeout(() => { btn.disabled = false; switchOrder(window._orderSide); }, 2000);
+    await loadAccount();
+  } else {
+    btn.textContent = '❌ 오류';
+    setTimeout(() => { btn.disabled = false; switchOrder(window._orderSide); }, 2000);
+  }
 }
 
 /* ─── Filter Tabs ─── */
@@ -1031,8 +1135,13 @@ function filterTab(el, filter) {
 }
 
 /* ─── Init ─── */
-buildTicker();
-buildScanner(STOCKS);
+(async () => {
+  buildTicker();                    // 폴백 티커 먼저
+  await loadAccount();              // 계좌 현금 로드
+  await loadScanner();              // 스캐너 결과 로드
+  loadTicker();                     // 실시간 시세 티커 업데이트 (비동기)
+  setInterval(loadScanner, 300000); // 5분마다 자동 갱신
+})();
 </script>
 </body>
 </html>
