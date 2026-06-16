@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+import pandas as pd
 import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -204,15 +205,22 @@ async def _scan_one(ticker: str) -> dict | None:
         import yfinance as yf
         df = await asyncio.get_event_loop().run_in_executor(
             None, lambda: yf.download(f"{ticker}.KS", period="6mo", interval="1d",
-                                       auto_adjust=True, progress=False)
+                                       auto_adjust=True, progress=False, group_by="column")
         )
         if df is None or len(df) < 60:
             return None
 
-        hi = df["High"].tolist()
-        lo = df["Low"].tolist()
-        cl = df["Close"].tolist()
-        vo = df["Volume"].tolist()
+        # yfinance 최신버전 MultiIndex 컬럼 대응
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        hi = df["High"].dropna().tolist()
+        lo = df["Low"].dropna().tolist()
+        cl = df["Close"].dropna().tolist()
+        vo = df["Volume"].dropna().tolist()
+
+        if len(cl) < 60:
+            return None
 
         adx   = _calc_adx(hi, lo, cl)
         cmf20 = _calc_cmf(hi, lo, cl, vo)
