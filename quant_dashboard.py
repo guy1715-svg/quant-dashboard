@@ -3244,13 +3244,10 @@ with tab_c:
 
         def _v89_scanner(df, ticker):
             """
-            V8.9.2 6대 조건 (AND) — KIS API 없이 yfinance로 근사
-            cond1: 시총 5천억~3조 (yfinance 조회, 없으면 통과)
-            cond2: ATR14 / 현재가 ≥ 3.5%
-            cond3: 영업이익 흑자 OR 매출 YoY ≥ 20% (없으면 통과)
-            cond4: CMF20 > 0 (yfinance OHLCV로 계산, OBV 대체)
-            cond5: 5거래일 누적 수익률 ≥ AI 최적화 파라미터 (기본 8%)
-            cond6: 당일 거래량 < 20일 최대 × AI 최적화 파라미터 (기본 50%)
+            V8.9.4 하이브리드 스코어링 스캐너
+            하드필터: C1(시총) + C2(ATR) — 필수 AND
+            스코어링: C3(재무 20점) + C4(수급 30점) + C5(모멘텀 25점) + C6(눌림목 25점)
+            판정: 70점↑ Target_Locked / 90점↑ A-Grade 주도주
             """
             if df is None or len(df) < 22:
                 return False, {}
@@ -3263,12 +3260,8 @@ with tab_c:
             cur   = float(c.iloc[-1])
             vol_t = float(v.iloc[-1])
 
-            # ATR14 (Wilder)
-            tr = pd.concat([
-                h - l,
-                (h - c.shift(1)).abs(),
-                (l - c.shift(1)).abs(),
-            ], axis=1).max(axis=1)
+            # ATR14 (Wilder EWM)
+            tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
             atr14 = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
 
             # 최근 20일 최대 거래량 (당일 제외)
@@ -3277,69 +3270,87 @@ with tab_c:
             # 5거래일 누적 수익률
             cum5 = (cur - float(c.iloc[-6])) / float(c.iloc[-6]) if len(c) >= 6 else 0
 
-            # CMF20 간이 계산 (OBV 대체)
+            # CMF20 (수급 대체 지표 — KIS 없을 때)
             hl_range = (h - l).replace(0, np.nan)
-            mfm = ((c - l) - (h - c)) / hl_range
-            mfv = mfm * v
-            cmf20 = float(mfv.rolling(20).sum().iloc[-1] / v.rolling(20).sum().iloc[-1]) if v.rolling(20).sum().iloc[-1] > 0 else 0.0
-            cond4_cmf = cmf20 > 0   # 0 초과면 매집 우세 (yfinance 근사 — 임계값 완화)
+            mfm  = ((c - l) - (h - c)) / hl_range
+            cmf20 = float((mfm * v).rolling(20).sum().iloc[-1] / v.rolling(20).sum().iloc[-1]) if v.rolling(20).sum().iloc[-1] > 0 else 0.0
 
-            # yfinance 시총·재무 + 하드 필터
-            mktcap_b  = None
-            cond3_fin = None
-            _is_kr    = is_korean_ticker(ticker)
-            _yf_info  = {}
+            # yfinance 시총·재무 조회
+            mktcap_b = None; op_income = None; rev_g = None
+            _is_kr   = is_korean_ticker(ticker)
+            _yf_info = {}
             try:
-                # .KS 먼저 시도, 실패 시 .KQ
-                _yf_info = {}
                 for _sfx in ([".KS", ".KQ"] if _is_kr else [""]):
                     try:
                         _tmp = _yf_scan.Ticker(ticker + _sfx).info
                         if _tmp and _tmp.get("regularMarketPrice"):
-                            _yf_info = _tmp
-                            break
+                            _yf_info = _tmp; break
                     except Exception:
                         continue
                 mktcap_b  = _yf_info.get('marketCap', 0) / 1e8 if _yf_info.get('marketCap') else None
                 op_income = _yf_info.get('operatingIncome', None)
                 rev_g     = _yf_info.get('revenueGrowth', None)
-                if op_income is not None:
-                    cond3_fin = (op_income > 0) or (rev_g >= 0.20 if rev_g is not None else False)
             except Exception:
-                mktcap_b  = None
-                cond3_fin = None
+                pass
 
-            # ── 하드 필터: ETF/SPAC/저변동성 섹터 즉시 차단 ──
+            # ── 하드 필터: ETF/SPAC/섹터 즉시 차단 ──
             _hf_ok, _hf_reason = _hard_filter(ticker, name, _yf_info)
             if not _hf_ok:
-                return False, {'조건': f'하드필터 차단: {_hf_reason}'}
+                return False, {'조건': f'하드필터: {_hf_reason}', '점수': 0, '등급': 'Filtered'}
 
-            # AI 최적화 파라미터 반영 (없으면 V8.9.2 기본값)
+            # ── 하드 필터: C1 시총 / C2 ATR ──
+            c1_pass = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True
+            c2_pass = (atr14 / cur) >= 0.035 if cur > 0 else False
+            hard_pass = c1_pass and c2_pass
+
+            # ── 스코어링 ──
+            score = 0; score_detail = []
+
+            # C3: 재무 20점
+            c3_ok = False
+            if op_income is not None or rev_g is not None:
+                c3_ok = ((op_income is not None and op_income > 0) or
+                         (rev_g is not None and rev_g >= 0.20))
+            if c3_ok: score += 20; score_detail.append("재무+20")
+
+            # C4: 수급 30점 — KIS 없으면 CMF20으로 대체
+            c4_ok = cmf20 > 0
+            if c4_ok: score += 30; score_detail.append("수급+30")
+
+            # C5: 모멘텀 25점
             _p_c5 = st.session_state.get("opt_best_cond5", 0.08)
+            c5_ok = cum5 >= _p_c5
+            if c5_ok: score += 25; score_detail.append(f"모멘텀+25")
+
+            # C6: 눌림목 25점
             _p_c6 = st.session_state.get("opt_best_cond6", 0.50)
+            c6_ok = (vol_t < max_vol_20 * _p_c6) if max_vol_20 > 0 else False
+            if c6_ok: score += 25; score_detail.append("눌림목+25")
 
-            cond1 = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True
-            cond2 = (atr14 / cur) >= 0.035 if cur > 0 else False
-            cond3 = cond3_fin if cond3_fin is not None else True
-            cond4 = cond4_cmf
-            cond5 = cum5 >= _p_c5
-            cond6 = (vol_t < max_vol_20 * _p_c6) if max_vol_20 > 0 else False
+            # ── 등급 판정 ──
+            if hard_pass and score >= 90:
+                grade = "🏆 A-Grade 주도주"
+            elif hard_pass and score >= 70:
+                grade = "🎯 Target_Locked"
+            else:
+                grade = "Filtered"
 
-            passed_all = all([cond1, cond2, cond3, cond4, cond5, cond6])
+            passed = hard_pass and score >= 70
 
+            def _e(b): return "✅" if b else "❌"
             meta = {
                 'ATR비율':    round(atr14 / cur * 100, 2) if cur > 0 else 0,
                 '5일수익률':  round(cum5 * 100, 2),
                 '거래량비율': round(vol_t / max_vol_20 * 100, 1) if max_vol_20 > 0 else 0,
                 '시총(억)':   round(mktcap_b) if mktcap_b else '?',
                 'CMF':        round(cmf20, 3),
-                f'cond5({_p_c5*100:.0f}%)': '✅' if cond5 else '❌',
-                f'cond6({_p_c6*100:.0f}%)': '✅' if cond6 else '❌',
-                '조건': (f"C1({'✅' if cond1 else '❌'}) C2({'✅' if cond2 else '❌'}) "
-                         f"C3({'✅' if cond3 else '❌'}) C4({'✅' if cond4 else '❌'}) "
-                         f"C5({'✅' if cond5 else '❌'}) C6({'✅' if cond6 else '❌'})"),
+                '점수':       score,
+                '등급':       grade,
+                '조건': (f"C1{_e(c1_pass)} C2{_e(c2_pass)} "
+                         f"C3{_e(c3_ok)} C4{_e(c4_ok)} C5{_e(c5_ok)} C6{_e(c6_ok)} "
+                         f"[{score}점] {grade}"),
             }
-            return passed_all, meta
+            return passed, meta
 
         for idx, ticker in enumerate(scan_tickers):
             prog.progress((idx+1)/len(scan_tickers))
@@ -3382,8 +3393,10 @@ with tab_c:
                     '5일수익률': _meta['5일수익률'],
                     'CMF':       _meta.get('CMF', 0),
                     '시총(억)':  _meta['시총(억)'],
+                    '점수':      _meta.get('점수', 0),
+                    '등급':      _meta.get('등급', ''),
                     '조건':      _meta['조건'],
-                    'score':     6,
+                    'score':     _meta.get('점수', 0),
                     'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
                                   f"📉거래량 {_meta['거래량비율']}%", f"CMF {_meta.get('CMF', 0):.3f}"],
                 })
@@ -3391,12 +3404,14 @@ with tab_c:
 
         # yfinance 폴백 결과 저장
         prog.empty(); status.empty()
-        passed = sorted(passed, key=lambda x: x.get('5일수익률', 0), reverse=True)
+        passed = sorted(passed, key=lambda x: x.get('점수', 0), reverse=True)
         st.session_state.passed = passed
+        _a_cnt  = sum(1 for p in passed if '주도주' in str(p.get('등급','')))
+        _tl_cnt = sum(1 for p in passed if 'Target' in str(p.get('등급','')))
         if not passed:
-            st.warning("⚠️ V8.9 조건(6개 AND) 충족 종목 없음.")
+            st.warning("⚠️ 스코어링 70점 이상 종목 없음. (하드필터 C1+C2 또는 점수 미달)")
         else:
-            st.success(f"✅ {len(passed)}개 종목 발굴! (yfinance 근사)")
+            st.success(f"✅ {len(passed)}개 발굴! 🏆A-Grade {_a_cnt}개 / 🎯Target_Locked {_tl_cnt}개")
 
     # ── 결과 표시 ──
     if st.session_state.passed is not None and st.session_state.passed:
