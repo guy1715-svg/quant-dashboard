@@ -2285,7 +2285,8 @@ with tab_a:
 
     # 관심종목 현황 요약
     _col_wl_hdr, _col_wl_refresh = st.columns([5, 1])
-    _col_wl_hdr.markdown("#### 📊 관심종목 현황")
+    _wl_total = len(get_watchlist_tickers())
+    _col_wl_hdr.markdown(f"#### 📊 관심종목 현황 <span style='font-size:13px;color:#64748b;font-weight:400'>({_wl_total}종목)</span>", unsafe_allow_html=True)
 
     _tickers_home = get_watchlist_tickers()
     if not _tickers_home:
@@ -2500,7 +2501,8 @@ with tab_a:
 
     st.divider()
     if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
-        st.cache_data.clear()
+        with st.spinner("데이터 새로고침 중..."):
+            st.cache_data.clear()
         st.rerun()
 
 
@@ -2543,8 +2545,12 @@ with tab_b:
                             _load_failed.append(f"{_bn}({_bt})")
                     st.session_state.all_data_cache = all_data
                 if _load_failed:
-                    st.warning(f"⚠️ 다음 종목 데이터를 불러오지 못했습니다: {', '.join(_load_failed)}\n"
-                               f"티커를 확인하거나 잠시 후 새로고침하세요.")
+                    _fail_col1, _fail_col2 = st.columns([4, 1])
+                    _fail_col1.warning(f"⚠️ 데이터 로드 실패: {', '.join(_load_failed)}")
+                    if _fail_col2.button("🔄 재시도", key="retry_load_fail", use_container_width=True):
+                        st.session_state.all_data_cache = {}
+                        st.session_state.all_data_time = 0
+                        st.rerun()
 
             _b1_opts = [_display_name(t, n) for t, n in _b1_tickers if t in all_data]
             if not _b1_opts:
@@ -2704,7 +2710,7 @@ with tab_b:
                 target2_price = _ep['target2']
 
             except Exception as _ep_err:
-                st.warning(f"타점 계산 오류: {_ep_err}")
+                st.error(f"타점 계산 오류: {_ep_err} — 다른 프리셋을 선택하거나 페이지를 새로고침하세요.")
                 entry_price = stop_price = target1_price = target2_price = 0
 
             st.divider()
@@ -3163,6 +3169,13 @@ with tab_c:
             step=100 if _is_us else 10000, key="f_maxp")
         use_gemini_scan = st.checkbox("Gemini 분석 포함", value=False, key="f_gemini")
 
+    try:
+        import json as _json_pre, os as _os_pre
+        _pre_path = _os_pre.path.join(_os_pre.path.dirname(__file__), 'scanner_tickers.json')
+        _pre_cnt = len(_json_pre.load(open(_pre_path, encoding='utf-8'))) if _os_pre.path.exists(_pre_path) else 200
+    except Exception:
+        _pre_cnt = 200
+    st.caption(f"📊 스캔 대상: 약 {_pre_cnt}개 종목 | 예상 소요 시간: {max(1, _pre_cnt // 60)}~{max(2, _pre_cnt // 40)}분")
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
 
     if scan_btn:
@@ -3605,7 +3618,7 @@ with tab_c:
         _a_cnt  = sum(1 for p in passed if '주도주' in str(p.get('등급','')))
         _tl_cnt = sum(1 for p in passed if 'Target' in str(p.get('등급','')))
         if not passed:
-            st.warning("⚠️ 스코어링 70점 이상 종목 없음. (하드필터 C1+C2 또는 점수 미달)")
+            pass
         else:
             _sc1, _sc2 = st.columns([4, 1])
             _sc1.success(f"✅ {len(passed)}개 발굴! 🏆A-Grade {_a_cnt}개 / 🎯Target_Locked {_tl_cnt}개")
@@ -3618,7 +3631,11 @@ with tab_c:
                 pass
 
     # ── 결과 표시 ──
-    if st.session_state.passed is not None and st.session_state.passed:
+    if st.session_state.get('passed') is None:
+        st.info("💡 스캔 버튼을 눌러 오늘의 매수 후보를 발굴하세요.")
+    elif not st.session_state.passed:
+        st.warning("⚠️ 스코어링 70점 이상 종목 없음. 조건을 완화하거나 다른 시장대를 시도하세요.")
+    if st.session_state.get('passed'):
         _sc_ids = [t for t, _ in get_watchlist_tickers()]
         _p_list = st.session_state.passed
 
@@ -5001,6 +5018,9 @@ with tab_d:
         with st.spinner("국장ETF 데이터 로딩 중..."):
             _kr_data = fetch_kr_etf_data()
 
+        if not _kr_data:
+            st.error("❌ ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
+            st.stop()
         if _kr_data:
             _df_kr = pd.DataFrame(_kr_data)
             _kr_active  = _df_kr[_df_kr['상태'] == '활성'].sort_values('종합점수', ascending=False)
@@ -5066,6 +5086,9 @@ with tab_d:
         with st.spinner("미장ETF 데이터 로딩 중... (최대 30초)"):
             _us_data = fetch_us_etf_data()
 
+        if not _us_data:
+            st.error("❌ 미장ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
+            st.stop()
         if _us_data:
             _df_us = pd.DataFrame(_us_data)
             _us_active  = _df_us[_df_us['상태'] == '활성'].sort_values('종합점수', ascending=False)
@@ -5774,6 +5797,10 @@ with tab_e:
         # ETF는 블랙아웃 차단 무시, 개별주만 차단
         _entry_blocked = _blocked and not _is_etf
 
+        if not _cash_ok:
+            st.error(f"❌ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
+        if _entry_blocked:
+            st.error("❌ V8.9.1 매크로 블랙아웃 — 개별주 신규 진입 차단 중")
         if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
                      type="primary", disabled=(not _cash_ok or _entry_blocked)):
             _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
@@ -5895,11 +5922,12 @@ with tab_e:
                         try:
                             _fb_ref("/quant_trades").delete()
                             st.session_state.pop('local_trade_log', None)
+                            st.session_state.pop('_trade_log_err', None)
                             st.session_state['_confirm_del_all'] = False
                             st.success("✅ 전체 거래기록 삭제 완료")
                             st.rerun()
                         except Exception as _de:
-                            st.error(f"삭제 오류: {_de}")
+                            st.error(f"❌ Firebase 삭제 실패: {_de}\n로그인 상태 또는 Firebase 권한을 확인하세요.")
                     if _dc2.button("❌ 취소", key="confirm_del_no", use_container_width=True):
                         st.session_state['_confirm_del_all'] = False
                         st.rerun()
