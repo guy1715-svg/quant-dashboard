@@ -1033,39 +1033,49 @@ def fetch_ohlcv(ticker, lookback=80):
         except Exception:
             pass
 
-        # 2순위: yfinance fallback
-        import yfinance as yf
+        # 2순위: yfinance fallback (최대 2회 재시도)
+        import yfinance as _yf_fetch
+        import time as _time_fetch
         for suffix in ['.KS', '.KQ']:
-            try:
-                yt = yf.Ticker(ticker + suffix)
-                df = yt.history(start=start, end=end, interval='1d')
-                if df is None or df.empty:
+            for _attempt in range(2):
+                try:
+                    _yt = _yf_fetch.Ticker(ticker + suffix)
+                    _df = _yt.history(start=start, end=end, interval='1d')
+                    if _df is None or _df.empty:
+                        break
+                    _df = _df.rename(columns={
+                        'Open':'시가','High':'고가','Low':'저가',
+                        'Close':'종가','Volume':'거래량'
+                    })[['시가','고가','저가','종가','거래량']]
+                    _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
+                    if len(_df) >= 5:
+                        return _df
+                    break
+                except Exception:
+                    if _attempt == 0:
+                        _time_fetch.sleep(1)
                     continue
-                df = df.rename(columns={
-                    'Open':'시가','High':'고가','Low':'저가',
-                    'Close':'종가','Volume':'거래량'
-                })[['시가','고가','저가','종가','거래량']]
-                df = df[df['거래량'] > 0].tail(lookback)
-                if len(df) >= 5:
-                    return df
-            except:
-                continue
     else:
-        # 미국 종목 — yfinance
-        import yfinance as yf
-        try:
-            yt = yf.Ticker(ticker)
-            df = yt.history(start=start, end=end, interval='1d')
-            if df is not None and not df.empty:
-                df = df.rename(columns={
-                    'Open':'시가','High':'고가','Low':'저가',
-                    'Close':'종가','Volume':'거래량'
-                })[['시가','고가','저가','종가','거래량']]
-                df = df[df['거래량'] > 0].tail(lookback)
-                if len(df) >= 5:
-                    return df
-        except:
-            pass
+        # 미국 종목 — yfinance (최대 2회 재시도)
+        import yfinance as _yf_fetch
+        import time as _time_fetch
+        for _attempt in range(2):
+            try:
+                _yt = _yf_fetch.Ticker(ticker)
+                _df = _yt.history(start=start, end=end, interval='1d')
+                if _df is not None and not _df.empty:
+                    _df = _df.rename(columns={
+                        'Open':'시가','High':'고가','Low':'저가',
+                        'Close':'종가','Volume':'거래량'
+                    })[['시가','고가','저가','종가','거래량']]
+                    _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
+                    if len(_df) >= 5:
+                        return _df
+                break
+            except Exception:
+                if _attempt == 0:
+                    _time_fetch.sleep(1)
+                continue
     return None
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2103,6 +2113,21 @@ if _time.time() - st.session_state.all_data_time > 300:
 
 all_data = st.session_state.all_data_cache
 
+# ── Session State 핵심 변수 사전 초기화 ──
+for _ss_key, _ss_default in [
+    ('passed', []),
+    ('all_data_cache', {}),
+    ('ui_dark', True),
+    ('opt_best_cond5', 0.08),
+    ('opt_best_cond6', 0.50),
+    ('paper_account', None),
+    ('watchlist_data', None),
+    ('gemini_model_global', 'gemini-1.5-flash'),
+    ('etf_market_sel', '🇰🇷 국장 ETF'),
+]:
+    if _ss_key not in st.session_state:
+        st.session_state[_ss_key] = _ss_default
+
 tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리"])
 
 
@@ -2447,6 +2472,17 @@ with tab_a:
 
 with tab_b:
     st.markdown("### 🔍 분석")
+    # 진입 금지 시간 / 매크로 블랙아웃 배너
+    _v891_b = run_v891_system_check()
+    if not _v891_b['can_enter']:
+        for _ba in _v891_b['alerts']:
+            st.error(_ba)
+    else:
+        from datetime import datetime as _dt_tb
+        _kh_b = (_dt_tb.utcnow().hour + 9) % 24
+        _km_b = _dt_tb.utcnow().minute
+        if (9 <= _kh_b < 10) or (_kh_b == 10 and _km_b <= 30):
+            st.error("🔒 09:00~10:30 진입 금지 구간 — 차트 분석만 가능")
     _sub_b1, _sub_b2 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석"])
 
     with _sub_b1:
@@ -2741,6 +2777,17 @@ with tab_b:
 with tab_c:
     st.markdown("### 📡 V8.9.4 단기 스윙 스캐너")
     st.caption("하드필터(시총·ATR) + 스코어링(재무·수급·모멘텀·눌림목) — 70점 이상 종목만 포착")
+    # 진입 금지 배너
+    _v891_c = run_v891_system_check()
+    if not _v891_c['can_enter']:
+        for _ca in _v891_c['alerts']:
+            st.warning(f"⚠️ {_ca} — 스캔은 가능하나 결과 종목 오늘 진입 불가")
+    else:
+        from datetime import datetime as _dt_tc
+        _kh_c = (_dt_tc.utcnow().hour + 9) % 24
+        _km_c = _dt_tc.utcnow().minute
+        if (9 <= _kh_c < 10) or (_kh_c == 10 and _km_c <= 30):
+            st.warning("🔒 09:00~10:30 진입 금지 구간 — 스캔 결과는 내일 진입 검토용으로 활용하세요")
 
     with st.expander("💡 스캐너 사용법", expanded=False):
         st.markdown("""
@@ -3499,7 +3546,15 @@ with tab_c:
         if not passed:
             st.warning("⚠️ 스코어링 70점 이상 종목 없음. (하드필터 C1+C2 또는 점수 미달)")
         else:
-            st.success(f"✅ {len(passed)}개 발굴! 🏆A-Grade {_a_cnt}개 / 🎯Target_Locked {_tl_cnt}개")
+            _sc1, _sc2 = st.columns([4, 1])
+            _sc1.success(f"✅ {len(passed)}개 발굴! 🏆A-Grade {_a_cnt}개 / 🎯Target_Locked {_tl_cnt}개")
+            try:
+                _dl_df = pd.DataFrame([{k: v for k, v in p.items() if k not in ('reasons',)} for p in passed])
+                _sc2.download_button("📥 CSV", _dl_df.to_csv(index=False, encoding='utf-8-sig'),
+                                     file_name=f"scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                     mime="text/csv", use_container_width=True)
+            except Exception:
+                pass
 
     # ── 결과 표시 ──
     if st.session_state.passed is not None and st.session_state.passed:
