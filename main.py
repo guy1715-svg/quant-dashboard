@@ -231,25 +231,23 @@ async def _scan_one(ticker: str) -> dict | None:
         ag, al = sum(gains)/14, sum(losses)/14
         rsi = 100 - 100/(1 + ag/(al+1e-9))
 
-        # C1 추세: ADX≥25, 정배열
-        c1 = adx >= 25 and ma5 > ma20 > ma60
+        # C1 추세: ADX≥20 (완화) + 단기 상승 (ma5 > ma20)
+        c1 = adx >= 20 and ma5 > ma20
 
-        # C2 눌림목: MA5이격 -3%~+3%
-        c2 = -3 <= ma5_diff <= 3
+        # C2 눌림목: MA5이격 -5%~+5% (완화)
+        c2 = -5 <= ma5_diff <= 5
 
-        # C3 재무: yfinance 모드에서는 PER/PBR — 간이 통과 처리
-        c3 = True  # KIS 연동 시 실제 재무 체크
+        # C3 재무: yfinance 모드 간이 통과
+        c3 = True
 
-        # C4 수급: CMF20 > 0 (KIS 없을 때 대리 지표)
+        # C4 수급: CMF20 > 0
         c4 = cmf20 > 0
 
-        # C5 모멘텀: RSI 40~70
-        c5 = 40 <= rsi <= 70
+        # C5 모멘텀: RSI 35~75 (완화)
+        c5 = 35 <= rsi <= 75
 
-        # C6 눌림목: MA5이격 -1%~+1% (엄격)
-        c6 = -1 <= ma5_diff <= 1
-
-        all6 = c1 and c2 and c3 and c4 and c5 and c6
+        # C6 눌림목: MA5이격 -3%~+3%
+        c6 = -3 <= ma5_diff <= 3
 
         score = (
             (25 if c3 else 0) +
@@ -258,12 +256,17 @@ async def _scan_one(ticker: str) -> dict | None:
             (20 if c6 else 0)
         )
 
+        all6 = c1 and c2 and c3 and c4 and c5 and c6
+
+        # C1+C2 하드필터
         if not (c1 and c2):
             return None
-        if not (all6 and score >= 70):
-            return None
 
-        grade = "A" if all6 else "B"
+        grade = "A" if all6 and score >= 70 else "B"
+
+        # B등급도 표시 (score >= 50 이상이면 반환)
+        if score < 50:
+            return None
 
         return {
             "ticker": ticker,
