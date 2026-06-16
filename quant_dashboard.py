@@ -5318,15 +5318,30 @@ with tab_e:
         if not _cash_ok:
             st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
 
+        # ETF 여부 판단 (종목명에 ETF 키워드 포함 또는 미국 ETF 티커)
+        _is_etf = any(kw in _bn.upper() for kw in ["KODEX","TIGER","ACE","SOL","KBSTAR","HANARO","KOSEF","RISE","PLUS","ETF"]) \
+                  or (not _bt.isdigit() and len(_bt) <= 5)
+
         # V8.9.1 진입 가능 여부 확인
         _v891_check = run_v891_system_check()
-        if not _v891_check['can_enter']:
+        _blocked = not _v891_check['can_enter']
+
+        if _blocked:
             for _a in _v891_check['alerts']:
-                st.error(_a)
-            st.warning("⚠️ V8.9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+                if _is_etf:
+                    st.warning(f"⚠️ 참고: {_a}")  # ETF는 경고만
+                else:
+                    st.error(_a)
+            if _is_etf:
+                st.info("ℹ️ ETF 로테이션은 매크로 이벤트 차단 제외 — 진입 가능합니다.")
+            else:
+                st.warning("⚠️ V8.9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+
+        # ETF는 블랙아웃 차단 무시, 개별주만 차단
+        _entry_blocked = _blocked and not _is_etf
 
         if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
-                     type="primary", disabled=(not _cash_ok or not _v891_check['can_enter'])):
+                     type="primary", disabled=(not _cash_ok or _entry_blocked)):
             _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
             _cost  = _net_b * _buy_qty
             _acc['cash'] -= _cost
