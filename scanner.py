@@ -1,10 +1,12 @@
 """
-scanner.py — V8.9.3 단기 스윙 스캐너 엔진
+scanner.py — V8.9.4 하이브리드 스코어링 스캐너 엔진
 
-V8.9.3 변경사항:
-  - 하드 필터 1: ETF / SPAC / 우선주 원천 차단 (시총 0 또는 None → 즉시 폐기)
-  - 하드 필터 2: 저변동성 금지 섹터 킬스위치 (유통/은행/금융/보험/전력·유틸/통신/지주사)
-  - 기존 V8.9.2 cond1~cond6 AND 로직 유지
+V8.9.4 변경사항:
+  - 데이터 소스: KIS API 우선, yfinance 폴백
+  - 하드 필터: ETF/SPAC/우선주/저변동성섹터 + 시총(C1) + ATR(C2) — AND 필수
+  - 스코어링: C3(재무 20점) + C4(외인/기관 쌍끌이 30점) + C5(모멘텀 25점) + C6(눌림목 25점)
+  - 판정: 70점 이상 → Target_Locked / 90점 이상 → A-Grade 주도주
+  - NXT(대체거래소) tradable_nxt 플래그 검증
 """
 
 from __future__ import annotations
@@ -19,29 +21,41 @@ import pandas as pd
 from indicators import calc_rsi_wilder, calc_atr, calc_cmf, calc_macd, calc_bb
 from kis_api import KISClient, get_client, run_async
 
-# ── V8.9.2 스캐너 파라미터 ────────────────────────────────────────────────────
-COND1_MKTCAP_MIN  = 5_000    # 억원
-COND1_MKTCAP_MAX  = 30_000   # 억원
-COND2_ATR_RATIO   = 0.035    # ATR14 / 현재가 ≥ 3.5%
-COND4_CMF_MIN     = 0.05     # CMF20 > 0.05
-COND5_CUM5_RET    = 0.08     # 5일 누적 수익률 ≥ 8%
-COND6_VOL_RATIO   = 0.50     # 거래량 < 최대의 50%
+# ── 하드 필터 파라미터 ────────────────────────────────────────────────────────
+COND1_MKTCAP_MIN = 5_000    # 억원
+COND1_MKTCAP_MAX = 30_000   # 억원
+COND2_ATR_RATIO  = 0.035    # ATR14 / 현재가 ≥ 3.5%
+
+# ── 스코어링 파라미터 ─────────────────────────────────────────────────────────
+SCORE_C3_FIN     = 20   # 재무: 영업이익 흑자 OR 매출YoY≥20%
+SCORE_C4_INV     = 30   # 수급: 외인+기관 쌍끌이 순매수 > 0
+SCORE_C5_MOM     = 25   # 모멘텀: 5일 누적수익률 ≥ 8%
+SCORE_C6_VOL     = 25   # 눌림목: 거래량 < 직전20일최대 × 50%
+SCORE_C5_RET_MIN = 0.08
+SCORE_C6_VOL_MAX = 0.50
+
+GRADE_A    = 90   # A-Grade 주도주
+GRADE_LOCK = 70   # Target_Locked
 
 CONCURRENCY_DEFAULT = 10
 
 # ── 하드 필터 상수 ────────────────────────────────────────────────────────────
-# ETF 판별 키워드 (종목명 포함 시 차단)
 ETF_NAME_KEYWORDS = [
     "KODEX", "TIGER", "KBSTAR", "HANARO", "ARIRANG", "KOSEF",
     "RISE", "ACE", "SOL", "PLUS", "ETF", "레버리지", "인버스",
     "스팩", "SPAC", "리츠", "REITS", "우선주",
 ]
 
-# 금지 섹터 블랙리스트 (yfinance sector/industry 문자열 포함 매칭)
+BLOCKED_NAME_KEYWORDS = [
+    "지주", "홀딩스", "홀딩", "HOLDING", "HOLDINGS",
+    "리테일", "마트", "쇼핑", "유통", "편의점", "홈쇼핑", "백화점", "면세",
+    "은행", "뱅크", "증권", "보험", "캐피탈", "카드", "저축", "투자", "자산운용", "신탁",
+    "텔레콤", "통신",
+    "한전", "발전", "전력", "가스",
+]
+
 BLOCKED_SECTORS = [
-    # 한국어
     "유통", "은행", "금융", "보험", "전력", "유틸리티", "통신", "지주",
-    # yfinance 영어 sector/industry 값
     "Banks", "Diversified Banks", "Regional Banks",
     "Insurance", "Life Insurance", "Property & Casualty Insurance",
     "Financial Services", "Capital Markets", "Consumer Finance",
@@ -53,67 +67,46 @@ BLOCKED_SECTORS = [
 ]
 
 
-# ── 하드 필터 1+2: ETF/저변동성 섹터 킬스위치 ───────────────────────────────
-def _hard_filter_yfinance(ticker: str, name: str) -> Tuple[bool, str]:
-    """
-    yfinance 메타데이터 기반 하드 필터.
-    Returns: (통과 여부, 거부 사유)
-    통과: (True, "")  /  차단: (False, 사유 문자열)
-    """
-    # ── 필터 1-A: 종목명 키워드로 ETF/SPAC/우선주 즉시 차단 ──
+# ── 하드 필터 함수 ────────────────────────────────────────────────────────────
+def _hard_filter_name_only(name: str, ticker: str) -> Tuple[bool, str]:
+    """종목명·코드만으로 빠른 1차 필터 (API 불필요)."""
     _name_upper = name.upper()
     for kw in ETF_NAME_KEYWORDS:
         if kw.upper() in _name_upper:
-            return False, f"ETF/SPAC 차단: {kw}"
-
-    # ── 필터 1-B: 티커 패턴으로 우선주 차단 (한국 우선주: 코드 끝 5번째 자리 5)
+            return False, f"ETF/SPAC: {kw}"
+    for kw in BLOCKED_NAME_KEYWORDS:
+        if kw.upper() in _name_upper:
+            return False, f"종목명섹터: {kw}"
     if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
-        return False, "우선주 차단 (종목코드 패턴)"
+        return False, "우선주 코드패턴"
+    return True, ""
 
-    # ── yfinance 메타데이터 조회 ──
+
+def _hard_filter_yfinance(ticker: str, name: str) -> Tuple[bool, str]:
+    """yfinance 메타데이터 기반 2차 필터."""
+    ok, reason = _hard_filter_name_only(name, ticker)
+    if not ok:
+        return False, reason
     try:
         import yfinance as yf
-        _suffix = ".KS" if ticker.isdigit() else ""
-        _info   = yf.Ticker(ticker + _suffix).info
-
-        # ── 필터 1-C: 시총 0 또는 None → ETF/거래정지 의심 ──
+        for _sfx in ([".KS", ".KQ"] if ticker.isdigit() else [""]):
+            _info = yf.Ticker(ticker + _sfx).info
+            if _info and _info.get("regularMarketPrice"):
+                break
         mktcap = _info.get("marketCap", None)
         if mktcap is None or mktcap == 0:
-            return False, "시총 0/None (ETF 또는 거래정지 의심)"
-
-        # ── 필터 2: 저변동성 금지 섹터 킬스위치 ──
-        sector   = str(_info.get("sector",   "") or "")
-        industry = str(_info.get("industry", "") or "")
-        combined = sector + " " + industry
-
-        for blocked in BLOCKED_SECTORS:
-            if blocked.lower() in combined.lower():
-                return False, f"금지 섹터 차단: {blocked} ({sector}/{industry})"
-
-        # ── 필터 1-D: quoteType이 ETF이면 차단 ──
-        quote_type = str(_info.get("quoteType", "") or "").upper()
-        if quote_type in ("ETF", "MUTUALFUND", "FUTURE", "INDEX"):
-            return False, f"quoteType 차단: {quote_type}"
-
+            return False, "시총 0/None"
+        qt = str(_info.get("quoteType", "") or "").upper()
+        if qt in ("ETF", "MUTUALFUND", "FUTURE", "INDEX"):
+            return False, f"quoteType={qt}"
+        combined = (str(_info.get("sector", "") or "") + " " +
+                    str(_info.get("industry", "") or ""))
+        for blk in BLOCKED_SECTORS:
+            if blk.lower() in combined.lower():
+                return False, f"금지섹터: {blk}"
         return True, ""
-
     except Exception:
-        # 메타데이터 조회 실패 시 통과 (보수적으로 허용 — 이후 조건에서 걸림)
         return True, ""
-
-
-def _hard_filter_name_only(name: str, ticker: str) -> Tuple[bool, str]:
-    """
-    API 없이 종목명·코드만으로 빠르게 1차 필터링 (KIS 모드 사전 필터).
-    yfinance 조회 없이 즉시 차단 가능한 케이스만 처리.
-    """
-    _name_upper = name.upper()
-    for kw in ETF_NAME_KEYWORDS:
-        if kw.upper() in _name_upper:
-            return False, f"ETF/SPAC 차단: {kw}"
-    if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
-        return False, "우선주 차단"
-    return True, ""
 
 
 # ── 결과 데이터클래스 ─────────────────────────────────────────────────────────
@@ -134,12 +127,14 @@ class ScanResult:
     rev_yoy:        Optional[float]
     tradable_nxt:   bool
     passed:         bool
+    score:          int           # 총점 (0~100)
+    grade:          str           # "A-Grade 주도주" / "Target_Locked" / "Filtered"
     cond_detail:    str
     rsi:            float = 0.0
     macd_cross:     bool  = False
     atr14:          float = 0.0
     reasons:        List[str] = field(default_factory=list)
-    filter_reason:  str  = ""   # 하드 필터 거부 사유 (디버그용)
+    filter_reason:  str  = ""
 
 
 # ── 지표 계산 ─────────────────────────────────────────────────────────────────
@@ -149,7 +144,6 @@ def _compute_from_ohlcv(df: pd.DataFrame) -> Dict:
         "close": "종가", "volume": "거래량",
     }
     df = df.rename(columns=col_map)
-
     if len(df) < 22:
         return {}
 
@@ -180,63 +174,95 @@ def _compute_from_ohlcv(df: pd.DataFrame) -> Dict:
         "max_vol_20": max_vol_20,
         "vol_ratio":  vol_today / max_vol_20 if max_vol_20 > 0 else 0,
         "cmf20":      cmf20 if not np.isnan(cmf20) else 0.0,
-        "rsi":        rsi  if not np.isnan(rsi)   else 50.0,
+        "rsi":        rsi   if not np.isnan(rsi)   else 50.0,
         "macd_cross": macd_cross,
     }
 
 
-# ── 6대 조건 평가 ─────────────────────────────────────────────────────────────
-def _evaluate_v892(
+# ── 하이브리드 스코어링 평가 ──────────────────────────────────────────────────
+def _evaluate_scoring(
     ind:        Dict,
     price_info: Dict,
     fin_info:   Dict,
     inv_info:   Dict,
-) -> Tuple[bool, str, List[str]]:
+) -> Tuple[bool, int, str, str, List[str]]:
+    """
+    Returns: (hard_pass, score, grade, cond_detail, reasons)
+    hard_pass: C1+C2 필수 AND 통과 여부
+    score: 0~100점 (C3+C4+C5+C6 합산)
+    grade: "A-Grade 주도주" / "Target_Locked" / "Filtered"
+    """
     mktcap_bil   = float(price_info.get("market_cap_bil", 0))
     op_profit    = fin_info.get("operating_profit")
     rev_yoy      = fin_info.get("revenue_yoy")
     foreign_net  = int(inv_info.get("foreign_net_5d", 0))
     inst_net     = int(inv_info.get("inst_net_5d",    0))
-    tradable_nxt = bool(price_info.get("tradable_nxt", False))
+    tradable_nxt = bool(price_info.get("tradable_nxt", True))
 
-    cond1 = (COND1_MKTCAP_MIN <= mktcap_bil <= COND1_MKTCAP_MAX
-             if mktcap_bil > 0 else True)
+    # ── 하드 필터: C1 시총 ──
+    if mktcap_bil > 0:
+        c1_pass = COND1_MKTCAP_MIN <= mktcap_bil <= COND1_MKTCAP_MAX
+    else:
+        c1_pass = True  # 데이터 없으면 통과 (후속 조건에서 걸림)
 
-    cond2 = ind.get("atr_ratio", 0) >= COND2_ATR_RATIO
+    # ── 하드 필터: C2 ATR ──
+    c2_pass = ind.get("atr_ratio", 0) >= COND2_ATR_RATIO
 
+    hard_pass = c1_pass and c2_pass
+
+    # ── 스코어링 (하드 필터 통과 여부 무관하게 계산, 단 판정은 hard_pass AND score 기준) ──
+    score = 0
+    reasons = []
+
+    # C3: 재무 (20점) — 결측치는 0점 처리, 탈락 없음
+    c3_ok = False
     if op_profit is not None or rev_yoy is not None:
-        cond3 = ((op_profit is not None and op_profit > 0) or
+        c3_ok = ((op_profit is not None and op_profit > 0) or
                  (rev_yoy  is not None and rev_yoy  >= 0.20))
+        if c3_ok:
+            score += SCORE_C3_FIN
+            reasons.append(f"📊재무+{SCORE_C3_FIN}점")
+
+    # C4: 수급 — 외인+기관 쌍끌이 순매수 > 0 (30점)
+    # KIS 데이터 있을 때: 외인 AND 기관 둘 다 순매수 양수
+    # yfinance 폴백: 데이터 없으므로 0점
+    c4_ok = (foreign_net > 0) and (inst_net > 0)
+    if c4_ok:
+        score += SCORE_C4_INV
+        reasons.append(f"💰쌍끌이+{SCORE_C4_INV}점")
+
+    # C5: 모멘텀 (25점) — 5일 누적수익률 ≥ 8%
+    c5_ok = ind.get("cum5", 0) >= SCORE_C5_RET_MIN
+    if c5_ok:
+        score += SCORE_C5_MOM
+        reasons.append(f"📈5일+{SCORE_C5_MOM}점")
+
+    # C6: 눌림목 (25점) — 거래량 < 직전 20일 최대 × 50%
+    c6_ok = ind.get("vol_ratio", 1) < SCORE_C6_VOL_MAX
+    if c6_ok:
+        score += SCORE_C6_VOL
+        reasons.append(f"📉눌림목+{SCORE_C6_VOL}점")
+
+    # ── 등급 판정 ──
+    if hard_pass and score >= GRADE_A:
+        grade = "A-Grade 주도주"
+    elif hard_pass and score >= GRADE_LOCK:
+        grade = "Target_Locked"
     else:
-        cond3 = True
-
-    cond4_cmf = ind.get("cmf20", 0) > COND4_CMF_MIN
-    if foreign_net != 0 or inst_net != 0:
-        cond4 = cond4_cmf and (foreign_net > 0) and (inst_net > 0)
-    else:
-        cond4 = cond4_cmf
-
-    cond5 = ind.get("cum5", 0)       >= COND5_CUM5_RET
-    cond6 = ind.get("vol_ratio", 1)  <  COND6_VOL_RATIO
-
-    passed = all([cond1, cond2, cond3, cond4, cond5, cond6])
+        grade = "Filtered"
 
     def _e(b): return "✅" if b else "❌"
     cond_detail = (
-        f"C1{_e(cond1)} C2{_e(cond2)} C3{_e(cond3)} "
-        f"C4{_e(cond4)} C5{_e(cond5)} C6{_e(cond6)} "
-        f"NXT{_e(tradable_nxt)}"
+        f"C1{_e(c1_pass)}({mktcap_bil:.0f}억) "
+        f"C2{_e(c2_pass)}({ind.get('atr_ratio',0)*100:.1f}%) "
+        f"C3{_e(c3_ok)} C4{_e(c4_ok)} C5{_e(c5_ok)} C6{_e(c6_ok)} "
+        f"점수:{score}점 NXT{_e(tradable_nxt)}"
     )
 
-    reasons = []
-    if cond2: reasons.append(f"📐ATR {ind['atr_ratio']*100:.1f}%")
-    if cond5: reasons.append(f"📈5일 {ind['cum5']*100:.1f}%")
-    if cond6: reasons.append(f"📉거래량 {ind['vol_ratio']*100:.0f}%")
-    cmf_v = ind.get("cmf20", 0)
-    if cond4: reasons.append(f"💰CMF {cmf_v:+.3f}")
-    if not tradable_nxt: reasons.append("⚠️NXT불가")
+    if not tradable_nxt:
+        reasons.append("⚠️NXT불가")
 
-    return passed, cond_detail, reasons
+    return hard_pass, score, grade, cond_detail, reasons
 
 
 # ── 단일 종목 비동기 스캔 (KIS 모드) ─────────────────────────────────────────
@@ -248,7 +274,6 @@ async def _scan_one_kis(
     max_price: int,
 ) -> Optional[ScanResult]:
     try:
-        # ── 하드 필터 0순위: 종목명/코드 기반 즉시 차단 ──
         ok, reason = _hard_filter_name_only(name, ticker)
         if not ok:
             return None
@@ -261,7 +286,6 @@ async def _scan_one_kis(
         if cur < min_price or cur > max_price:
             return None
 
-        # ── 하드 필터 1-C: KIS 시총 0 차단 ──
         mktcap = float(price_info.get("market_cap_bil", 0))
         if mktcap == 0:
             return None
@@ -279,37 +303,46 @@ async def _scan_one_kis(
             client.get_investor_trend(ticker, days=5),
         )
 
-        # ── 하드 필터 2: KIS sector 정보로 금지 섹터 차단 ──
+        # 금지 섹터 차단
         sector = str(fin_info.get("sector", "") or "")
         for blocked in BLOCKED_SECTORS:
             if blocked.lower() in sector.lower():
                 return None
 
-        passed, cond_detail, reasons = _evaluate_v892(ind, price_info, fin_info, inv_info)
-        if not passed:
+        hard_pass, score, grade, cond_detail, reasons = _evaluate_scoring(
+            ind, price_info, fin_info, inv_info
+        )
+
+        # 70점 미만 또는 하드필터 실패 → 제외
+        if not hard_pass or score < GRADE_LOCK:
             return None
 
+        c = df["종가"].astype(float) if "종가" in df.columns else df["close"].astype(float)
+        chg = float(price_info.get("change_pct", 0))
+
         return ScanResult(
-            ticker        = ticker,
-            name          = name,
-            price         = cur,
-            change_pct    = float(price_info.get("change_pct", 0)),
-            market_cap_bil= mktcap,
-            atr_ratio     = round(ind["atr_ratio"] * 100, 2),
-            cum5_ret      = round(ind["cum5"]       * 100, 2),
-            vol_ratio     = round(ind["vol_ratio"]  * 100, 1),
-            cmf           = round(ind["cmf20"], 4),
-            foreign_net   = int(inv_info.get("foreign_net_5d", 0)),
-            inst_net      = int(inv_info.get("inst_net_5d",    0)),
-            op_profit     = fin_info.get("operating_profit"),
-            rev_yoy       = fin_info.get("revenue_yoy"),
-            tradable_nxt  = bool(price_info.get("tradable_nxt", False)),
-            passed        = True,
-            cond_detail   = cond_detail,
-            rsi           = round(ind["rsi"],  1),
-            macd_cross    = ind["macd_cross"],
-            atr14         = round(ind["atr14"], 2),
-            reasons       = reasons,
+            ticker         = ticker,
+            name           = name,
+            price          = int(cur),
+            change_pct     = chg,
+            market_cap_bil = mktcap,
+            atr_ratio      = round(ind["atr_ratio"] * 100, 2),
+            cum5_ret       = round(ind["cum5"]       * 100, 2),
+            vol_ratio      = round(ind["vol_ratio"]  * 100, 1),
+            cmf            = round(ind["cmf20"], 4),
+            foreign_net    = int(inv_info.get("foreign_net_5d", 0)),
+            inst_net       = int(inv_info.get("inst_net_5d",    0)),
+            op_profit      = fin_info.get("operating_profit"),
+            rev_yoy        = fin_info.get("revenue_yoy"),
+            tradable_nxt   = bool(price_info.get("tradable_nxt", False)),
+            passed         = True,
+            score          = score,
+            grade          = grade,
+            cond_detail    = cond_detail,
+            rsi            = round(ind["rsi"],  1),
+            macd_cross     = ind["macd_cross"],
+            atr14          = round(ind["atr14"], 2),
+            reasons        = reasons,
         )
     except Exception:
         return None
@@ -324,15 +357,14 @@ def scan_one_yfinance(
     max_price: int,
 ) -> Optional[ScanResult]:
     """
-    yfinance fetch_ohlcv 결과 DataFrame을 직접 받아 스캔.
-
-    하드 필터 → 가격 필터 → 지표 계산 → 6대 조건 순서로 실행.
+    yfinance fetch_ohlcv DataFrame을 받아 스코어링 스캔.
+    KIS 없는 환경(Streamlit Cloud)에서 폴백으로 사용.
+    C4(외인/기관) 데이터 없으므로 최대 70점 (C3+C5+C6).
     """
     try:
-        # ── 하드 필터 0순위: ETF/SPAC/섹터 킬스위치 ──
         ok, reason = _hard_filter_yfinance(ticker, name)
         if not ok:
-            return None  # 거부 (reason은 디버그 로그용)
+            return None
 
         if df is None or len(df) < 22:
             return None
@@ -345,39 +377,65 @@ def scan_one_yfinance(
         if cur < min_price or cur > max_price:
             return None
 
+        # yfinance로 재무·시총 조회
         price_info = {"market_cap_bil": 0, "tradable_nxt": True, "change_pct": 0}
-        fin_info   = {"operating_profit": None, "revenue_yoy": None}
+        fin_info   = {"operating_profit": None, "revenue_yoy": None, "sector": ""}
         inv_info   = {"foreign_net_5d": 0, "inst_net_5d": 0}
+
+        try:
+            import yfinance as _yf
+            for _sfx in ([".KS", ".KQ"] if ticker.isdigit() else [""]):
+                _info = _yf.Ticker(ticker + _sfx).info
+                if _info and _info.get("regularMarketPrice"):
+                    break
+            mktcap = _info.get("marketCap", 0) or 0
+            price_info["market_cap_bil"] = mktcap / 1e8
+            fin_info["operating_profit"] = _info.get("operatingIncome")
+            fin_info["revenue_yoy"]      = _info.get("revenueGrowth")
+            fin_info["sector"]           = _info.get("sector", "") or ""
+        except Exception:
+            pass
+
+        # 금지 섹터 재확인
+        for blk in BLOCKED_SECTORS:
+            if blk.lower() in fin_info["sector"].lower():
+                return None
 
         c   = df["종가"].astype(float) if "종가" in df.columns else df["close"].astype(float)
         chg = (float(c.iloc[-1]) / float(c.iloc[-2]) - 1) * 100 if len(c) >= 2 else 0.0
         price_info["change_pct"] = round(chg, 2)
 
-        passed, cond_detail, reasons = _evaluate_v892(ind, price_info, fin_info, inv_info)
-        if not passed:
+        hard_pass, score, grade, cond_detail, reasons = _evaluate_scoring(
+            ind, price_info, fin_info, inv_info
+        )
+
+        # yfinance 모드: C4 데이터 없어서 최대 70점 → 70점 이상이면 통과
+        if not hard_pass or score < GRADE_LOCK:
             return None
 
         return ScanResult(
-            ticker        = ticker,
-            name          = name,
-            price         = int(cur),
-            change_pct    = round(chg, 2),
-            market_cap_bil= 0,
-            atr_ratio     = round(ind["atr_ratio"] * 100, 2),
-            cum5_ret      = round(ind["cum5"]       * 100, 2),
-            vol_ratio     = round(ind["vol_ratio"]  * 100, 1),
-            cmf           = round(ind["cmf20"], 4),
-            foreign_net   = 0,
-            inst_net      = 0,
-            op_profit     = None,
-            rev_yoy       = None,
-            tradable_nxt  = True,
-            passed        = True,
-            cond_detail   = cond_detail,
-            rsi           = round(ind["rsi"],  1),
-            macd_cross    = ind["macd_cross"],
-            atr14         = round(ind["atr14"], 2),
-            reasons       = reasons,
+            ticker         = ticker,
+            name           = name,
+            price          = int(cur),
+            change_pct     = round(chg, 2),
+            market_cap_bil = price_info["market_cap_bil"],
+            atr_ratio      = round(ind["atr_ratio"] * 100, 2),
+            cum5_ret       = round(ind["cum5"]       * 100, 2),
+            vol_ratio      = round(ind["vol_ratio"]  * 100, 1),
+            cmf            = round(ind["cmf20"], 4),
+            foreign_net    = 0,
+            inst_net       = 0,
+            op_profit      = fin_info.get("operating_profit"),
+            rev_yoy        = fin_info.get("revenue_yoy"),
+            tradable_nxt   = True,
+            passed         = True,
+            score          = score,
+            grade          = grade,
+            cond_detail    = cond_detail,
+            rsi            = round(ind["rsi"],  1),
+            macd_cross     = ind["macd_cross"],
+            atr14          = round(ind["atr14"], 2),
+            reasons        = reasons,
         )
     except Exception:
         return None
@@ -401,7 +459,7 @@ async def _run_scan_async(
     raw   = await asyncio.gather(*tasks, return_exceptions=True)
     return sorted(
         [r for r in raw if isinstance(r, ScanResult)],
-        key=lambda x: x.cum5_ret,
+        key=lambda x: (x.score, x.cum5_ret),
         reverse=True,
     )
 
@@ -424,6 +482,8 @@ def results_to_df(results: List[ScanResult]) -> pd.DataFrame:
     rows = []
     for r in results:
         rows.append({
+            "등급":      r.grade,
+            "점수":      f"{r.score}점",
             "종목명":    r.name,
             "코드":      r.ticker,
             "현재가":    f"{r.price:,}",
@@ -432,7 +492,8 @@ def results_to_df(results: List[ScanResult]) -> pd.DataFrame:
             "ATR%":      f"{r.atr_ratio:.1f}%",
             "5일수익률": f"{r.cum5_ret:+.1f}%",
             "거래량%":   f"{r.vol_ratio:.0f}%",
-            "CMF":       f"{r.cmf:+.3f}",
+            "외인순매수": f"{r.foreign_net:+,}" if r.foreign_net else "-",
+            "기관순매수": f"{r.inst_net:+,}"    if r.inst_net    else "-",
             "RSI":       f"{r.rsi:.0f}",
             "NXT":       "✅" if r.tradable_nxt else "⚠️",
             "조건":      r.cond_detail,
