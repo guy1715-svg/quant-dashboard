@@ -2504,7 +2504,7 @@ with tab_a:
         st.markdown(f"""
 <div style='background:#0f172a;border:1px solid #1e3a5f;border-radius:12px;padding:14px 16px;margin-bottom:10px'>
   <div style='font-size:11px;color:#64748b;margin-bottom:2px'>ACCOUNT SUMMARY</div>
-  <div style='font-size:22px;font-weight:800;color:#f0f4ff'>{_total_eval/1e6:.1f if _total_eval == _total_eval else '?'}M <span style='font-size:13px;color:#64748b'>KRW</span></div>
+  <div style='font-size:22px;font-weight:800;color:#f0f4ff'>{f"{_total_eval/1e6:.1f}" if not pd.isna(_total_eval) else "?"}M <span style='font-size:13px;color:#64748b'>KRW</span></div>
   <div style='display:flex;gap:14px;margin-top:8px'>
     <div>
       <div style='font-size:10px;color:#64748b'>Portfolio Return</div>
