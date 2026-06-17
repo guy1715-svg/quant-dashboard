@@ -274,13 +274,13 @@ def _evaluate_scoring(
     # ── 등급 판정 ──
     all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
 
-    # 대형주 특례: C1(ADX≥25) + C4(수급) True면 나머지 일부 미달해도 Target_Locked 허용
-    adx_val   = float(ind.get("adx14", 0))
+    # 대형주 특례: C1(시총범위) AND C3(재무) 둘 다 True일 때만 허용
+    # C1 또는 C3 중 하나라도 False → 점수/등급 무관하게 무조건 Drop
     large_cap_pass = (
         is_large_cap
-        and adx_val >= 25
-        and c4_ok
-        and not overheat
+        and c1_pass          # 절대조건 1: 시총 범위 통과
+        and c3_ok            # 절대조건 2: 재무 통과
+        and not overheat     # 과열 차단
     )
 
     if overheat:
