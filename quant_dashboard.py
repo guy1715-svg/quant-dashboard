@@ -4175,14 +4175,25 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
     for _i, row in df_ranked.iterrows():
         _is_top  = (_i == 0 and row['상태'] == '활성')
         _is_dead = (row['상태'] != '활성')
-        _bg     = '#1a1400' if _is_top else '#0d0d0d' if _is_dead else '#111827'
-        _border = '#ffd166' if _is_top else '#2d3a55' if _is_dead else '#1e3a5f'
-        _op     = '0.4' if _is_dead else '1.0'
+        _rank   = '🥇' if _is_top else f"{_i+1}위"
+
+        # ── 탈락 종목: 컴팩트 한 줄 표시 ──
+        if _is_dead:
+            st.markdown(
+                f"<div style='background:#0d0d0d;border-radius:6px;padding:5px 14px;margin-bottom:2px;opacity:0.45;"
+                f"font-size:12px;color:#64748b'>"
+                f"{_rank} {row['ETF명']} ({row['코드']}) — ADX {row.get('ADX',0)} 탈락"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            continue
+
+        _bg     = '#1a1400' if _is_top else '#111827'
+        _macd   = row.get('MACD', '')
+        _border_color = '#ffd166' if _is_top else ('#d4a017' if _macd == '골든크로스' else '#c0392b' if _macd == '데드크로스' else '#1e3a5f')
         _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
         _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
-        _rank   = '🥇' if _is_top else f"{_i+1}위"
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
-        _dead_tag = ' <span style="color:#64748b;font-size:11px">ADX 25미만 탈락</span>' if _is_dead else ''
         _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
         if show_add_btn:
             _card_col, _btn_col = st.columns([9, 1])
@@ -4190,20 +4201,18 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             _card_col = st.container()
         with _card_col:
             st.markdown(
-                f"<div style='background:{_bg};border:1px solid {_border};border-radius:10px;"
-                f"padding:14px 18px;margin-bottom:4px;opacity:{_op}'>"
+                f"<div style='background:{_bg};border:1px solid {_border_color};border-radius:10px;"
+                f"padding:14px 18px;margin-bottom:4px'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
                 f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-                f"{_tag}{_dead_tag}</div>"
+                f"{_tag}</div>"
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
                 f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
                 f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
                 f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
                 f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>MACD <b style='color:#f0f4ff'>{row.get('MACD','')}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>Z <b style='color:#f0f4ff'>{row.get('Z-Score',0):+.2f}</b></span>"
                 f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
                 f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
                 f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
@@ -4503,13 +4512,8 @@ with tab_d:
                                 '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
         return results
 
-    st.divider()
-
     # ── 시장별 분기: 라디오 토글에 따라 국장/미장/전체 랭킹판 표시 ──
     if _etf_market == "🇰🇷 국장 ETF":
-        st.markdown("### 🇰🇷 국장ETF 종합 랭킹판")
-        st.caption("한국 상장 ETF 전체 카테고리 랭킹. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
-
         _cc1, _cc2 = st.columns([4, 1])
         with _cc2:
             if st.button("🔄 새로고침", key="kr_etf_refresh"):
@@ -4555,7 +4559,24 @@ with tab_d:
                 _kr_m3.metric("1위 ETF", _kr_top['ETF명'])
                 _kr_m4.metric("1위 점수", f"{int(_kr_top['종합점수'])}점")
 
-            st.markdown("---")
+            if not _kr_active.empty:
+                with st.expander("📊 TOP10 히트맵 보기", expanded=False):
+                    _kr_top10 = _kr_active.head(10)
+                    _kr_hm_fig = go.Figure(go.Bar(
+                        x=_kr_top10['종합점수'],
+                        y=[f"{r['ETF명']} ({r['코드']})" for _, r in _kr_top10.iterrows()],
+                        orientation='h',
+                        marker_color=['#ffd166' if i==0 else '#4da6ff' for i in range(len(_kr_top10))],
+                        text=[f"{v}점" for v in _kr_top10['종합점수']],
+                        textposition='inside',
+                    ))
+                    _kr_hm_fig.update_layout(
+                        height=320, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        font_color='#f0f4ff', xaxis_title='종합점수', yaxis_autorange='reversed',
+                        margin=dict(l=0,r=0,t=10,b=0)
+                    )
+                    st.plotly_chart(_kr_hm_fig, use_container_width=True)
+
             _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
@@ -4573,27 +4594,29 @@ with tab_d:
                 if not _snipe_list:
                     st.info("구성종목 DB 없음 또는 데이터 로드 실패")
                 else:
-                    _sc1, _sc2, _sc3, _sc4 = st.columns([2,1,1,1])
-                    _sc1.markdown("**종목**"); _sc2.markdown("**타점**"); _sc3.markdown("**RSI / Z**"); _sc4.markdown("**R:R / 손절**")
-                    st.markdown('<hr style="margin:4px 0;border-color:#2a2e39">', unsafe_allow_html=True)
+                    _fmt_p = lambda p: f"{int(p):,}원" if p >= 100 else f"{p:,.2f}"
                     for _h in _snipe_list:
-                        _col1, _col2, _col3, _col4 = st.columns([2,1,1,1])
-                        _fmt_p = lambda p: f"{int(p):,}원" if p >= 100 else f"{p:,.2f}"
-                        with _col1:
-                            st.markdown(f"**{_h['종목명']}** `{_h['종목코드']}`  \n현재가 {_fmt_p(_h['현재가'])}")
-                        with _col2:
-                            st.markdown(f"<span style='color:{_h['타점색']};font-weight:700'>{_h['타점']}</span>  \nMA5이격 {_h['MA5이격']:+.1f}%", unsafe_allow_html=True)
-                        with _col3:
-                            _rsi_c = "#f23645" if _h['RSI'] >= 70 else "#089981" if _h['RSI'] <= 30 else "#d1d4dc"
-                            st.markdown(f"RSI <span style='color:{_rsi_c}'>{_h['RSI']}</span>  \nZ-Score {_h['Z-Score']:+.2f}", unsafe_allow_html=True)
-                        with _col4:
-                            st.markdown(f"R:R **{_h['R:R']:.1f}**  \n손절 {_fmt_p(_h['손절가'])}")
-                        st.markdown('<hr style="margin:2px 0;border-color:#1e222d">', unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                            f"background:#111827;border-left:3px solid {_h['타점색']};border-radius:6px;"
+                            f"padding:10px 14px;margin:4px 0'>"
+                            f"<div>"
+                            f"<b>{_h['종목명']}</b> <span style='color:#64748b;font-size:11px'>{_h['종목코드']}</span>"
+                            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>현재가 {_fmt_p(_h['현재가'])} · MA5이격 {_h['MA5이격']:+.1f}%</div>"
+                            f"</div>"
+                            f"<div style='text-align:center'>"
+                            f"<div style='color:{_h['타점색']};font-weight:700;font-size:13px'>{_h['타점']}</div>"
+                            f"<div style='font-size:11px;color:#64748b'>RSI {_h['RSI']} · Z {_h['Z-Score']:+.2f}</div>"
+                            f"</div>"
+                            f"<div style='text-align:right'>"
+                            f"<div style='font-size:13px;font-weight:700'>R:R {_h['R:R']:.1f}</div>"
+                            f"<div style='font-size:11px;color:#f43f5e'>손절 {_fmt_p(_h['손절가'])}</div>"
+                            f"</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
 
     elif _etf_market == "🇺🇸 미장 ETF":
-        st.markdown("### 🇺🇸 미장ETF 종합 랭킹판")
-        st.caption("미국 직상장 ETF 랭킹. 가격 단위: USD. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
-
         _uc1, _uc2 = st.columns([4, 1])
         with _uc2:
             if st.button("🔄 새로고침", key="us_etf_refresh"):
@@ -4657,7 +4680,6 @@ with tab_d:
                     )
                     st.plotly_chart(_hm_fig, use_container_width=True)
 
-            st.markdown("---")
             _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
@@ -4676,21 +4698,26 @@ with tab_d:
                 if not _us_snipe:
                     st.info("구성종목 DB 없음 또는 데이터 로드 실패")
                 else:
-                    _uc1, _uc2, _uc3, _uc4 = st.columns([2,1,1,1])
-                    _uc1.markdown("**종목**"); _uc2.markdown("**타점**"); _uc3.markdown("**RSI / Z**"); _uc4.markdown("**R:R / 손절**")
-                    st.markdown('<hr style="margin:4px 0;border-color:#2a2e39">', unsafe_allow_html=True)
                     for _h in _us_snipe:
-                        _vc1, _vc2, _vc3, _vc4 = st.columns([2,1,1,1])
-                        with _vc1:
-                            st.markdown(f"**{_h['종목명']}** `{_h['종목코드']}`  \n현재가 ${_h['현재가']:,.2f}")
-                        with _vc2:
-                            st.markdown(f"<span style='color:{_h['타점색']};font-weight:700'>{_h['타점']}</span>  \nMA5이격 {_h['MA5이격']:+.1f}%", unsafe_allow_html=True)
-                        with _vc3:
-                            _rsi_c = "#f23645" if _h['RSI'] >= 70 else "#089981" if _h['RSI'] <= 30 else "#d1d4dc"
-                            st.markdown(f"RSI <span style='color:{_rsi_c}'>{_h['RSI']}</span>  \nZ-Score {_h['Z-Score']:+.2f}", unsafe_allow_html=True)
-                        with _vc4:
-                            st.markdown(f"R:R **{_h['R:R']:.1f}**  \n손절 ${_h['손절가']:,.2f}")
-                        st.markdown('<hr style="margin:2px 0;border-color:#1e222d">', unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                            f"background:#111827;border-left:3px solid {_h['타점색']};border-radius:6px;"
+                            f"padding:10px 14px;margin:4px 0'>"
+                            f"<div>"
+                            f"<b>{_h['종목명']}</b> <span style='color:#64748b;font-size:11px'>{_h['종목코드']}</span>"
+                            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>현재가 ${_h['현재가']:,.2f} · MA5이격 {_h['MA5이격']:+.1f}%</div>"
+                            f"</div>"
+                            f"<div style='text-align:center'>"
+                            f"<div style='color:{_h['타점색']};font-weight:700;font-size:13px'>{_h['타점']}</div>"
+                            f"<div style='font-size:11px;color:#64748b'>RSI {_h['RSI']} · Z {_h['Z-Score']:+.2f}</div>"
+                            f"</div>"
+                            f"<div style='text-align:right'>"
+                            f"<div style='font-size:13px;font-weight:700'>R:R {_h['R:R']:.1f}</div>"
+                            f"<div style='font-size:11px;color:#f43f5e'>손절 ${_h['손절가']:,.2f}</div>"
+                            f"</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
 
     else:  # 🌐 전체 통합
         st.markdown("### 🌐 국장+미장 ETF 통합 랭킹판")
@@ -4731,7 +4758,6 @@ with tab_d:
             if _mkt_filter != "전체":
                 _all_ranked = _all_ranked[_all_ranked['시장'] == _mkt_filter].reset_index(drop=True)
 
-            st.markdown("---")
             # 1위 ETF 시장에 따라 통화 단위 결정
             _all_top_row = _all_ranked.iloc[0] if not _all_ranked.empty else None
             _all_top_sym = '$' if (_all_top_row is not None and _all_top_row.get('시장') == '🇺🇸 미장') else '원'
