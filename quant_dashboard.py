@@ -3560,12 +3560,11 @@ with tab_c:
             # ── 등급 판정 ──
             all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
 
-            # 대형주 특례: ADX≥25 + C4수급 True + 과열 없으면 Target_Locked 허용
-            _adx_val  = float(df['고가'].iloc[-14:].mean())  # 임시 — adx14 변수 재활용
+            # 대형주 특례: C4수급 True + 최소 변동성 + 과열 없으면 Target_Locked 허용
             _large_cap_pass = (
                 _is_large_cap
                 and c4_ok
-                and atr14 / cur >= 0.02  # 최소한의 변동성
+                and atr14 / cur >= 0.02
                 and not _overheat
             )
 
