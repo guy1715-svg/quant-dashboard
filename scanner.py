@@ -206,6 +206,18 @@ def _evaluate_scoring(
     inst_net     = int(inv_info.get("inst_net_5d",    0))
     tradable_nxt = bool(price_info.get("tradable_nxt", True))
 
+    # ── 대형주 여부 판정 (시총 1조=10,000억 이상 or KOSPI200 편입) ──
+    KOSPI200 = {
+        '005930','000660','005380','005490','035420','000270','105560','055550',
+        '012330','051910','006400','207940','068270','035720','003550','323410',
+        '034730','086790','028260','011200','009830','010130','032830','017670',
+        '066570','011070','003490','024110','018260','030200','090430','096770',
+        '010950','011780','009150','000810','033780','329180','012450','247540',
+        '373220','003670','091990','316140','267250','042700','000100','402340',
+    }
+    ticker_code = str(price_info.get("ticker", ""))
+    is_large_cap = (mktcap_bil >= 10_000) or (ticker_code in KOSPI200)
+
     # ── 하드 필터: C1 시총 ──
     if mktcap_bil > 0:
         c1_pass = COND1_MKTCAP_MIN <= mktcap_bil <= COND1_MKTCAP_MAX
@@ -254,21 +266,44 @@ def _evaluate_scoring(
         score += SCORE_C6_VOL
         reasons.append(f"📉눌림목+{SCORE_C6_VOL}점")
 
-    # ── 등급 판정 (Target_Locked: C1~C6 전부 True 필수) ──
+    # ── 과열 방지: 갭상승/MA5이격 차단 (대형주 특례에서도 절대 예외 없음) ──
+    gap_pct   = float(ind.get("gap_pct",   0))   # 시가 갭 (%)
+    ma5_diff  = float(ind.get("ma5_diff",  0))   # MA5 이격 (%)
+    overheat  = (gap_pct >= 3.0) or (abs(ma5_diff) >= 3.0)
+
+    # ── 등급 판정 ──
     all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
-    if all6_pass and score >= GRADE_A:
+
+    # 대형주 특례: C1(ADX≥25) + C4(수급) True면 나머지 일부 미달해도 Target_Locked 허용
+    adx_val   = float(ind.get("adx14", 0))
+    large_cap_pass = (
+        is_large_cap
+        and adx_val >= 25
+        and c4_ok
+        and not overheat
+    )
+
+    if overheat:
+        grade = "Filtered"  # 과열 → 무조건 차단
+    elif all6_pass and score >= GRADE_A:
         grade = "A-Grade 주도주"
     elif all6_pass and score >= GRADE_LOCK:
         grade = "Target_Locked"
+    elif large_cap_pass and score >= GRADE_LOCK:
+        grade = "Target_Locked"  # 대형주 특례 통과
     else:
         grade = "Filtered"
 
     def _e(b): return "✅" if b else "❌"
+    _lc_tag = "🏦대형주특례" if large_cap_pass and not all6_pass else ""
+    _oh_tag = "🔥과열차단" if overheat else ""
     cond_detail = (
         f"C1{_e(c1_pass)}({mktcap_bil:.0f}억) "
         f"C2{_e(c2_pass)}({ind.get('atr_ratio',0)*100:.1f}%) "
         f"C3{_e(c3_ok)} C4{_e(c4_ok)} C5{_e(c5_ok)} C6{_e(c6_ok)} "
         f"점수:{score}점 NXT{_e(tradable_nxt)}"
+        + (f" {_lc_tag}" if _lc_tag else "")
+        + (f" {_oh_tag}" if _oh_tag else "")
     )
 
     if not tradable_nxt:
