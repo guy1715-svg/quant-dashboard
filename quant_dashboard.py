@@ -3959,6 +3959,113 @@ with tab_c:
 # 국장ETF / 미장ETF 공용 지표 계산 함수
 # ══════════════════════════════════════════
 
+# ── ETF 구성종목 DB (상위 보유 종목 하드코딩 — yfinance holdings API 불안정 대응) ──
+_ETF_HOLDINGS_DB = {
+    # 국장 ETF
+    "069500": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "102110": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "114800": [("069500","KODEX200"),("005930","삼성전자"),("000660","SK하이닉스")],
+    "122630": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
+    "229200": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "233740": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
+    "091160": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("066570","LG전자"),("009150","삼성전기"),("030200","KT"),("032830","삼성생명"),("017670","SK텔레콤"),("011200","HMM"),("010130","고려아연")],
+    "098560": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("012450","한화에어로스페이스"),("329180","HD현대중공업"),("267250","HD현대重공업"),("009540","HD한국조선해양")],
+    "139220": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("096770","SK이노베이션"),("011070","LG이노텍"),("003670","포스코퓨처엠")],
+    "305720": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("003670","포스코퓨처엠"),("096770","SK이노베이션"),("011070","LG이노텍")],
+    "012450": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("000720","현대건설"),("267250","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션")],
+    # 미장 ETF
+    "SPY":  [("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("BRK.B","Berkshire"),("LLY","Eli Lilly"),("AVGO","Broadcom"),("JPM","JPMorgan")],
+    "QQQ":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
+    "SOXX": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
+    "SOXL": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
+    "XLK":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AVGO","Broadcom"),("CRM","Salesforce"),("ORCL","Oracle"),("ACN","Accenture"),("AMD","AMD"),("NOW","ServiceNow"),("CSCO","Cisco")],
+    "SMH":  [("NVDA","NVIDIA"),("TSM","TSMC"),("AVGO","Broadcom"),("ASML","ASML"),("TXN","Texas Instruments"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("MU","Micron"),("AMD","AMD"),("LRCX","Lam Research")],
+    "TQQQ": [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
+    "IWM":  [("SMCI","Super Micro"),("MSTR","MicroStrategy"),("CELH","Celsius"),("WTFC","Wintrust Financial"),("PLTR","Palantir"),("NTRA","Natera"),("APP","Applovin"),("PTON","Peloton"),("RH","RH"),("SAIA","Saia Inc")],
+    "XLE":  [("XOM","Exxon Mobil"),("CVX","Chevron"),("COP","ConocoPhillips"),("EOG","EOG Resources"),("SLB","SLB"),("MPC","Marathon Petroleum"),("PSX","Phillips 66"),("PXD","Pioneer Natural"),("VLO","Valero Energy"),("DVN","Devon Energy")],
+    "GLD":  [],  # 금 ETF — 개별종목 없음
+    "TLT":  [],  # 채권 ETF — 개별종목 없음
+}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
+    """ETF 구성종목 개별 스캐닝 — Z-Score/RSI/ATR 기반 타점 산출"""
+    holdings = _ETF_HOLDINGS_DB.get(etf_code, [])
+    if not holdings:
+        return []
+
+    import yfinance as yf
+    results = []
+    for code, name in holdings[:8]:  # 상위 8개만
+        try:
+            sym = f"{code}.KS" if is_korean else code
+            df  = yf.Ticker(sym).history(period="3mo", interval="1d")
+            if df is None or len(df) < 20:
+                continue
+
+            cl  = df["Close"]; hi = df["High"]; lo = df["Low"]; vo = df["Volume"]
+            cur = float(cl.iloc[-1])
+            if cur <= 0:
+                continue
+
+            # ATR14
+            tr   = pd.concat([hi-lo, (hi-cl.shift()).abs(), (lo-cl.shift()).abs()], axis=1).max(axis=1)
+            atr  = float(tr.rolling(14).mean().iloc[-1])
+            atr_r = atr / cur
+
+            # RSI14
+            d = cl.diff(); g = d.clip(lower=0).rolling(14).mean(); l_ = (-d).clip(lower=0).rolling(14).mean()
+            rsi = float(100 - 100 / (1 + g.iloc[-1] / (l_.iloc[-1] + 1e-9)))
+
+            # Z-Score20
+            mu = cl.rolling(20).mean().iloc[-1]; sd = cl.rolling(20).std().iloc[-1]
+            zscore = float((cur - mu) / (sd + 1e-9))
+
+            # MA5 이격
+            ma5     = float(cl.rolling(5).mean().iloc[-1])
+            ma5_diff = (cur - ma5) / ma5 * 100
+
+            # 거래대금 (당일)
+            turnover = cur * float(vo.iloc[-1])
+
+            # 전일 저가 지지선
+            prev_low = float(lo.iloc[-2]) if len(lo) >= 2 else cur * 0.95
+
+            # 타점 판단
+            if zscore <= -0.5 and rsi <= 45 and abs(ma5_diff) <= 3:
+                signal = "🎯 눌림목 타점"
+                signal_color = "#089981"
+            elif zscore <= 0 and rsi <= 55:
+                signal = "⏳ 대기"
+                signal_color = "#f0b90b"
+            else:
+                signal = "⚠️ 과열"
+                signal_color = "#f23645"
+
+            # 손절: 전일저가 또는 -5% (더 타이트한 쪽)
+            stop  = max(prev_low, cur * 0.95)
+            target = cur * (1 + atr_r * 2)  # ATR 2배 목표
+            rr    = (target - cur) / (cur - stop + 1e-9)
+
+            results.append({
+                "종목코드": code, "종목명": name,
+                "현재가": round(cur, 0 if is_korean else 2),
+                "RSI": round(rsi, 1), "Z-Score": round(zscore, 2),
+                "ATR%": round(atr_r * 100, 2), "MA5이격": round(ma5_diff, 2),
+                "거래대금": turnover,
+                "타점": signal, "타점색": signal_color,
+                "목표가": round(target, 0 if is_korean else 2),
+                "손절가": round(stop, 0 if is_korean else 2),
+                "R:R": round(rr, 2),
+            })
+        except Exception:
+            continue
+
+    # 거래대금 + Z-Score 낮은 순 정렬 (대장주 + 눌림목 우선)
+    results.sort(key=lambda x: (-x["거래대금"], x["Z-Score"]))
+    return results
+
+
 def _calc_etf_indicators(ticker_sym):
     """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
     import yfinance as yf
@@ -4432,6 +4539,37 @@ with tab_d:
             _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
+            # ── 🎯 개별종목 스나이핑 리스트 (ETF 1위 구성종목 자동 추적) ──
+            if _kr_top is not None:
+                _top_code = str(_kr_top['코드'])
+                _top_name = _kr_top['ETF명']
+                st.markdown(f"---")
+                st.markdown(f"### 🔫 개별종목 스나이핑 — `{_top_name}` 구성종목 타점 추적")
+                st.caption(f"ETF 1위({_top_name}) 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5% (더 타이트한 쪽 자동 적용)")
+
+                with st.spinner("구성종목 스캔 중..."):
+                    _snipe_list = _scan_etf_holdings(_top_code, is_korean=True)
+
+                if not _snipe_list:
+                    st.info("구성종목 DB 없음 또는 데이터 로드 실패")
+                else:
+                    _sc1, _sc2, _sc3, _sc4 = st.columns([2,1,1,1])
+                    _sc1.markdown("**종목**"); _sc2.markdown("**타점**"); _sc3.markdown("**RSI / Z**"); _sc4.markdown("**R:R / 손절**")
+                    st.markdown('<hr style="margin:4px 0;border-color:#2a2e39">', unsafe_allow_html=True)
+                    for _h in _snipe_list:
+                        _col1, _col2, _col3, _col4 = st.columns([2,1,1,1])
+                        _fmt_p = lambda p: f"{int(p):,}원" if p >= 100 else f"{p:,.2f}"
+                        with _col1:
+                            st.markdown(f"**{_h['종목명']}** `{_h['종목코드']}`  \n현재가 {_fmt_p(_h['현재가'])}")
+                        with _col2:
+                            st.markdown(f"<span style='color:{_h['타점색']};font-weight:700'>{_h['타점']}</span>  \nMA5이격 {_h['MA5이격']:+.1f}%", unsafe_allow_html=True)
+                        with _col3:
+                            _rsi_c = "#f23645" if _h['RSI'] >= 70 else "#089981" if _h['RSI'] <= 30 else "#d1d4dc"
+                            st.markdown(f"RSI <span style='color:{_rsi_c}'>{_h['RSI']}</span>  \nZ-Score {_h['Z-Score']:+.2f}", unsafe_allow_html=True)
+                        with _col4:
+                            st.markdown(f"R:R **{_h['R:R']:.1f}**  \n손절 {_fmt_p(_h['손절가'])}")
+                        st.markdown('<hr style="margin:2px 0;border-color:#1e222d">', unsafe_allow_html=True)
+
     elif _etf_market == "🇺🇸 미장 ETF":
         st.markdown("### 🇺🇸 미장ETF 종합 랭킹판")
         st.caption("미국 직상장 ETF 랭킹. 가격 단위: USD. ADX·RSI·MACD·Z-Score·모멘텀 종합점수 기준.")
@@ -4502,6 +4640,37 @@ with tab_d:
             st.markdown("---")
             _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
+
+            # ── 🎯 개별종목 스나이핑 리스트 (미장 ETF 1위 구성종목) ──
+            _us_top = _us_active.iloc[0] if not _us_active.empty else None
+            if _us_top is not None:
+                _us_top_code = str(_us_top['코드'])
+                _us_top_name = _us_top['ETF명']
+                st.markdown("---")
+                st.markdown(f"### 🔫 개별종목 스나이핑 — `{_us_top_name}` 구성종목 타점 추적")
+                st.caption(f"ETF 1위({_us_top_name}) 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5%")
+
+                with st.spinner("구성종목 스캔 중..."):
+                    _us_snipe = _scan_etf_holdings(_us_top_code, is_korean=False)
+
+                if not _us_snipe:
+                    st.info("구성종목 DB 없음 또는 데이터 로드 실패")
+                else:
+                    _uc1, _uc2, _uc3, _uc4 = st.columns([2,1,1,1])
+                    _uc1.markdown("**종목**"); _uc2.markdown("**타점**"); _uc3.markdown("**RSI / Z**"); _uc4.markdown("**R:R / 손절**")
+                    st.markdown('<hr style="margin:4px 0;border-color:#2a2e39">', unsafe_allow_html=True)
+                    for _h in _us_snipe:
+                        _vc1, _vc2, _vc3, _vc4 = st.columns([2,1,1,1])
+                        with _vc1:
+                            st.markdown(f"**{_h['종목명']}** `{_h['종목코드']}`  \n현재가 ${_h['현재가']:,.2f}")
+                        with _vc2:
+                            st.markdown(f"<span style='color:{_h['타점색']};font-weight:700'>{_h['타점']}</span>  \nMA5이격 {_h['MA5이격']:+.1f}%", unsafe_allow_html=True)
+                        with _vc3:
+                            _rsi_c = "#f23645" if _h['RSI'] >= 70 else "#089981" if _h['RSI'] <= 30 else "#d1d4dc"
+                            st.markdown(f"RSI <span style='color:{_rsi_c}'>{_h['RSI']}</span>  \nZ-Score {_h['Z-Score']:+.2f}", unsafe_allow_html=True)
+                        with _vc4:
+                            st.markdown(f"R:R **{_h['R:R']:.1f}**  \n손절 ${_h['손절가']:,.2f}")
+                        st.markdown('<hr style="margin:2px 0;border-color:#1e222d">', unsafe_allow_html=True)
 
     else:  # 🌐 전체 통합
         st.markdown("### 🌐 국장+미장 ETF 통합 랭킹판")
