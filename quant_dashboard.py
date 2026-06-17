@@ -2434,9 +2434,36 @@ with tab_a:
     if not _v891_home['can_enter']:
         _blackout_48 = True
 
+    # ── 모의투자 모드 배너 ──
+    st.markdown("""
+<div style='background:linear-gradient(90deg,#1e1b4b,#312e81);border:1px solid #4f46e5;
+border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
+  <div style='display:flex;align-items:center;gap:10px'>
+    <span style='background:#4f46e5;color:#fff;font-size:10px;font-weight:800;
+    padding:2px 8px;border-radius:4px'>📋 모의투자 모드</span>
+    <span style='color:#a5b4fc;font-size:12px'>실전 자금 미사용 — 모든 거래는 페이퍼 트레이딩으로 기록됩니다</span>
+  </div>
+  <span style='color:#6366f1;font-size:11px'>실전 로직 검증 중 ✓</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── CSS: 글로우/점멸 애니메이션 ──
+    st.markdown("""
+<style>
+@keyframes redBlink {
+  0%,100%{box-shadow:0 0 8px 2px #ef4444;}
+  50%{box-shadow:0 0 0 0 transparent;}
+}
+@keyframes greenGlow {
+  0%,100%{box-shadow:0 0 12px 3px #16a34a;}
+  50%{box-shadow:0 0 20px 6px #22c55e;}
+}
+.card-stop-warn {animation:redBlink 1.2s ease-in-out infinite;}
+.card-profit-high {animation:greenGlow 2s ease-in-out infinite;}
+</style>""", unsafe_allow_html=True)
+
     # ── 상단 상태 바 ──
     _sb_cols = st.columns([3, 1, 1, 1, 1])
-    _sb_cols[0].markdown("## 🎯 V9.0 Quant Command Center")
+    _sb_cols[0].markdown("## 🎯 V9.1 Quant Command Center")
     _market_badge = (
         "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>● 장중</span>"
         if _is_market_open else
@@ -2596,7 +2623,48 @@ with tab_a:
                 (r['시장'] == '🇺🇸' and _rank_tab == "미장 ETFs")]
 
             if not _filtered_etfs:
-                st.info("점수 60 이상 ETF 없음 (장 외 시간이거나 데이터 로딩 중)")
+                # V9.1 Item 3: 장외 시간 — AI 전략 시나리오
+                import datetime as _dt_p2
+                _kst_h = (_dt_p2.datetime.utcnow().hour + 9) % 24
+                _is_offhours = not (9 <= _kst_h < 16)
+                _offhours_label = "🌙 장 마감 후" if _kst_h >= 16 else "🌅 개장 전"
+                # 전략 섹터 TOP3 시나리오 (랭킹 캐시 기반)
+                try:
+                    _all_etfs_sc = _get_home_etf_top(20)
+                    _sc_kr = [r for r in _all_etfs_sc if r['시장'] == '🇰🇷']
+                    _sc_us = [r for r in _all_etfs_sc if r['시장'] == '🇺🇸']
+                    _sc_pool = _sc_kr if _rank_tab == "국장 ETFs" else _sc_us
+                except Exception:
+                    _sc_pool = []
+                if _sc_pool:
+                    st.markdown(f"""
+<div style='background:linear-gradient(135deg,#0f172a,#1e1b4b);border:1px solid #4f46e5;
+border-radius:10px;padding:12px 14px;margin-bottom:8px'>
+  <div style='font-size:11px;font-weight:700;color:#818cf8;margin-bottom:8px'>
+    {_offhours_label} · 내일 공략 AI 시나리오
+  </div>""", unsafe_allow_html=True)
+                    for _sci, _scr in enumerate(_sc_pool[:3]):
+                        _sc_adx = _scr.get('ADX', 0)
+                        _sc_mom = _scr.get('모멘텀(%)', 0)
+                        _sc_rsi = _scr.get('RSI', 50)
+                        _sc_score = _scr.get('종합점수', 0)
+                        _sc_action = "매수 대기" if _sc_rsi < 55 else "모멘텀 추종" if _sc_adx >= 25 else "관망"
+                        _sc_ac = "#16a34a" if _sc_action == "매수 대기" else "#f59e0b" if _sc_action == "모멘텀 추종" else "#64748b"
+                        st.markdown(f"""
+<div style='background:#0d1117;border-left:3px solid {_sc_ac};border-radius:6px;
+padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center'>
+  <div>
+    <span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_sci+1}. {_scr["ETF명"]}</span>
+    <span style='color:#64748b;font-size:10px;margin-left:6px'>점수 {_sc_score}</span>
+  </div>
+  <div style='text-align:right'>
+    <div style='font-size:11px;color:{_sc_ac};font-weight:700'>{_sc_action}</div>
+    <div style='font-size:10px;color:#64748b'>RSI {_sc_rsi} · ADX {_sc_adx}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    st.info("점수 60 이상 ETF 없음 (장 외 시간이거나 데이터 로딩 중)")
             else:
                 for _ri, _re in enumerate(_filtered_etfs[:5]):
                     _is_top_r = (_ri == 0)
@@ -2764,10 +2832,49 @@ with tab_a:
                         st.session_state[_ts_key] = True
                         _ts_active = True
 
-                    # 카드 렌더링
+                    # 카드 렌더링 — V9.1: 퀵 액션 바 상단 배치
                     _ts_badge = "<span style='background:#7c3aed;color:#fff;font-size:9px;padding:1px 6px;border-radius:10px'>🔒 트레일링스탑</span>" if _ts_active else ""
+
+                    # ── 퀵 액션 바 (카드 위쪽) ──
+                    _qa1, _qa2, _qa3 = st.columns(3)
+                    with _qa1:
+                        if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
+                            _half_qty = max(1, _qty_p3 // 2)
+                            _net_sell = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                            _acc_p3_act = load_account()
+                            _pos_idx = next((i for i, p in enumerate(_acc_p3_act['positions']) if p['ticker'] == _tk_p3), None)
+                            if _pos_idx is not None:
+                                _acc_p3_act['positions'][_pos_idx]['qty'] -= _half_qty
+                                if _acc_p3_act['positions'][_pos_idx]['qty'] <= 0:
+                                    _acc_p3_act['positions'].pop(_pos_idx)
+                                _acc_p3_act['cash'] += _net_sell * _half_qty
+                                save_account(_acc_p3_act)
+                                log_trade(_tk_p3, _nm_p3, 'SELL', _half_qty, _cur_p3, _net_sell,
+                                          _acc_p3_act['cash'], _acc_p3_act['cash'], memo="홈탭 절반매도")
+                                st.success(f"✅ {_half_qty}주 절반 매도 완료")
+                                st.rerun()
+                    with _qa2:
+                        if st.button(f"🚨 전량 매도", key=f"full_sell_{_tk_p3}", use_container_width=True,
+                                     type="primary" if _stop_warn else "secondary"):
+                            _net_sell2 = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                            _acc_p3_act2 = load_account()
+                            _acc_p3_act2['positions'] = [p for p in _acc_p3_act2['positions'] if p['ticker'] != _tk_p3]
+                            _acc_p3_act2['cash'] += _net_sell2 * _qty_p3
+                            save_account(_acc_p3_act2)
+                            log_trade(_tk_p3, _nm_p3, 'SELL', _qty_p3, _cur_p3, _net_sell2,
+                                      _acc_p3_act2['cash'], _acc_p3_act2['cash'], memo="홈탭 전량매도")
+                            st.success(f"✅ {_qty_p3}주 전량 매도 완료")
+                            st.rerun()
+                    with _qa3:
+                        _ts_label = "🔒 트레일링ON" if _ts_active else "🔓 트레일링OFF"
+                        if st.button(_ts_label, key=f"ts_toggle_{_tk_p3}", use_container_width=True):
+                            st.session_state[_ts_key] = not _ts_active
+                            st.rerun()
+
+                    # ── V9.1 Item 1: 카드 글로우 클래스 ──
+                    _glow_class = "card-profit-high" if _pnl_pct_p3 >= 10 else ("card-stop-warn" if _stop_warn else "")
                     st.markdown(f"""
-<div style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'>
+<div class='{_glow_class}' style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'>
   <div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'>
     <div>
       <div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div>
@@ -2807,41 +2914,6 @@ with tab_a:
   </div>
 </div>""", unsafe_allow_html=True)
 
-                    # 액션 버튼 (페이퍼 트레이딩 연동)
-                    _btn_c1, _btn_c2, _btn_c3 = st.columns(3)
-                    with _btn_c1:
-                        if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
-                            _half_qty = max(1, _qty_p3 // 2)
-                            _net_sell = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
-                            _acc_p3_act = load_account()
-                            _pos_idx = next((i for i, p in enumerate(_acc_p3_act['positions']) if p['ticker'] == _tk_p3), None)
-                            if _pos_idx is not None:
-                                _acc_p3_act['positions'][_pos_idx]['qty'] -= _half_qty
-                                if _acc_p3_act['positions'][_pos_idx]['qty'] <= 0:
-                                    _acc_p3_act['positions'].pop(_pos_idx)
-                                _acc_p3_act['cash'] += _net_sell * _half_qty
-                                save_account(_acc_p3_act)
-                                log_trade(_tk_p3, _nm_p3, 'SELL', _half_qty, _cur_p3, _net_sell,
-                                          _acc_p3_act['cash'], _acc_p3_act['cash'], memo="홈탭 절반매도")
-                                st.success(f"✅ {_half_qty}주 절반 매도 완료")
-                                st.rerun()
-                    with _btn_c2:
-                        if st.button(f"🚨 전량 매도", key=f"full_sell_{_tk_p3}", use_container_width=True,
-                                     type="primary" if _stop_warn else "secondary"):
-                            _net_sell2 = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
-                            _acc_p3_act2 = load_account()
-                            _acc_p3_act2['positions'] = [p for p in _acc_p3_act2['positions'] if p['ticker'] != _tk_p3]
-                            _acc_p3_act2['cash'] += _net_sell2 * _qty_p3
-                            save_account(_acc_p3_act2)
-                            log_trade(_tk_p3, _nm_p3, 'SELL', _qty_p3, _cur_p3, _net_sell2,
-                                      _acc_p3_act2['cash'], _acc_p3_act2['cash'], memo="홈탭 전량매도")
-                            st.success(f"✅ {_qty_p3}주 전량 매도 완료")
-                            st.rerun()
-                    with _btn_c3:
-                        _ts_label = "🔒 트레일링ON" if _ts_active else "🔓 트레일링OFF"
-                        if st.button(_ts_label, key=f"ts_toggle_{_tk_p3}", use_container_width=True):
-                            st.session_state[_ts_key] = not _ts_active
-                            st.rerun()
 
                 except Exception as _ep3:
                     _ename = _pos_p3i.get('name', _pos_p3i.get('ticker', '?'))
@@ -2912,6 +2984,26 @@ with tab_a:
                     title=dict(text=f"<b>{_nm_p4}</b> 30일", font=dict(size=11, color='#94a3b8'), x=0)
                 )
                 st.plotly_chart(_fig_p4, use_container_width=True)
+
+                # V9.1 Item 4: 목표/손절 거리 오버레이
+                if _avg_p4 > 0:
+                    _cur_p4_price = float(_cl_p4.iloc[-1]) if len(_cl_p4) else _avg_p4
+                    _stop_p4 = _avg_p4 * 0.93
+                    _tgt_p4 = _avg_p4 * 1.08
+                    _dist_stop_p4 = (_cur_p4_price - _stop_p4) / _cur_p4_price * 100
+                    _dist_tgt_p4 = (_tgt_p4 - _cur_p4_price) / _cur_p4_price * 100
+                    _dc_stop_p4 = "#ef4444" if _dist_stop_p4 < 3 else "#f97316" if _dist_stop_p4 < 5 else "#64748b"
+                    st.markdown(f"""
+<div style='display:flex;gap:6px;margin-bottom:6px'>
+  <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center;border:1px solid #ef444440'>
+    <div style='font-size:10px;color:#ef4444'>🛑 손절까지</div>
+    <div style='font-size:16px;font-weight:800;color:{_dc_stop_p4}'>-{_dist_stop_p4:.1f}%</div>
+  </div>
+  <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center;border:1px solid #16a34a40'>
+    <div style='font-size:10px;color:#16a34a'>🎯 목표까지</div>
+    <div style='font-size:16px;font-weight:800;color:#16a34a'>+{_dist_tgt_p4:.1f}%</div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
                 # Z-Score 바
                 _cur_z4 = float(_zs4.dropna().iloc[-1]) if not _zs4.dropna().empty else 0.0
