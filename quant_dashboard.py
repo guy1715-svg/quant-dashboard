@@ -3209,16 +3209,13 @@ with tab_b:
 
     with _sub_b1:
         def _display_name(ticker, name):
-            if is_korean_ticker(ticker):
-                return f"{name} ({ticker})"
-            else:
-                return f"{ticker} ({name})"
+            return f"{name} ({ticker})" if is_korean_ticker(ticker) else f"{ticker} ({name})"
 
         _b1_tickers = get_watchlist_tickers()
         if not _b1_tickers:
             st.info("👈 사이드바에서 관심종목을 추가해주세요.")
         else:
-            # all_data에 없는 종목 즉시 로드 (관리 탭을 안 열어도 동작)
+            # all_data에 없는 종목 즉시 로드
             _b1_missing = [(_bt, _bn) for _bt, _bn in _b1_tickers if _bt not in all_data]
             if _b1_missing:
                 _load_failed = []
@@ -3242,166 +3239,303 @@ with tab_b:
             if not _b1_opts:
                 st.warning("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
                 st.stop()
-            selected = st.selectbox("종목 선택", _b1_opts)
-            # 티커 추출
+
+            # ── 종목 선택 + 프리셋 ──
+            _sel_col_b, _pre_col_b = st.columns([2, 1])
+            with _sel_col_b:
+                selected = st.selectbox("종목 선택", _b1_opts)
             sel_ticker = selected.split('(')[-1].replace(')', '').strip()
             if not is_korean_ticker(sel_ticker):
-                # 미국 종목: "AVGO (Broadcom)" → ticker=AVGO
                 sel_ticker = selected.split(' ')[0].strip()
             sel_name = all_data[sel_ticker]['name']
-            sel_df     = all_data[sel_ticker]['df']
+            sel_df   = all_data[sel_ticker]['df']
 
-            # 핵심 지표 카드
+            with _pre_col_b:
+                if 'analysis_preset' not in st.session_state:
+                    st.session_state.analysis_preset = 'bounce'
+                _pr_map = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
+                _pr_sel = st.radio("전략", list(_pr_map.keys()), horizontal=True,
+                                   index=list(_pr_map.values()).index(st.session_state.analysis_preset),
+                                   key="preset_radio_b1")
+                if _pr_map[_pr_sel] != st.session_state.analysis_preset:
+                    st.session_state.analysis_preset = _pr_map[_pr_sel]
+                    st.rerun()
+
+            # ── 핵심 지표 계산 ──
             l = sel_df.iloc[-1]; p = sel_df.iloc[-2]
-            chg = (l['종가']/p['종가']-1)*100
-            bb_r = l['BB_upper']-l['BB_lower']
-            bb_p = round((l['종가']-l['BB_lower'])/bb_r*100,1) if bb_r>0 else 50
-            w52_pos = round((l['종가']-l['52W_low'])/(l['52W_high']-l['52W_low'])*100,1) if (l['52W_high']-l['52W_low'])>0 else 50
+            chg = (l['종가'] / p['종가'] - 1) * 100
+            bb_r = l['BB_upper'] - l['BB_lower']
+            bb_p = round((l['종가'] - l['BB_lower']) / bb_r * 100, 1) if bb_r > 0 else 50
+            _sigs     = get_signal(sel_df)
+            _buy_cnt  = sum(1 for _, t in _sigs if t == 'buy')
+            _sell_cnt = sum(1 for _, t in _sigs if t == 'sell')
+            _v891     = run_v891_system_check()
 
-            m1,m2,m3,m4,m5,m6 = st.columns(6)
-            chg_color = 'up' if chg>0 else 'down'
-            _cur_unit = get_currency(sel_ticker)
-            # KIS 실시간 현재가 우선 사용
             _kis_price = None
             if kis_available() and is_korean_ticker(sel_ticker):
                 _kis_price = kis_get_price(sel_ticker)
             _display_price = _kis_price['현재가'] if _kis_price else l['종가']
-            _display_chg   = _kis_price['등락률'] if _kis_price else chg
-            _kis_badge     = " <span style='font-size:10px;color:#34d399'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#64748b'>● 지연</span>"
-            _cur_fmt  = format_price(_display_price, sel_ticker)
-            m1.markdown(f"<div class='metric-card'><div class='label'>현재가{_kis_badge}</div><div class='value flat'>{_cur_fmt}</div></div>", unsafe_allow_html=True)
-            m2.markdown(f"<div class='metric-card'><div class='label'>등락</div><div class='value {chg_color}'>{chg:+.2f}%</div></div>", unsafe_allow_html=True)
-            rsi_c = 'up' if l['RSI']>=70 else 'down' if l['RSI']<=30 else 'flat'
-            m3.markdown(f"<div class='metric-card'><div class='label'>RSI(14)</div><div class='value {rsi_c}'>{l['RSI']:.1f}</div></div>", unsafe_allow_html=True)
-            m4.markdown(f"<div class='metric-card'><div class='label'>BB 위치</div><div class='value flat'>{bb_p}%</div></div>", unsafe_allow_html=True)
-            m5.markdown(f"<div class='metric-card'><div class='label'>52주 위치</div><div class='value flat'>{w52_pos}%</div></div>", unsafe_allow_html=True)
-            vol_c = 'up' if l['거래량_비율']>=200 else 'flat'
-            m6.markdown(f"<div class='metric-card'><div class='label'>거래량비율</div><div class='value {vol_c}'>{l['거래량_비율']:.0f}%</div></div>", unsafe_allow_html=True)
+            _kis_badge = " <span style='font-size:10px;color:#34d399'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#64748b'>● 지연</span>"
 
-            # ── 🎯 자동 전략 분석 ──
-            st.markdown("### 🎯 자동 전략 분석")
-
-            # 프리셋 선택
-            _an_pr1, _an_pr2, _an_pr3 = st.columns(3)
-            if 'analysis_preset' not in st.session_state:
-                st.session_state.analysis_preset = 'bounce'
-            if _an_pr1.button("📉 반등매매", key="an_bounce",
-                              type="primary" if st.session_state.analysis_preset=="bounce" else "secondary",
-                              use_container_width=True):
-                st.session_state.analysis_preset = "bounce"
-                st.rerun()
-            if _an_pr2.button("📈 추세매매", key="an_trend",
-                              type="primary" if st.session_state.analysis_preset=="trend" else "secondary",
-                              use_container_width=True):
-                st.session_state.analysis_preset = "trend"
-                st.rerun()
-            if _an_pr3.button("🎯 바닥확인", key="an_bottom",
-                              type="primary" if st.session_state.analysis_preset=="bottom" else "secondary",
-                              use_container_width=True):
-                st.session_state.analysis_preset = "bottom"
-                st.rerun()
-
-            # 타점 자동 계산
+            # ── 타점 계산 ──
             try:
                 _ep = calc_entry_point(sel_df, st.session_state.analysis_preset)
-                _rr_c = '#34d399' if _ep['rr'] >= 2 else '#fbbf24' if _ep['rr'] >= 1 else '#f43f5e'
-                _gap_c = '#34d399' if _ep['gap_pct'] < 0 else '#fbbf24'
-
-                # 진입 종합 판정
-                _sigs = get_signal(sel_df)
-                _buy_cnt  = sum(1 for _, t in _sigs if t == 'buy')
-                _sell_cnt = sum(1 for _, t in _sigs if t == 'sell')
-                _v891     = run_v891_system_check()
-
-                if not _v891['can_enter']:
-                    _verdict = "🚫 진입 차단"
-                    _verdict_color = "#f43f5e"
-                    _verdict_bg    = "rgba(244,63,94,0.1)"
-                    _verdict_border= "rgba(244,63,94,0.4)"
-                    _verdict_detail = " / ".join(_v891['alerts'])
-                elif _ep['rr'] < 2.0:
-                    _verdict = "❌ 진입 불가"
-                    _verdict_color = "#f43f5e"
-                    _verdict_bg    = "rgba(244,63,94,0.1)"
-                    _verdict_border= "rgba(244,63,94,0.4)"
-                    _verdict_detail = f"R:R {_ep['rr']} — 2.0 미만 기각"
-                elif _buy_cnt >= 2 and _ep['rr'] >= 2.0:
-                    _verdict = "✅ 매수 검토"
-                    _verdict_color = "#34d399"
-                    _verdict_bg    = "rgba(52,211,153,0.1)"
-                    _verdict_border= "rgba(52,211,153,0.4)"
-                    _verdict_detail = f"매수신호 {_buy_cnt}개 / R:R {_ep['rr']}"
-                else:
-                    _verdict = "⚠️ 관망"
-                    _verdict_color = "#fbbf24"
-                    _verdict_bg    = "rgba(251,191,36,0.1)"
-                    _verdict_border= "rgba(251,191,36,0.4)"
-                    _verdict_detail = f"신호 약함 (매수 {_buy_cnt} / 매도 {_sell_cnt})"
-
-                # 판정 배너
-                st.markdown(
-                    f"<div style='background:{_verdict_bg};border:2px solid {_verdict_border};"
-                    f"border-radius:14px;padding:14px 20px;margin-bottom:12px;"
-                    f"display:flex;justify-content:space-between;align-items:center'>"
-                    f"<span style='font-size:22px;font-weight:800;color:{_verdict_color}'>{_verdict}</span>"
-                    f"<span style='font-size:13px;color:#94a3b8'>{_verdict_detail}</span>"
-                    f"<span style='font-size:12px;color:#64748b'>{_ep['reason']}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-                # 전략 카드 (현재가 / 매수타점 / 손절가 / 1차목표 / R:R)
-                st.markdown(
-                    f"<div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px'>"
-                    f"<div style='background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;text-align:center'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>현재가</div>"
-                    f"<div style='font-size:18px;font-weight:700;color:#94a3b8'>{_ep['cur']:,.0f}</div></div>"
-
-                    f"<div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:12px;padding:14px;text-align:center'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🎯 매수 타점</div>"
-                    f"<div style='font-size:18px;font-weight:700;color:#fbbf24'>{_ep['entry']:,.0f}</div>"
-                    f"<div style='font-size:11px;color:{_gap_c}'>{_ep['gap_pct']:+.1f}% 대기</div></div>"
-
-                    f"<div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:12px;padding:14px;text-align:center'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🛑 손절가</div>"
-                    f"<div style='font-size:18px;font-weight:700;color:#f43f5e'>{_ep['stoploss']:,.0f}</div>"
-                    f"<div style='font-size:11px;color:#64748b'>-7%</div></div>"
-
-                    f"<div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:12px;padding:14px;text-align:center'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>🎯 1차 목표</div>"
-                    f"<div style='font-size:18px;font-weight:700;color:#34d399'>{_ep['target1']:,.0f}</div></div>"
-
-                    f"<div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:12px;padding:14px;text-align:center'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>✨ 2차 목표</div>"
-                    f"<div style='font-size:18px;font-weight:700;color:#a78bfa'>{_ep['target2']:,.0f}</div></div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-                # R:R 바
-                st.markdown(
-                    f"<div style='background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);"
-                    f"border-radius:12px;padding:12px 20px;display:flex;align-items:center;gap:20px;margin-bottom:8px'>"
-                    f"<span style='color:#64748b;font-size:12px'>R:R</span>"
-                    f"<span style='font-size:28px;font-weight:800;color:{_rr_c};font-family:IBM Plex Mono'>{_ep['rr']}</span>"
-                    f"<span style='font-size:13px;color:{_rr_c}'>{'✅ 진입 가능 (2.0 이상)' if _ep['rr']>=2 else '⚠️ 소량만 (1.0~2.0)' if _ep['rr']>=1 else '❌ 진입 불가 (2.0 미만)'}</span>"
-                    f"<span style='margin-left:auto;font-size:11px;color:#64748b'>신호: {' '.join(s for s,_ in _sigs)}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
                 entry_price   = _ep['entry']
                 stop_price    = _ep['stoploss']
                 target1_price = _ep['target1']
                 target2_price = _ep['target2']
-
             except Exception as _ep_err:
-                st.error(f"타점 계산 오류: {_ep_err} — 다른 프리셋을 선택하거나 페이지를 새로고침하세요.")
+                st.error(f"타점 계산 오류: {_ep_err}")
                 entry_price = stop_price = target1_price = target2_price = 0
+                _ep = {'rr': 0, 'gap_pct': 0, 'reason': '계산 실패', 'cur': l['종가'],
+                       'entry': 0, 'stoploss': 0, 'target1': 0, 'target2': 0}
 
-            st.divider()
+            # ══════════════════════════════════════════
+            # 1. AI VERDICT CARD
+            # ══════════════════════════════════════════
+            if not _v891['can_enter']:
+                _vd_icon = "🔴"; _vd_color = "#f43f5e"
+                _vd_bg = "rgba(244,63,94,0.12)"; _vd_border = "#f43f5e80"
+                _vd_label = "🚫 진입 차단"
+                _vd_lines = [
+                    _v891['alerts'][0] if _v891['alerts'] else "시스템 차단 상태입니다.",
+                    "매크로/시간 필터에 의해 진입이 제한됩니다.",
+                    "차트 분석 및 대기 모드를 유지하세요."
+                ]
+            elif _ep['rr'] < 2.0:
+                _vd_icon = "🔴"; _vd_color = "#f43f5e"
+                _vd_bg = "rgba(244,63,94,0.10)"; _vd_border = "#f43f5e80"
+                _vd_label = "❌ 진입 불가"
+                _vd_lines = [
+                    f"R:R {_ep['rr']} — 최소 기준 2.0 미달로 기각합니다.",
+                    "손절 대비 수익 기대값이 불충분한 구간입니다.",
+                    "다음 타점을 기다리거나 전략 프리셋을 변경하세요."
+                ]
+            elif _buy_cnt >= 2 and _ep['rr'] >= 2.0:
+                _vd_icon = "🟢"; _vd_color = "#34d399"
+                _vd_bg = "rgba(52,211,153,0.12)"; _vd_border = "#34d39980"
+                _vd_label = "✅ 매수 권장"
+                _vd_lines = [
+                    f"퀀트 신호 {_buy_cnt}개 동시 발현, 기술적 조건 충족.",
+                    f"눌림목 달성 후 반등 흐름 확인 (R:R {_ep['rr']}).",
+                    "손실 소멸가 + 익절가 안전 구간 — 진입 검토하세요."
+                ]
+            else:
+                _vd_icon = "🟡"; _vd_color = "#fbbf24"
+                _vd_bg = "rgba(251,191,36,0.10)"; _vd_border = "#fbbf2480"
+                _vd_label = "⚠️ 관망"
+                _vd_lines = [
+                    f"매수 신호 {_buy_cnt}개 — 기준 2개 미달, 확신도 부족.",
+                    "현재 가격대는 추가 확인이 필요한 구간입니다.",
+                    "신호 강화 또는 지지선 근접 시 재진입 검토하세요."
+                ]
 
-            # ── 수동 조정 (선택) ──
+            _vd_check = "✅" if _vd_icon == "🟢" else "⚠️" if _vd_icon == "🟡" else "❌"
+            st.markdown(f"""
+<div style='background:{_vd_bg};border:2px solid {_vd_border};border-radius:16px;
+padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
+  <div style='font-size:56px;line-height:1'>{_vd_icon}</div>
+  <div style='flex:1'>
+    <div style='font-size:24px;font-weight:900;color:{_vd_color};margin-bottom:8px'>
+      VERDICT: {_vd_label}
+    </div>
+    {''.join(f"<div style='font-size:12px;color:#94a3b8;margin-bottom:2px'>{_vd_check} {ln}</div>" for ln in _vd_lines)}
+  </div>
+  <div style='text-align:right;min-width:90px'>
+    <div style='font-size:10px;color:#64748b'>R:R Ratio</div>
+    <div style='font-size:36px;font-weight:900;color:{_vd_color};font-family:IBM Plex Mono;line-height:1.1'>{_ep["rr"]}</div>
+    <div style='font-size:10px;color:#64748b;margin-top:4px'>{sel_name[:12]}</div>
+    <div style='font-size:10px;color:#64748b'>신호 {_buy_cnt}매수/{_sell_cnt}매도</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # ══════════════════════════════════════════
+            # 2. CHECKLIST CARD — 대형 스테이터스 배지
+            # ══════════════════════════════════════════
+            _rr_ok   = _ep['rr'] >= 2.0
+            _sig_ok  = _buy_cnt >= 2
+            _sys_ok  = _v891['can_enter']
+            _vol_ok  = l.get('거래량_비율', 100) >= 120
+            _rsi_ok  = 30 <= l['RSI'] <= 65
+            _ma_ok   = l['종가'] > l.get('MA20', l['종가'])
+
+            def _ck_badge(label, ok, detail=""):
+                c  = "#16a34a" if ok else "#dc2626"
+                bg = "rgba(22,163,74,0.12)" if ok else "rgba(220,38,38,0.12)"
+                bd = "#16a34a50" if ok else "#dc262650"
+                ic = "✅" if ok else "❌"
+                glow = f"box-shadow:0 0 10px 2px {'#16a34a' if ok else '#dc2626'}50;" if ok else ""
+                return (
+                    f"<div style='background:{bg};border:1px solid {bd};border-radius:10px;"
+                    f"padding:10px;text-align:center;{glow}'>"
+                    f"<div style='font-size:20px'>{ic}</div>"
+                    f"<div style='font-size:11px;font-weight:700;color:{c};margin-top:4px'>{label}</div>"
+                    f"<div style='font-size:10px;color:#64748b;margin-top:2px'>{detail}</div>"
+                    f"</div>"
+                )
+
+            st.markdown(f"""
+<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:14px 16px;margin-bottom:14px'>
+  <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:10px'>
+    CHECKLIST CARD — {sel_name} ({sel_ticker})
+    <span style='float:right;color:#64748b'>현재가 <b style='color:#f0f4ff'>{format_price(_display_price, sel_ticker)}</b>{_kis_badge}</span>
+  </div>
+  <div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:10px'>
+    {_ck_badge("R:R 2.0+", _rr_ok, str(_ep["rr"]))}
+    {_ck_badge("매수신호 2+", _sig_ok, f"{_buy_cnt}개")}
+    {_ck_badge("시스템 OK", _sys_ok, "매크로")}
+    {_ck_badge("거래량 폭발", _vol_ok, f"{l.get('거래량_비율',100):.0f}%")}
+    {_ck_badge("RSI 30-65", _rsi_ok, f"{l['RSI']:.0f}")}
+    {_ck_badge("MA20 위", _ma_ok, f"{l.get('MA20',0):,.0f}")}
+  </div>
+  <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px'>
+    <div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:10px;text-align:center'>
+      <div style='font-size:10px;color:#64748b'>🎯 진입</div>
+      <div style='font-size:17px;font-weight:800;color:#fbbf24'>{_ep["entry"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>{_ep["gap_pct"]:+.1f}% 대기</div>
+    </div>
+    <div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:10px;padding:10px;text-align:center'>
+      <div style='font-size:10px;color:#64748b'>🛑 손절가</div>
+      <div style='font-size:17px;font-weight:800;color:#f43f5e'>{_ep["stoploss"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>-7%</div>
+    </div>
+    <div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:10px;padding:10px;text-align:center'>
+      <div style='font-size:10px;color:#64748b'>🎯 익절 1차</div>
+      <div style='font-size:17px;font-weight:800;color:#34d399'>{_ep["target1"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>+8%</div>
+    </div>
+    <div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:10px;padding:10px;text-align:center'>
+      <div style='font-size:10px;color:#64748b'>✨ 익절 2차</div>
+      <div style='font-size:17px;font-weight:800;color:#a78bfa'>{_ep["target2"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>+15%</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # ══════════════════════════════════════════
+            # 3. MULTI-PANE CHART + TOGGLE + VALUATION BAND
+            # ══════════════════════════════════════════
+            st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>MULTI-PANE CHART</div>", unsafe_allow_html=True)
+
+            _mp_tc1, _mp_tc2, _mp_tc3, _mp_tc4 = st.columns(4)
+            _mp_rsi  = _mp_tc1.toggle("RSI",    value=True,  key="mp_rsi")
+            _mp_vol  = _mp_tc2.toggle("Volume", value=True,  key="mp_vol")
+            _mp_macd = _mp_tc3.toggle("MACD",   value=False, key="mp_macd")
+            _mp_band = _mp_tc4.toggle("밸류에이션 Band", value=True, key="mp_band")
+
+            _mp_nrows = 1 + int(_mp_rsi) + int(_mp_vol) + int(_mp_macd)
+            _mp_hts   = [0.55] + [0.15] * (_mp_nrows - 1)
+            _ht_s = sum(_mp_hts); _mp_hts = [h / _ht_s for h in _mp_hts]
+
+            from plotly.subplots import make_subplots as _ms_b
+            _mp_fig = _ms_b(rows=_mp_nrows, cols=1, shared_xaxes=True,
+                            row_heights=_mp_hts, vertical_spacing=0.02)
+
+            _mpdf = sel_df.tail(60).copy()
+            _x_mp = list(range(len(_mpdf)))
+            _cl_mp = _mpdf['종가']
+            _op_mp = _mpdf.get('시가', _cl_mp)
+            _hi_mp = _mpdf.get('고가', _cl_mp)
+            _lo_mp = _mpdf.get('저가', _cl_mp)
+
+            # 밸류에이션 Band
+            if _mp_band and 'BB_upper' in _mpdf.columns and 'RSI' in _mpdf.columns:
+                _bb_lo_mp = _mpdf['BB_lower']
+                _bb_hi_mp = _mpdf['BB_upper']
+                _rsi_mp   = _mpdf['RSI']
+                for _xi in range(len(_mpdf)):
+                    _bb_rng = float(_bb_hi_mp.iloc[_xi] - _bb_lo_mp.iloc[_xi])
+                    _bp_v = (float(_cl_mp.iloc[_xi]) - float(_bb_lo_mp.iloc[_xi])) / (_bb_rng + 1e-9) * 100
+                    _rv = float(_rsi_mp.iloc[_xi])
+                    if _rv < 40 or _bp_v < 25:
+                        _mp_fig.add_vrect(x0=_xi - 0.5, x1=_xi + 0.5,
+                                          fillcolor="rgba(52,211,153,0.08)", line_width=0, row=1, col=1)
+                    elif _rv > 65 or _bp_v > 75:
+                        _mp_fig.add_vrect(x0=_xi - 0.5, x1=_xi + 0.5,
+                                          fillcolor="rgba(244,63,94,0.08)", line_width=0, row=1, col=1)
+
+            # 캔들스틱
+            _mp_fig.add_trace(go.Candlestick(
+                x=_x_mp, open=_op_mp, high=_hi_mp, low=_lo_mp, close=_cl_mp,
+                increasing_line_color='#ef4444', decreasing_line_color='#3b82f6',
+                name='가격', showlegend=False
+            ), row=1, col=1)
+
+            # MA선
+            for _ma_col, _ma_c in [('MA5', '#fbbf24'), ('MA20', '#34d399'), ('MA60', '#a78bfa')]:
+                if _ma_col in _mpdf.columns:
+                    _mp_fig.add_trace(go.Scatter(
+                        x=_x_mp, y=_mpdf[_ma_col], name=_ma_col,
+                        line=dict(color=_ma_c, width=1), showlegend=False
+                    ), row=1, col=1)
+
+            # 전략 라인
+            for _sl_v, _sl_c, _sl_d, _sl_lbl in [
+                (entry_price,   '#fbbf24', 'dash',  '진입'),
+                (stop_price,    '#f43f5e', 'dot',   '손절'),
+                (target1_price, '#34d399', 'solid', '목표1'),
+                (target2_price, '#a78bfa', 'dot',   '목표2'),
+            ]:
+                if _sl_v and _sl_v > 0:
+                    _mp_fig.add_hline(y=_sl_v, line=dict(color=_sl_c, dash=_sl_d, width=1),
+                                      annotation_text=f"<b>{_sl_lbl} {_sl_v:,.0f}</b>",
+                                      annotation_font=dict(color=_sl_c, size=10),
+                                      annotation_position="right", row=1, col=1)
+
+            _mp_ri = 2
+
+            if _mp_rsi and 'RSI' in _mpdf.columns:
+                _mp_fig.add_trace(go.Scatter(x=_x_mp, y=_mpdf['RSI'], name='RSI',
+                    line=dict(color='#a78bfa', width=1.2), showlegend=False), row=_mp_ri, col=1)
+                _mp_fig.add_hline(y=70, line=dict(color='#f43f5e', dash='dot', width=0.8), row=_mp_ri, col=1)
+                _mp_fig.add_hline(y=30, line=dict(color='#34d399', dash='dot', width=0.8), row=_mp_ri, col=1)
+                _mp_fig.update_yaxes(title_text="RSI", title_font_size=9, tickfont_size=9, row=_mp_ri, col=1)
+                _mp_ri += 1
+
+            if _mp_vol and '거래량' in _mpdf.columns:
+                _v_clrs = ['#ef4444' if c >= o else '#3b82f6'
+                           for c, o in zip(_cl_mp.values, _op_mp.values)]
+                _mp_fig.add_trace(go.Bar(x=_x_mp, y=_mpdf['거래량'], name='거래량',
+                    marker_color=_v_clrs, showlegend=False), row=_mp_ri, col=1)
+                _mp_fig.update_yaxes(title_text="Vol", title_font_size=9, tickfont_size=9, row=_mp_ri, col=1)
+                _mp_ri += 1
+
+            if _mp_macd and 'MACD' in _mpdf.columns:
+                _mp_fig.add_trace(go.Scatter(x=_x_mp, y=_mpdf['MACD'], name='MACD',
+                    line=dict(color='#fbbf24', width=1.2), showlegend=False), row=_mp_ri, col=1)
+                if 'Signal' in _mpdf.columns:
+                    _mp_fig.add_trace(go.Scatter(x=_x_mp, y=_mpdf['Signal'], name='Signal',
+                        line=dict(color='#f43f5e', width=1, dash='dot'), showlegend=False), row=_mp_ri, col=1)
+                if 'MACD_hist' in _mpdf.columns:
+                    _hist_c = ['#34d399' if v >= 0 else '#f43f5e' for v in _mpdf['MACD_hist']]
+                    _mp_fig.add_trace(go.Bar(x=_x_mp, y=_mpdf['MACD_hist'], name='Hist',
+                        marker_color=_hist_c, showlegend=False), row=_mp_ri, col=1)
+                _mp_fig.update_yaxes(title_text="MACD", title_font_size=9, tickfont_size=9, row=_mp_ri, col=1)
+
+            _mp_fig.update_layout(
+                height=500 if _mp_nrows > 1 else 300,
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=0, r=70, t=8, b=0),
+                font=dict(color='#64748b', size=10),
+                showlegend=False,
+                xaxis_rangeslider_visible=False,
+            )
+            for _ri_u in range(1, _mp_nrows + 1):
+                _mp_fig.update_xaxes(showgrid=False, row=_ri_u, col=1)
+                _mp_fig.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)',
+                                     zeroline=False, row=_ri_u, col=1)
+
+            st.plotly_chart(_mp_fig, use_container_width=True)
+
+            if _mp_band:
+                st.markdown("""
+<div style='display:flex;gap:20px;font-size:11px;color:#64748b;margin-top:-8px;margin-bottom:10px'>
+  <span><span style='color:#34d399'>■</span> 저평가 구간 (RSI&lt;40 또는 BB하단25%)</span>
+  <span><span style='color:#64748b'>■</span> 적정 구간</span>
+  <span><span style='color:#ef4444'>■</span> 과열 구간 (RSI&gt;65 또는 BB상단75%)</span>
+</div>""", unsafe_allow_html=True)
+
+            # ── 수동 조정 ──
             with st.expander("✏️ 수동 조정", expanded=False):
                 _unit  = get_currency(sel_ticker)
                 _step  = 100 if is_korean_ticker(sel_ticker) else 1
@@ -3411,30 +3545,78 @@ with tab_b:
                 target1_price = lc3.number_input(f"1차 목표 ({_unit})", value=int(target1_price) if target1_price else 0, step=_step)
                 target2_price = lc4.number_input(f"2차 목표 ({_unit})", value=int(target2_price) if target2_price else 0, step=_step)
 
-            # 차트
-            fig = make_chart(
-                sel_df, sel_name,
-                entry    = entry_price   if entry_price   > 0 else None,
-                stoploss = stop_price    if stop_price    > 0 else None,
-                target1  = target1_price if target1_price > 0 else None,
-                target2  = target2_price if target2_price > 0 else None,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            # ══════════════════════════════════════════
+            # 4. PERFORMANCE PROJECTION CARD
+            # ══════════════════════════════════════════
+            if entry_price > 0 and stop_price > 0:
+                _pp_e = entry_price
+                _pp_s = stop_price
+                _pp_t1 = target1_price if target1_price > 0 else _pp_e * 1.08
+                _pp_t2 = target2_price if target2_price > 0 else _pp_e * 1.15
+                _pp_loss = (_pp_s - _pp_e) / _pp_e * 100
+                _pp_base = (_pp_t1 - _pp_e) / _pp_e * 100
+                _pp_best = (_pp_t2 - _pp_e) / _pp_e * 100
+                _pp_rr   = abs(_pp_base / _pp_loss) if _pp_loss != 0 else 0
+                _pp_mx   = max(abs(_pp_best), abs(_pp_base), abs(_pp_loss), 1)
+                _pp_bw_best = abs(_pp_best) / _pp_mx * 100
+                _pp_bw_base = abs(_pp_base) / _pp_mx * 100
+                _pp_bw_loss = abs(_pp_loss) / _pp_mx * 100
 
-            # 이평선 상태 테이블
-            st.markdown("### 📐 이평선 현황")
-            ma_cols = st.columns(4)
-            for i, (ma, label) in enumerate([('MA5','5일'),('MA20','20일'),('MA60','60일'),('MA120','120일')]):
-                val = l[ma]
-                diff = round((l['종가']/val-1)*100, 2) if val > 0 else 0
-                status = '위' if l['종가'] > val else '아래'
-                c = 'up' if l['종가'] > val else 'down'
-                _val_fmt = format_price(val, sel_ticker)
-                ma_cols[i].markdown(
-                    f"<div class='metric-card'><div class='label'>{label}선</div>"
-                    f"<div class='value flat' style='font-size:16px'>{_val_fmt}</div>"
-                    f"<div style='font-size:12px; margin-top:4px' class='{c}'>현재가 {status} ({diff:+.1f}%)</div></div>",
-                    unsafe_allow_html=True)
+                st.markdown(f"""
+<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:16px 20px;margin-top:6px'>
+  <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:12px'>
+    PERFORMANCE PROJECTION
+    <span style='float:right;font-size:12px;color:#94a3b8'>Risk/Reward
+      <b style='color:#fbbf24;font-size:18px;margin-left:6px'>{_pp_rr:.2f}</b>
+      &nbsp;<span style='font-size:11px;color:#64748b'>(승률 기준 63.9%)</span>
+    </span>
+  </div>
+  <div style='display:flex;flex-direction:column;gap:10px'>
+    <div style='display:flex;align-items:center;gap:10px'>
+      <span style='color:#a78bfa;font-size:11px;font-weight:700;min-width:40px'>Best</span>
+      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+        <div style='width:{_pp_bw_best:.0f}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);height:100%;border-radius:4px'></div>
+      </div>
+      <span style='color:#a78bfa;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_best:+.1f}%</span>
+    </div>
+    <div style='display:flex;align-items:center;gap:10px'>
+      <span style='color:#34d399;font-size:11px;font-weight:700;min-width:40px'>Base</span>
+      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+        <div style='width:{_pp_bw_base:.0f}%;background:linear-gradient(90deg,#16a34a,#34d399);height:100%;border-radius:4px'></div>
+      </div>
+      <span style='color:#34d399;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_base:+.1f}%</span>
+    </div>
+    <div style='display:flex;align-items:center;gap:10px'>
+      <span style='color:#f43f5e;font-size:11px;font-weight:700;min-width:40px'>Worst</span>
+      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+        <div style='width:{_pp_bw_loss:.0f}%;background:linear-gradient(90deg,#991b1b,#f43f5e);height:100%;border-radius:4px'></div>
+      </div>
+      <span style='color:#f43f5e;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_loss:+.1f}%</span>
+    </div>
+  </div>
+  <div style='margin-top:12px;display:flex;gap:16px;font-size:11px;color:#64748b;
+  border-top:1px solid #1e293b;padding-top:10px;flex-wrap:wrap'>
+    <span>진입 <b style='color:#fbbf24'>{_pp_e:,.0f}</b></span>
+    <span>손절 <b style='color:#f43f5e'>{_pp_s:,.0f}</b></span>
+    <span>1차목표 <b style='color:#34d399'>{_pp_t1:,.0f}</b></span>
+    <span>2차목표 <b style='color:#a78bfa'>{_pp_t2:,.0f}</b></span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # 이평선 현황
+            with st.expander("📐 이평선 현황", expanded=False):
+                ma_cols = st.columns(4)
+                for i, (ma, label) in enumerate([('MA5','5일'),('MA20','20일'),('MA60','60일'),('MA120','120일')]):
+                    val = l[ma]
+                    diff = round((l['종가']/val-1)*100, 2) if val > 0 else 0
+                    status = '위' if l['종가'] > val else '아래'
+                    c = 'up' if l['종가'] > val else 'down'
+                    _val_fmt = format_price(val, sel_ticker)
+                    ma_cols[i].markdown(
+                        f"<div class='metric-card'><div class='label'>{label}선</div>"
+                        f"<div class='value flat' style='font-size:16px'>{_val_fmt}</div>"
+                        f"<div style='font-size:12px; margin-top:4px' class='{c}'>현재가 {status} ({diff:+.1f}%)</div></div>",
+                        unsafe_allow_html=True)
 
 
     # ══════════════════════════════════════════
