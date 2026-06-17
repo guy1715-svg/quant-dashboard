@@ -2479,12 +2479,20 @@ with tab_a:
                     _sym_cc_yf = f"{_pcc['ticker']}.KS"
                 else:
                     _sym_cc_yf = _pcc['ticker']
+                _cur_cc = float(_pcc.get('avg_price', 0))  # fallback
                 if _sym_cc in all_data:
-                    _cur_cc = float(all_data[_sym_cc]['df']['종가'].iloc[-1])
+                    _v_cc = all_data[_sym_cc]['df']['종가'].iloc[-1]
+                    if _v_cc and not pd.isna(_v_cc):
+                        _cur_cc = float(_v_cc)
                 else:
                     import yfinance as _yf_cc
-                    _h_cc = _yf_cc.Ticker(_sym_cc_yf).history(period="2d")
-                    _cur_cc = float(_h_cc['Close'].iloc[-1]) if not _h_cc.empty else _pcc['avg_price']
+                    _h_cc = _yf_cc.Ticker(_sym_cc_yf).history(period="5d")
+                    if isinstance(_h_cc.columns, pd.MultiIndex):
+                        _h_cc.columns = _h_cc.columns.get_level_values(0)
+                    if not _h_cc.empty:
+                        _v_cc2 = _h_cc['Close'].dropna()
+                        if not _v_cc2.empty and not pd.isna(_v_cc2.iloc[-1]):
+                            _cur_cc = float(_v_cc2.iloc[-1])
                 _eval_cc = _cur_cc * _pcc['qty']
                 _total_eval += _eval_cc
             except Exception:
@@ -2496,7 +2504,7 @@ with tab_a:
         st.markdown(f"""
 <div style='background:#0f172a;border:1px solid #1e3a5f;border-radius:12px;padding:14px 16px;margin-bottom:10px'>
   <div style='font-size:11px;color:#64748b;margin-bottom:2px'>ACCOUNT SUMMARY</div>
-  <div style='font-size:22px;font-weight:800;color:#f0f4ff'>{_total_eval/1e6:.1f}M <span style='font-size:13px;color:#64748b'>KRW</span></div>
+  <div style='font-size:22px;font-weight:800;color:#f0f4ff'>{_total_eval/1e6:.1f if _total_eval == _total_eval else '?'}M <span style='font-size:13px;color:#64748b'>KRW</span></div>
   <div style='display:flex;gap:14px;margin-top:8px'>
     <div>
       <div style='font-size:10px;color:#64748b'>Portfolio Return</div>
@@ -2709,13 +2717,25 @@ with tab_a:
                     _is_kr_p3 = is_korean_ticker(_tk_p3)
 
                     # 현재가 조회
+                    _cur_p3 = _avg_p3  # fallback
                     if _tk_p3 in all_data:
-                        _cur_p3 = float(all_data[_tk_p3]['df']['종가'].iloc[-1])
+                        _df_p3_raw = all_data[_tk_p3]['df']
+                        _v = _df_p3_raw['종가'].iloc[-1]
+                        if _v and not pd.isna(_v):
+                            _cur_p3 = float(_v)
                     else:
-                        import yfinance as _yf_p3
-                        _sym_p3 = f"{_tk_p3}.KS" if _is_kr_p3 else _tk_p3
-                        _h_p3 = _yf_p3.Ticker(_sym_p3).history(period="3d")
-                        _cur_p3 = float(_h_p3['Close'].iloc[-1]) if not _h_p3.empty else _avg_p3
+                        try:
+                            import yfinance as _yf_p3
+                            _sym_p3 = f"{_tk_p3}.KS" if _is_kr_p3 else _tk_p3
+                            _h_p3 = _yf_p3.Ticker(_sym_p3).history(period="5d")
+                            if isinstance(_h_p3.columns, pd.MultiIndex):
+                                _h_p3.columns = _h_p3.columns.get_level_values(0)
+                            if not _h_p3.empty:
+                                _v3 = _h_p3['Close'].dropna().iloc[-1]
+                                if _v3 and not pd.isna(_v3):
+                                    _cur_p3 = float(_v3)
+                        except Exception:
+                            pass
 
                     _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
                     _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
@@ -2826,7 +2846,7 @@ with tab_a:
                 st.plotly_chart(_fig_p4, use_container_width=True)
 
                 # Z-Score 바
-                _cur_z4 = float(_zs4.iloc[-1]) if not _zs4.empty else 0
+                _cur_z4 = float(_zs4.dropna().iloc[-1]) if not _zs4.dropna().empty else 0.0
                 _zc4 = "#16a34a" if _cur_z4 < -0.5 else "#ef4444" if _cur_z4 > 1.5 else "#64748b"
                 _rsi_p4 = float(_df_p4['RSI'].iloc[-1]) if 'RSI' in _df_p4.columns else 50
                 _rsi_c4 = "#ef4444" if _rsi_p4 >= 70 else "#3b82f6" if _rsi_p4 <= 30 else "#64748b"
