@@ -3989,16 +3989,32 @@ _ETF_HOLDINGS_DB = {
     "XLE":  [("XOM","Exxon Mobil"),("CVX","Chevron"),("COP","ConocoPhillips"),("EOG","EOG Resources"),("SLB","SLB"),("MPC","Marathon Petroleum"),("PSX","Phillips 66"),("PXD","Pioneer Natural"),("VLO","Valero Energy"),("DVN","Devon Energy")],
     "GLD":  [],  # 금 ETF — 개별종목 없음
     "TLT":  [],  # 채권 ETF — 개별종목 없음
+    "ARKK": [("TSLA","Tesla"),("ROKU","Roku"),("COIN","Coinbase"),("PATH","UiPath"),("TWLO","Twilio"),("EXAS","Exact Sciences"),("CRSP","CRISPR Therapeutics"),("BEAM","Beam Therapeutics"),("TDOC","Teladoc"),("SHOP","Shopify")],
+    "ARKG": [("RXRX","Recursion Pharma"),("CRSP","CRISPR Therapeutics"),("TWST","Twist Bioscience"),("PACB","Pacific Biosciences"),("CDNA","CareDx"),("ACMR","ACM Research"),("NVTA","Invitae"),("BEAM","Beam Therapeutics"),("NTLA","Intellia Therapeutics"),("VERV","Verve Therapeutics")],
+    "ARKW": [("TSLA","Tesla"),("COIN","Coinbase"),("ROKU","Roku"),("MSTR","MicroStrategy"),("TWLO","Twilio"),("PATH","UiPath"),("TDOC","Teladoc"),("SHOP","Shopify"),("OPEN","Opendoor"),("DKNG","DraftKings")],
+    "BOTZ": [("NVDA","NVIDIA"),("ISRG","Intuitive Surgical"),("ABB","ABB Ltd"),("FANUY","Fanuc"),("IRBT","iRobot"),("BRKS","Brooks Automation"),("KEYB","Keyence"),("OMRNY","Omron"),("AZPN","Aspen Tech"),("NNDM","Nano Dimension")],
+    "CIBR": [("PANW","Palo Alto Networks"),("CRWD","CrowdStrike"),("FTNT","Fortinet"),("ZS","Zscaler"),("OKTA","Okta"),("S","SentinelOne"),("CYBR","CyberArk"),("QLYS","Qualys"),("VRNS","Varonis"),("TENB","Tenable")],
 }
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
     """ETF 구성종목 개별 스캐닝 — Z-Score/RSI/ATR 기반 타점 산출"""
+    import yfinance as yf
     holdings = _ETF_HOLDINGS_DB.get(etf_code, [])
+    # DB에 없으면 yfinance로 구성종목 자동 조회 (미국 ETF만)
+    if not holdings and not is_korean:
+        try:
+            _tk_obj = yf.Ticker(etf_code)
+            _fund_data = _tk_obj.funds_data
+            if _fund_data is not None:
+                _top = getattr(_fund_data, 'top_holdings', None)
+                if _top is not None and not _top.empty:
+                    holdings = [(row.get('Symbol', sym), row.get('Name', sym))
+                                for sym, row in _top.head(10).iterrows()]
+        except Exception:
+            pass
     if not holdings:
         return []
-
-    import yfinance as yf
     results = []
     for code, name in holdings[:8]:  # 상위 8개만
         try:
