@@ -4345,6 +4345,34 @@ with tab_d:
         ("EEM",  "iShares 이머징"),
     ]
 
+    # ── ETF 데이터 fetch 함수 (호출 전에 반드시 정의) ──
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def fetch_kr_etf_data():
+        results = []
+        for ticker, name in _KR_ETF_LIST:
+            _sym = f"{ticker}.KS"
+            _ind = _calc_etf_indicators(_sym)
+            if _ind:
+                results.append({'코드': ticker, 'ETF명': name, **_ind})
+            else:
+                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
+                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
+                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+        return results
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def fetch_us_etf_data():
+        results = []
+        for ticker, name in _US_ETF_LIST:
+            _ind = _calc_etf_indicators(ticker)
+            if _ind:
+                results.append({'코드': ticker, 'ETF명': name, **_ind})
+            else:
+                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
+                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
+                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+        return results
+
     st.divider()
 
     # ── 시장별 분기: 라디오 토글에 따라 국장/미장/전체 랭킹판 표시 ──
@@ -4517,33 +4545,6 @@ with tab_d:
             _all_top_sym = '$' if (_all_top_row is not None and _all_top_row.get('시장') == '🇺🇸 미장') else '원'
             _render_etf_ranking(_all_ranked, currency_symbol=_all_top_sym, key_prefix='all_etf', show_add_btn=True)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_kr_etf_data():
-        results = []
-        for ticker, name in _KR_ETF_LIST:
-            _sym = f"{ticker}.KS"
-            _ind = _calc_etf_indicators(_sym)
-            if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
-            else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
-        return results
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_us_etf_data():
-        results = []
-        for ticker, name in _US_ETF_LIST:
-            _ind = _calc_etf_indicators(ticker)
-            if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
-            else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
-        return results
 
     ETF_LIST = [
         # 삼성증권 HTS 기준 ETF 종목코드
