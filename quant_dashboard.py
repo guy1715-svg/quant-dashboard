@@ -402,10 +402,14 @@ def load_account():
     try:
         data = _fb_ref("/quant_account").get()
         if data:
+            # Firebase stores lists as {"0":{...},"1":{...}} dicts — convert back
+            _pos_raw = data.get('positions', [])
+            if isinstance(_pos_raw, dict):
+                _pos_raw = list(_pos_raw.values())
             acc = {
                 'initial':   float(data.get('initial', 10000000)),
                 'cash':      float(data.get('cash', 10000000)),
-                'positions': data.get('positions', []),
+                'positions': _pos_raw,
                 'peak':      float(data.get('peak', 10000000)),
                 'trough':    float(data.get('trough', 10000000)),
             }
@@ -6112,43 +6116,47 @@ with tab_e:
                 # 벤치마크 비교
                 import yfinance as yf
                 _start_bm = _log_df['날짜'].min()
+                _is_dark_perf = st.session_state.get('ui_dark', True)
+                _perf_bg = '#0b0e17' if _is_dark_perf else '#f8fafc'
+                _perf_grid = 'rgba(255,255,255,0.05)' if _is_dark_perf else 'rgba(0,0,0,0.05)'
+                _perf_txt = '#7a8ba8' if _is_dark_perf else '#64748b'
+                _fig_perf = go.Figure()
+                # 포트폴리오 수익률 선
+                _port = _log_df.set_index('날짜')['수익률(%)']
+                _port.index = pd.to_datetime(_port.index, errors='coerce').tz_localize(None)
+                _port = _port[~_port.index.isna()].sort_index()
+                _fig_perf.add_trace(go.Scatter(
+                    x=_port.index, y=_port.values,
+                    name='내 포트폴리오', line=dict(color='#f63d68', width=2),
+                    fill='tozeroy', fillcolor='rgba(246,61,104,0.07)',
+                    hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>포트폴리오</extra>'
+                ))
+                # 코스피 벤치마크 (실패해도 포트폴리오 차트는 표시)
                 try:
-                    _bm   = yf.Ticker("^KS11").history(start=_start_bm, interval="1d")
-                    _bm_r = (_bm['Close'] / _bm['Close'].iloc[0] - 1) * 100
-                    _bm_r.index = pd.to_datetime(_bm_r.index).tz_localize(None)
-                    _port = _log_df.set_index('날짜')['수익률(%)']
-                    _port.index = pd.to_datetime(_port.index).tz_localize(None)
-                    _cmp  = pd.DataFrame({'포트폴리오': _port, '코스피': _bm_r}).ffill().dropna()
-                    _is_dark_perf = st.session_state.get('ui_dark', True)
-                    _perf_bg = '#0b0e17' if _is_dark_perf else '#f8fafc'
-                    _perf_grid = 'rgba(255,255,255,0.05)' if _is_dark_perf else 'rgba(0,0,0,0.05)'
-                    _perf_txt = '#7a8ba8' if _is_dark_perf else '#64748b'
-                    _fig_perf = go.Figure()
-                    _fig_perf.add_trace(go.Scatter(
-                        x=_cmp.index, y=_cmp['포트폴리오'],
-                        name='내 포트폴리오', line=dict(color='#f63d68', width=2),
-                        fill='tozeroy', fillcolor='rgba(246,61,104,0.07)',
-                        hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>포트폴리오</extra>'
-                    ))
-                    _fig_perf.add_trace(go.Scatter(
-                        x=_cmp.index, y=_cmp['코스피'],
-                        name='코스피', line=dict(color='#3b82f6', width=1.5, dash='dot'),
-                        hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>코스피</extra>'
-                    ))
-                    _fig_perf.add_shape(type='line', x0=_cmp.index[0], x1=_cmp.index[-1],
+                    _bm = yf.Ticker("^KS11").history(start=_port.index.min(), interval="1d")
+                    if not _bm.empty and len(_bm) > 0:
+                        _bm_idx = pd.to_datetime(_bm.index).tz_localize(None) if _bm.index.tzinfo is not None else pd.to_datetime(_bm.index)
+                        _bm_r = (_bm['Close'].values / _bm['Close'].values[0] - 1) * 100
+                        _fig_perf.add_trace(go.Scatter(
+                            x=_bm_idx, y=_bm_r,
+                            name='코스피', line=dict(color='#3b82f6', width=1.5, dash='dot'),
+                            hovertemplate='%{x|%Y-%m-%d}<br>수익률: %{y:+.2f}%<extra>코스피</extra>'
+                        ))
+                except Exception:
+                    pass
+                if len(_port) >= 2:
+                    _fig_perf.add_shape(type='line', x0=_port.index[0], x1=_port.index[-1],
                         y0=0, y1=0, line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'))
-                    _fig_perf.update_layout(
-                        paper_bgcolor=_perf_bg, plot_bgcolor=_perf_bg,
-                        height=280, margin=dict(l=10, r=10, t=10, b=10),
-                        legend=dict(orientation='h', y=1.08, x=0, font=dict(size=11, color=_perf_txt)),
-                        xaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10)),
-                        yaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10),
-                                   ticksuffix='%', side='right'),
-                        hovermode='x unified',
-                    )
-                    st.plotly_chart(_fig_perf, use_container_width=True)
-                except:
-                    st.line_chart(_log_df.set_index('날짜')['수익률(%)'])
+                _fig_perf.update_layout(
+                    paper_bgcolor=_perf_bg, plot_bgcolor=_perf_bg,
+                    height=280, margin=dict(l=10, r=10, t=10, b=10),
+                    legend=dict(orientation='h', y=1.08, x=0, font=dict(size=11, color=_perf_txt)),
+                    xaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10)),
+                    yaxis=dict(showgrid=True, gridcolor=_perf_grid, tickfont=dict(color=_perf_txt, size=10),
+                               ticksuffix='%', side='right'),
+                    hovermode='x unified',
+                )
+                st.plotly_chart(_fig_perf, use_container_width=True)
 
                 # MDD
                 _cm    = _log_df['평가금액'].cummax()
