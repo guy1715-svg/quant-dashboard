@@ -274,12 +274,13 @@ def _evaluate_scoring(
     # ── 등급 판정 ──
     all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
 
-    # 대형주 특례: C1(시총범위) AND C3(재무) 둘 다 True일 때만 허용
-    # C1 또는 C3 중 하나라도 False → 점수/등급 무관하게 무조건 Drop
+    # 대형주 특례: C1(시총) AND C3(재무) AND C4(수급) 모두 True일 때만 허용
+    # 셋 중 하나라도 False → 점수 무관 무조건 Drop
     large_cap_pass = (
         is_large_cap
-        and c1_pass          # 절대조건 1: 시총 범위 통과
-        and c3_ok            # 절대조건 2: 재무 통과
+        and c1_pass          # 절대조건 1: 시총 범위
+        and c3_ok            # 절대조건 2: 재무 흑자
+        and c4_ok            # 절대조건 3: 수급(CMF>0 or 외인+기관 순매수)
         and not overheat     # 과열 차단
     )
 
