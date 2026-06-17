@@ -2150,6 +2150,238 @@ for _ss_key, _ss_default in [
     if _ss_key not in st.session_state:
         st.session_state[_ss_key] = _ss_default
 
+# ══════════════════════════════════════════
+
+# ── ETF 구성종목 DB (상위 보유 종목 하드코딩 — yfinance holdings API 불안정 대응) ──
+_ETF_HOLDINGS_DB = {
+    # 국장 ETF
+    "069500": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "102110": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "114800": [("069500","KODEX200"),("005930","삼성전자"),("000660","SK하이닉스")],
+    "122630": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
+    "229200": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
+    "233740": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
+    "091160": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("066570","LG전자"),("009150","삼성전기"),("030200","KT"),("032830","삼성생명"),("017670","SK텔레콤"),("011200","HMM"),("010130","고려아연")],
+    "098560": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("012450","한화에어로스페이스"),("329180","HD현대중공업"),("267250","HD현대重공업"),("009540","HD한국조선해양")],
+    "139220": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("096770","SK이노베이션"),("011070","LG이노텍"),("003670","포스코퓨처엠")],
+    "305720": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("003670","포스코퓨처엠"),("096770","SK이노베이션"),("011070","LG이노텍")],
+    "012450": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("000720","현대건설"),("267250","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션")],
+    # 미장 ETF
+    "SPY":  [("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("BRK.B","Berkshire"),("LLY","Eli Lilly"),("AVGO","Broadcom"),("JPM","JPMorgan")],
+    "QQQ":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
+    "SOXX": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
+    "SOXL": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
+    "XLK":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AVGO","Broadcom"),("CRM","Salesforce"),("ORCL","Oracle"),("ACN","Accenture"),("AMD","AMD"),("NOW","ServiceNow"),("CSCO","Cisco")],
+    "SMH":  [("NVDA","NVIDIA"),("TSM","TSMC"),("AVGO","Broadcom"),("ASML","ASML"),("TXN","Texas Instruments"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("MU","Micron"),("AMD","AMD"),("LRCX","Lam Research")],
+    "TQQQ": [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
+    "IWM":  [("SMCI","Super Micro"),("MSTR","MicroStrategy"),("CELH","Celsius"),("WTFC","Wintrust Financial"),("PLTR","Palantir"),("NTRA","Natera"),("APP","Applovin"),("PTON","Peloton"),("RH","RH"),("SAIA","Saia Inc")],
+    "XLE":  [("XOM","Exxon Mobil"),("CVX","Chevron"),("COP","ConocoPhillips"),("EOG","EOG Resources"),("SLB","SLB"),("MPC","Marathon Petroleum"),("PSX","Phillips 66"),("PXD","Pioneer Natural"),("VLO","Valero Energy"),("DVN","Devon Energy")],
+    "GLD":  [],  # 금 ETF — 개별종목 없음
+    "TLT":  [],  # 채권 ETF — 개별종목 없음
+    "ARKK": [("TSLA","Tesla"),("ROKU","Roku"),("COIN","Coinbase"),("PATH","UiPath"),("TWLO","Twilio"),("EXAS","Exact Sciences"),("CRSP","CRISPR Therapeutics"),("BEAM","Beam Therapeutics"),("TDOC","Teladoc"),("SHOP","Shopify")],
+    "ARKG": [("RXRX","Recursion Pharma"),("CRSP","CRISPR Therapeutics"),("TWST","Twist Bioscience"),("PACB","Pacific Biosciences"),("CDNA","CareDx"),("ACMR","ACM Research"),("NVTA","Invitae"),("BEAM","Beam Therapeutics"),("NTLA","Intellia Therapeutics"),("VERV","Verve Therapeutics")],
+    "ARKW": [("TSLA","Tesla"),("COIN","Coinbase"),("ROKU","Roku"),("MSTR","MicroStrategy"),("TWLO","Twilio"),("PATH","UiPath"),("TDOC","Teladoc"),("SHOP","Shopify"),("OPEN","Opendoor"),("DKNG","DraftKings")],
+    "BOTZ": [("NVDA","NVIDIA"),("ISRG","Intuitive Surgical"),("ABB","ABB Ltd"),("FANUY","Fanuc"),("IRBT","iRobot"),("BRKS","Brooks Automation"),("KEYB","Keyence"),("OMRNY","Omron"),("AZPN","Aspen Tech"),("NNDM","Nano Dimension")],
+    "CIBR": [("PANW","Palo Alto Networks"),("CRWD","CrowdStrike"),("FTNT","Fortinet"),("ZS","Zscaler"),("OKTA","Okta"),("S","SentinelOne"),("CYBR","CyberArk"),("QLYS","Qualys"),("VRNS","Varonis"),("TENB","Tenable")],
+}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
+    """ETF 구성종목 개별 스캐닝 — Z-Score/RSI/ATR 기반 타점 산출"""
+    import yfinance as yf
+    holdings = _ETF_HOLDINGS_DB.get(etf_code, [])
+    # DB에 없으면 yfinance로 구성종목 자동 조회 (미국 ETF만)
+    if not holdings and not is_korean:
+        try:
+            _tk_obj = yf.Ticker(etf_code)
+            _fund_data = _tk_obj.funds_data
+            if _fund_data is not None:
+                _top = getattr(_fund_data, 'top_holdings', None)
+                if _top is not None and not _top.empty:
+                    holdings = [(row.get('Symbol', sym), row.get('Name', sym))
+                                for sym, row in _top.head(10).iterrows()]
+        except Exception:
+            pass
+    if not holdings:
+        return []
+    results = []
+    for code, name in holdings[:8]:  # 상위 8개만
+        try:
+            sym = f"{code}.KS" if is_korean else code
+            df  = yf.Ticker(sym).history(period="3mo", interval="1d")
+            if df is None or len(df) < 20:
+                continue
+
+            cl  = df["Close"]; hi = df["High"]; lo = df["Low"]; vo = df["Volume"]
+            cur = float(cl.iloc[-1])
+            if cur <= 0:
+                continue
+
+            # ATR14
+            tr   = pd.concat([hi-lo, (hi-cl.shift()).abs(), (lo-cl.shift()).abs()], axis=1).max(axis=1)
+            atr  = float(tr.rolling(14).mean().iloc[-1])
+            atr_r = atr / cur
+
+            # RSI14
+            d = cl.diff(); g = d.clip(lower=0).rolling(14).mean(); l_ = (-d).clip(lower=0).rolling(14).mean()
+            rsi = float(100 - 100 / (1 + g.iloc[-1] / (l_.iloc[-1] + 1e-9)))
+
+            # Z-Score20
+            mu = cl.rolling(20).mean().iloc[-1]; sd = cl.rolling(20).std().iloc[-1]
+            zscore = float((cur - mu) / (sd + 1e-9))
+
+            # MA5 이격
+            ma5     = float(cl.rolling(5).mean().iloc[-1])
+            ma5_diff = (cur - ma5) / ma5 * 100
+
+            # 거래대금 (당일)
+            turnover = cur * float(vo.iloc[-1])
+
+            # 전일 저가 지지선
+            prev_low = float(lo.iloc[-2]) if len(lo) >= 2 else cur * 0.95
+
+            # 타점 판단
+            if zscore <= -0.5 and rsi <= 45 and abs(ma5_diff) <= 3:
+                signal = "🎯 눌림목 타점"
+                signal_color = "#089981"
+            elif zscore <= 0 and rsi <= 55:
+                signal = "⏳ 대기"
+                signal_color = "#f0b90b"
+            else:
+                signal = "⚠️ 과열"
+                signal_color = "#f23645"
+
+            # 손절: 전일저가 또는 -5% (더 타이트한 쪽)
+            stop  = max(prev_low, cur * 0.95)
+            target = cur * (1 + atr_r * 2)  # ATR 2배 목표
+            rr    = (target - cur) / (cur - stop + 1e-9)
+
+            results.append({
+                "종목코드": code, "종목명": name,
+                "현재가": round(cur, 0 if is_korean else 2),
+                "RSI": round(rsi, 1), "Z-Score": round(zscore, 2),
+                "ATR%": round(atr_r * 100, 2), "MA5이격": round(ma5_diff, 2),
+                "거래대금": turnover,
+                "타점": signal, "타점색": signal_color,
+                "목표가": round(target, 0 if is_korean else 2),
+                "손절가": round(stop, 0 if is_korean else 2),
+                "R:R": round(rr, 2),
+            })
+        except Exception:
+            continue
+
+    # 거래대금 + Z-Score 낮은 순 정렬 (대장주 + 눌림목 우선)
+    results.sort(key=lambda x: (-x["거래대금"], x["Z-Score"]))
+    return results
+
+
+def _calc_etf_indicators(ticker_sym):
+    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
+    import yfinance as yf
+    import numpy as np
+    try:
+        _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
+        if _df is None or len(_df) < 60:
+            return None
+        _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
+
+        _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
+        _atr  = _tr.rolling(14).mean()
+        _pdm  = _hi.diff().clip(lower=0); _ndm = (-_lo.diff()).clip(lower=0)
+        _pdi  = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
+        _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
+        _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
+        _adx  = round(_dx.rolling(14).mean().iloc[-1], 1)
+
+        _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
+        _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
+        _rsi   = round((100 - 100/(1+_gain/_loss.replace(0,np.nan))).iloc[-1], 1)
+
+        _ema12 = _cl.ewm(span=12).mean(); _ema26 = _cl.ewm(span=26).mean()
+        _macd  = _ema12 - _ema26; _signal = _macd.ewm(span=9).mean()
+        _mv = _macd.iloc[-1]; _sv = _signal.iloc[-1]; _mp = _macd.iloc[-2]; _sp = _signal.iloc[-2]
+        if _mv > _sv and _mp <= _sp:   _macd_sig = '🟢골든크로스'
+        elif _mv > _sv:                _macd_sig = '▲상승'
+        elif _mv < _sv and _mp >= _sp: _macd_sig = '🔴데드크로스'
+        else:                          _macd_sig = '▼하락'
+
+        _ret = _cl.pct_change()
+        _zs  = round((_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1]
+                     if _ret.rolling(20).std().iloc[-1] > 0 else 0, 2)
+        _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
+        _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
+
+        _ma5 = _cl.rolling(5).mean().iloc[-1]; _ma20 = _cl.rolling(20).mean().iloc[-1]; _ma60 = _cl.rolling(60).mean().iloc[-1]
+        _aligned = bool(_cl.iloc[-1] > _ma5 > _ma20 > _ma60)
+
+        _score = 0
+        if _adx >= 40: _score += 25
+        elif _adx >= 30: _score += 18
+        elif _adx >= 25: _score += 12
+        if 40 <= _rsi <= 60: _score += 15
+        elif 30 <= _rsi < 40: _score += 10
+        elif 60 < _rsi <= 70: _score += 8
+        elif _rsi < 30: _score += 5
+        if '골든크로스' in _macd_sig: _score += 20
+        elif '상승' in _macd_sig: _score += 12
+        elif '하락' in _macd_sig: _score += 4
+        if _zs >= 1.5: _score += 15
+        elif _zs >= 0.5: _score += 10
+        elif _zs >= -0.5: _score += 6
+        elif _zs >= -1.5: _score += 2
+        if _mom >= 10: _score += 15
+        elif _mom >= 5: _score += 10
+        elif _mom >= 0: _score += 6
+        elif _mom >= -5: _score += 2
+        if _aligned: _score += 10
+        if _vol_r >= 200: _score += 10
+        elif _vol_r >= 150: _score += 7
+        elif _vol_r >= 100: _score += 4
+
+        _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
+        # 갭상승 뇌동매매 차단용 데이터
+        _open_today    = float(_df['Open'].iloc[-1])
+        _prev_close    = float(_cl.iloc[-2])
+        _gap_pct       = (_open_today - _prev_close) / _prev_close if _prev_close > 0 else 0
+        _cur_vs_ma5    = (float(_cl.iloc[-1]) - _ma5) / _ma5 if _ma5 > 0 else 0
+        return {
+            'ADX': _adx, 'RSI': _rsi, 'MACD': _macd_sig,
+            'Z-Score': _zs, '모멘텀(%)': _mom, '거래량%': _vol_r,
+            '정배열': '✅' if _aligned else '❌',
+            '종합점수': _score, '등락(%)': _chg,
+            '현재가': round(_cl.iloc[-1], 2),
+            '상태': '활성' if _adx >= 25 else '탈락',
+            '갭(%)': round(_gap_pct * 100, 2),
+            'MA5이격(%)': round(_cur_vs_ma5 * 100, 2),
+            'MA5가격': round(_ma5, 2),
+            '전일종가': round(_prev_close, 2),
+        }
+    except Exception:
+        return None
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_home_etf_top(n=6):
+    """홈탭 관제판용 — 국장+미장 ETF 상위 N개 빠른 조회 (점수≥60 필터)"""
+    _QUICK_KR = [("395160","KODEX AI반도체TOP2+"),("091160","KODEX 반도체"),
+                 ("069500","KODEX 200"),("463250","TIGER K방산&우주"),
+                 ("459580","KODEX AI전력핵심설비"),("133690","TIGER 나스닥100"),
+                 ("364980","TIGER 조선TOP10"),("305720","KODEX 2차전지산업")]
+    _QUICK_US = [("QQQ","나스닥100"),("SOXX","iShares 반도체"),("SMH","VanEck 반도체"),
+                 ("ARKK","ARK 혁신"),("ARKG","ARK 유전체"),("XLK","Technology"),
+                 ("TQQQ","나스닥3x"),("SPY","S&P500")]
+    rows = []
+    for code, name in _QUICK_KR:
+        ind = _calc_etf_indicators(f"{code}.KS")
+        if ind and ind.get('종합점수', 0) >= 60:
+            rows.append({'코드': code, 'ETF명': name, '시장': '🇰🇷', **ind})
+    for code, name in _QUICK_US:
+        ind = _calc_etf_indicators(code)
+        if ind and ind.get('종합점수', 0) >= 60:
+            rows.append({'코드': code, 'ETF명': name, '시장': '🇺🇸', **ind})
+    rows.sort(key=lambda r: r.get('종합점수', 0), reverse=True)
+    return rows[:n]
+
+
 tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리"])
 
 
@@ -4231,238 +4463,6 @@ with tab_c:
 
 # ══════════════════════════════════════════
 # 국장ETF / 미장ETF 공용 지표 계산 함수
-# ══════════════════════════════════════════
-
-# ── ETF 구성종목 DB (상위 보유 종목 하드코딩 — yfinance holdings API 불안정 대응) ──
-_ETF_HOLDINGS_DB = {
-    # 국장 ETF
-    "069500": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
-    "102110": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
-    "114800": [("069500","KODEX200"),("005930","삼성전자"),("000660","SK하이닉스")],
-    "122630": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
-    "229200": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER"),("000270","기아"),("051910","LG화학"),("006400","삼성SDI"),("035720","카카오"),("055550","신한지주")],
-    "233740": [("005930","삼성전자"),("000660","SK하이닉스"),("005490","POSCO홀딩스"),("005380","현대차"),("035420","NAVER")],
-    "091160": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("066570","LG전자"),("009150","삼성전기"),("030200","KT"),("032830","삼성생명"),("017670","SK텔레콤"),("011200","HMM"),("010130","고려아연")],
-    "098560": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("012450","한화에어로스페이스"),("329180","HD현대중공업"),("267250","HD현대重공업"),("009540","HD한국조선해양")],
-    "139220": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("096770","SK이노베이션"),("011070","LG이노텍"),("003670","포스코퓨처엠")],
-    "305720": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("003670","포스코퓨처엠"),("096770","SK이노베이션"),("011070","LG이노텍")],
-    "012450": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("000720","현대건설"),("267250","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션")],
-    # 미장 ETF
-    "SPY":  [("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("BRK.B","Berkshire"),("LLY","Eli Lilly"),("AVGO","Broadcom"),("JPM","JPMorgan")],
-    "QQQ":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
-    "SOXX": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
-    "SOXL": [("NVDA","NVIDIA"),("AVGO","Broadcom"),("AMD","AMD"),("INTC","Intel"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("LRCX","Lam Research"),("MU","Micron"),("KLAC","KLA Corp"),("TXN","Texas Instruments")],
-    "XLK":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AVGO","Broadcom"),("CRM","Salesforce"),("ORCL","Oracle"),("ACN","Accenture"),("AMD","AMD"),("NOW","ServiceNow"),("CSCO","Cisco")],
-    "SMH":  [("NVDA","NVIDIA"),("TSM","TSMC"),("AVGO","Broadcom"),("ASML","ASML"),("TXN","Texas Instruments"),("QCOM","Qualcomm"),("AMAT","Applied Materials"),("MU","Micron"),("AMD","AMD"),("LRCX","Lam Research")],
-    "TQQQ": [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
-    "IWM":  [("SMCI","Super Micro"),("MSTR","MicroStrategy"),("CELH","Celsius"),("WTFC","Wintrust Financial"),("PLTR","Palantir"),("NTRA","Natera"),("APP","Applovin"),("PTON","Peloton"),("RH","RH"),("SAIA","Saia Inc")],
-    "XLE":  [("XOM","Exxon Mobil"),("CVX","Chevron"),("COP","ConocoPhillips"),("EOG","EOG Resources"),("SLB","SLB"),("MPC","Marathon Petroleum"),("PSX","Phillips 66"),("PXD","Pioneer Natural"),("VLO","Valero Energy"),("DVN","Devon Energy")],
-    "GLD":  [],  # 금 ETF — 개별종목 없음
-    "TLT":  [],  # 채권 ETF — 개별종목 없음
-    "ARKK": [("TSLA","Tesla"),("ROKU","Roku"),("COIN","Coinbase"),("PATH","UiPath"),("TWLO","Twilio"),("EXAS","Exact Sciences"),("CRSP","CRISPR Therapeutics"),("BEAM","Beam Therapeutics"),("TDOC","Teladoc"),("SHOP","Shopify")],
-    "ARKG": [("RXRX","Recursion Pharma"),("CRSP","CRISPR Therapeutics"),("TWST","Twist Bioscience"),("PACB","Pacific Biosciences"),("CDNA","CareDx"),("ACMR","ACM Research"),("NVTA","Invitae"),("BEAM","Beam Therapeutics"),("NTLA","Intellia Therapeutics"),("VERV","Verve Therapeutics")],
-    "ARKW": [("TSLA","Tesla"),("COIN","Coinbase"),("ROKU","Roku"),("MSTR","MicroStrategy"),("TWLO","Twilio"),("PATH","UiPath"),("TDOC","Teladoc"),("SHOP","Shopify"),("OPEN","Opendoor"),("DKNG","DraftKings")],
-    "BOTZ": [("NVDA","NVIDIA"),("ISRG","Intuitive Surgical"),("ABB","ABB Ltd"),("FANUY","Fanuc"),("IRBT","iRobot"),("BRKS","Brooks Automation"),("KEYB","Keyence"),("OMRNY","Omron"),("AZPN","Aspen Tech"),("NNDM","Nano Dimension")],
-    "CIBR": [("PANW","Palo Alto Networks"),("CRWD","CrowdStrike"),("FTNT","Fortinet"),("ZS","Zscaler"),("OKTA","Okta"),("S","SentinelOne"),("CYBR","CyberArk"),("QLYS","Qualys"),("VRNS","Varonis"),("TENB","Tenable")],
-}
-
-@st.cache_data(ttl=300, show_spinner=False)
-def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
-    """ETF 구성종목 개별 스캐닝 — Z-Score/RSI/ATR 기반 타점 산출"""
-    import yfinance as yf
-    holdings = _ETF_HOLDINGS_DB.get(etf_code, [])
-    # DB에 없으면 yfinance로 구성종목 자동 조회 (미국 ETF만)
-    if not holdings and not is_korean:
-        try:
-            _tk_obj = yf.Ticker(etf_code)
-            _fund_data = _tk_obj.funds_data
-            if _fund_data is not None:
-                _top = getattr(_fund_data, 'top_holdings', None)
-                if _top is not None and not _top.empty:
-                    holdings = [(row.get('Symbol', sym), row.get('Name', sym))
-                                for sym, row in _top.head(10).iterrows()]
-        except Exception:
-            pass
-    if not holdings:
-        return []
-    results = []
-    for code, name in holdings[:8]:  # 상위 8개만
-        try:
-            sym = f"{code}.KS" if is_korean else code
-            df  = yf.Ticker(sym).history(period="3mo", interval="1d")
-            if df is None or len(df) < 20:
-                continue
-
-            cl  = df["Close"]; hi = df["High"]; lo = df["Low"]; vo = df["Volume"]
-            cur = float(cl.iloc[-1])
-            if cur <= 0:
-                continue
-
-            # ATR14
-            tr   = pd.concat([hi-lo, (hi-cl.shift()).abs(), (lo-cl.shift()).abs()], axis=1).max(axis=1)
-            atr  = float(tr.rolling(14).mean().iloc[-1])
-            atr_r = atr / cur
-
-            # RSI14
-            d = cl.diff(); g = d.clip(lower=0).rolling(14).mean(); l_ = (-d).clip(lower=0).rolling(14).mean()
-            rsi = float(100 - 100 / (1 + g.iloc[-1] / (l_.iloc[-1] + 1e-9)))
-
-            # Z-Score20
-            mu = cl.rolling(20).mean().iloc[-1]; sd = cl.rolling(20).std().iloc[-1]
-            zscore = float((cur - mu) / (sd + 1e-9))
-
-            # MA5 이격
-            ma5     = float(cl.rolling(5).mean().iloc[-1])
-            ma5_diff = (cur - ma5) / ma5 * 100
-
-            # 거래대금 (당일)
-            turnover = cur * float(vo.iloc[-1])
-
-            # 전일 저가 지지선
-            prev_low = float(lo.iloc[-2]) if len(lo) >= 2 else cur * 0.95
-
-            # 타점 판단
-            if zscore <= -0.5 and rsi <= 45 and abs(ma5_diff) <= 3:
-                signal = "🎯 눌림목 타점"
-                signal_color = "#089981"
-            elif zscore <= 0 and rsi <= 55:
-                signal = "⏳ 대기"
-                signal_color = "#f0b90b"
-            else:
-                signal = "⚠️ 과열"
-                signal_color = "#f23645"
-
-            # 손절: 전일저가 또는 -5% (더 타이트한 쪽)
-            stop  = max(prev_low, cur * 0.95)
-            target = cur * (1 + atr_r * 2)  # ATR 2배 목표
-            rr    = (target - cur) / (cur - stop + 1e-9)
-
-            results.append({
-                "종목코드": code, "종목명": name,
-                "현재가": round(cur, 0 if is_korean else 2),
-                "RSI": round(rsi, 1), "Z-Score": round(zscore, 2),
-                "ATR%": round(atr_r * 100, 2), "MA5이격": round(ma5_diff, 2),
-                "거래대금": turnover,
-                "타점": signal, "타점색": signal_color,
-                "목표가": round(target, 0 if is_korean else 2),
-                "손절가": round(stop, 0 if is_korean else 2),
-                "R:R": round(rr, 2),
-            })
-        except Exception:
-            continue
-
-    # 거래대금 + Z-Score 낮은 순 정렬 (대장주 + 눌림목 우선)
-    results.sort(key=lambda x: (-x["거래대금"], x["Z-Score"]))
-    return results
-
-
-def _calc_etf_indicators(ticker_sym):
-    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
-    import yfinance as yf
-    import numpy as np
-    try:
-        _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
-        if _df is None or len(_df) < 60:
-            return None
-        _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
-
-        _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
-        _atr  = _tr.rolling(14).mean()
-        _pdm  = _hi.diff().clip(lower=0); _ndm = (-_lo.diff()).clip(lower=0)
-        _pdi  = 100*_pdm.rolling(14).mean()/_atr.replace(0,np.nan)
-        _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
-        _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
-        _adx  = round(_dx.rolling(14).mean().iloc[-1], 1)
-
-        _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
-        _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
-        _rsi   = round((100 - 100/(1+_gain/_loss.replace(0,np.nan))).iloc[-1], 1)
-
-        _ema12 = _cl.ewm(span=12).mean(); _ema26 = _cl.ewm(span=26).mean()
-        _macd  = _ema12 - _ema26; _signal = _macd.ewm(span=9).mean()
-        _mv = _macd.iloc[-1]; _sv = _signal.iloc[-1]; _mp = _macd.iloc[-2]; _sp = _signal.iloc[-2]
-        if _mv > _sv and _mp <= _sp:   _macd_sig = '🟢골든크로스'
-        elif _mv > _sv:                _macd_sig = '▲상승'
-        elif _mv < _sv and _mp >= _sp: _macd_sig = '🔴데드크로스'
-        else:                          _macd_sig = '▼하락'
-
-        _ret = _cl.pct_change()
-        _zs  = round((_ret.iloc[-1]-_ret.rolling(20).mean().iloc[-1])/_ret.rolling(20).std().iloc[-1]
-                     if _ret.rolling(20).std().iloc[-1] > 0 else 0, 2)
-        _mom = round((_cl.iloc[-1]/_cl.iloc[-20]-1)*100, 2) if len(_cl)>=20 else 0
-        _vol_r = round(_vol.iloc[-1]/_vol.tail(20).mean()*100, 0) if _vol.tail(20).mean() > 0 else 100
-
-        _ma5 = _cl.rolling(5).mean().iloc[-1]; _ma20 = _cl.rolling(20).mean().iloc[-1]; _ma60 = _cl.rolling(60).mean().iloc[-1]
-        _aligned = bool(_cl.iloc[-1] > _ma5 > _ma20 > _ma60)
-
-        _score = 0
-        if _adx >= 40: _score += 25
-        elif _adx >= 30: _score += 18
-        elif _adx >= 25: _score += 12
-        if 40 <= _rsi <= 60: _score += 15
-        elif 30 <= _rsi < 40: _score += 10
-        elif 60 < _rsi <= 70: _score += 8
-        elif _rsi < 30: _score += 5
-        if '골든크로스' in _macd_sig: _score += 20
-        elif '상승' in _macd_sig: _score += 12
-        elif '하락' in _macd_sig: _score += 4
-        if _zs >= 1.5: _score += 15
-        elif _zs >= 0.5: _score += 10
-        elif _zs >= -0.5: _score += 6
-        elif _zs >= -1.5: _score += 2
-        if _mom >= 10: _score += 15
-        elif _mom >= 5: _score += 10
-        elif _mom >= 0: _score += 6
-        elif _mom >= -5: _score += 2
-        if _aligned: _score += 10
-        if _vol_r >= 200: _score += 10
-        elif _vol_r >= 150: _score += 7
-        elif _vol_r >= 100: _score += 4
-
-        _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
-        # 갭상승 뇌동매매 차단용 데이터
-        _open_today    = float(_df['Open'].iloc[-1])
-        _prev_close    = float(_cl.iloc[-2])
-        _gap_pct       = (_open_today - _prev_close) / _prev_close if _prev_close > 0 else 0
-        _cur_vs_ma5    = (float(_cl.iloc[-1]) - _ma5) / _ma5 if _ma5 > 0 else 0
-        return {
-            'ADX': _adx, 'RSI': _rsi, 'MACD': _macd_sig,
-            'Z-Score': _zs, '모멘텀(%)': _mom, '거래량%': _vol_r,
-            '정배열': '✅' if _aligned else '❌',
-            '종합점수': _score, '등락(%)': _chg,
-            '현재가': round(_cl.iloc[-1], 2),
-            '상태': '활성' if _adx >= 25 else '탈락',
-            '갭(%)': round(_gap_pct * 100, 2),
-            'MA5이격(%)': round(_cur_vs_ma5 * 100, 2),
-            'MA5가격': round(_ma5, 2),
-            '전일종가': round(_prev_close, 2),
-        }
-    except Exception:
-        return None
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _get_home_etf_top(n=6):
-    """홈탭 관제판용 — 국장+미장 ETF 상위 N개 빠른 조회 (점수≥60 필터)"""
-    _QUICK_KR = [("395160","KODEX AI반도체TOP2+"),("091160","KODEX 반도체"),
-                 ("069500","KODEX 200"),("463250","TIGER K방산&우주"),
-                 ("459580","KODEX AI전력핵심설비"),("133690","TIGER 나스닥100"),
-                 ("364980","TIGER 조선TOP10"),("305720","KODEX 2차전지산업")]
-    _QUICK_US = [("QQQ","나스닥100"),("SOXX","iShares 반도체"),("SMH","VanEck 반도체"),
-                 ("ARKK","ARK 혁신"),("ARKG","ARK 유전체"),("XLK","Technology"),
-                 ("TQQQ","나스닥3x"),("SPY","S&P500")]
-    rows = []
-    for code, name in _QUICK_KR:
-        ind = _calc_etf_indicators(f"{code}.KS")
-        if ind and ind.get('종합점수', 0) >= 60:
-            rows.append({'코드': code, 'ETF명': name, '시장': '🇰🇷', **ind})
-    for code, name in _QUICK_US:
-        ind = _calc_etf_indicators(code)
-        if ind and ind.get('종합점수', 0) >= 60:
-            rows.append({'코드': code, 'ETF명': name, '시장': '🇺🇸', **ind})
-    rows.sort(key=lambda r: r.get('종합점수', 0), reverse=True)
-    return rows[:n]
-
-
 def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
     """ETF 랭킹 카드 렌더링 공용 함수."""
     for _i, row in df_ranked.iterrows():
