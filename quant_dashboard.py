@@ -2154,11 +2154,501 @@ tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 �
 
 
 with tab_a:
-    st.markdown("### 🏠 오늘의 퀀트 관제탑")
+    # ──────────────────────────────────────────────────────────────────────
+    # V9.0 4-Panel Command Center
+    # ──────────────────────────────────────────────────────────────────────
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _get_market():
+        _r = {}
+        try:
+            import FinanceDataReader as _fdr
+            from datetime import datetime as _dt_fdr, timedelta as _td_fdr
+            _end = _dt_fdr.now().strftime('%Y-%m-%d')
+            _start = (_dt_fdr.now() - _td_fdr(days=7)).strftime('%Y-%m-%d')
+            for _n, _s in [("코스피","KS11"),("코스닥","KQ11")]:
+                try:
+                    _h = _fdr.DataReader(_s, _start, _end)
+                    _h = _h.dropna(subset=['Close'])
+                    if len(_h) >= 2:
+                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                        if _c > 0 and _p > 0:
+                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+                except Exception:
+                    pass
+        except ImportError:
+            pass
+        try:
+            import yfinance as _yf2
+            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
+                try:
+                    _h = _yf2.Ticker(_s).history(period="5d", interval="1d")
+                    _h = _h.dropna(subset=['Close'])
+                    if len(_h) >= 2:
+                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                        if _c > 0 and _p > 0:
+                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return _r
 
-    # ── 대시보드 사용 가이드 ──
-    with st.expander("📖 대시보드 사용 가이드 (처음이시라면 꼭 읽어주세요!)", expanded=False):
-        st.markdown("""
+    from datetime import datetime as _dt_cc
+    _kst_h = (_dt_cc.utcnow().hour + 9) % 24
+    _kst_m = _dt_cc.utcnow().minute
+    _is_market_open = (9 <= _kst_h < 16) and not (_kst_h == 9 and _kst_m < 30)
+    _blackout_48 = False
+    _v891_home = run_v891_system_check()
+    if not _v891_home['can_enter']:
+        _blackout_48 = True
+
+    # ── 상단 상태 바 ──
+    _sb_cols = st.columns([3, 1, 1, 1, 1])
+    _sb_cols[0].markdown("## 🎯 V9.0 Quant Command Center")
+    _market_badge = (
+        "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>● 장중</span>"
+        if _is_market_open else
+        "<span style='background:#374151;color:#9ca3af;padding:3px 10px;border-radius:20px;font-size:12px'>○ 장외</span>"
+    )
+    _sb_cols[1].markdown(_market_badge, unsafe_allow_html=True)
+    _mkt_home = _get_market()
+    for _i_sb, (_nm_sb, _key_sb) in enumerate([("코스피","코스피"),("코스닥","코스닥"),("나스닥","나스닥")]):
+        _d_sb = _mkt_home.get(_key_sb, {})
+        if _d_sb:
+            _up_sb = _d_sb.get('등락', 0) > 0
+            _c_sb = "#f63d68" if _up_sb else "#3b82f6"
+            _sb_cols[2+_i_sb].markdown(
+                f"<div style='font-size:11px;color:#64748b'>{_nm_sb}</div>"
+                f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
+                unsafe_allow_html=True)
+
+    if _blackout_48:
+        st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
+
+    st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
+
+    # ── 4-Panel Layout ──
+    _p1, _p2, _p3, _p4 = st.columns([1, 1.6, 1.4, 1.4])
+
+    # ══════════════════════════════════════════════
+    # PANEL 1 — Account Summary + Live Signal Stream
+    # ══════════════════════════════════════════════
+    with _p1:
+        _acc_cc = load_account()
+        _pos_list_cc = _acc_cc.get('positions', [])
+        _total_eval = _acc_cc['cash']
+        _pos_pnl_pct = 0.0
+
+        # 포지션 현재 평가금액 계산 (캐시 활용)
+        for _pcc in _pos_list_cc:
+            try:
+                _sym_cc = _pcc['ticker']
+                if is_korean_ticker(_sym_cc):
+                    _sym_cc_yf = f"{_pcc['ticker']}.KS"
+                else:
+                    _sym_cc_yf = _pcc['ticker']
+                if _sym_cc in all_data:
+                    _cur_cc = float(all_data[_sym_cc]['df']['종가'].iloc[-1])
+                else:
+                    import yfinance as _yf_cc
+                    _h_cc = _yf_cc.Ticker(_sym_cc_yf).history(period="2d")
+                    _cur_cc = float(_h_cc['Close'].iloc[-1]) if not _h_cc.empty else _pcc['avg_price']
+                _eval_cc = _cur_cc * _pcc['qty']
+                _total_eval += _eval_cc
+            except Exception:
+                _total_eval += _pcc.get('avg_price', 0) * _pcc.get('qty', 0)
+
+        _ret_pct = (_total_eval / _acc_cc['initial'] - 1) * 100 if _acc_cc['initial'] > 0 else 0
+        _ret_color = "#16a34a" if _ret_pct >= 0 else "#ef4444"
+
+        st.markdown(f"""
+<div style='background:#0f172a;border:1px solid #1e3a5f;border-radius:12px;padding:14px 16px;margin-bottom:10px'>
+  <div style='font-size:11px;color:#64748b;margin-bottom:2px'>ACCOUNT SUMMARY</div>
+  <div style='font-size:22px;font-weight:800;color:#f0f4ff'>{_total_eval/1e6:.1f}M <span style='font-size:13px;color:#64748b'>KRW</span></div>
+  <div style='display:flex;gap:14px;margin-top:8px'>
+    <div>
+      <div style='font-size:10px;color:#64748b'>Portfolio Return</div>
+      <div style='font-size:16px;font-weight:700;color:{_ret_color}'>{_ret_pct:+.2f}%</div>
+    </div>
+    <div>
+      <div style='font-size:10px;color:#64748b'>보유종목</div>
+      <div style='font-size:16px;font-weight:700;color:#f0f4ff'>{len(_pos_list_cc)}개</div>
+    </div>
+    <div>
+      <div style='font-size:10px;color:#64748b'>가용현금</div>
+      <div style='font-size:14px;font-weight:600;color:#94a3b8'>{_acc_cc['cash']/1e6:.1f}M</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        # Live Signal Stream
+        st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:4px'>⚡ LIVE SIGNAL STREAM</div>", unsafe_allow_html=True)
+
+        # 신호 피드 조합: 관심종목 신호 + 최근 거래
+        _signal_feed = []
+        _tickers_cc = get_watchlist_tickers()
+        for _t_cc, _n_cc in _tickers_cc[:5]:
+            try:
+                _df_cc2 = all_data.get(_t_cc, {}).get('df')
+                if _df_cc2 is None:
+                    continue
+                _sig_cc = get_signal(_df_cc2)
+                _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
+                _chg_c2 = "#16a34a" if _chg_cc > 0 else "#ef4444"
+                for _s, _stype in _sig_cc[:1]:
+                    _signal_feed.append((_n_cc, _s, _chg_cc, _chg_c2))
+            except Exception:
+                pass
+
+        if _signal_feed:
+            for _sn, _ss, _sc, _scc in _signal_feed:
+                st.markdown(
+                    f"<div style='background:#0d1117;border-left:2px solid {_scc};border-radius:4px;"
+                    f"padding:5px 10px;margin-bottom:3px;font-size:11px'>"
+                    f"<span style='color:#f0f4ff;font-weight:600'>{_sn}</span> "
+                    f"<span style='color:#64748b'>{_ss}</span> "
+                    f"<span style='color:{_scc};float:right'>{_sc:+.1f}%</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.markdown("<div style='color:#374151;font-size:11px;padding:6px'>관심종목 신호 없음</div>", unsafe_allow_html=True)
+
+        # 매크로 이벤트 다음 일정
+        _future_cc = sorted(
+            [e for e in st.session_state.get('macro_events', [])
+             if e['date'] >= _dt_cc.now().strftime("%Y-%m-%d")],
+            key=lambda x: x['date']
+        )
+        if _future_cc:
+            _ne = _future_cc[0]
+            _ne_dt = _dt_cc.strptime(_ne['date'], "%Y-%m-%d")
+            _ne_days = (_ne_dt - _dt_cc.now()).days
+            _ne_c = "#ef4444" if _ne_days <= 2 else "#f97316" if _ne_days <= 7 else "#64748b"
+            st.markdown(
+                f"<div style='margin-top:8px;background:#0d1117;border-radius:6px;padding:7px 10px;font-size:11px'>"
+                f"<span style='color:#64748b'>다음 이벤트</span> "
+                f"<span style='color:{_ne_c};font-weight:700'>{_ne['name']}</span> "
+                f"<span style='color:#64748b'>D-{_ne_days}</span></div>",
+                unsafe_allow_html=True
+            )
+
+        if st.button("🔄 새로고침", key="home_refresh_cc", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # ══════════════════════════════════════════════
+    # PANEL 2 — Global Integrated Rankings
+    # ══════════════════════════════════════════════
+    with _p2:
+        st.markdown("""<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>
+        GLOBAL INTEGRATED RANKINGS <span style='color:#374151'>(Score ≥ 60)</span></div>""",
+        unsafe_allow_html=True)
+
+        _rank_tab = st.radio("", ["국장 ETFs", "미장 ETFs", "관심종목"], horizontal=True, key="home_rank_tab", label_visibility="collapsed")
+
+        if _rank_tab in ("국장 ETFs", "미장 ETFs"):
+            with st.spinner("랭킹 로딩 중..."):
+                _home_etfs = _get_home_etf_top(8)
+
+            _filtered_etfs = [r for r in _home_etfs if
+                (r['시장'] == '🇰🇷' and _rank_tab == "국장 ETFs") or
+                (r['시장'] == '🇺🇸' and _rank_tab == "미장 ETFs")]
+
+            if not _filtered_etfs:
+                st.info("점수 60 이상 ETF 없음 (장 외 시간이거나 데이터 로딩 중)")
+            else:
+                for _ri, _re in enumerate(_filtered_etfs[:5]):
+                    _is_top_r = (_ri == 0)
+                    _rc = "#ffd166" if _is_top_r else "#3b82f6" if _re.get('ADX', 0) >= 30 else "#374151"
+                    _macd_r = _re.get('MACD', '')
+                    _border_r = "#ffd166" if _is_top_r else ("#d4a017" if "골든" in _macd_r else "#1e3a5f")
+                    _bg_r = "#1a1400" if _is_top_r else "#0d1117"
+                    _score_r = _re.get('종합점수', 0)
+                    _mom_r = _re.get('모멘텀(%)', 0)
+                    _adx_r = _re.get('ADX', 0)
+                    _rsi_r = _re.get('RSI', 0)
+                    _chg_r = _re.get('등락(%)', 0)
+                    _chg_c_r = "#16a34a" if _chg_r > 0 else "#ef4444"
+                    _cur_r = _re.get('현재가', 0)
+                    _is_kr_r = _re['시장'] == '🇰🇷'
+                    _price_r = f"{_cur_r:,.0f}원" if _is_kr_r else f"${_cur_r:,.2f}"
+
+                    st.markdown(f"""
+<div style='background:{_bg_r};border:1px solid {_border_r};border-radius:8px;padding:10px 12px;margin-bottom:4px'>
+  <div style='display:flex;justify-content:space-between;align-items:center'>
+    <div style='display:flex;align-items:center;gap:6px'>
+      <span style='color:{_rc};font-weight:800;font-size:13px'>{'🥇' if _is_top_r else f'{_ri+1}위'}</span>
+      <span style='font-weight:700;font-size:13px'>{_re['ETF명']}</span>
+      <span style='color:#64748b;font-size:10px'>({_re['코드']})</span>
+    </div>
+    <span style='background:#1e293b;color:#fbbf24;font-size:13px;font-weight:800;padding:2px 8px;border-radius:6px'>{_score_r}</span>
+  </div>
+  <div style='display:flex;gap:10px;margin-top:6px;flex-wrap:wrap'>
+    <span style='font-size:11px;color:#64748b'>현재가 <b style='color:#f0f4ff'>{_price_r}</b></span>
+    <span style='font-size:11px;color:#64748b'>ADX <b style='color:{"#16a34a" if _adx_r>=25 else "#ef4444"}'>{_adx_r}</b></span>
+    <span style='font-size:11px;color:#64748b'>RSI <b style='color:#f0f4ff'>{_rsi_r}</b></span>
+    <span style='font-size:11px;color:#64748b'>모멘텀 <b style='color:{_chg_c_r}'>{_mom_r:+.1f}%</b></span>
+    <span style='font-size:11px;color:{_chg_c_r}'>{'▲' if _chg_r>0 else '▼'}{abs(_chg_r):.2f}%</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                    # 1위 ETF: Top Holdings 버튼
+                    if _is_top_r:
+                        _top_key = f"home_show_holdings_{_re['코드']}"
+                        if st.button(f"🔫 Scan Top Holdings — {_re['ETF명']}", key=f"home_holdings_btn_{_re['코드']}", use_container_width=True):
+                            st.session_state[_top_key] = not st.session_state.get(_top_key, False)
+
+                        if st.session_state.get(_top_key, False):
+                            with st.spinner("구성종목 스캔 중..."):
+                                _home_snipe = _scan_etf_holdings(_re['코드'], is_korean=_is_kr_r)
+                            if _home_snipe:
+                                st.markdown("<div style='font-size:11px;color:#64748b;margin:4px 0 2px'>▶ 구성종목 타점</div>", unsafe_allow_html=True)
+                                for _hs in _home_snipe[:5]:
+                                    _fmt_hs = lambda p: f"{int(p):,}원" if (_is_kr_r and p >= 100) else f"${p:,.2f}"
+                                    st.markdown(
+                                        f"<div style='background:#0d1117;border-left:3px solid {_hs['타점색']};"
+                                        f"border-radius:4px;padding:5px 10px;margin:2px 0;font-size:11px;"
+                                        f"display:flex;justify-content:space-between'>"
+                                        f"<span><b>{_hs['종목명']}</b> <span style='color:#64748b'>{_hs['종목코드']}</span></span>"
+                                        f"<span style='color:{_hs['타점색']};font-weight:700'>{_hs['타점']}</span>"
+                                        f"<span style='color:#64748b'>R:R {_hs['R:R']:.1f}</span>"
+                                        f"</div>",
+                                        unsafe_allow_html=True
+                                    )
+
+        else:  # 관심종목
+            _wl_cc2 = get_watchlist_tickers()
+            if not _wl_cc2:
+                st.info("관심종목을 추가하세요")
+            else:
+                _wl_scored = []
+                for _wt, _wn in _wl_cc2:
+                    try:
+                        _wdf = all_data.get(_wt, {}).get('df')
+                        if _wdf is None or len(_wdf) < 20:
+                            continue
+                        _wlast = _wdf.iloc[-1]
+                        _wadx = float(_wdf.get('ADX', _wdf.iloc[-5:].index.size))
+                        _wrsi = float(_wlast.get('RSI', 50))
+                        _wchg = (_wlast['종가'] / _wdf.iloc[-2]['종가'] - 1) * 100
+                        _wl_scored.append((_wt, _wn, _wchg, _wrsi, _wlast['종가']))
+                    except Exception:
+                        pass
+                _wl_scored.sort(key=lambda x: x[2], reverse=True)
+                for _wt, _wn, _wchg, _wrsi, _wp in _wl_scored[:6]:
+                    _wc = "#16a34a" if _wchg > 0 else "#ef4444"
+                    _wr_c = "#ef4444" if _wrsi >= 70 else "#3b82f6" if _wrsi <= 30 else "#64748b"
+                    st.markdown(
+                        f"<div style='background:#0d1117;border-radius:6px;padding:7px 12px;margin-bottom:3px;"
+                        f"display:flex;justify-content:space-between;align-items:center'>"
+                        f"<div><span style='font-weight:600;font-size:13px'>{_wn}</span> "
+                        f"<span style='color:#64748b;font-size:10px'>{_wt}</span></div>"
+                        f"<div style='text-align:right'>"
+                        f"<span style='color:{_wc};font-weight:700'>{_wchg:+.2f}%</span> "
+                        f"<span style='color:{_wr_c};font-size:11px'>RSI {_wrsi:.0f}</span>"
+                        f"</div></div>",
+                        unsafe_allow_html=True
+                    )
+
+    # ══════════════════════════════════════════════
+    # PANEL 3 — Active Portfolio 관제
+    # ══════════════════════════════════════════════
+    with _p3:
+        st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>ACTIVE PORTFOLIO 관제</div>", unsafe_allow_html=True)
+
+        _acc_p3 = load_account()
+        _pos_p3 = _acc_p3.get('positions', [])
+
+        if not _pos_p3:
+            st.markdown("""
+<div style='background:#0d1117;border:1px solid #1e3a5f;border-radius:10px;padding:20px;text-align:center'>
+  <div style='color:#374151;font-size:28px;margin-bottom:8px'>📭</div>
+  <div style='color:#64748b;font-size:12px'>보유 포지션 없음</div>
+  <div style='color:#374151;font-size:11px;margin-top:4px'>관리 탭에서 페이퍼 트레이딩 실행</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            for _pos_p3i in _pos_p3:
+                try:
+                    _tk_p3 = _pos_p3i['ticker']
+                    _nm_p3 = _pos_p3i.get('name', _tk_p3)
+                    _qty_p3 = _pos_p3i.get('qty', 0)
+                    _avg_p3 = float(_pos_p3i.get('avg_price', 0))
+                    _is_kr_p3 = is_korean_ticker(_tk_p3)
+
+                    # 현재가 조회
+                    if _tk_p3 in all_data:
+                        _cur_p3 = float(all_data[_tk_p3]['df']['종가'].iloc[-1])
+                    else:
+                        import yfinance as _yf_p3
+                        _sym_p3 = f"{_tk_p3}.KS" if _is_kr_p3 else _tk_p3
+                        _h_p3 = _yf_p3.Ticker(_sym_p3).history(period="3d")
+                        _cur_p3 = float(_h_p3['Close'].iloc[-1]) if not _h_p3.empty else _avg_p3
+
+                    _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
+                    _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
+                    _stop_p3 = _avg_p3 * 0.93
+                    _target_p3 = _avg_p3 * 1.08
+                    _t2_p3 = _avg_p3 * 1.15
+                    _pnl_color = "#16a34a" if _pnl_pct_p3 >= 0 else "#ef4444"
+                    _sym_p3str = "원" if _is_kr_p3 else "$"
+                    _fmt_p3 = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
+
+                    # 손절 근접 경고
+                    _stop_dist = (_cur_p3 / _stop_p3 - 1) * 100
+                    _stop_warn = _stop_dist < 3.0
+                    _card_border_p3 = "#ef4444" if _stop_warn else "#1e3a5f"
+
+                    st.markdown(f"""
+<div style='background:#0d1117;border:1px solid {_card_border_p3};border-radius:10px;padding:12px 14px;margin-bottom:6px'>
+  <div style='display:flex;justify-content:space-between;align-items:flex-start'>
+    <div>
+      <div style='font-weight:800;font-size:14px'>{_nm_p3}</div>
+      <div style='color:#64748b;font-size:11px'>{_tk_p3} · {_qty_p3}주 · 평균 {_fmt_p3(_avg_p3)}</div>
+    </div>
+    <div style='text-align:right'>
+      <div style='font-size:18px;font-weight:800;color:{_pnl_color}'>{_pnl_pct_p3:+.2f}%</div>
+      <div style='font-size:11px;color:{_pnl_color}'>{'+' if _pnl_abs_p3>=0 else ''}{_pnl_abs_p3:,.0f}원</div>
+    </div>
+  </div>
+  <div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:10px'>
+    <div style='background:#111827;border-radius:6px;padding:7px;text-align:center'>
+      <div style='font-size:10px;color:#64748b'>현재가</div>
+      <div style='font-size:13px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div>
+    </div>
+    <div style='background:#1a0a0a;border-radius:6px;padding:7px;text-align:center;border:1px solid #3f1515'>
+      <div style='font-size:10px;color:#ef4444'>🛑 손절 (-7%)</div>
+      <div style='font-size:13px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div>
+    </div>
+    <div style='background:#0a1a0d;border-radius:6px;padding:7px;text-align:center;border:1px solid #14532d'>
+      <div style='font-size:10px;color:#16a34a'>🎯 목표 (+8%)</div>
+      <div style='font-size:13px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div>
+    </div>
+  </div>
+  {'<div style="margin-top:6px;background:#1a0000;border-radius:4px;padding:4px 8px;font-size:10px;color:#ef4444;text-align:center">⚠️ 손절가 근접 — 리스크 관리 필요</div>' if _stop_warn else ''}
+  <div style='display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#64748b'>
+    <span>R:R = <b style='color:#f0f4ff'>1 : {(_target_p3-_avg_p3)/(_avg_p3-_stop_p3):.1f}</b></span>
+    <span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span>
+  </div>
+</div>""", unsafe_allow_html=True)
+                except Exception as _ep3:
+                    st.warning(f"{_pos_p3i.get('name',_pos_p3i.get('ticker','?'))}: 데이터 오류")
+
+    # ══════════════════════════════════════════════
+    # PANEL 4 — Performance & Chart
+    # ══════════════════════════════════════════════
+    with _p4:
+        st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>PERFORMANCE & CHART</div>", unsafe_allow_html=True)
+
+        _acc_p4 = load_account()
+        _pos_p4 = _acc_p4.get('positions', [])
+
+        if _pos_p4:
+            # 첫 번째 포지션의 Z-Score + RSI 오버레이 차트
+            _focus = _pos_p4[0]
+            _tk_p4 = _focus['ticker']
+            _nm_p4 = _focus.get('name', _tk_p4)
+            _avg_p4 = float(_focus.get('avg_price', 0))
+            try:
+                if _tk_p4 in all_data:
+                    _df_p4 = all_data[_tk_p4]['df']
+                else:
+                    import yfinance as _yf_p4
+                    _sym_p4 = f"{_tk_p4}.KS" if is_korean_ticker(_tk_p4) else _tk_p4
+                    _raw_p4 = _yf_p4.Ticker(_sym_p4).history(period="3mo")
+                    if isinstance(_raw_p4.columns, pd.MultiIndex):
+                        _raw_p4.columns = _raw_p4.columns.get_level_values(0)
+                    _raw_p4 = _raw_p4.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})
+                    _df_p4 = calc_indicators(_raw_p4)
+
+                _cl_p4 = _df_p4['종가'].tail(30)
+                _idx_p4 = list(range(len(_cl_p4)))
+                _mu4 = _cl_p4.rolling(20).mean()
+                _sd4 = _cl_p4.rolling(20).std()
+                _zs4 = ((_cl_p4 - _mu4) / (_sd4 + 1e-9)).round(2)
+
+                _fig_p4 = go.Figure()
+                _fig_p4.add_trace(go.Scatter(
+                    x=_idx_p4, y=_cl_p4.values,
+                    name='종가', line=dict(color='#3b82f6', width=1.5),
+                    hovertemplate='%{y:,.0f}원<extra></extra>'
+                ))
+                if _avg_p4 > 0:
+                    _fig_p4.add_hline(y=_avg_p4, line=dict(color='#fbbf24', dash='dash', width=1),
+                                      annotation_text=f"평균 {_avg_p4:,.0f}", annotation_font_size=9,
+                                      annotation_font_color='#fbbf24')
+                    _fig_p4.add_hline(y=_avg_p4 * 0.93, line=dict(color='#ef4444', dash='dot', width=1),
+                                      annotation_text="손절", annotation_font_size=9,
+                                      annotation_font_color='#ef4444')
+                    _fig_p4.add_hline(y=_avg_p4 * 1.08, line=dict(color='#16a34a', dash='dot', width=1),
+                                      annotation_text="목표", annotation_font_size=9,
+                                      annotation_font_color='#16a34a')
+                _fig_p4.update_layout(
+                    height=140, margin=dict(l=0, r=40, t=20, b=0),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    showlegend=False, font_color='#64748b',
+                    xaxis=dict(visible=False),
+                    yaxis=dict(showgrid=False, tickfont=dict(size=9, color='#64748b')),
+                    title=dict(text=f"<b>{_nm_p4}</b> 30일", font=dict(size=11, color='#94a3b8'), x=0)
+                )
+                st.plotly_chart(_fig_p4, use_container_width=True)
+
+                # Z-Score 바
+                _cur_z4 = float(_zs4.iloc[-1]) if not _zs4.empty else 0
+                _zc4 = "#16a34a" if _cur_z4 < -0.5 else "#ef4444" if _cur_z4 > 1.5 else "#64748b"
+                _rsi_p4 = float(_df_p4['RSI'].iloc[-1]) if 'RSI' in _df_p4.columns else 50
+                _rsi_c4 = "#ef4444" if _rsi_p4 >= 70 else "#3b82f6" if _rsi_p4 <= 30 else "#64748b"
+
+                st.markdown(f"""
+<div style='display:flex;gap:8px;margin-bottom:8px'>
+  <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center'>
+    <div style='font-size:10px;color:#64748b'>Z-Score</div>
+    <div style='font-size:15px;font-weight:700;color:{_zc4}'>{_cur_z4:+.2f}</div>
+  </div>
+  <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center'>
+    <div style='font-size:10px;color:#64748b'>RSI</div>
+    <div style='font-size:15px;font-weight:700;color:{_rsi_c4}'>{_rsi_p4:.0f}</div>
+  </div>
+  <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center'>
+    <div style='font-size:10px;color:#64748b'>MDD</div>
+    <div style='font-size:15px;font-weight:700;color:#ef4444'>{((_acc_p4.get("trough",_acc_p4["initial"])/_acc_p4["peak"])-1)*100:.1f}%</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            except Exception:
+                st.caption("차트 로드 실패")
+
+        else:
+            st.markdown("""
+<div style='background:#0d1117;border-radius:8px;padding:16px;text-align:center;color:#374151;font-size:12px'>
+포지션 없음 — 전략 탭에서 ETF 랭킹 확인 후 관리 탭에서 페이퍼 트레이딩 실행
+</div>""", unsafe_allow_html=True)
+
+        # 최근 거래 Order Book
+        st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-top:4px;margin-bottom:4px'>ACTIVE TRADES & ORDER BOOK</div>", unsafe_allow_html=True)
+        _fb_trades_p4 = _load_trade_log_firebase()
+        if _fb_trades_p4:
+            for _tr4 in reversed(_fb_trades_p4[-4:]):
+                _act4 = _tr4.get('매매', '')
+                _tc4 = "#16a34a" if _act4 in ('BUY','매수') else "#ef4444"
+                st.markdown(
+                    f"<div style='background:#0d1117;border-left:2px solid {_tc4};border-radius:4px;"
+                    f"padding:4px 8px;margin-bottom:2px;font-size:11px;display:flex;justify-content:space-between'>"
+                    f"<span><b style='color:{_tc4}'>{_act4}</b> {_tr4.get('종목명','?')}</span>"
+                    f"<span style='color:#64748b'>{_tr4.get('수량',0)}주 @ {_tr4.get('순체결가',0):,.0f}</span>"
+                    f"<span style='color:#374151'>{_tr4.get('날짜','')}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.markdown("<div style='color:#374151;font-size:11px;padding:4px'>거래 기록 없음</div>", unsafe_allow_html=True)
+
+    # ── 하단: 가이드 + 매크로 이벤트 (접힘) ──
+    st.markdown("<hr style='margin:12px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
+    _bot1, _bot2 = st.columns(2)
+    with _bot1:
+        with st.expander("📖 대시보드 사용 가이드", expanded=False):
+            st.markdown("""
 ### 🗺️ 탭별 역할 한눈에 보기
 
 | 탭 | 역할 | 언제 쓰나 |
@@ -2214,300 +2704,80 @@ with tab_a:
    - 단, 1위가 3거래일 연속 유지 중인 ETF로만 이동 (잦은 스위칭 금지)
 """)
 
-    # 시장 요약
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _get_market():
-        _r = {}
-        try:
-            import FinanceDataReader as _fdr
-            from datetime import datetime as _dt_fdr, timedelta as _td_fdr
-            _end = _dt_fdr.now().strftime('%Y-%m-%d')
-            _start = (_dt_fdr.now() - _td_fdr(days=7)).strftime('%Y-%m-%d')
-            for _n, _s in [("코스피","KS11"), ("코스닥","KQ11")]:
-                try:
-                    _h = _fdr.DataReader(_s, _start, _end)
-                    _h = _h.dropna(subset=['Close'])
-                    if len(_h) >= 2:
-                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
-                        if _c > 0 and _p > 0:
-                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
-                except: pass
-        except ImportError:
-            pass
-        # 미국 지수는 yfinance로 시도 (클라우드 환경에서 안 될 수 있음)
-        try:
-            import yfinance as _yf2
-            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
-                try:
-                    _h = _yf2.Ticker(_s).history(period="5d",interval="1d")
-                    _h = _h.dropna(subset=['Close'])
-                    if len(_h) >= 2:
-                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
-                        if _c > 0 and _p > 0:
-                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
-                except: pass
-        except: pass
-        return _r
-
-    _mkt2 = _get_market()
-    if _mkt2:
-        _cols_m = st.columns(len(_mkt2))
-        for _i_m, (_nm_m, _d_m) in enumerate(_mkt2.items()):
-            _up = _d_m['등락'] > 0
-            _cc_m = 'up' if (_up and _nm_m != 'VIX') or (not _up and _nm_m == 'VIX') else 'down'
-            _cur_val = _d_m.get('현재', float('nan'))
-            _chg_val = _d_m.get('등락', float('nan'))
-            import math as _math
-            _cur_str = f"{_cur_val:,.2f}" if not _math.isnan(_cur_val) else "-"
-            _chg_str = f"{'▲' if _up else '▼'}{abs(_chg_val):.2f}%" if not _math.isnan(_chg_val) else "-"
-            _cols_m[_i_m].markdown(
-                f"<div class='metric-card'><div class='label'>{_nm_m}</div>"
-                f"<div class='value flat' style='font-size:16px'>{_cur_str}</div>"
-                f"<div class='{_cc_m}'>{_chg_str}</div></div>",
-                unsafe_allow_html=True)
-
-    # 환율 경고
-    if _mkt2.get('달러/원',{}).get('현재',0) >= 1500:
-        st.error("🚨 환율 1,500원 돌파! 미국 주식 신규 진입 자제")
-    elif _mkt2.get('달러/원',{}).get('현재',0) >= 1450:
-        st.warning("⚠️ 환율 1,450원 이상 — 환차손 주의")
-
-    st.divider()
-
-    # 장 시간 상태 인라인 표시
-    from datetime import datetime as _dt_h
-    _kh = (_dt_h.utcnow().hour + 9) % 24
-    _km = _dt_h.utcnow().minute
-    if (9 <= _kh < 10) or (_kh == 10 and _km <= 30):
-        st.error("🔒 09:00~10:30 진입 금지 구간")
-    elif 9 <= _kh < 16:
-        st.success("✅ 진입 가능 구간 (장중)")
-    else:
-        st.info("💤 장 외 시간")
-
-    st.divider()
-
-    # 관심종목 현황 요약
-    _col_wl_hdr, _col_wl_refresh = st.columns([5, 1])
-    _wl_total = len(get_watchlist_tickers())
-    _col_wl_hdr.markdown(f"#### 📊 관심종목 현황 <span style='font-size:13px;color:#64748b;font-weight:400'>({_wl_total}종목)</span>", unsafe_allow_html=True)
-
-    _tickers_home = get_watchlist_tickers()
-    if not _tickers_home:
-        st.info("관심종목을 추가해주세요. (사이드바 또는 관리 탭)")
-    else:
-        _rows_home = []
-        _home_failed = []
-        for _th, _nh in _tickers_home:
-            try:
-                if _th in all_data:
-                    _df_h = all_data[_th]['df']
-                else:
-                    _df_h = fetch_ohlcv(_th, 30)
-                    if _df_h is None or len(_df_h) < 5:
-                        _home_failed.append(f"{_nh}({_th})")
-                        continue
-                    _df_h = calc_indicators(_df_h)
-                _lh = _df_h.iloc[-1]; _ph = _df_h.iloc[-2]
-                _chgh = (_lh['종가']/_ph['종가']-1)*100
-                _sigh = get_signal(_df_h)
-                _rows_home.append((_th, _nh, _lh, _chgh, _sigh))
-            except Exception:
-                _home_failed.append(f"{_nh}({_th})")
-        if _home_failed:
-            st.warning(f"⚠️ 데이터 로드 실패: {', '.join(_home_failed)} — 티커 확인 또는 새로고침")
-
-        # 등락 기준 정렬 (상승 → 하락)
-        _rows_home.sort(key=lambda x: x[3], reverse=True)
-
-        _is_dark_h = st.session_state.get('ui_dark', True)
-        _card_bg   = 'rgba(255,255,255,0.04)' if _is_dark_h else 'rgba(0,0,0,0.03)'
-        _card_br   = 'rgba(255,255,255,0.09)' if _is_dark_h else 'rgba(0,0,0,0.10)'
-        _txt_sub   = '#64748b'
-
-        for _th, _nh, _lh, _chgh, _sigh in _rows_home:
-            _cch    = '#f63d68' if _chgh > 0 else '#3b82f6'
-            _rsi_v  = _lh['RSI']
-            _rsi_ch = '#f63d68' if _rsi_v >= 70 else '#3b82f6' if _rsi_v <= 30 else '#8b5cf6'
-            _arrow  = '▲' if _chgh > 0 else '▼'
-            _bdgh   = ' '.join([f"<span class='badge badge-{s[1]}'>{s[0]}</span>" for s in _sigh[:2]])
-            _vol_r  = _lh.get('거래량_비율', 100)
-            _vol_str = f"거래량 {_vol_r:.0f}%" if _vol_r else ""
-            _vol_c  = '#f63d68' if _vol_r and _vol_r >= 150 else _txt_sub
-            # 52주 신고가 근접 (95% 이상)
-            _52w_h  = _lh.get('52W_high', None)
-            _52w_tag = ""
-            if _52w_h and float(_52w_h) > 0:
-                _52w_pct = float(_lh['종가']) / float(_52w_h) * 100
-                if _52w_pct >= 95:
-                    _52w_tag = "<span style='background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;margin-left:4px'>52W고가</span>"
-            # RSI 레이블
-            _rsi_lbl = "과매수" if _rsi_v >= 70 else "과매도" if _rsi_v <= 30 else ""
-            _rsi_str = f"RSI {_rsi_v:.0f}" + (f" ({_rsi_lbl})" if _rsi_lbl else "")
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                f"padding:10px 14px;background:{_card_bg};border-radius:10px;"
-                f"margin-bottom:5px;border:1px solid {_card_br}'>"
-                f"<div style='display:flex;align-items:center;gap:10px'>"
-                f"<span style='font-size:14px;font-weight:600'>{_nh}</span>"
-                f"<span style='color:{_txt_sub};font-size:11px'>{_th}</span>"
-                f"{_bdgh}{_52w_tag}"
-                f"</div>"
-                f"<div style='display:flex;align-items:center;gap:16px'>"
-                f"<span style='color:{_vol_c};font-size:11px'>{_vol_str}</span>"
-                f"<span style='color:{_rsi_ch};font-size:12px;font-family:IBM Plex Mono'>{_rsi_str}</span>"
-                f"<span style='font-family:IBM Plex Mono;font-size:14px'>{format_price(_lh['종가'],_th)}</span>"
-                f"<span style='color:{_cch};font-weight:600;min-width:60px;text-align:right'>{_arrow}{abs(_chgh):.2f}%</span>"
-                f"</div></div>",
-                unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── 🗓️ 매크로 이벤트 관리 ──
-    st.markdown("#### 🗓️ 매크로 이벤트")
-    st.caption("±48시간 이내 자동 블랙아웃 (신규 진입 차단)")
-
-    _DEFAULT_MACRO_EVENTS = [
-        {"date": "2026-06-18", "name": "🇺🇸 FOMC"},
-        {"date": "2026-07-03", "name": "🇺🇸 NFP"},
-        {"date": "2026-07-15", "name": "🇺🇸 CPI"},
-        {"date": "2026-07-17", "name": "🇰🇷 금통위"},
-        {"date": "2026-07-30", "name": "🇺🇸 FOMC"},
-        {"date": "2026-08-07", "name": "🇺🇸 NFP"},
-        {"date": "2026-08-12", "name": "🇺🇸 CPI"},
-        {"date": "2026-08-28", "name": "🇰🇷 금통위"},
-        {"date": "2026-09-04", "name": "🇺🇸 NFP"},
-        {"date": "2026-09-11", "name": "🇺🇸 CPI"},
-        {"date": "2026-09-17", "name": "🇺🇸 FOMC"},
-        {"date": "2026-10-02", "name": "🇺🇸 NFP"},
-        {"date": "2026-10-15", "name": "🇺🇸 CPI"},
-        {"date": "2026-10-16", "name": "🇰🇷 금통위"},
-        {"date": "2026-10-29", "name": "🇺🇸 FOMC"},
-        {"date": "2026-11-06", "name": "🇺🇸 NFP"},
-        {"date": "2026-11-13", "name": "🇺🇸 CPI"},
-        {"date": "2026-11-27", "name": "🇰🇷 금통위"},
-        {"date": "2026-12-04", "name": "🇺🇸 NFP"},
-        {"date": "2026-12-10", "name": "🇺🇸 FOMC"},
-        {"date": "2026-12-11", "name": "🇺🇸 CPI"},
-    ]
-
-    if 'macro_events' not in st.session_state:
-        st.session_state.macro_events = _DEFAULT_MACRO_EVENTS.copy()
-
-    from datetime import datetime as _dtt2
-    _now_dt    = _dtt2.now()
-    _today_str = _now_dt.strftime("%Y-%m-%d")
-
-    # ── 추가 폼 (간결) ──
-    with st.form("macro_add_form", clear_on_submit=True):
-        _fa1, _fa2, _fa3 = st.columns([2, 3, 1])
-        _ev_date = _fa1.date_input("날짜")
-        _ev_name = _fa2.text_input("이벤트명", placeholder="예: FOMC, CPI")
-        _fa3.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
-        if st.form_submit_button("➕", use_container_width=True) and _ev_name:
-            _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
-            _dup = [(e['date'], e['name']) for e in st.session_state.macro_events]
-            if (str(_ev_date), _ev_name.strip()) not in _dup:
-                st.session_state.macro_events.append(_new_ev)
-                st.session_state.pop('v891_cache', None)
+    with _bot2:
+        with st.expander("🗓️ 매크로 이벤트 관리", expanded=False):
+            _DEFAULT_MACRO_EVENTS = [
+                {"date": "2026-06-18", "name": "🇺🇸 FOMC"},
+                {"date": "2026-07-03", "name": "🇺🇸 NFP"},
+                {"date": "2026-07-15", "name": "🇺🇸 CPI"},
+                {"date": "2026-07-17", "name": "🇰🇷 금통위"},
+                {"date": "2026-07-30", "name": "🇺🇸 FOMC"},
+                {"date": "2026-08-07", "name": "🇺🇸 NFP"},
+                {"date": "2026-08-12", "name": "🇺🇸 CPI"},
+                {"date": "2026-08-28", "name": "🇰🇷 금통위"},
+                {"date": "2026-09-04", "name": "🇺🇸 NFP"},
+                {"date": "2026-09-11", "name": "🇺🇸 CPI"},
+                {"date": "2026-09-17", "name": "🇺🇸 FOMC"},
+                {"date": "2026-10-02", "name": "🇺🇸 NFP"},
+                {"date": "2026-10-15", "name": "🇺🇸 CPI"},
+                {"date": "2026-10-16", "name": "🇰🇷 금통위"},
+                {"date": "2026-10-29", "name": "🇺🇸 FOMC"},
+                {"date": "2026-11-06", "name": "🇺🇸 NFP"},
+                {"date": "2026-11-13", "name": "🇺🇸 CPI"},
+                {"date": "2026-11-27", "name": "🇰🇷 금통위"},
+                {"date": "2026-12-04", "name": "🇺🇸 NFP"},
+                {"date": "2026-12-10", "name": "🇺🇸 FOMC"},
+                {"date": "2026-12-11", "name": "🇺🇸 CPI"},
+            ]
+            if 'macro_events' not in st.session_state:
+                st.session_state.macro_events = _DEFAULT_MACRO_EVENTS.copy()
+            from datetime import datetime as _dtt2
+            _now_dt = _dtt2.now()
+            _today_str2 = _now_dt.strftime("%Y-%m-%d")
+            with st.form("macro_add_form", clear_on_submit=True):
+                _fa1, _fa2, _fa3 = st.columns([2, 3, 1])
+                _ev_date = _fa1.date_input("날짜")
+                _ev_name = _fa2.text_input("이벤트명", placeholder="예: FOMC, CPI")
+                _fa3.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+                if st.form_submit_button("➕", use_container_width=True) and _ev_name:
+                    _new_ev = {"date": str(_ev_date), "name": _ev_name.strip()}
+                    _dup = [(e['date'], e['name']) for e in st.session_state.macro_events]
+                    if (str(_ev_date), _ev_name.strip()) not in _dup:
+                        st.session_state.macro_events.append(_new_ev)
+                        st.rerun()
+            _mc1b, _mc2b = st.columns([3, 1])
+            if _mc2b.button("🔄 초기화", key="reset_macro_b", use_container_width=True):
+                _existing_pairs2 = [(e['date'], e['name']) for e in st.session_state.macro_events]
+                for _de in _DEFAULT_MACRO_EVENTS:
+                    if _de['date'] >= _today_str2 and (_de['date'], _de['name']) not in _existing_pairs2:
+                        st.session_state.macro_events.append(_de)
                 st.rerun()
-
-    _mc1, _mc2 = st.columns([3, 1])
-    if _mc2.button("🔄 초기화", key="reset_macro", use_container_width=True):
-        _existing_pairs = [(e['date'], e['name']) for e in st.session_state.macro_events]
-        for _de in _DEFAULT_MACRO_EVENTS:
-            if _de['date'] >= _today_str and (_de['date'], _de['name']) not in _existing_pairs:
-                st.session_state.macro_events.append(_de)
-        st.rerun()
-
-    # ── 달력 뷰: 월 탐색 ──
-    _future_evs = sorted(
-        [e for e in st.session_state.macro_events if e['date'] >= _today_str],
-        key=lambda x: x['date']
-    )
-
-    _by_month = {}
-    for _ev in _future_evs:
-        _by_month.setdefault(_ev['date'][:7], []).append(_ev)
-    _all_months = sorted(_by_month.keys())
-
-    if _all_months:
-        _cur_ym = _now_dt.strftime("%Y-%m")
-        # 현재 월이 없으면 첫 번째 월로
-        _def_idx = _all_months.index(_cur_ym) if _cur_ym in _all_months else 0
-        if 'macro_cal_idx' not in st.session_state:
-            st.session_state.macro_cal_idx = _def_idx
-        # 인덱스 범위 보정
-        st.session_state.macro_cal_idx = max(0, min(st.session_state.macro_cal_idx, len(_all_months)-1))
-        _cidx = st.session_state.macro_cal_idx
-        _sel_ym = _all_months[_cidx]
-
-        # 월 네비게이션
-        _nav1, _nav2, _nav3 = st.columns([1, 3, 1])
-        if _nav1.button("◀", key="cal_prev", use_container_width=True, disabled=_cidx == 0):
-            st.session_state.macro_cal_idx -= 1
-            st.rerun()
-        try:
-            _month_label = _dtt2.strptime(_sel_ym, "%Y-%m").strftime("%Y년 %m월")
-        except:
-            _month_label = _sel_ym
-        _nav2.markdown(f"<div style='text-align:center;font-weight:700;font-size:15px;padding:6px 0'>{_month_label}</div>", unsafe_allow_html=True)
-        if _nav3.button("▶", key="cal_next", use_container_width=True, disabled=_cidx == len(_all_months)-1):
-            st.session_state.macro_cal_idx += 1
-            st.rerun()
-
-        # 선택 월 이벤트 표시
-        _ev_type_color = {"FOMC": "#ef4444", "CPI": "#f97316", "NFP": "#eab308", "금통위": "#3b82f6"}
-        _month_evs = _by_month.get(_sel_ym, [])
-        if _month_evs:
-            for _ev in _month_evs:
+            _future_evs2 = sorted(
+                [e for e in st.session_state.macro_events if e['date'] >= _today_str2],
+                key=lambda x: x['date']
+            )[:8]
+            _ev_type_color2 = {"FOMC": "#ef4444", "CPI": "#f97316", "NFP": "#eab308", "금통위": "#3b82f6"}
+            for _ev2 in _future_evs2:
                 try:
-                    _ev_dt    = _dtt2.strptime(_ev['date'], "%Y-%m-%d")
-                    _diff_h   = (_ev_dt - _now_dt).total_seconds() / 3600
-                    _blackout = abs(_diff_h) <= 48
-                    _soon     = 0 < _diff_h <= 72
-                    _day_str  = _ev_dt.strftime("%d일(%a)").replace("Mon","월").replace("Tue","화").replace("Wed","수").replace("Thu","목").replace("Fri","금").replace("Sat","토").replace("Sun","일")
-                except:
-                    _blackout = False; _soon = False; _day_str = _ev['date'][5:]
-
-                _tag_color = "#64748b"
-                for _kw, _c in _ev_type_color.items():
-                    if _kw in _ev['name']:
-                        _tag_color = _c; break
-
-                _status_badge = ""
-                if _blackout:
-                    _status_badge = "<span style='background:#ef4444;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>블랙아웃</span>"
-                elif _soon:
-                    _status_badge = "<span style='background:#f97316;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px'>임박</span>"
-
-                _ridx = next((i for i, e in enumerate(st.session_state.macro_events)
-                              if e['date'] == _ev['date'] and e['name'] == _ev['name']), None)
-                _col_ev, _col_del = st.columns([10, 1])
-                _col_ev.markdown(
-                    f"<div style='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)'>"
-                    f"<span style='font-family:IBM Plex Mono;font-size:12px;color:#94a3b8;min-width:64px'>{_day_str}</span>"
-                    f"<span style='width:3px;height:14px;background:{_tag_color};border-radius:2px;display:inline-block'></span>"
-                    f"<span style='font-size:13px;color:#e2e8f0'>{_ev['name']}</span>"
-                    f"{_status_badge}</div>",
+                    _ev_dt2 = _dtt2.strptime(_ev2['date'], "%Y-%m-%d")
+                    _diff_h2 = (_ev_dt2 - _now_dt).total_seconds() / 3600
+                    _blackout2 = abs(_diff_h2) <= 48
+                    _day_str2 = _ev2['date'][5:]
+                except Exception:
+                    _blackout2 = False; _day_str2 = _ev2['date'][5:]
+                _tc2 = "#64748b"
+                for _kw2, _c2 in _ev_type_color2.items():
+                    if _kw2 in _ev2['name']:
+                        _tc2 = _c2; break
+                _bb2 = " 🚨블랙아웃" if _blackout2 else ""
+                st.markdown(
+                    f"<div style='font-size:11px;padding:3px 0;border-bottom:1px solid #1e2a3a'>"
+                    f"<span style='color:#64748b;font-family:monospace'>{_day_str2}</span> "
+                    f"<span style='color:{_tc2}'>{_ev2['name']}</span>"
+                    f"<span style='color:#ef4444;font-size:10px'>{_bb2}</span>"
+                    f"</div>",
                     unsafe_allow_html=True
                 )
-                if _col_del.button("✕", key=f"del_ev_{_ev['date']}_{_ev['name']}", use_container_width=True):
-                    if _ridx is not None:
-                        st.session_state.macro_events.pop(_ridx)
-                        st.session_state.pop('v891_cache', None)
-                        st.rerun()
-        else:
-            st.caption("이 달 예정 이벤트 없음")
-
-    if not _future_evs:
-        st.caption("등록된 이벤트 없음 — 초기화 버튼으로 기본 이벤트를 추가하세요.")
-
-    st.divider()
-    if st.button("🔄 새로고침", key="home_refresh", use_container_width=True):
-        with st.spinner("데이터 새로고침 중..."):
-            st.cache_data.clear()
-        st.rerun()
 
 
 with tab_b:
@@ -4169,6 +4439,29 @@ def _calc_etf_indicators(ticker_sym):
         }
     except Exception:
         return None
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_home_etf_top(n=6):
+    """홈탭 관제판용 — 국장+미장 ETF 상위 N개 빠른 조회 (점수≥60 필터)"""
+    _QUICK_KR = [("395160","KODEX AI반도체TOP2+"),("091160","KODEX 반도체"),
+                 ("069500","KODEX 200"),("463250","TIGER K방산&우주"),
+                 ("459580","KODEX AI전력핵심설비"),("133690","TIGER 나스닥100"),
+                 ("364980","TIGER 조선TOP10"),("305720","KODEX 2차전지산업")]
+    _QUICK_US = [("QQQ","나스닥100"),("SOXX","iShares 반도체"),("SMH","VanEck 반도체"),
+                 ("ARKK","ARK 혁신"),("ARKG","ARK 유전체"),("XLK","Technology"),
+                 ("TQQQ","나스닥3x"),("SPY","S&P500")]
+    rows = []
+    for code, name in _QUICK_KR:
+        ind = _calc_etf_indicators(f"{code}.KS")
+        if ind and ind.get('종합점수', 0) >= 60:
+            rows.append({'코드': code, 'ETF명': name, '시장': '🇰🇷', **ind})
+    for code, name in _QUICK_US:
+        ind = _calc_etf_indicators(code)
+        if ind and ind.get('종합점수', 0) >= 60:
+            rows.append({'코드': code, 'ETF명': name, '시장': '🇺🇸', **ind})
+    rows.sort(key=lambda r: r.get('종합점수', 0), reverse=True)
+    return rows[:n]
+
 
 def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
     """ETF 랭킹 카드 렌더링 공용 함수."""
