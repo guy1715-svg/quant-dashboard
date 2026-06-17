@@ -2739,52 +2739,120 @@ with tab_a:
 
                     _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
                     _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
-                    _stop_p3 = _avg_p3 * 0.93
-                    _target_p3 = _avg_p3 * 1.08
-                    _t2_p3 = _avg_p3 * 1.15
-                    _pnl_color = "#16a34a" if _pnl_pct_p3 >= 0 else "#ef4444"
-                    _sym_p3str = "원" if _is_kr_p3 else "$"
-                    _fmt_p3 = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
+                    _stop_p3    = _avg_p3 * 0.93
+                    _target_p3  = _avg_p3 * 1.08
+                    _t2_p3      = _avg_p3 * 1.15
+                    _eval_p3    = _cur_p3 * _qty_p3
+                    _pnl_color  = "#16a34a" if _pnl_pct_p3 >= 0 else "#ef4444"
+                    _sym_p3str  = "원" if _is_kr_p3 else "$"
+                    _fmt_p3     = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
 
-                    # 손절 근접 경고
-                    _stop_dist = (_cur_p3 / _stop_p3 - 1) * 100
-                    _stop_warn = _stop_dist < 3.0
-                    _card_border_p3 = "#ef4444" if _stop_warn else "#1e3a5f"
+                    # 손절/목표 사이 진행률 바 (0%=손절, 100%=1차목표)
+                    _range_p3   = _target_p3 - _stop_p3
+                    _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
+                    _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
+                    _target_hit = _cur_p3 >= _target_p3
+                    _card_border_p3 = "#ef4444" if _stop_warn else ("#16a34a" if _target_hit else "#1e3a5f")
 
+                    # 트레일링 스탑 상태
+                    _ts_key = f"trailing_stop_{_tk_p3}"
+                    if _ts_key not in st.session_state:
+                        st.session_state[_ts_key] = False
+                    _ts_active = st.session_state[_ts_key]
+                    # 평균가 돌파 시 자동 트레일링 스탑 제안
+                    if _pnl_pct_p3 >= 0 and not _ts_active:
+                        st.session_state[_ts_key] = True
+                        _ts_active = True
+
+                    # 카드 렌더링
+                    _ts_badge = "<span style='background:#7c3aed;color:#fff;font-size:9px;padding:1px 6px;border-radius:10px'>🔒 트레일링스탑</span>" if _ts_active else ""
                     st.markdown(f"""
-<div style='background:#0d1117;border:1px solid {_card_border_p3};border-radius:10px;padding:12px 14px;margin-bottom:6px'>
-  <div style='display:flex;justify-content:space-between;align-items:flex-start'>
+<div style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'>
+  <div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'>
     <div>
-      <div style='font-weight:800;font-size:14px'>{_nm_p3}</div>
-      <div style='color:#64748b;font-size:11px'>{_tk_p3} · {_qty_p3}주 · 평균 {_fmt_p3(_avg_p3)}</div>
+      <div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div>
+      <div style='color:#64748b;font-size:11px;margin-top:2px'>{_tk_p3} · {_qty_p3:,}주 · 평균 {_fmt_p3(_avg_p3)} · 평가 {_fmt_p3(_eval_p3)}</div>
     </div>
     <div style='text-align:right'>
-      <div style='font-size:18px;font-weight:800;color:{_pnl_color}'>{_pnl_pct_p3:+.2f}%</div>
-      <div style='font-size:11px;color:{_pnl_color}'>{'+' if _pnl_abs_p3>=0 else ''}{_pnl_abs_p3:,.0f}원</div>
+      <div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div>
+      <div style='font-size:12px;color:{_pnl_color}'>{"+{:,.0f}".format(_pnl_abs_p3) if _pnl_abs_p3>=0 else "{:,.0f}".format(_pnl_abs_p3)}원</div>
     </div>
   </div>
-  <div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:10px'>
-    <div style='background:#111827;border-radius:6px;padding:7px;text-align:center'>
+  <div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'>
+    <div style='background:#111827;border-radius:8px;padding:8px;text-align:center'>
       <div style='font-size:10px;color:#64748b'>현재가</div>
-      <div style='font-size:13px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div>
+      <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div>
     </div>
-    <div style='background:#1a0a0a;border-radius:6px;padding:7px;text-align:center;border:1px solid #3f1515'>
-      <div style='font-size:10px;color:#ef4444'>🛑 손절 (-7%)</div>
-      <div style='font-size:13px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div>
+    <div style='background:#1a0a0a;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#ef4444" if _stop_warn else "#3f1515"}'>
+      <div style='font-size:10px;color:#ef4444'>🛑 손절 -7%</div>
+      <div style='font-size:14px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div>
     </div>
-    <div style='background:#0a1a0d;border-radius:6px;padding:7px;text-align:center;border:1px solid #14532d'>
-      <div style='font-size:10px;color:#16a34a'>🎯 목표 (+8%)</div>
-      <div style='font-size:13px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div>
+    <div style='background:#0a1a0d;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#16a34a" if _target_hit else "#14532d"}'>
+      <div style='font-size:10px;color:#16a34a'>🎯 1차 +8%</div>
+      <div style='font-size:14px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div>
     </div>
   </div>
-  {'<div style="margin-top:6px;background:#1a0000;border-radius:4px;padding:4px 8px;font-size:10px;color:#ef4444;text-align:center">⚠️ 손절가 근접 — 리스크 관리 필요</div>' if _stop_warn else ''}
-  <div style='display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#64748b'>
-    <span>R:R = <b style='color:#f0f4ff'>1 : {(_target_p3-_avg_p3)/(_avg_p3-_stop_p3):.1f}</b></span>
+  <div style='background:#111827;border-radius:6px;padding:4px 8px;margin-bottom:8px'>
+    <div style='display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-bottom:3px'>
+      <span>손절 {_fmt_p3(_stop_p3)}</span><span>현재 {_fmt_p3(_cur_p3)}</span><span>목표 {_fmt_p3(_target_p3)}</span>
+    </div>
+    <div style='background:#1e293b;border-radius:4px;height:6px;overflow:hidden'>
+      <div style='background:{"#ef4444" if _prog_p3<25 else "#f97316" if _prog_p3<60 else "#16a34a"};height:100%;width:{_prog_p3:.0f}%;border-radius:4px;transition:width 0.3s'></div>
+    </div>
+  </div>
+  <div style='display:flex;justify-content:space-between;font-size:11px;color:#64748b'>
+    <span>R:R <b style='color:#f0f4ff'>1:{(_target_p3-_avg_p3)/max(_avg_p3-_stop_p3,1):.1f}</b></span>
     <span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span>
+    <span>{"⚠️ 손절 근접!" if _stop_warn else "✅ 목표 달성!" if _target_hit else ""}</span>
   </div>
 </div>""", unsafe_allow_html=True)
+
+                    # 액션 버튼 (페이퍼 트레이딩 연동)
+                    _btn_c1, _btn_c2, _btn_c3 = st.columns(3)
+                    with _btn_c1:
+                        if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
+                            _half_qty = max(1, _qty_p3 // 2)
+                            _net_sell = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                            _acc_p3_act = load_account()
+                            _pos_idx = next((i for i, p in enumerate(_acc_p3_act['positions']) if p['ticker'] == _tk_p3), None)
+                            if _pos_idx is not None:
+                                _acc_p3_act['positions'][_pos_idx]['qty'] -= _half_qty
+                                if _acc_p3_act['positions'][_pos_idx]['qty'] <= 0:
+                                    _acc_p3_act['positions'].pop(_pos_idx)
+                                _acc_p3_act['cash'] += _net_sell * _half_qty
+                                save_account(_acc_p3_act)
+                                log_trade(_tk_p3, _nm_p3, 'SELL', _half_qty, _cur_p3, _net_sell,
+                                          _acc_p3_act['cash'], _acc_p3_act['cash'], memo="홈탭 절반매도")
+                                st.success(f"✅ {_half_qty}주 절반 매도 완료")
+                                st.rerun()
+                    with _btn_c2:
+                        if st.button(f"🚨 전량 매도", key=f"full_sell_{_tk_p3}", use_container_width=True,
+                                     type="primary" if _stop_warn else "secondary"):
+                            _net_sell2 = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                            _acc_p3_act2 = load_account()
+                            _acc_p3_act2['positions'] = [p for p in _acc_p3_act2['positions'] if p['ticker'] != _tk_p3]
+                            _acc_p3_act2['cash'] += _net_sell2 * _qty_p3
+                            save_account(_acc_p3_act2)
+                            log_trade(_tk_p3, _nm_p3, 'SELL', _qty_p3, _cur_p3, _net_sell2,
+                                      _acc_p3_act2['cash'], _acc_p3_act2['cash'], memo="홈탭 전량매도")
+                            st.success(f"✅ {_qty_p3}주 전량 매도 완료")
+                            st.rerun()
+                    with _btn_c3:
+                        _ts_label = "🔒 트레일링ON" if _ts_active else "🔓 트레일링OFF"
+                        if st.button(_ts_label, key=f"ts_toggle_{_tk_p3}", use_container_width=True):
+                            st.session_state[_ts_key] = not _ts_active
+                            st.rerun()
+
                 except Exception as _ep3:
-                    st.warning(f"{_pos_p3i.get('name',_pos_p3i.get('ticker','?'))}: 데이터 오류")
+                    _ename = _pos_p3i.get('name', _pos_p3i.get('ticker', '?'))
+                    st.markdown(
+                        f"<div style='background:#1a0a0a;border:1px solid #3f1515;border-radius:8px;"
+                        f"padding:10px 14px;margin-bottom:6px;font-size:12px'>"
+                        f"<b>{_ename}</b> — 현재가 조회 실패 (장외시간 또는 네트워크)<br>"
+                        f"<span style='color:#64748b'>평균가 기준: {float(_pos_p3i.get('avg_price',0)):,.0f} · {_pos_p3i.get('qty',0)}주</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
 
     # ══════════════════════════════════════════════
     # PANEL 4 — Performance & Chart
