@@ -7763,42 +7763,243 @@ with tab_e:
         else:
             st.info("💡 투자자 순매수 데이터는 장 마감 후 업데이트됩니다.")
 
-        # ── 코스피 지수 차트 ──
+        # ── 고도화 지수 차트 (Heikin-Ashi + 볼린저 + 이벤트 마커) ──
         st.markdown("---")
-        st.markdown("#### 📊 코스피 최근 60일 차트")
-        try:
-            import yfinance as yf
-            kospi_hist = yf.Ticker("^KS11").history(period="3mo", interval="1d")
-            if not kospi_hist.empty:
-                fig_k = go.Figure()
-                colors_k = ['#ff4d6d' if kospi_hist['Close'].iloc[i] >= kospi_hist['Open'].iloc[i]
-                            else '#4da6ff' for i in range(len(kospi_hist))]
-                fig_k.add_trace(go.Candlestick(
-                    x=kospi_hist.index,
-                    open=kospi_hist['Open'], high=kospi_hist['High'],
-                    low=kospi_hist['Low'], close=kospi_hist['Close'],
-                    increasing_line_color='#ff4d6d', decreasing_line_color='#4da6ff',
-                    increasing_fillcolor='#ff4d6d', decreasing_fillcolor='#4da6ff',
-                    name='코스피', showlegend=False
-                ))
-                # 20일 이평선
-                ma20 = kospi_hist['Close'].rolling(20).mean()
-                fig_k.add_trace(go.Scatter(
-                    x=kospi_hist.index, y=ma20,
-                    line=dict(color='#06d6a0', width=1.5), name='MA20'
-                ))
-                fig_k.update_layout(
-                    paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
-                    font=dict(color='#8899bb', size=11),
-                    xaxis_rangeslider_visible=False,
-                    height=350,
-                    margin=dict(l=10,r=10,t=20,b=10),
-                    xaxis=dict(gridcolor='#1a2535'),
-                    yaxis=dict(gridcolor='#1a2535'),
+        st.markdown("#### 📊 변동성 관측 차트")
+
+        _chart_syms = {
+            "코스피 (^KS11)": "^KS11",
+            "코스닥 (^KQ11)": "^KQ11",
+            "S&P500 (^GSPC)": "^GSPC",
+            "나스닥 (^IXIC)": "^IXIC",
+            "VIX (^VIX)": "^VIX",
+        }
+        _sel_chart = st.selectbox("지수 선택", list(_chart_syms.keys()), key="idx_chart_sel")
+        _sel_sym   = _chart_syms[_sel_chart]
+
+        # 하이킨 아시 ON/OFF 토글
+        _ha_on = st.toggle("🕯 Heikin-Ashi 평활 캔들", value=True, key="ha_toggle")
+
+        @st.cache_data(ttl=1800, show_spinner=False)
+        def _fetch_chart_df(symbol, period="6mo"):
+            try:
+                import yfinance as _yf_c
+                _df = _yf_c.Ticker(symbol).history(period=period, interval="1d")
+                if _df.empty:
+                    return None
+                _df = _df[['Open','High','Low','Close','Volume']].dropna()
+                return _df
+            except Exception:
+                return None
+
+        def _to_heikin_ashi(df):
+            ha = df.copy()
+            ha['Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+            ha['Open']  = 0.0
+            for i in range(len(df)):
+                if i == 0:
+                    ha.iloc[0, ha.columns.get_loc('Open')] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
+                else:
+                    ha.iloc[i, ha.columns.get_loc('Open')] = (ha['Open'].iloc[i-1] + ha['Close'].iloc[i-1]) / 2
+            ha['High'] = df[['High','Open','Close']].max(axis=1)
+            ha['Low']  = df[['Low','Open','Close']].min(axis=1)
+            return ha
+
+        def _calc_rsi(close, period=14):
+            delta = close.diff()
+            gain  = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
+            loss  = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+            rs    = gain / loss.replace(0, 1e-9)
+            return 100 - 100 / (1 + rs)
+
+        # 하드코딩된 이벤트 마커 (FOMC·금리·매크로 이벤트)
+        _EVENT_DATES = [
+            ("2024-11-07", "FOMC"),
+            ("2024-12-19", "FOMC"),
+            ("2025-01-29", "FOMC"),
+            ("2025-03-19", "FOMC"),
+            ("2025-05-07", "FOMC"),
+            ("2025-06-18", "FOMC"),
+            ("2025-07-30", "FOMC"),
+            ("2025-09-17", "FOMC"),
+            ("2025-10-29", "FOMC"),
+            ("2025-12-10", "FOMC"),
+        ]
+
+        with st.spinner("차트 데이터 로딩 중..."):
+            _cdf = _fetch_chart_df(_sel_sym)
+
+        if _cdf is not None and len(_cdf) >= 20:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            import numpy as np
+
+            _plot_df = _to_heikin_ashi(_cdf) if _ha_on else _cdf
+
+            # 지표 계산
+            _cl = _cdf['Close']
+            _ma20  = _cl.rolling(20).mean()
+            _ma60  = _cl.rolling(60).mean()
+            _bb_m  = _cl.rolling(20).mean()
+            _bb_s  = _cl.rolling(20).std()
+            _bb_up = _bb_m + 2 * _bb_s
+            _bb_lo = _bb_m - 2 * _bb_s
+            _rsi   = _calc_rsi(_cl)
+
+            # MA20 색상 동적 결정 (현재가 대비 거리)
+            _cur_price = float(_cl.iloc[-1])
+            _ma20_last = float(_ma20.iloc[-1]) if not np.isnan(_ma20.iloc[-1]) else _cur_price
+            _ma20_dist = (_cur_price / _ma20_last - 1) * 100 if _ma20_last > 0 else 0
+            if _ma20_dist > 5:
+                _ma20_color = "#fbbf24"   # 골드 — 과열
+                _ma20_label = f"MA20 (과열 +{_ma20_dist:.1f}%)"
+            elif _ma20_dist < -5:
+                _ma20_color = "#38bdf8"   # 라이트 블루 — 침체
+                _ma20_label = f"MA20 (침체 {_ma20_dist:.1f}%)"
+            else:
+                _ma20_color = "#06d6a0"
+                _ma20_label = f"MA20 ({_ma20_dist:+.1f}%)"
+
+            # 서브플롯: 메인차트 + RSI
+            _fig = make_subplots(
+                rows=2, cols=1,
+                row_heights=[0.75, 0.25],
+                shared_xaxes=True,
+                vertical_spacing=0.03
+            )
+
+            # 캔들 (Heikin-Ashi or 일반)
+            _up_c   = "#39ff14"   # 형광 그린
+            _dn_c   = "#ff003c"   # 형광 레드
+            _fig.add_trace(go.Candlestick(
+                x=_plot_df.index,
+                open=_plot_df['Open'], high=_plot_df['High'],
+                low=_plot_df['Low'],   close=_plot_df['Close'],
+                increasing_line_color=_up_c, decreasing_line_color=_dn_c,
+                increasing_fillcolor=_up_c,  decreasing_fillcolor=_dn_c,
+                name="HA캔들" if _ha_on else "캔들",
+                showlegend=False,
+                # 커스텀 툴팁
+                customdata=list(zip(
+                    ((_cl - _cl.shift(1)) / _cl.shift(1) * 100).round(2).fillna(0),
+                    _rsi.round(1).fillna(50)
+                )),
+                hovertemplate=(
+                    "<b>%{x|%Y-%m-%d}</b><br>"
+                    "등락률: <b>%{customdata[0]:+.2f}%</b><br>"
+                    "RSI: <b>%{customdata[1]:.1f}</b><br>"
+                    "종가: %{close:,.2f}<br>"
+                    "고가: %{high:,.2f} / 저가: %{low:,.2f}<extra></extra>"
                 )
-                st.plotly_chart(fig_k, use_container_width=True)
-        except Exception as e:
-            st.warning(f"코스피 차트 오류: {e}")
+            ), row=1, col=1)
+
+            # 볼린저 밴드 (반투명 배경)
+            _fig.add_trace(go.Scatter(
+                x=list(_bb_up.index) + list(_bb_lo.index[::-1]),
+                y=list(_bb_up) + list(_bb_lo[::-1]),
+                fill='toself', fillcolor='rgba(148,163,184,0.07)',
+                line=dict(color='rgba(148,163,184,0)', width=0),
+                name='볼린저밴드', showlegend=True, legendgroup='bb',
+                hoverinfo='skip'
+            ), row=1, col=1)
+            _fig.add_trace(go.Scatter(
+                x=_bb_up.index, y=_bb_up,
+                line=dict(color='rgba(148,163,184,0.3)', width=0.8, dash='dot'),
+                name='BB상단', showlegend=False, hoverinfo='skip'
+            ), row=1, col=1)
+            _fig.add_trace(go.Scatter(
+                x=_bb_lo.index, y=_bb_lo,
+                line=dict(color='rgba(148,163,184,0.3)', width=0.8, dash='dot'),
+                name='BB하단', showlegend=False, hoverinfo='skip'
+            ), row=1, col=1)
+
+            # MA20 (동적 색상, 굵게)
+            _fig.add_trace(go.Scatter(
+                x=_ma20.index, y=_ma20,
+                line=dict(color=_ma20_color, width=2.5),
+                name=_ma20_label
+            ), row=1, col=1)
+
+            # MA60
+            if len(_cdf) >= 60:
+                _fig.add_trace(go.Scatter(
+                    x=_ma60.index, y=_ma60,
+                    line=dict(color='#a78bfa', width=1.2, dash='dot'),
+                    name='MA60'
+                ), row=1, col=1)
+
+            # RSI 서브플롯
+            _fig.add_trace(go.Scatter(
+                x=_rsi.index, y=_rsi,
+                line=dict(color='#fbbf24', width=1.5),
+                name='RSI(14)',
+                hovertemplate="RSI: <b>%{y:.1f}</b><extra></extra>"
+            ), row=2, col=1)
+            _fig.add_hline(y=70, line_color='#ff003c', line_width=0.8,
+                           line_dash='dash', row=2, col=1)
+            _fig.add_hline(y=30, line_color='#39ff14', line_width=0.8,
+                           line_dash='dash', row=2, col=1)
+
+            # FOMC 이벤트 수직선
+            import pandas as pd
+            _df_start = _cdf.index[0].to_pydatetime().replace(tzinfo=None)
+            for _ev_dt_str, _ev_lbl in _EVENT_DATES:
+                try:
+                    _ev_dt = pd.Timestamp(_ev_dt_str)
+                    if hasattr(_cdf.index[0], 'tzinfo') and _cdf.index[0].tzinfo:
+                        import pytz
+                        _ev_dt = _ev_dt.tz_localize('UTC')
+                    if _cdf.index[0] <= _ev_dt <= _cdf.index[-1]:
+                        _fig.add_vline(
+                            x=_ev_dt.value / 1e6,
+                            line_color='rgba(251,191,36,0.5)',
+                            line_width=1.2,
+                            line_dash='dot',
+                            row='all', col=1,
+                            annotation_text=_ev_lbl,
+                            annotation_font_color='#fbbf24',
+                            annotation_font_size=9,
+                            annotation_position="top left"
+                        )
+                except Exception:
+                    pass
+
+            _fig.update_layout(
+                paper_bgcolor='#0a0e1a',
+                plot_bgcolor='#0f1726',
+                font=dict(color='#8899bb', size=11),
+                xaxis_rangeslider_visible=False,
+                height=520,
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(orientation='h', y=1.02, x=0,
+                            font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
+                hovermode='x unified',
+            )
+            _fig.update_xaxes(gridcolor='#1a2535', showgrid=True)
+            _fig.update_yaxes(gridcolor='#1a2535', showgrid=True)
+            _fig.update_yaxes(title_text="RSI", row=2, col=1,
+                              range=[0, 100], fixedrange=True)
+
+            st.plotly_chart(_fig, use_container_width=True)
+
+            # 현재 상태 요약 칩
+            _rsi_now = float(_rsi.iloc[-1]) if not np.isnan(_rsi.iloc[-1]) else 50
+            _bb_pos  = (_cur_price - float(_bb_lo.iloc[-1])) / max(float(_bb_up.iloc[-1]) - float(_bb_lo.iloc[-1]), 1) * 100
+            _rsi_lbl = "과매수🔴" if _rsi_now >= 70 else ("과매도🟢" if _rsi_now <= 30 else "중립⚪")
+            _bb_lbl  = "BB상단돌파🔴" if _bb_pos >= 95 else ("BB하단이탈🟢" if _bb_pos <= 5 else f"BB{_bb_pos:.0f}%")
+            st.markdown(
+                f"<div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:4px'>"
+                f"<span style='background:#1e293b;color:#fbbf24;font-size:12px;padding:4px 12px;border-radius:20px'>"
+                f"RSI {_rsi_now:.1f} — {_rsi_lbl}</span>"
+                f"<span style='background:#1e293b;color:{_ma20_color};font-size:12px;padding:4px 12px;border-radius:20px'>"
+                f"{_ma20_label}</span>"
+                f"<span style='background:#1e293b;color:#94a3b8;font-size:12px;padding:4px 12px;border-radius:20px'>"
+                f"볼린저 {_bb_lbl}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.warning("차트 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
 
     # ══════════════════════════════════════════
     # 탭 1: 현황판
