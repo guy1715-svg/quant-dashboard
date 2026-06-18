@@ -3505,6 +3505,14 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
         )
     # ── 빠른 결론 헤드라인 (탭 선택 전) ──
     _b_tickers = get_watchlist_tickers()
+    # quick select 전에 all_data 미수록 종목 즉시 로드
+    _b_missing_pre = [(_bt, _bn) for _bt, _bn in _b_tickers if _bt not in all_data]
+    if _b_missing_pre:
+        for _bt, _bn in _b_missing_pre:
+            _bdf = fetch_ohlcv(_bt, 80)
+            if _bdf is not None and len(_bdf) >= 20:
+                all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+        st.session_state.all_data_cache = all_data
     if _b_tickers:
         _b_quick_sel = st.selectbox(
             "▶ 분석 종목 선택 (결론 우선 표시)",
@@ -3566,6 +3574,8 @@ padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;
                         else:
                             _load_failed.append(f"{_bn}({_bt})")
                     st.session_state.all_data_cache = all_data
+                    import time as _time_ad
+                    st.session_state.all_data_time = _time_ad.time()
                 if _load_failed:
                     _fail_col1, _fail_col2 = st.columns([4, 1])
                     _fail_col1.warning(f"⚠️ 데이터 로드 실패: {', '.join(_load_failed)}")
