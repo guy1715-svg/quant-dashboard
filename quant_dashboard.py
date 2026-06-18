@@ -5316,81 +5316,80 @@ with tab_d:
     st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
     st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
 
-    st.markdown("""
-<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;padding:18px 22px;margin-bottom:14px'>
-  <div style='font-size:12px;font-weight:700;color:#64748b;margin-bottom:14px'>⚡ ETF 로테이션 전략 — 핵심 체크리스트</div>
-
-  <div style='display:grid;grid-template-columns:1fr 1fr;gap:16px'>
-
-    <div>
-      <div style='font-size:11px;font-weight:700;color:#3b82f6;margin-bottom:10px'>🇰🇷 국장 ETF 매수 절차</div>
-      <div style='line-height:1.9;font-size:12px;color:#94a3b8'>
-        <div>🎯 <b style='color:#f0f4ff'>1단계</b> — 랭킹판에서 종합점수 1위 확인 (ADX ≥ 25 필수)</div>
-        <div>📱 <b style='color:#f0f4ff'>2단계</b> — 증권사 앱에서 종목코드 검색 후 지정가 주문</div>
-        <div>⏰ <b style='color:#f0f4ff'>3단계</b> — 09:30 이후 진입 (09:00~10:30 변동성 금지)</div>
-        <div>📋 <b style='color:#f0f4ff'>4단계</b> — 관리 탭에서 페이퍼 트레이딩 기록</div>
-      </div>
-    </div>
-
-    <div>
-      <div style='font-size:11px;font-weight:700;color:#a78bfa;margin-bottom:10px'>🇺🇸 미장 ETF 매수 절차</div>
-      <div style='line-height:1.9;font-size:12px;color:#94a3b8'>
-        <div>🎯 <b style='color:#f0f4ff'>1단계</b> — 미장 ETF 1위 티커 확인 (QQQ·SOXX 등)</div>
-        <div>💱 <b style='color:#f0f4ff'>2단계</b> — 원화 → 달러 환전 후 해외주식 주문</div>
-        <div>⏰ <b style='color:#f0f4ff'>3단계</b> — 미국 정규장 23:30~06:00 또는 프리마켓 활용</div>
-        <div>🧾 <b style='color:#f0f4ff'>4단계</b> — 양도세 250만원 초과분 22% 고려</div>
-      </div>
-    </div>
-
-  </div>
-
-  <div style='margin-top:16px;border-top:1px solid #1e293b;padding-top:14px'>
-    <div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:10px'>🔄 매도/스위칭 신호 기준</div>
-    <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>
-      <div style='background:#0a2a0a;border:1px solid #16a34a40;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#16a34a;font-weight:700'>🟢 홀드</div>
-        <div style='color:#94a3b8'>1~2위 유지, 점수차 15점 미만</div>
-        <div style='color:#64748b'>→ 계속 보유</div>
-      </div>
-      <div style='background:#2a1a00;border:1px solid #f59e0b40;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#f59e0b;font-weight:700'>🟡 주의</div>
-        <div style='color:#94a3b8'>3위 진입 또는 점수차 15점↑</div>
-        <div style='color:#64748b'>→ 다음날 재확인</div>
-      </div>
-      <div style='background:#2a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#ef4444;font-weight:700'>🔴 스위칭</div>
-        <div style='color:#94a3b8'>4위 이하 또는 점수차 20점↑</div>
-        <div style='color:#64748b'>→ 1위 ETF로 즉시 교체</div>
-      </div>
-      <div style='background:#1a0a0a;border:1px solid #ef444460;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#ef4444;font-weight:700'>⚫ 손절</div>
-        <div style='color:#94a3b8'>매수가 대비 -7% 도달</div>
-        <div style='color:#64748b'>→ 즉시 전량 매도</div>
-      </div>
-      <div style='background:#1a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#f43f5e;font-weight:700'>🔴 ADX &lt; 25</div>
-        <div style='color:#94a3b8'>추세 소멸 신호</div>
-        <div style='color:#64748b'>→ 전량 매도 후 관망</div>
-      </div>
-      <div style='background:#2a1500;border:1px solid #f9731640;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
-        <div style='color:#f97316;font-weight:700'>🟠 RSI ≥ 78</div>
-        <div style='color:#94a3b8'>단기 과열 구간</div>
-        <div style='color:#64748b'>→ 절반 익절</div>
-      </div>
-    </div>
-  </div>
-
-  <div style='margin-top:14px;border-top:1px solid #1e293b;padding-top:12px'>
-    <div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px'>⚠️ 실전 주의사항</div>
-    <div style='line-height:2.0;font-size:12px;color:#94a3b8'>
-      <div>🔁 <b style='color:#fbbf24'>스위칭</b>은 3거래일 연속 1위 ETF로만 이동 — 매일 1위가 바뀌면 보류</div>
-      <div>⏳ <b style='color:#fbbf24'>최소 보유 기간 2주</b> — 잦은 스위칭은 수수료 손실 누적</div>
-      <div>📅 <b style='color:#fbbf24'>FOMC·CPI 이벤트 직전</b> 신규 진입 자제 (홈탭 캘린더 확인)</div>
-      <div>🇰🇷 국장 ETF: 거래세 없음, 매매수수료만 발생</div>
-      <div>🇺🇸 미장 ETF: 환전비용 + 수수료 + 양도세(250만원 초과 22%) 반드시 고려</div>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
+    # ── 전략 체크리스트 ── blank line 없는 단일 HTML 블록
+    _step = lambda icon, num, txt: (
+        f"<div style='display:flex;gap:6px;padding:3px 0;font-size:12px'>"
+        f"<span>{icon}</span>"
+        f"<span><span style='color:#f0f4ff;font-weight:700'>{num}단계</span>"
+        f"<span style='color:#94a3b8'> — {txt}</span></span>"
+        f"</div>"
+    )
+    _kr_steps = (
+        _step("🎯","1","랭킹판에서 종합점수 1위 확인 (ADX ≥ 25 필수)") +
+        _step("📱","2","증권사 앱에서 종목코드 검색 후 지정가 주문") +
+        _step("⏰","3","09:30 이후 진입 (09:00~10:30 변동성 금지)") +
+        _step("📋","4","관리 탭에서 페이퍼 트레이딩 기록")
+    )
+    _us_steps = (
+        _step("🎯","1","미장 ETF 1위 티커 확인 (QQQ·SOXX 등)") +
+        _step("💱","2","원화 → 달러 환전 후 해외주식 주문") +
+        _step("⏰","3","미국 정규장 23:30~06:00 또는 프리마켓 활용") +
+        _step("🧾","4","양도세 250만원 초과분 22% 고려")
+    )
+    _warn_step = lambda icon, txt: (
+        f"<div style='display:flex;gap:6px;padding:3px 0;font-size:12px;color:#94a3b8'>"
+        f"<span>{icon}</span><span>{txt}</span></div>"
+    )
+    _warn_items = (
+        _warn_step("🔁", "<span style='color:#fbbf24;font-weight:700'>스위칭</span>은 3거래일 연속 1위 ETF로만 — 매일 1위가 바뀌면 보류") +
+        _warn_step("⏳", "<span style='color:#fbbf24;font-weight:700'>최소 보유 기간 2주</span> — 잦은 스위칭은 수수료 손실 누적") +
+        _warn_step("📅", "<span style='color:#fbbf24;font-weight:700'>FOMC·CPI 이벤트 직전</span> 신규 진입 자제 (홈탭 캘린더 확인)") +
+        _warn_step("🇰🇷", "국장 ETF: 거래세 없음, 매매수수료만 발생") +
+        _warn_step("🇺🇸", "미장 ETF: 환전비용 + 수수료 + 양도세(250만원 초과 22%) 반드시 고려")
+    )
+    def _sig_card(bg, bd, label_c, label, desc, action):
+        return (
+            f"<div style='background:{bg};border:1px solid {bd};border-radius:8px;"
+            f"padding:8px 12px;font-size:11px'>"
+            f"<div style='color:{label_c};font-weight:700;margin-bottom:4px'>{label}</div>"
+            f"<div style='color:#94a3b8;line-height:1.6'>{desc}</div>"
+            f"<div style='color:#64748b;margin-top:4px'>{action}</div>"
+            f"</div>"
+        )
+    _sig_cards = (
+        _sig_card("#0a2a0a","#16a34a40","#16a34a","🟢 홀드","1~2위 유지, 점수차 15점 미만","→ 계속 보유") +
+        _sig_card("#2a1a00","#f59e0b40","#f59e0b","🟡 주의","3위 진입 또는 점수차 15점↑","→ 다음날 재확인") +
+        _sig_card("#2a0a0a","#ef444440","#ef4444","🔴 스위칭","4위 이하 또는 점수차 20점↑","→ 1위 ETF로 즉시 교체") +
+        _sig_card("#1a0a0a","#ef444460","#ef4444","⚫ 손절","매수가 대비 -7% 도달","→ 즉시 전량 매도") +
+        _sig_card("#1a0a0a","#ef444440","#f43f5e","🔴 ADX &lt; 25","추세 소멸 신호","→ 전량 매도 후 관망") +
+        _sig_card("#2a1500","#f9731640","#f97316","🟠 RSI ≥ 78","단기 과열 구간","→ 절반 익절")
+    )
+    st.markdown(
+        "<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;padding:18px 22px;margin-bottom:14px'>"
+        "<div style='font-size:12px;font-weight:700;color:#64748b;margin-bottom:14px'>⚡ ETF 로테이션 전략 — 핵심 체크리스트</div>"
+        "<div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px'>"
+        "<div>"
+        "<div style='font-size:11px;font-weight:700;color:#3b82f6;margin-bottom:8px'>🇰🇷 국장 ETF 매수 절차</div>"
+        + _kr_steps +
+        "</div>"
+        "<div>"
+        "<div style='font-size:11px;font-weight:700;color:#a78bfa;margin-bottom:8px'>🇺🇸 미장 ETF 매수 절차</div>"
+        + _us_steps +
+        "</div>"
+        "</div>"
+        "<div style='border-top:1px solid #1e293b;padding-top:14px;margin-bottom:14px'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:10px'>🔄 매도/스위칭 신호 기준</div>"
+        "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>"
+        + _sig_cards +
+        "</div>"
+        "</div>"
+        "<div style='border-top:1px solid #1e293b;padding-top:12px'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px'>⚠️ 실전 주의사항</div>"
+        + _warn_items +
+        "</div>"
+        "</div>",
+        unsafe_allow_html=True
+    )
 
     _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
 
