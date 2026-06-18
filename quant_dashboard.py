@@ -4448,8 +4448,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     with _sc_col1:
         st.markdown("**📋 스캔 대상**")
         market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="scanner_market")
+        scan_mode   = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
         top_n = st.slider("스캔 종목 수", 20, 200, 50, key="scanner_topn")
-        st.info("V8.9: 6대 조건 **전부 AND** 충족 종목만 통과 (점수 기준 없음)")
+        st.info("V9.7: S/A/B 등급제 · OR 로직 · ETF 전용 채점 · 레짐 감지")
 
     with _sc_col2:
         st.markdown("**🎯 필터 조건**")
@@ -4642,22 +4643,114 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             ("BABA","Alibaba"),("JD","JD.com"),("PDD","PDD Holdings"),
             ]
 
+        # ── ETF 유니버스 ──────────────────────────────────────────────────────
+        _ETF_UNIVERSE = [
+            # 지수 ETF (벤치마크)
+            ("VTI",  "Vanguard Total Market"),
+            ("SPY",  "S&P 500 ETF"),
+            ("QQQ",  "Nasdaq 100"),
+            ("IVV",  "iShares S&P 500"),
+            ("VOO",  "Vanguard S&P 500"),
+            # 배당 ETF
+            ("JEPQ", "JPMorgan Nasdaq Income"),
+            ("JEPI", "JPMorgan Premium Income"),
+            ("SCHD", "Schwab Dividend"),
+            ("MAIN", "Main Street Capital"),
+            ("DIVO", "Amplify CWP Enh. Div"),
+            ("HDV",  "iShares High Div"),
+            ("VYM",  "Vanguard High Div Yield"),
+            # 채권 ETF
+            ("AGG",  "iShares Core US Bond"),
+            ("TLT",  "iShares 20Y Treasury"),
+            ("BND",  "Vanguard Bond Market"),
+            # 섹터 ETF
+            ("XLK",  "Technology SPDR"),
+            ("XLV",  "Healthcare SPDR"),
+            ("XLF",  "Financial SPDR"),
+            ("SOXX", "iShares Semiconductor"),
+            ("ARKK", "ARK Innovation"),
+            # 원자재/금
+            ("GLD",  "SPDR Gold"),
+            ("IAU",  "iShares Gold"),
+            # 해외 ETF
+            ("VEA",  "Vanguard FTSE Dev"),
+            ("VWO",  "Vanguard FTSE EM"),
+        ]
+        _ETF_TICKERS_SET = {t for t,_ in _ETF_UNIVERSE}
+
+        # ── ETF 전용 스코어링 함수 ────────────────────────────────────────────
+        def _etf_scorer(df_e, ticker_e):
+            """안정성(MA200) + 추세(RSI 40~65) + 거래량 안정성 3축 평가"""
+            if df_e is None or len(df_e) < 30:
+                return False, {}
+            _ce = df_e['종가'].astype(float)
+            _ve = df_e['거래량'].astype(float)
+            _cur_e = float(_ce.iloc[-1])
+            _sc_e = 0; _det_e = []
+
+            # 안정성: MA200 상단 위치 (40점)
+            _ma200_e = float(_ce.tail(200).mean()) if len(_ce) >= 200 else float(_ce.mean())
+            if _cur_e > _ma200_e: _sc_e += 40; _det_e.append(f"MA200상단+40")
+
+            # 추세: RSI 40~65 적정 구간 (30점)
+            _dv = _ce.diff(); _gu = _dv.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+            _lu = (-_dv.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+            _rsi_e = float(100 - 100 / (1 + _gu.iloc[-1] / max(_lu.iloc[-1], 1e-9)))
+            if 40 <= _rsi_e <= 65: _sc_e += 30; _det_e.append(f"RSI적정({_rsi_e:.0f})+30")
+
+            # 거래량 안정성 (30점)
+            _vol5_e  = float(_ve.tail(5).mean())
+            _vol20_e = float(_ve.tail(20).mean())
+            _vstab_e = _vol5_e > 0 and (_vol5_e / max(_vol20_e, 1)) >= 0.5
+            if _vstab_e: _sc_e += 30; _det_e.append("거래량안정+30")
+
+            # 보너스: 5일 수익률 양수 (+10)
+            _cum5_e = ((_cur_e - float(_ce.iloc[-6])) / float(_ce.iloc[-6])) if len(_ce) >= 6 else 0
+            if _cum5_e > 0: _sc_e += 10; _det_e.append(f"추세양수+10")
+
+            if _sc_e >= 90:   _grade_e = "🥇 S등급"
+            elif _sc_e >= 70: _grade_e = "🎯 A등급"
+            elif _sc_e >= 50: _grade_e = "🔎 B등급"
+            else:             _grade_e = "Filtered"
+
+            _pass_e = _grade_e in ("🥇 S등급", "🎯 A등급", "🔎 B등급")
+            _e_ok = lambda b: "✅" if b else "❌"
+            return _pass_e, {
+                '등급': _grade_e, '점수': _sc_e,
+                'RSI': round(_rsi_e, 1), '5일수익률': round(_cum5_e * 100, 2),
+                '거래량비율': round(_vol5_e / max(_vol20_e, 1) * 100, 1),
+                '시총(억)': '?', 'CMF': 0, 'ATR비율': 0,
+                '조건': (f"[ETF] MA200{_e_ok(_cur_e>_ma200_e)} "
+                         f"RSI{_e_ok(40<=_rsi_e<=65)}({_rsi_e:.0f}) "
+                         f"Vol{_e_ok(_vstab_e)} [{_sc_e}점] {_grade_e}"),
+            }
+
+        # ── 스캔 리스트 구성 (모드 연동) ──────────────────────────────────────
+        _scan_mode = st.session_state.get('scan_mode', '📈 개별주')
         extra = [(t,n) for t,n in TICKERS]
         if market_type == "KOSPI":
-            scan_list = KOSPI_LIST + [x for x in extra if x not in KOSPI_LIST]
+            _base_list = KOSPI_LIST + [x for x in extra if x not in KOSPI_LIST]
         elif market_type == "KOSDAQ":
-            scan_list = KOSDAQ_LIST + [x for x in extra if x not in KOSDAQ_LIST]
+            _base_list = KOSDAQ_LIST + [x for x in extra if x not in KOSDAQ_LIST]
         elif market_type == "KOSPI+KOSDAQ":
-            scan_list = KOSPI_LIST + [x for x in KOSDAQ_LIST if x not in KOSPI_LIST]
-            scan_list += [x for x in extra if x not in scan_list]
+            _base_list = KOSPI_LIST + [x for x in KOSDAQ_LIST if x not in KOSPI_LIST]
+            _base_list += [x for x in extra if x not in _base_list]
         else:
-            scan_list = SP500_LIST + [x for x in extra if x not in SP500_LIST]
+            _base_list = SP500_LIST + [x for x in extra if x not in SP500_LIST]
 
-        scan_list   = scan_list[:top_n]
+        if '🏦 ETF' in _scan_mode:
+            scan_list = _ETF_UNIVERSE[:]
+        elif '🔀 통합' in _scan_mode:
+            scan_list = _base_list + [x for x in _ETF_UNIVERSE if x[0] not in {t for t,_ in _base_list}]
+        else:
+            scan_list = _base_list
+
+        scan_list    = scan_list[:top_n]
         scan_tickers = [t for t,n in scan_list]
         name_map     = {t:n for t,n in scan_list}
 
-        st.info(f"📋 스캔 대상: {len(scan_tickers)}종목 | 엔진: {'🔥 KIS API (실시간)' if KIS_ENABLED else '📡 yfinance (지연)'}")
+        _mode_label = {"📈 개별주": "개별주", "🏦 ETF": "ETF 전용", "🔀 통합": "개별주+ETF"}.get(_scan_mode, "개별주")
+        st.info(f"📋 {_mode_label} {len(scan_tickers)}종목 | 엔진: {'🔥 KIS API (실시간)' if KIS_ENABLED else '📡 yfinance (지연)'}")
 
         passed = []
         prog   = st.progress(0)
@@ -5018,7 +5111,11 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _price = float(df['종가'].iloc[-1])
                 if _price < min_price or _price > max_price: continue
 
-                _ok, _meta = _v89_scanner(df, ticker)
+                _is_etf = (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
+                if _is_etf:
+                    _ok, _meta = _etf_scorer(df, ticker)
+                else:
+                    _ok, _meta = _v89_scanner(df, ticker)
                 if not _ok:
                     continue
 
@@ -5052,7 +5149,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
         # yfinance 폴백 결과 저장
         prog.empty(); status.empty()
-        passed = sorted(passed, key=lambda x: x.get('점수', 0), reverse=True)
+        # 약세장에서는 ETF를 결과 상단으로 배치 (방어 포트폴리오 유도)
+        _regime_sort = st.session_state.get('_market_regime', 'neutral')
+        if _regime_sort == 'bear':
+            _etf_res  = [x for x in passed if x['ticker'] in _ETF_TICKERS_SET]
+            _stk_res  = [x for x in passed if x['ticker'] not in _ETF_TICKERS_SET]
+            _etf_res  = sorted(_etf_res, key=lambda x: x.get('점수', 0), reverse=True)
+            _stk_res  = sorted(_stk_res, key=lambda x: x.get('점수', 0), reverse=True)
+            passed = _etf_res + _stk_res
+        else:
+            passed = sorted(passed, key=lambda x: x.get('점수', 0), reverse=True)
         st.session_state.passed = passed
         # 스캔 결과 → 분석 기록 일괄 저장
         _scan_preset_name = st.session_state.get('scan_preset', '')
@@ -5084,6 +5190,33 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                      mime="text/csv", use_container_width=True)
             except Exception:
                 pass
+
+    # ── VTI 벤치마크 배너 ─────────────────────────────────────────────────────
+    try:
+        import yfinance as _yf_vti
+        _vti_h = _yf_vti.Ticker("VTI").history(period="1mo", interval="1d")
+        if _vti_h is not None and len(_vti_h) >= 2:
+            _vti_now  = float(_vti_h['Close'].iloc[-1])
+            _vti_prev = float(_vti_h['Close'].iloc[0])
+            _vti_ret  = (_vti_now / _vti_prev - 1) * 100
+            _vti_5d   = (_vti_now / float(_vti_h['Close'].iloc[-6]) - 1) * 100 if len(_vti_h) >= 6 else 0
+            _vti_c    = "#166534" if _vti_ret >= 0 else "#991B1B"
+            _vti_arr  = "▲" if _vti_ret >= 0 else "▼"
+            st.markdown(
+                f"<div style='background:#0f172a;border:1px solid #1e3a5f;border-radius:10px;"
+                f"padding:10px 16px;display:flex;align-items:center;gap:16px;margin-bottom:8px'>"
+                f"<span style='font-size:11px;color:#64748b;font-weight:600'>📊 VTI 벤치마크</span>"
+                f"<span style='font-size:14px;font-weight:800;color:#f0f4ff'>${_vti_now:.2f}</span>"
+                f"<span style='color:{_vti_c};font-size:12px'>{_vti_arr}{abs(_vti_ret):.2f}% (1개월)</span>"
+                f"<span style='color:{('#166534' if _vti_5d>=0 else '#991B1B')};font-size:12px'>"
+                f"{('▲' if _vti_5d>=0 else '▼')}{abs(_vti_5d):.2f}% (5일)</span>"
+                f"<span style='font-size:10px;color:#475569;margin-left:auto'>"
+                f"{'📈 시장 강세 — 알파 전략 유효' if _vti_ret >= 0 else '📉 시장 약세 — ETF 방어 고려'}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+    except Exception:
+        pass
 
     # ── 결과 표시 ──
     if st.session_state.get('passed') is None:
@@ -5124,28 +5257,39 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             _gchg_c = "#ef4444" if _gchg > 0 else "#3b82f6"
             _gg_c  = "#ffd166" if 'S등급' in _ggrd else "#3b82f6" if 'A등급' in _ggrd else "#10b981" if 'B등급' in _ggrd else "#64748b"
             # C1~C6 파싱
-            import re as _re_g
             def _cx(cond_str, cx): return "✅" if f"C{cx}✅" in cond_str else "❌"
-            _c1 = _cx(_gcond,1); _c2 = _cx(_gcond,2); _c3 = _cx(_gcond,3)
-            _c4 = _cx(_gcond,4); _c5 = _cx(_gcond,5); _c6 = _cx(_gcond,6)
+            _is_etf_card = _gitem['ticker'] in _ETF_TICKERS_SET if '_ETF_TICKERS_SET' in dir() else False
             _is_wl_g = _gitem['ticker'] in _sc_ids
+            if _is_etf_card:
+                # ETF 카드: MA200 / RSI / Vol 3축 표시
+                _etf_badge = "<span style='background:#1e3a5f;color:#60a5fa;font-size:9px;padding:1px 6px;border-radius:8px;margin-left:4px'>ETF</span>"
+                _cond_grid = (
+                    f"<div style='font-size:9px;color:#64748b;margin-top:4px'>{_gitem.get('조건','')[:60]}</div>"
+                )
+            else:
+                _etf_badge = ""
+                _c1 = _cx(_gcond,1); _c2 = _cx(_gcond,2); _c3 = _cx(_gcond,3)
+                _c4 = _cx(_gcond,4); _c5 = _cx(_gcond,5); _c6 = _cx(_gcond,6)
+                _cond_grid = (
+                    f"<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:10px;text-align:center'>"
+                    f"<div style='color:#64748b'>C1<br>{_c1}</div>"
+                    f"<div style='color:#64748b'>C2<br>{_c2}</div>"
+                    f"<div style='color:#64748b'>C3<br>{_c3}</div>"
+                    f"<div style='color:#64748b'>C4<br>{_c4}</div>"
+                    f"<div style='color:#64748b'>C5<br>{_c5}</div>"
+                    f"<div style='color:#64748b'>C6<br>{_c6}</div>"
+                    f"</div>"
+                )
             _grid_html += (
                 f"<div style='background:#0d1117;border:1px solid {_gg_c}30;border-radius:10px;padding:10px 12px'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
-                f"<span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_gitem['name'][:10]}</span>"
+                f"<span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_gitem['name'][:10]}{_etf_badge}</span>"
                 f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:1px 8px;border-radius:12px'>{_gsc}점</span>"
                 f"</div>"
                 f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>{_gitem['ticker']} &nbsp;|&nbsp; "
                 f"<span style='color:{_gchg_c}'>{'▲' if _gchg>0 else '▼'}{abs(_gchg):.1f}%</span>"
                 f"&nbsp;|&nbsp; {_gitem.get('5일수익률',0):+.1f}%</div>"
-                f"<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:10px;text-align:center'>"
-                f"<div style='color:#64748b'>C1<br>{_c1}</div>"
-                f"<div style='color:#64748b'>C2<br>{_c2}</div>"
-                f"<div style='color:#64748b'>C3<br>{_c3}</div>"
-                f"<div style='color:#64748b'>C4<br>{_c4}</div>"
-                f"<div style='color:#64748b'>C5<br>{_c5}</div>"
-                f"<div style='color:#64748b'>C6<br>{_c6}</div>"
-                f"</div>"
+                + _cond_grid +
                 f"<div style='font-size:10px;color:{_gg_c};margin-top:6px'>{_ggrd}"
                 + ("&nbsp;<span style='color:#34d399'>★ 관심</span>" if _is_wl_g else "") +
                 "</div>"
