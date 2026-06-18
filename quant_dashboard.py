@@ -57,13 +57,27 @@ def _get_firebase_app():
             firebase_admin.initialize_app(_fb_cred, {"databaseURL": _db_url})
         return firebase_admin.get_app()
     except Exception as _e:
-        st.error(f"Firebase 초기화 실패: {_e}")
+        # 에러 상세 미노출 — 내부 로그만 기록
+        import logging as _logging
+        _logging.error("Firebase 초기화 오류: %s", type(_e).__name__)
         return None
 
+class _NullRef:
+    """Firebase 미연결 시 get/set/push 호출이 조용히 실패하도록 하는 더미 레퍼런스"""
+    def get(self): return None
+    def set(self, v): pass
+    def push(self, v): pass
+    def update(self, v): pass
+
 def _fb_ref(path):
-    """Firebase DB 레퍼런스 반환"""
-    _get_firebase_app()
-    return fb_db.reference(path)
+    """Firebase DB 레퍼런스 반환. 앱 미초기화 시 NullRef 반환(AttributeError 방지)"""
+    _app = _get_firebase_app()
+    if _app is None:
+        return _NullRef()
+    try:
+        return fb_db.reference(path)
+    except Exception:
+        return _NullRef()
 
 
 # ══════════════════════════════════════════
@@ -84,9 +98,9 @@ def kis_get_token():
     """KIS API 접근 토큰 발급 — 6시간 TTL 자동 갱신"""
     _now = _time_kis.time()
     # 유효한 토큰이 있으면 바로 반환
-    if (st.session_state.get('kis_token') and
-            _now - st.session_state.get('kis_token_time', 0) < 21600):
-        return st.session_state.kis_token
+    if (st.session_state.get('_k_t') and
+            _now - st.session_state.get('_k_ts', 0) < 21600):
+        return st.session_state['_k_t']
     # 토큰 없거나 만료 → 재발급
     try:
         _key    = st.secrets["KIS_APP_KEY"]
@@ -99,8 +113,9 @@ def kis_get_token():
         }, timeout=10)
         _token = _res.json().get("access_token")
         if _token:
-            st.session_state.kis_token      = _token
-            st.session_state.kis_token_time = _now
+            # 토큰을 노출되기 쉬운 'kis_token' 키 대신 짧은 내부 키로 저장
+            st.session_state['_k_t']  = _token
+            st.session_state['_k_ts'] = _now
             return _token
     except Exception:
         pass
@@ -632,8 +647,18 @@ def save_watchlist(text):
 def get_watchlist_tickers():
     return _parse_watchlist(get_watchlist())
 
+def _validate_ticker(ticker: str) -> bool:
+    """종목코드 형식 검증 — 한국(6자리 숫자) 또는 미국(1~6자 영문+숫자, 특수문자 불허)"""
+    import re as _re_v
+    if not ticker or len(ticker) > 10:
+        return False
+    return bool(_re_v.match(r'^[A-Za-z0-9]{1,10}$', ticker))
+
 def add_ticker(ticker, name):
     """관심종목 1개 추가 — Firebase 저장"""
+    if not _validate_ticker(ticker):
+        return False
+    name = str(name)[:30]  # 종목명 최대 30자 제한
     wl = get_watchlist()
     existing = [t for t, _ in _parse_watchlist(wl)]
     if ticker in existing:
@@ -1050,84 +1075,91 @@ caption, .stCaption { font-size: var(--fs-xs) !important; color: var(--text-dim)
 # 데이터 함수
 # ══════════════════════════════════════════
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_ohlcv(ticker, lookback=80):
+    # import를 함수 외부(모듈 레벨)에서 이미 했을 경우를 대비해 lazy하게 처리
+    try:
+        import FinanceDataReader as _fdr
+    except ImportError:
+        _fdr = None
+    try:
+        import yfinance as _yf_fetch
+    except ImportError:
+        _yf_fetch = None
+    import time as _time_fetch
+
     end   = datetime.today()
     start = end - timedelta(days=lookback*2)
     _start_str = start.strftime('%Y-%m-%d')
     _end_str   = end.strftime('%Y-%m-%d')
 
-    # 한국 종목 여부 판단 (숫자 6자리)
     is_korean = ticker.isdigit() and len(ticker) == 6
 
     if is_korean:
-        # 1순위: FinanceDataReader (Streamlit Cloud 환경에서 안정적)
-        try:
-            import FinanceDataReader as _fdr
-            _df = _fdr.DataReader(ticker, _start_str, _end_str)
-            if _df is not None and not _df.empty and len(_df) >= 5:
-                # FDR 컬럼명 정규화
-                _col_map = {}
-                for _c in _df.columns:
-                    _cl = _c.lower()
-                    if _cl in ('open', '시가'): _col_map[_c] = '시가'
-                    elif _cl in ('high', '고가'): _col_map[_c] = '고가'
-                    elif _cl in ('low', '저가'): _col_map[_c] = '저가'
-                    elif _cl in ('close', '종가'): _col_map[_c] = '종가'
-                    elif _cl in ('volume', '거래량'): _col_map[_c] = '거래량'
-                _df = _df.rename(columns=_col_map)
-                _needed = ['시가','고가','저가','종가','거래량']
-                if all(c in _df.columns for c in _needed):
-                    _df = _df[_needed]
-                    _df = _df[_df['거래량'] > 0].tail(lookback)
-                    if len(_df) >= 5:
-                        return _df
-        except Exception:
-            pass
+        # 1순위: FinanceDataReader
+        if _fdr is not None:
+            try:
+                _df = _fdr.DataReader(ticker, _start_str, _end_str)
+                if _df is not None and not _df.empty and len(_df) >= 5:
+                    _col_map = {}
+                    for _c in _df.columns:
+                        _cl = _c.lower()
+                        if _cl in ('open', '시가'): _col_map[_c] = '시가'
+                        elif _cl in ('high', '고가'): _col_map[_c] = '고가'
+                        elif _cl in ('low', '저가'): _col_map[_c] = '저가'
+                        elif _cl in ('close', '종가'): _col_map[_c] = '종가'
+                        elif _cl in ('volume', '거래량'): _col_map[_c] = '거래량'
+                    _df = _df.rename(columns=_col_map)
+                    _needed = ['시가','고가','저가','종가','거래량']
+                    if all(c in _df.columns for c in _needed):
+                        _df = _df[_needed]
+                        _df = _df[_df['거래량'] > 0].tail(lookback)
+                        if len(_df) >= 5:
+                            return _df
+            except Exception:
+                pass
 
-        # 2순위: yfinance fallback (최대 2회 재시도)
-        import yfinance as _yf_fetch
-        import time as _time_fetch
-        for suffix in ['.KS', '.KQ']:
+        # 2순위: yfinance fallback
+        if _yf_fetch is not None:
+            for suffix in ['.KS', '.KQ']:
+                for _attempt in range(2):
+                    try:
+                        _yt = _yf_fetch.Ticker(ticker + suffix)
+                        _df = _yt.history(start=start, end=end, interval='1d')
+                        if _df is None or _df.empty:
+                            break
+                        _df = _df.rename(columns={
+                            'Open':'시가','High':'고가','Low':'저가',
+                            'Close':'종가','Volume':'거래량'
+                        })[['시가','고가','저가','종가','거래량']]
+                        _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
+                        if len(_df) >= 5:
+                            return _df
+                        break
+                    except Exception:
+                        if _attempt == 0:
+                            _time_fetch.sleep(1)
+                        continue
+    else:
+        # 미국 종목 — yfinance
+        if _yf_fetch is not None:
             for _attempt in range(2):
                 try:
-                    _yt = _yf_fetch.Ticker(ticker + suffix)
+                    _yt = _yf_fetch.Ticker(ticker)
                     _df = _yt.history(start=start, end=end, interval='1d')
-                    if _df is None or _df.empty:
-                        break
-                    _df = _df.rename(columns={
-                        'Open':'시가','High':'고가','Low':'저가',
-                        'Close':'종가','Volume':'거래량'
-                    })[['시가','고가','저가','종가','거래량']]
-                    _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
-                    if len(_df) >= 5:
-                        return _df
+                    if _df is not None and not _df.empty:
+                        _df = _df.rename(columns={
+                            'Open':'시가','High':'고가','Low':'저가',
+                            'Close':'종가','Volume':'거래량'
+                        })[['시가','고가','저가','종가','거래량']]
+                        _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
+                        if len(_df) >= 5:
+                            return _df
                     break
                 except Exception:
                     if _attempt == 0:
                         _time_fetch.sleep(1)
                     continue
-    else:
-        # 미국 종목 — yfinance (최대 2회 재시도)
-        import yfinance as _yf_fetch
-        import time as _time_fetch
-        for _attempt in range(2):
-            try:
-                _yt = _yf_fetch.Ticker(ticker)
-                _df = _yt.history(start=start, end=end, interval='1d')
-                if _df is not None and not _df.empty:
-                    _df = _df.rename(columns={
-                        'Open':'시가','High':'고가','Low':'저가',
-                        'Close':'종가','Volume':'거래량'
-                    })[['시가','고가','저가','종가','거래량']]
-                    _df = _df[_df['거래량'] > 0].dropna().tail(lookback)
-                    if len(_df) >= 5:
-                        return _df
-                break
-            except Exception:
-                if _attempt == 0:
-                    _time_fetch.sleep(1)
-                continue
     return None
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1221,7 +1253,10 @@ def get_signal(df):
     return signals
 
 def build_prompt(df, name, ticker):
-    l = df.iloc[-1]; p = df.iloc[-2]
+    if df is None or len(df) < 2:
+        return f"{name}({ticker}) 데이터 부족으로 프롬프트 생성 불가"
+    l = df.iloc[-1]
+    p = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
     w = df.iloc[-6] if len(df) >= 6 else df.iloc[0]
 
     def _g(row, key, default=0):
@@ -1270,8 +1305,11 @@ def calc_entry_point(df, preset=None):
           target1 > entry (목표가는 항상 매수가 위)
     """
     import numpy as np
+    if df is None or len(df) < 2:
+        return {'cur':0,'entry':0,'stoploss':0,'target1':0,'target2':0,
+                'reason':'데이터 부족','rr':0,'gap_pct':0}
     l   = df.iloc[-1]
-    cur = float(l['종가'])
+    cur = float(l['종가']) if float(l.get('종가', 0)) > 0 else 1.0
 
     ma5   = float(l['MA5'])
     ma20  = float(l['MA20'])
@@ -1351,6 +1389,8 @@ def calc_entry_point(df, preset=None):
     risk   = entry - stoploss
     reward = target1 - entry
     rr     = round(reward / risk, 2) if risk > 0 else 0
+    # cur == 0 방어 (ZeroDivision)
+    gap_pct = round((entry - cur) / cur * 100, 1) if cur > 0 else 0.0
 
     return {
         'cur':      round(cur),
@@ -1360,7 +1400,7 @@ def calc_entry_point(df, preset=None):
         'target2':  target2,
         'reason':   reason,
         'rr':       rr,
-        'gap_pct':  round((entry - cur) / cur * 100, 1),  # 현재가 대비 진입가 차이
+        'gap_pct':  gap_pct,
     }
 
 def make_chart(df, name, entry=None, stoploss=None, target1=None, target2=None):
@@ -7840,8 +7880,8 @@ with tab_e:
                                     unsafe_allow_html=True
                                 )
                     else:
-                        _tok = st.session_state.get('kis_token')
-                        _tok_age = _time_kis.time() - st.session_state.get('kis_token_time', 0)
+                        _tok = st.session_state.get('_k_t')
+                        _tok_age = _time_kis.time() - st.session_state.get('_k_ts', 0)
                         if _tok and _tok_age > 21600:
                             st.warning("⏰ KIS 토큰 만료 (6시간) — 페이지를 새로고침하면 자동 갱신됩니다.")
                         elif not _tok:
