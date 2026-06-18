@@ -770,6 +770,9 @@ hr { border-color: #e2e8f0 !important; }
     box-shadow: var(--shadow-sm);
     gap: 2px;
     flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 100;
 }
 .stTabs [data-baseweb="tab"] {
     border-radius: 8px;
@@ -3252,6 +3255,47 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
     차트 분석 · 타점 계산은 가능 — 실제 주문은 금지 구간 해제 후 실행하세요
   </div>
 </div>""", unsafe_allow_html=True)
+    # ── 빠른 결론 헤드라인 (탭 선택 전) ──
+    _b_tickers = get_watchlist_tickers()
+    if _b_tickers:
+        _b_quick_sel = st.selectbox(
+            "▶ 분석 종목 선택 (결론 우선 표시)",
+            [f"{n} ({t})" for t, n in _b_tickers if t in all_data],
+            key="b_quick_sel"
+        )
+        if _b_quick_sel:
+            _bq_tk = _b_quick_sel.split('(')[-1].replace(')','').strip()
+            if not is_korean_ticker(_bq_tk):
+                _bq_tk = _b_quick_sel.split(' ')[0].strip()
+            if _bq_tk in all_data:
+                try:
+                    _bq_df = all_data[_bq_tk]['df']
+                    _bq_ep = calc_entry_point(_bq_df, st.session_state.get('analysis_preset','bounce'))
+                    _bq_sigs = get_signal(_bq_df)
+                    _bq_buy  = sum(1 for _, t in _bq_sigs if t == 'buy')
+                    _bq_v891 = run_v891_system_check()
+                    if not _bq_v891['can_enter']:
+                        _bq_vd = "🚫 진입 차단"; _bq_vc = "#f43f5e"; _bq_vb = "rgba(244,63,94,0.12)"
+                    elif _bq_ep['rr'] < 2.0:
+                        _bq_vd = "❌ 진입 불가"; _bq_vc = "#f43f5e"; _bq_vb = "rgba(244,63,94,0.10)"
+                    elif _bq_buy >= 2:
+                        _bq_vd = "✅ 매수 권장"; _bq_vc = "#34d399"; _bq_vb = "rgba(52,211,153,0.12)"
+                    else:
+                        _bq_vd = "⚠️ 관망"; _bq_vc = "#fbbf24"; _bq_vb = "rgba(251,191,36,0.10)"
+                    st.markdown(f"""
+<div style='background:{_bq_vb};border:2px solid {_bq_vc}60;border-radius:12px;
+padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center'>
+  <div>
+    <span style='font-size:20px;font-weight:900;color:{_bq_vc}'>{_bq_vd}</span>
+    <span style='font-size:11px;color:#64748b;margin-left:12px'>
+      진입 {_bq_ep["entry"]:,.0f} | 손절 {_bq_ep["stoploss"]:,.0f} | 목표 {_bq_ep["target1"]:,.0f}
+    </span>
+  </div>
+  <span style='font-size:28px;font-weight:900;color:{_bq_vc};font-family:IBM Plex Mono'>R:R {_bq_ep["rr"]}</span>
+</div>""", unsafe_allow_html=True)
+                except Exception:
+                    pass
+
     _sub_b1, _sub_b2, _sub_b3 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석", "📋 분석 기록"])
 
     with _sub_b1:
@@ -4786,6 +4830,47 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
         st.divider()
 
+        # ── 콤팩트 스코어 그리드 (C1~C6 한눈에) ──
+        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:8px'>📊 발굴 종목 스코어 카드 — C1~C6 조건 현황</div>", unsafe_allow_html=True)
+        _grid_html = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:16px'>"
+        for _gi, _gitem in enumerate(_p_list[:20]):
+            _gcond = _gitem.get('조건', '')
+            _ggrd  = _gitem.get('등급', '')
+            _gsc   = _gitem.get('score', 0)
+            _gchg  = _gitem.get('등락(%)', 0)
+            _gchg_c = "#ef4444" if _gchg > 0 else "#3b82f6"
+            _gg_c  = "#ffd166" if '🏆' in _ggrd else "#3b82f6" if 'Target' in _ggrd else "#64748b"
+            # C1~C6 파싱
+            import re as _re_g
+            def _cx(cond_str, cx): return "✅" if f"C{cx}✅" in cond_str else "❌"
+            _c1 = _cx(_gcond,1); _c2 = _cx(_gcond,2); _c3 = _cx(_gcond,3)
+            _c4 = _cx(_gcond,4); _c5 = _cx(_gcond,5); _c6 = _cx(_gcond,6)
+            _is_wl_g = _gitem['ticker'] in _sc_ids
+            _grid_html += (
+                f"<div style='background:#0d1117;border:1px solid {_gg_c}30;border-radius:10px;padding:10px 12px'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
+                f"<span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_gitem['name'][:10]}</span>"
+                f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:1px 8px;border-radius:12px'>{_gsc}점</span>"
+                f"</div>"
+                f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>{_gitem['ticker']} &nbsp;|&nbsp; "
+                f"<span style='color:{_gchg_c}'>{'▲' if _gchg>0 else '▼'}{abs(_gchg):.1f}%</span>"
+                f"&nbsp;|&nbsp; {_gitem.get('5일수익률',0):+.1f}%</div>"
+                f"<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:10px;text-align:center'>"
+                f"<div style='color:#64748b'>C1<br>{_c1}</div>"
+                f"<div style='color:#64748b'>C2<br>{_c2}</div>"
+                f"<div style='color:#64748b'>C3<br>{_c3}</div>"
+                f"<div style='color:#64748b'>C4<br>{_c4}</div>"
+                f"<div style='color:#64748b'>C5<br>{_c5}</div>"
+                f"<div style='color:#64748b'>C6<br>{_c6}</div>"
+                f"</div>"
+                f"<div style='font-size:10px;color:{_gg_c};margin-top:6px'>{_ggrd}"
+                + ("&nbsp;<span style='color:#34d399'>★ 관심</span>" if _is_wl_g else "") +
+                "</div>"
+                f"</div>"
+            )
+        _grid_html += "</div>"
+        st.markdown(_grid_html, unsafe_allow_html=True)
+
         # ── 원클릭 분석 오버레이 카드 ──
         st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 원클릭 분석 — 종목을 클릭하면 즉시 판정 결과를 확인할 수 있습니다</div>", unsafe_allow_html=True)
 
@@ -5231,62 +5316,81 @@ with tab_d:
     st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
     st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
 
-    with st.expander("💡 ETF 로테이션 전략 사용법 & 매수/매도 방법", expanded=False):
-        st.markdown("""
-### 🎯 ETF 로테이션이란?
-여러 ETF 중 **가장 강한 추세의 ETF 1개에만 집중 투자**하고, 순위가 바뀌면 교체(로테이션)하는 전략입니다.
-분산투자보다 집중력 있고, 개별주보다 리스크가 낮은 중간 전략입니다.
+    st.markdown("""
+<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;padding:18px 22px;margin-bottom:14px'>
+  <div style='font-size:12px;font-weight:700;color:#64748b;margin-bottom:14px'>⚡ ETF 로테이션 전략 — 핵심 체크리스트</div>
 
----
+  <div style='display:grid;grid-template-columns:1fr 1fr;gap:16px'>
 
-### 📋 매수 방법 (국장 ETF)
+    <div>
+      <div style='font-size:11px;font-weight:700;color:#3b82f6;margin-bottom:10px'>🇰🇷 국장 ETF 매수 절차</div>
+      <div style='line-height:1.9;font-size:12px;color:#94a3b8'>
+        <div>🎯 <b style='color:#f0f4ff'>1단계</b> — 랭킹판에서 종합점수 1위 확인 (ADX ≥ 25 필수)</div>
+        <div>📱 <b style='color:#f0f4ff'>2단계</b> — 증권사 앱에서 종목코드 검색 후 지정가 주문</div>
+        <div>⏰ <b style='color:#f0f4ff'>3단계</b> — 09:30 이후 진입 (09:00~10:30 변동성 금지)</div>
+        <div>📋 <b style='color:#f0f4ff'>4단계</b> — 관리 탭에서 페이퍼 트레이딩 기록</div>
+      </div>
+    </div>
 
-**1단계: 랭킹 확인**
-- 이 탭에서 🇰🇷 국장 ETF 선택 → 종합점수 1위 ETF 확인
-- ADX ≥ 25 (활성) 종목 중 1위가 매수 타겟
+    <div>
+      <div style='font-size:11px;font-weight:700;color:#a78bfa;margin-bottom:10px'>🇺🇸 미장 ETF 매수 절차</div>
+      <div style='line-height:1.9;font-size:12px;color:#94a3b8'>
+        <div>🎯 <b style='color:#f0f4ff'>1단계</b> — 미장 ETF 1위 티커 확인 (QQQ·SOXX 등)</div>
+        <div>💱 <b style='color:#f0f4ff'>2단계</b> — 원화 → 달러 환전 후 해외주식 주문</div>
+        <div>⏰ <b style='color:#f0f4ff'>3단계</b> — 미국 정규장 23:30~06:00 또는 프리마켓 활용</div>
+        <div>🧾 <b style='color:#f0f4ff'>4단계</b> — 양도세 250만원 초과분 22% 고려</div>
+      </div>
+    </div>
 
-**2단계: 증권사 앱/HTS에서 매수**
-- 종목코드(6자리)로 검색 → 예: `395160` (KODEX AI반도체TOP2+)
-- 주문 유형: **시장가** 또는 **지정가** (09:30 이후 권장)
-- 매수 시간: 장 시작 후 10분 이후 (09:30~15:20)
+  </div>
 
-**3단계: 페이퍼 트레이딩 기록**
-- 관리 탭 → 페이퍼 트레이딩에서 가상 매수로 기록 관리
+  <div style='margin-top:16px;border-top:1px solid #1e293b;padding-top:14px'>
+    <div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:10px'>🔄 매도/스위칭 신호 기준</div>
+    <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>
+      <div style='background:#0a2a0a;border:1px solid #16a34a40;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#16a34a;font-weight:700'>🟢 홀드</div>
+        <div style='color:#94a3b8'>1~2위 유지, 점수차 15점 미만</div>
+        <div style='color:#64748b'>→ 계속 보유</div>
+      </div>
+      <div style='background:#2a1a00;border:1px solid #f59e0b40;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#f59e0b;font-weight:700'>🟡 주의</div>
+        <div style='color:#94a3b8'>3위 진입 또는 점수차 15점↑</div>
+        <div style='color:#64748b'>→ 다음날 재확인</div>
+      </div>
+      <div style='background:#2a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#ef4444;font-weight:700'>🔴 스위칭</div>
+        <div style='color:#94a3b8'>4위 이하 또는 점수차 20점↑</div>
+        <div style='color:#64748b'>→ 1위 ETF로 즉시 교체</div>
+      </div>
+      <div style='background:#1a0a0a;border:1px solid #ef444460;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#ef4444;font-weight:700'>⚫ 손절</div>
+        <div style='color:#94a3b8'>매수가 대비 -7% 도달</div>
+        <div style='color:#64748b'>→ 즉시 전량 매도</div>
+      </div>
+      <div style='background:#1a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#f43f5e;font-weight:700'>🔴 ADX &lt; 25</div>
+        <div style='color:#94a3b8'>추세 소멸 신호</div>
+        <div style='color:#64748b'>→ 전량 매도 후 관망</div>
+      </div>
+      <div style='background:#2a1500;border:1px solid #f9731640;border-radius:8px;padding:8px 12px;line-height:1.8;font-size:11px'>
+        <div style='color:#f97316;font-weight:700'>🟠 RSI ≥ 78</div>
+        <div style='color:#94a3b8'>단기 과열 구간</div>
+        <div style='color:#64748b'>→ 절반 익절</div>
+      </div>
+    </div>
+  </div>
 
----
-
-### 📋 매수 방법 (미장 ETF)
-
-**1단계: 랭킹 확인**
-- 🇺🇸 미장 ETF 선택 → 1위 ETF 티커 확인 (예: `QQQ`, `SOXX`)
-
-**2단계: 증권사 앱에서 해외주식 매수**
-- 해외주식 메뉴 → 미국 시장 → 티커 검색
-- 매수 시간: 미국 정규장 (한국시간 23:30~06:00) 또는 **프리마켓 활용**
-- 환전 필요: 원화 → 달러 환전 후 매수
-
----
-
-### 🔄 매도/스위칭 타이밍
-
-| 신호 | 조건 | 행동 |
-|---|---|---|
-| 🟢 **홀드** | 1~2위 유지, 점수차 15점 미만 | 계속 보유 |
-| 🟡 **주의** | 3위 진입 OR 점수차 15점↑ | 다음날 재확인 |
-| 🔴 **스위칭** | 4위 이하 OR 점수차 20점↑ | 현재 1위 ETF로 교체 |
-| ⚫ **손절** | 매수가 대비 -7% | 즉시 매도 |
-| 🔴 **ADX < 25** | 추세 소멸 | 전량 매도 후 관망 |
-| 🟠 **RSI ≥ 78** | 단기 과열 | 절반 익절 |
-
----
-
-### ⚠️ 실전 주의사항
-- **스위칭은 3거래일 연속 1위 ETF로만** 이동 (1위가 매일 바뀌면 보류)
-- **최소 보유 기간 2주** — 잦은 스위칭은 수수료 손실
-- **FOMC·CPI 등 이벤트 직전** 신규 진입 자제 (매크로 이벤트 캘린더 홈탭 참조)
-- 국장 ETF: 거래세 없음, 매매수수료만 발생
-- 미장 ETF: 달러 환전 비용 + 수수료 + 양도세(250만원 초과분 22%) 고려
-""")
+  <div style='margin-top:14px;border-top:1px solid #1e293b;padding-top:12px'>
+    <div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px'>⚠️ 실전 주의사항</div>
+    <div style='line-height:2.0;font-size:12px;color:#94a3b8'>
+      <div>🔁 <b style='color:#fbbf24'>스위칭</b>은 3거래일 연속 1위 ETF로만 이동 — 매일 1위가 바뀌면 보류</div>
+      <div>⏳ <b style='color:#fbbf24'>최소 보유 기간 2주</b> — 잦은 스위칭은 수수료 손실 누적</div>
+      <div>📅 <b style='color:#fbbf24'>FOMC·CPI 이벤트 직전</b> 신규 진입 자제 (홈탭 캘린더 확인)</div>
+      <div>🇰🇷 국장 ETF: 거래세 없음, 매매수수료만 발생</div>
+      <div>🇺🇸 미장 ETF: 환전비용 + 수수료 + 양도세(250만원 초과 22%) 반드시 고려</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
     _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
 
