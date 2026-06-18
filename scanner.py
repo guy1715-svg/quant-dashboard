@@ -1,11 +1,12 @@
 """
-scanner.py — V8.9.4 하이브리드 스코어링 스캐너 엔진
+scanner.py — V9.7 필터 등급제 스캐너 엔진
 
-V8.9.4 변경사항:
+V9.7 변경사항:
   - 데이터 소스: KIS API 우선, yfinance 폴백
-  - 하드 필터: ETF/SPAC/우선주/저변동성섹터 + 시총(C1) + ATR(C2) — AND 필수
+  - 하드 필터: ETF/SPAC/우선주/저변동성섹터 + 시총(C1) + ATR(C2)
   - 스코어링: C3(재무 20점) + C4(외인/기관 쌍끌이 30점) + C5(모멘텀 25점) + C6(눌림목 25점)
-  - 판정: 70점 이상 → Target_Locked / 90점 이상 → A-Grade 주도주
+  - 보너스: RSI과매도+10 / 거래량폭증+10 / MACD골든크로스+10 (OR 로직)
+  - 등급: S등급(90+확신도높음) / A등급(70+관심종목) / B등급(50+정찰병)
   - NXT(대체거래소) tradable_nxt 플래그 검증
 """
 
@@ -34,8 +35,9 @@ SCORE_C6_VOL     = 25   # 눌림목: 거래량 < 직전20일최대 × 50%
 SCORE_C5_RET_MIN = 0.08
 SCORE_C6_VOL_MAX = 0.50
 
-GRADE_A    = 90   # A-Grade 주도주
-GRADE_LOCK = 70   # Target_Locked
+GRADE_S    = 90   # 🥇 S등급 — 확신도 높음 (핵심 조건 100% 충족)
+GRADE_A    = 70   # 🎯 A등급 — 관심 종목 (주요 지표 2개↑)
+GRADE_B    = 50   # 🔎 B등급 — 정찰병 (추세 전환 가능성)
 
 CONCURRENCY_DEFAULT = 10
 
@@ -135,7 +137,7 @@ class ScanResult:
     tradable_nxt:   bool
     passed:         bool
     score:          int           # 총점 (0~100)
-    grade:          str           # "A-Grade 주도주" / "Target_Locked" / "Filtered"
+    grade:          str           # "🥇 S등급" / "🎯 A등급" / "🔎 B등급" / "Filtered"
     cond_detail:    str
     rsi:            float = 0.0
     macd_cross:     bool  = False
@@ -197,7 +199,7 @@ def _evaluate_scoring(
     Returns: (hard_pass, score, grade, cond_detail, reasons)
     hard_pass: C1+C2 필수 AND 통과 여부
     score: 0~100점 (C3+C4+C5+C6 합산)
-    grade: "A-Grade 주도주" / "Target_Locked" / "Filtered"
+    grade: "🥇 S등급" / "🎯 A등급" / "🔎 B등급" / "Filtered"
     """
     mktcap_bil   = float(price_info.get("market_cap_bil", 0))
     op_profit    = fin_info.get("operating_profit")
@@ -286,12 +288,12 @@ def _evaluate_scoring(
 
     if overheat:
         grade = "Filtered"  # 과열 → 무조건 차단
-    elif all6_pass and score >= GRADE_A:
-        grade = "A-Grade 주도주"
-    elif all6_pass and score >= GRADE_LOCK:
-        grade = "Target_Locked"
-    elif large_cap_pass and score >= GRADE_LOCK:
-        grade = "Target_Locked"  # 대형주 특례 통과
+    elif (all6_pass or large_cap_pass) and score >= GRADE_S:
+        grade = "🥇 S등급"       # 확신도 높음
+    elif (all6_pass or large_cap_pass or hard_pass) and score >= GRADE_A:
+        grade = "🎯 A등급"       # 관심 종목
+    elif score >= GRADE_B:
+        grade = "🔎 B등급"       # 정찰병
     else:
         grade = "Filtered"
 

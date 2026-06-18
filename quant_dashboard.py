@@ -4693,7 +4693,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         '조건':        _kr.cond_detail,
                         'score':       _kr.score if hasattr(_kr, 'score') else 70,
                         '점수':        _kr.score if hasattr(_kr, 'score') else 70,
-                        '등급':        _kr.grade  if hasattr(_kr, 'grade')  else 'Target_Locked',
+                        '등급':        _kr.grade  if hasattr(_kr, 'grade')  else '🎯 A등급',
                         'reasons':     _kr.reasons,
                     })
                 # KIS 모드에서는 아래 yfinance 루프 건너뜀
@@ -4701,9 +4701,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 passed = sorted(passed, key=lambda x: x['5일수익률'], reverse=True)
                 st.session_state.passed = passed
                 if not passed:
-                    st.warning("⚠️ V8.9 조건(6개 AND) 충족 종목 없음.")
+                    st.warning("⚠️ B등급(50점↑) 이상 종목 없음. (KIS 실시간)")
                 else:
-                    st.success(f"✅ {len(passed)}개 종목 발굴! (KIS 실시간)")
+                    _ks_s = sum(1 for p in passed if 'S등급' in str(p.get('등급','')))
+                    _ks_a = sum(1 for p in passed if 'A등급' in str(p.get('등급','')))
+                    _ks_b = sum(1 for p in passed if 'B등급' in str(p.get('등급','')))
+                    st.success(f"✅ {len(passed)}개 발굴! 🥇S {_ks_s} · 🎯A {_ks_a} · 🔎B {_ks_b} (KIS 실시간)")
             except Exception as _kis_err:
                 st.warning(f"⚠️ KIS API 오류 ({_kis_err}) — yfinance 폴백으로 전환")
                 KIS_ENABLED_FALLBACK = False
@@ -4852,6 +4855,32 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             )
 
 
+            # ── 갭/이격 계산 (과열 방지용) ──
+            _open_t   = float(df['시가'].iloc[-1])
+            _prev_cl  = float(df['종가'].iloc[-2]) if len(df) >= 2 else _open_t
+            _gap_pct  = (_open_t - _prev_cl) / _prev_cl * 100 if _prev_cl > 0 else 0
+            _ma5_val  = df['종가'].iloc[-5:].mean() if len(df) >= 5 else cur
+            _ma5_diff = (cur - _ma5_val) / _ma5_val * 100 if _ma5_val > 0 else 0
+            _overheat = (_gap_pct >= 3.0) or (abs(_ma5_diff) >= 3.0)
+
+            # ── 기술 지표 (항상 계산 — 보너스 스코어링 + 프리셋 게이트 공용) ──
+            _cl = df['종가'].astype(float)
+            _d_rsi = _cl.diff()
+            _g_rsi = _d_rsi.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+            _l_rsi = (-_d_rsi.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+            _rsi_val = float(100 - 100 / (1 + _g_rsi.iloc[-1] / max(_l_rsi.iloc[-1], 1e-9)))
+            _vr_pct  = vol_t / max_vol_20 * 100 if max_vol_20 > 0 else 0
+            _m12 = _cl.ewm(span=12, adjust=False).mean()
+            _m26 = _cl.ewm(span=26, adjust=False).mean()
+            _mc  = _m12 - _m26; _sg = _mc.ewm(span=9, adjust=False).mean()
+            _macd_gc = bool(len(_mc) >= 2 and _mc.iloc[-1] > _sg.iloc[-1] and _mc.iloc[-2] <= _sg.iloc[-2])
+            _bb_m = _cl.rolling(20).mean().iloc[-1]; _bb_s = _cl.rolling(20).std().iloc[-1]
+            _bb_pos = (cur - (_bb_m - 2*_bb_s)) / (4*_bb_s + 1e-9) * 100
+            _ma5_g  = float(_cl.tail(5).mean())
+            _ma20_g = float(_cl.tail(20).mean())
+            _ma60_g = float(_cl.tail(60).mean()) if len(_cl) >= 60 else _ma20_g
+            _ma_align = _ma5_g > _ma20_g > _ma60_g
+
             # ── 스코어링 ──
             score = 0; score_detail = []
 
@@ -4863,109 +4892,111 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             if c3_ok: score += 20; score_detail.append("재무+20")
 
             # C4: 수급 30점 — KIS 없으면 CMF20으로 대체
-            # CMF > 0 일 때만 True, 0 이하면 예외 없이 False
             c4_ok = (cmf20 > 0)
             if c4_ok: score += 30; score_detail.append("수급+30")
 
             # C5: 모멘텀 25점
             _p_c5 = st.session_state.get("opt_best_cond5", 0.08)
             c5_ok = cum5 >= _p_c5
-            if c5_ok: score += 25; score_detail.append(f"모멘텀+25")
+            if c5_ok: score += 25; score_detail.append("모멘텀+25")
 
             # C6: 눌림목 25점
             _p_c6 = st.session_state.get("opt_best_cond6", 0.50)
             c6_ok = (vol_t < max_vol_20 * _p_c6) if max_vol_20 > 0 else False
             if c6_ok: score += 25; score_detail.append("눌림목+25")
 
-            # ── 갭/이격 계산 (과열 방지용) ──
-            _open_t   = float(df['시가'].iloc[-1])
-            _prev_cl  = float(df['종가'].iloc[-2]) if len(df) >= 2 else _open_t
-            _gap_pct  = (_open_t - _prev_cl) / _prev_cl * 100 if _prev_cl > 0 else 0
-            _ma5_val  = df['종가'].iloc[-5:].mean() if len(df) >= 5 else cur
-            _ma5_diff = (cur - _ma5_val) / _ma5_val * 100 if _ma5_val > 0 else 0
-            _overheat = (_gap_pct >= 3.0) or (abs(_ma5_diff) >= 3.0)
+            # ── 보너스 점수 (OR 로직 보강: RSI/거래량/MACD 중 해당 시 가점) ──
+            _bonus = 0; _bonus_tags = []
+            if _rsi_val <= 35:  _bonus += 10; _bonus_tags.append(f"RSI과매도({_rsi_val:.0f}↓)+10")
+            if _vr_pct >= 200:  _bonus += 10; _bonus_tags.append(f"거래량폭증({_vr_pct:.0f}%)+10")
+            if _macd_gc:        _bonus += 10; _bonus_tags.append("MACD골든크로스+10")
 
-            # ── 프리셋 게이트: 선택된 필터 조건을 반드시 통과해야 함 ──
+            # ── 레짐 기반 보너스 (약세장=방어수급 가점 / 강세장=추세 가점) ──
+            _regime = st.session_state.get('_market_regime', 'neutral')
+            if _regime == 'bear' and c4_ok:   _bonus += 5; _bonus_tags.append("방어수급+5(약세장)")
+            if _regime == 'bull' and c5_ok:   _bonus += 5; _bonus_tags.append("추세모멘텀+5(강세장)")
+
+            score = min(score + _bonus, 110)
+
+            # ── 프리셋 게이트: OR 로직 (선택 조건 중 1개 이상 충족하면 통과) ──
             _active_preset = st.session_state.get('scan_preset')
             if _active_preset and _active_preset != 'custom':
-                _cl = df['종가']
-                # RSI 계산
-                _d = _cl.diff(); _g = _d.clip(lower=0).ewm(alpha=1/14,adjust=False).mean()
-                _ls = (-_d.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
-                _rsi_g = float(100 - 100/(1 + _g.iloc[-1]/max(_ls.iloc[-1],1e-9)))
-                # 거래량 비율
-                _vr_g = vol_t / max_vol_20 * 100 if max_vol_20 > 0 else 0
-                # MACD 골든크로스
-                _m12 = _cl.ewm(span=12,adjust=False).mean()
-                _m26 = _cl.ewm(span=26,adjust=False).mean()
-                _mc = _m12 - _m26; _sg = _mc.ewm(span=9,adjust=False).mean()
-                _gc = (_mc.iloc[-1] > _sg.iloc[-1] and _mc.iloc[-2] <= _sg.iloc[-2])
-                # BB 위치
-                _bb_m = _cl.rolling(20).mean().iloc[-1]; _bb_s = _cl.rolling(20).std().iloc[-1]
-                _bb_lo_g = _bb_m - 2*_bb_s; _bb_up_g = _bb_m + 2*_bb_s
-                _bb_pos_g = (cur - _bb_lo_g)/(_bb_up_g - _bb_lo_g + 1e-9)*100
-                # MA 정배열
-                _ma5_g  = float(_cl.tail(5).mean())
-                _ma20_g = float(_cl.tail(20).mean())
-                _ma60_g = float(_cl.tail(60).mean()) if len(_cl) >= 60 else _ma20_g
-                _align_g = _ma5_g > _ma20_g > _ma60_g
+                _preset_checks = []
+                if use_rsi:   _preset_checks.append(_rsi_val <= 35)
+                if use_vol:   _preset_checks.append(_vr_pct >= 150)
+                if use_macd:  _preset_checks.append(_macd_gc)
+                if use_bb:    _preset_checks.append(_bb_pos <= 25)
+                if use_align: _preset_checks.append(_ma_align)
+                if _preset_checks and not any(_preset_checks):
+                    return False, {'조건': '프리셋 조건 미충족(OR)', '점수': score, '등급': 'Filtered'}
 
-                _gate_fail = (
-                    (use_rsi   and _rsi_g > 35) or
-                    (use_vol   and _vr_g < 150) or
-                    (use_macd  and not _gc) or
-                    (use_bb    and _bb_pos_g > 25) or
-                    (use_align and not _align_g)
-                )
-                if _gate_fail:
-                    return False, {'조건': '프리셋 조건 미충족', '점수': 0, '등급': 'Filtered'}
-
-            # ── 등급 판정 ──
+            # ── S/A/B 3단계 등급 판정 ──
             all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
-
-            # 대형주 특례: C1(시총) AND C3(재무) AND C4(CMF>0) 모두 True일 때만 허용
-            # 셋 중 하나라도 False → 점수 무관 무조건 Drop
             _large_cap_pass = (
-                _is_large_cap
-                and c1_pass          # 절대조건 1: 시총 범위
-                and c3_ok            # 절대조건 2: 재무 흑자
-                and c4_ok            # 절대조건 3: CMF > 0 (자금 유입)
-                and not _overheat    # 과열 차단
+                _is_large_cap and c1_pass and c3_ok and c4_ok and not _overheat
             )
 
             if _overheat:
                 grade = "🔥 과열차단"
-            elif all6_pass and score >= 90:
-                grade = "🏆 A-Grade 주도주"
-            elif all6_pass and score >= 70:
-                grade = "🎯 Target_Locked"
-            elif _large_cap_pass and score >= 70:
-                grade = "🎯 Target_Locked"  # 대형주 특례 (C1+C3 필수)
-            elif hard_pass and score >= 70:
-                grade = "📋 관심후보"
+            elif (all6_pass or _large_cap_pass) and score >= 90:
+                grade = "🥇 S등급"        # 확신도 높음 — 핵심 조건 100% + 90점↑
+            elif (all6_pass or _large_cap_pass or hard_pass) and score >= 70:
+                grade = "🎯 A등급"        # 관심 종목 — 주요 지표 2개↑ 충족
+            elif score >= 50:
+                grade = "🔎 B등급"        # 정찰병 — 추세 전환 가능성 포착
             else:
                 grade = "Filtered"
 
-            passed = (grade in ("🏆 A-Grade 주도주", "🎯 Target_Locked"))
+            passed = grade in ("🥇 S등급", "🎯 A등급", "🔎 B등급")
 
             def _e(b): return "✅" if b else "❌"
             _lc_tag = " 🏦대형주특례" if (_large_cap_pass and not all6_pass and not _overheat) else ""
             _oh_tag = " 🔥과열" if _overheat else ""
+            _rg_tag = f" [{_regime.upper()}장]" if _regime != 'neutral' else ""
+            _bonus_str = (" | " + " ".join(_bonus_tags)) if _bonus_tags else ""
             meta = {
                 'ATR비율':    round(atr14 / cur * 100, 2) if cur > 0 else 0,
                 '5일수익률':  round(cum5 * 100, 2),
-                '거래량비율': round(vol_t / max_vol_20 * 100, 1) if max_vol_20 > 0 else 0,
+                '거래량비율': round(_vr_pct, 1),
                 '시총(억)':   round(mktcap_b) if mktcap_b else '?',
                 'CMF':        round(cmf20, 3),
                 '갭(%)':      round(_gap_pct, 2),
                 'MA5이격(%)': round(_ma5_diff, 2),
+                'RSI':        round(_rsi_val, 1),
                 '점수':       score,
                 '등급':       grade,
                 '조건': (f"C1{_e(c1_pass)} C2{_e(c2_pass)} "
                          f"C3{_e(c3_ok)} C4{_e(c4_ok)} C5{_e(c5_ok)} C6{_e(c6_ok)} "
-                         f"[{score}점] {grade}{_lc_tag}{_oh_tag}"),
+                         f"[{score}점] {grade}{_lc_tag}{_oh_tag}{_rg_tag}{_bonus_str}"),
             }
             return passed, meta
+
+        # ── 시장 레짐 감지 (KOSPI MA5 vs MA20) ─────────────────────────────────
+        try:
+            import yfinance as _yf_reg
+            _reg_df = _yf_reg.Ticker("^KS11").history(period="2mo", interval="1d")
+            if _reg_df is not None and len(_reg_df) >= 20:
+                _reg_c = _reg_df['Close']
+                _reg_ma5  = float(_reg_c.tail(5).mean())
+                _reg_ma20 = float(_reg_c.tail(20).mean())
+                _reg_slope = (_reg_c.iloc[-1] - _reg_c.iloc[-5]) / max(_reg_c.iloc[-5], 1)
+                if _reg_ma5 > _reg_ma20 * 1.005 and _reg_slope > 0:
+                    st.session_state['_market_regime'] = 'bull'
+                elif _reg_ma5 < _reg_ma20 * 0.995 and _reg_slope < 0:
+                    st.session_state['_market_regime'] = 'bear'
+                else:
+                    st.session_state['_market_regime'] = 'neutral'
+        except Exception:
+            st.session_state.setdefault('_market_regime', 'neutral')
+        _regime_now = st.session_state.get('_market_regime', 'neutral')
+        _regime_labels = {'bull': '📈 강세장', 'bear': '📉 약세장', 'neutral': '➡️ 중립'}
+        _regime_colors = {'bull': '#166534', 'bear': '#991B1B', 'neutral': '#64748b'}
+        _rc = _regime_colors.get(_regime_now, '#64748b')
+        _rl = _regime_labels.get(_regime_now, '중립')
+        status.markdown(
+            f"<span style='font-size:11px;color:{_rc}'>시장 레짐: {_rl} — 스캐너 자동 조정 완료</span>",
+            unsafe_allow_html=True
+        )
 
         for idx, ticker in enumerate(scan_tickers):
             prog.progress((idx+1)/len(scan_tickers))
@@ -5038,13 +5069,14 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             with st.expander(f"⚠️ 스캔 중 오류 {len(_errs)}건 (데이터 없음 / API 오류)", expanded=False):
                 for _em in _errs[:20]:
                     st.caption(_em)
-        _a_cnt  = sum(1 for p in passed if '주도주' in str(p.get('등급','')))
-        _tl_cnt = sum(1 for p in passed if 'Target' in str(p.get('등급','')))
+        _s_cnt  = sum(1 for p in passed if 'S등급' in str(p.get('등급','')))
+        _a_cnt  = sum(1 for p in passed if 'A등급' in str(p.get('등급','')))
+        _b_cnt  = sum(1 for p in passed if 'B등급' in str(p.get('등급','')))
         if not passed:
             pass
         else:
             _sc1, _sc2 = st.columns([4, 1])
-            _sc1.success(f"✅ {len(passed)}개 발굴! 🏆A-Grade {_a_cnt}개 / 🎯Target_Locked {_tl_cnt}개")
+            _sc1.success(f"✅ {len(passed)}개 발굴! 🥇S등급 {_s_cnt}개 / 🎯A등급 {_a_cnt}개 / 🔎B등급 {_b_cnt}개")
             try:
                 _dl_df = pd.DataFrame([{k: v for k, v in p.items() if k not in ('reasons',)} for p in passed])
                 _sc2.download_button("📥 CSV", _dl_df.to_csv(index=False, encoding='utf-8-sig'),
@@ -5057,12 +5089,15 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     if st.session_state.get('passed') is None:
         st.info("💡 스캔 버튼을 눌러 오늘의 매수 후보를 발굴하세요.")
     elif not st.session_state.passed:
-        st.warning("⚠️ 스코어링 70점 이상 종목 없음. 조건을 완화하거나 다른 시장대를 시도하세요.")
+        st.warning("⚠️ B등급(50점↑) 이상 종목 없음. 시장 레짐 확인 후 다른 시장대를 시도하세요.")
     if st.session_state.get('passed'):
         _sc_ids = [t for t, _ in get_watchlist_tickers()]
         _p_list = st.session_state.passed
 
-        st.success(f"✅ {len(_p_list)}개 종목 발굴!")
+        _s_c = sum(1 for _x in _p_list if 'S등급' in str(_x.get('등급','')))
+        _a_c = sum(1 for _x in _p_list if 'A등급' in str(_x.get('등급','')))
+        _b_c = sum(1 for _x in _p_list if 'B등급' in str(_x.get('등급','')))
+        st.success(f"✅ {len(_p_list)}개 발굴! 🥇S등급 {_s_c}개 · 🎯A등급 {_a_c}개 · 🔎B등급 {_b_c}개")
 
         # 전체 추가 버튼
         _new_items = [i for i in _p_list if i['ticker'] not in _sc_ids]
@@ -5087,7 +5122,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             _gsc   = _gitem.get('score', 0)
             _gchg  = _gitem.get('등락(%)', 0)
             _gchg_c = "#ef4444" if _gchg > 0 else "#3b82f6"
-            _gg_c  = "#ffd166" if '🏆' in _ggrd else "#3b82f6" if 'Target' in _ggrd else "#64748b"
+            _gg_c  = "#ffd166" if 'S등급' in _ggrd else "#3b82f6" if 'A등급' in _ggrd else "#10b981" if 'B등급' in _ggrd else "#64748b"
             # C1~C6 파싱
             import re as _re_g
             def _cx(cond_str, cx): return "✅" if f"C{cx}✅" in cond_str else "❌"
