@@ -2853,7 +2853,6 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                     _target_p3  = _avg_p3 * 1.08
                     _t2_p3      = _avg_p3 * 1.15
                     _eval_p3    = _cur_p3 * _qty_p3
-                    _pnl_color  = "#16a34a" if _pnl_pct_p3 >= 0 else "#ef4444"
                     _sym_p3str  = "원" if _is_kr_p3 else "$"
                     _fmt_p3     = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
 
@@ -2862,7 +2861,9 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                     _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
                     _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
                     _target_hit = _cur_p3 >= _target_p3
-                    _card_border_p3 = "#ef4444" if _stop_warn else ("#16a34a" if _target_hit else "#1e3a5f")
+                    # 형광 그린(수익)/형광 레드(손절 임박)
+                    _pnl_color  = "#39ff14" if _pnl_pct_p3 >= 0 else ("#ff003c" if _stop_warn else "#ef4444")
+                    _card_border_p3 = "#ff003c" if _stop_warn else ("#39ff14" if _target_hit else "#1e3a5f")
 
                     # 트레일링 스탑 상태
                     _ts_key = f"trailing_stop_{_tk_p3}"
@@ -3255,6 +3256,43 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
     차트 분석 · 타점 계산은 가능 — 실제 주문은 금지 구간 해제 후 실행하세요
   </div>
 </div>""", unsafe_allow_html=True)
+        # ── 시장 레짐 + 해제 카운트다운 ──
+        from datetime import datetime as _dt_reg, timedelta as _td_reg
+        _now_utc = _dt_reg.utcnow()
+        _now_kst = _now_utc + _td_reg(hours=9)
+        _kh_now  = _now_kst.hour
+        _km_now  = _now_kst.minute
+        if _v891_b.get('blackout'):
+            _regime_label = "FOMC 블랙아웃 모드 (매파적 리스크)"
+            _regime_icon  = "🦅"
+            _regime_color = "#f97316"
+        elif _time_block_b:
+            _regime_label = "장 초반 변동성 구간 (관망 필수)"
+            _regime_icon  = "⏰"
+            _regime_color = "#fbbf24"
+        else:
+            _regime_label = "일반 진입 금지 (시스템 알림)"
+            _regime_icon  = "🔒"
+            _regime_color = "#ef4444"
+        # 다음 09:00 KST까지 남은 시간
+        _next_open = _now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+        if _now_kst >= _next_open:
+            _next_open += _td_reg(days=1)
+        _remaining = _next_open - _now_kst
+        _rem_h  = int(_remaining.total_seconds() // 3600)
+        _rem_m  = int((_remaining.total_seconds() % 3600) // 60)
+        st.markdown(
+            f"<div style='background:#0d1117;border:1px solid {_regime_color}40;border-radius:10px;"
+            f"padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center'>"
+            f"<div><span style='font-size:16px'>{_regime_icon}</span>"
+            f"<span style='color:{_regime_color};font-weight:700;font-size:13px;margin-left:8px'>금일 시장 레짐: {_regime_label}</span></div>"
+            f"<div style='text-align:right'>"
+            f"<div style='font-size:10px;color:#64748b'>다음 진입 가능 해제까지</div>"
+            f"<div style='font-size:16px;font-weight:900;color:#fbbf24;font-family:monospace'>{_rem_h:02d}:{_rem_m:02d}</div>"
+            f"<div style='font-size:10px;color:#64748b'>내일 09:00 KST 해제 예정</div>"
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
     # ── 빠른 결론 헤드라인 (탭 선택 전) ──
     _b_tickers = get_watchlist_tickers()
     if _b_tickers:
@@ -4871,37 +4909,53 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _grid_html += "</div>"
         st.markdown(_grid_html, unsafe_allow_html=True)
 
-        # ── 원클릭 분석 오버레이 카드 ──
-        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 원클릭 분석 — 종목을 클릭하면 즉시 판정 결과를 확인할 수 있습니다</div>", unsafe_allow_html=True)
+        # ── V9.7 사이드 패널 Drawer — 좌: 목록 / 우: 상세 분석 ──
+        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 종목 선택 → 우측 패널에서 즉시 분석</div>", unsafe_allow_html=True)
 
-        for _si, item in enumerate(_p_list):
-            _stk = item['ticker']; _snm = item['name']
-            _schg = item.get('등락(%)', 0); _ssc = item.get('score', 0)
-            _sgrd = item.get('등급', '')
-            _scc  = "#ffd166" if '🏆' in _sgrd else "#3b82f6"
-            _schg_c = "#ef4444" if _schg > 0 else "#3b82f6"
-            _is_in_wl = _stk in _sc_ids
-            _exp_open = st.session_state.get(f"scan_exp_{_stk}", False)
+        if 'scan_drawer_sel' not in st.session_state:
+            st.session_state['scan_drawer_sel'] = _p_list[0]['ticker'] if _p_list else None
 
-            # 요약 헤더 클릭 → 분석 오버레이
-            with st.expander(
-                f"{'🏆' if '🏆' in _sgrd else '🎯'} {_snm} ({_stk}) | {_ssc}점 | {'▲' if _schg>0 else '▼'}{abs(_schg):.2f}%",
-                expanded=st.session_state.get(f"scan_exp_{_stk}", _si == 0)
-            ):
-                # 빠른 메타 칩
+        _drawer_left, _drawer_right = st.columns([2, 3])
+
+        with _drawer_left:
+            st.markdown("<div style='font-size:11px;color:#64748b;margin-bottom:6px'>📋 발굴 종목 목록</div>", unsafe_allow_html=True)
+            for _si, item in enumerate(_p_list):
+                _stk = item['ticker']; _snm = item['name']
+                _schg = item.get('등락(%)', 0); _ssc = item.get('score', 0)
+                _sgrd = item.get('등급', '')
+                _schg_c = "#39ff14" if _schg > 0 else "#3b82f6"
+                _is_sel = st.session_state.get('scan_drawer_sel') == _stk
+                _btn_style = "primary" if _is_sel else "secondary"
+                _btn_lbl = f"{'🏆' if '🏆' in _sgrd else '🎯'} {_snm[:8]} | {_ssc}점 | {'▲' if _schg>0 else '▼'}{abs(_schg):.1f}%"
+                if st.button(_btn_lbl, key=f"drawer_btn_{_stk}", use_container_width=True, type=_btn_style):
+                    st.session_state['scan_drawer_sel'] = _stk
+                    st.rerun()
+
+        with _drawer_right:
+            _sel_tk = st.session_state.get('scan_drawer_sel')
+            _sel_item = next((i for i in _p_list if i['ticker'] == _sel_tk), None)
+            if _sel_item:
+                _stk = _sel_item['ticker']; _snm = _sel_item['name']
+                _ssc = _sel_item.get('score', 0)
+                _sgrd = _sel_item.get('등급', '')
+                _schg = _sel_item.get('등락(%)', 0)
+                _scc  = "#ffd166" if '🏆' in _sgrd else "#3b82f6"
+                _schg_c = "#39ff14" if _schg > 0 else "#3b82f6"
+                _is_in_wl = _stk in _sc_ids
+
+                # 메타 칩
                 _smeta_html = (
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>"
+                    f"<div style='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px'>"
                     f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:3px 10px;border-radius:20px'>점수 {_ssc}</span>"
                     f"<span style='background:#1e293b;color:{_schg_c};font-size:11px;padding:3px 10px;border-radius:20px'>{'▲' if _schg>0 else '▼'}{abs(_schg):.2f}%</span>"
-                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>거래량 {item.get('거래량비율',0):.0f}%</span>"
-                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>CMF {item.get('CMF',0):.3f}</span>"
-                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>5일 {item.get('5일수익률',0):+.1f}%</span>"
-                    f"<span style='background:#1e293b;color:{_scc};font-size:11px;padding:3px 10px;border-radius:20px'>{_sgrd}</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>거래량 {_sel_item.get('거래량비율',0):.0f}%</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>CMF {_sel_item.get('CMF',0):.3f}</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>5일 {_sel_item.get('5일수익률',0):+.1f}%</span>"
                     f"</div>"
                 )
                 st.markdown(_smeta_html, unsafe_allow_html=True)
 
-                # ⚡ 즉시 Verdict 분석
+                # ⚡ Verdict 분석
                 try:
                     _df_ov = fetch_ohlcv(_stk, 60)
                     if _df_ov is not None and len(_df_ov) >= 20:
@@ -4920,60 +4974,64 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         else:
                             _vd_ov = "⚠️ 관망"; _vc_ov = "#fbbf24"; _vb_ov = "rgba(251,191,36,0.08)"
 
-                        st.markdown(f"""
-<div style='background:{_vb_ov};border:2px solid {_vc_ov}50;border-radius:12px;
-padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'>
-  <div>
-    <div style='font-size:18px;font-weight:900;color:{_vc_ov}'>{_vd_ov}</div>
-    <div style='font-size:11px;color:#64748b;margin-top:4px'>
-      진입 {_ep_ov["entry"]:,.0f} &nbsp;|&nbsp; 손절 {_ep_ov["stoploss"]:,.0f} &nbsp;|&nbsp; 목표 {_ep_ov["target1"]:,.0f}
-    </div>
-  </div>
-  <div style='text-align:right'>
-    <div style='font-size:11px;color:#64748b'>R:R</div>
-    <div style='font-size:26px;font-weight:900;color:{_vc_ov};font-family:IBM Plex Mono'>{_ep_ov["rr"]}</div>
-  </div>
-</div>""", unsafe_allow_html=True)
-                        # 저장
+                        # 지지선/손절가 계산
+                        _ep_sup = _ep_ov['stoploss']
+                        _ep_ent = _ep_ov['entry']
+                        _ep_tgt = _ep_ov['target1']
+                        _ep_cur = float(_df_ov['Close'].iloc[-1]) if 'Close' in _df_ov.columns else _ep_ent
+
+                        st.markdown(
+                            f"<div style='background:{_vb_ov};border:2px solid {_vc_ov}50;border-radius:12px;"
+                            f"padding:12px 16px;margin-bottom:8px'>"
+                            f"<div style='font-size:18px;font-weight:900;color:{_vc_ov};margin-bottom:6px'>{_vd_ov}</div>"
+                            f"<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:11px'>"
+                            f"<div style='color:#64748b'>현재가<br><span style='color:#f0f4ff;font-weight:700'>{_ep_cur:,.0f}</span></div>"
+                            f"<div style='color:#64748b'>진입가<br><span style='color:#fbbf24;font-weight:700'>{_ep_ent:,.0f}</span></div>"
+                            f"<div style='color:#64748b'>지지/손절<br><span style='color:#ff003c;font-weight:700'>{_ep_sup:,.0f}</span></div>"
+                            f"<div style='color:#64748b'>목표가<br><span style='color:#39ff14;font-weight:700'>{_ep_tgt:,.0f}</span></div>"
+                            f"</div>"
+                            f"<div style='margin-top:8px;font-size:11px;color:#64748b'>수급점수 {_sel_item.get('CMF',0):.3f} &nbsp;|&nbsp; R:R <span style='color:{_vc_ov};font-weight:700'>" + str(_ep_ov['rr']) + "</span></div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
                         save_analysis_log(_stk, _snm, _vd_ov, _ep_ov['rr'],
                                           _ep_ov['entry'], _ep_ov['stoploss'],
                                           _ep_ov['target1'], _ep_ov['target2'],
                                           preset=st.session_state.get('scan_preset',''),
-                                          score=_ssc, source="스캐너오버레이")
+                                          score=_ssc, source="스캐너드로어")
+
+                        # 차트 토글
+                        _chart_key_ov = f"ov_chart_{_stk}"
+                        if st.button(
+                            "📈 차트 닫기" if st.session_state.get(_chart_key_ov) else "📈 차트 보기",
+                            key=f"ov_chart_btn_{_stk}", use_container_width=True
+                        ):
+                            st.session_state[_chart_key_ov] = not st.session_state.get(_chart_key_ov, False)
+                            st.rerun()
+                        if st.session_state.get(_chart_key_ov):
+                            try:
+                                _df_ch = fetch_ohlcv(_stk, 60)
+                                if _df_ch is not None:
+                                    _df_ch = calc_indicators(_df_ch)
+                                    _ep_ch = calc_entry_point(_df_ch, st.session_state.get('scan_preset', 'bounce'))
+                                    st.plotly_chart(make_chart(_df_ch, _snm,
+                                        entry=_ep_ch['entry'], stoploss=_ep_ch['stoploss'],
+                                        target1=_ep_ch['target1'], target2=_ep_ch['target2']),
+                                        use_container_width=True)
+                            except Exception:
+                                st.caption("차트 로드 실패")
+
+                        # 관심종목 추가
+                        if _is_in_wl:
+                            st.markdown("<div style='color:#34d399;font-size:12px;margin-top:6px'>✅ 관심종목 등록됨</div>", unsafe_allow_html=True)
+                        else:
+                            if st.button("⭐ 관심종목 추가", key=f"ov_add_{_stk}", use_container_width=True):
+                                if add_ticker(_stk, _snm):
+                                    st.success(f"✅ {_snm} 추가!"); st.rerun()
                     else:
                         st.caption("데이터 부족 — 분석 불가")
                 except Exception as _ov_e:
                     st.caption(f"분석 오류: {_ov_e}")
-
-                # 액션 버튼
-                _ov_c1, _ov_c2, _ov_c3 = st.columns(3)
-                if _is_in_wl:
-                    _ov_c1.markdown("<div style='color:#34d399;padding:10px 0;font-size:12px'>✅ 관심종목 등록됨</div>", unsafe_allow_html=True)
-                else:
-                    if _ov_c1.button("⭐ 관심종목 추가", key=f"ov_add_{_stk}", use_container_width=True):
-                        if add_ticker(_stk, _snm):
-                            st.success(f"✅ {_snm} 추가!"); st.rerun()
-
-                _chart_key_ov = f"ov_chart_{_stk}"
-                if _ov_c2.button(
-                    "📈 차트 닫기" if st.session_state.get(_chart_key_ov) else "📈 차트 보기",
-                    key=f"ov_chart_btn_{_stk}", use_container_width=True
-                ):
-                    st.session_state[_chart_key_ov] = not st.session_state.get(_chart_key_ov, False)
-                    st.rerun()
-
-                if st.session_state.get(_chart_key_ov):
-                    try:
-                        _df_ch = fetch_ohlcv(_stk, 60)
-                        if _df_ch is not None:
-                            _df_ch = calc_indicators(_df_ch)
-                            _ep_ch = calc_entry_point(_df_ch, st.session_state.get('scan_preset', 'bounce'))
-                            st.plotly_chart(make_chart(_df_ch, _snm,
-                                entry=_ep_ch['entry'], stoploss=_ep_ch['stoploss'],
-                                target1=_ep_ch['target1'], target2=_ep_ch['target2']),
-                                use_container_width=True)
-                    except Exception:
-                        st.caption("차트 로드 실패")
 
         st.divider()
 
@@ -5390,6 +5448,61 @@ with tab_d:
         "</div>",
         unsafe_allow_html=True
     )
+
+    # ── V9.7 실전 지지선 시각화 모듈 ──
+    try:
+        from datetime import datetime as _dt_sr
+        _sr_market = st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')
+        _sr_list_key = '379800' if '국장' in str(_sr_market) else 'SPY'
+        _sr_df = fetch_ohlcv(_sr_list_key if '국장' in str(_sr_market) else _sr_list_key, 60)
+        if _sr_df is not None and len(_sr_df) >= 20:
+            _sr_cl = _sr_df['Close'] if 'Close' in _sr_df.columns else _sr_df.iloc[:, 3]
+            _sr_hi = _sr_df['High'] if 'High' in _sr_df.columns else _sr_df.iloc[:, 1]
+            _sr_lo = _sr_df['Low']  if 'Low'  in _sr_df.columns else _sr_df.iloc[:, 2]
+            _sr_cur = float(_sr_cl.iloc[-1])
+            # 피벗 포인트 계산
+            _sr_ph = float(_sr_hi.iloc[-2]); _sr_pl = float(_sr_lo.iloc[-2]); _sr_pc = float(_sr_cl.iloc[-2])
+            _sr_pivot = (_sr_ph + _sr_pl + _sr_pc) / 3
+            _sr_s1 = 2 * _sr_pivot - _sr_ph
+            _sr_s2 = _sr_pivot - (_sr_ph - _sr_pl)
+            _sr_r1 = 2 * _sr_pivot - _sr_pl
+            _sr_r2 = _sr_pivot + (_sr_ph - _sr_pl)
+            # 20일 스윙 저점/고점
+            _sr_swing_lo = float(_sr_lo.tail(20).min())
+            _sr_swing_hi = float(_sr_hi.tail(20).max())
+            # 현재가와 각 레벨 거리
+            def _sr_dist(lv): return f"{(lv/_sr_cur-1)*100:+.2f}%"
+            def _sr_fmt(v): return f"{int(v):,}" if _sr_list_key.isdigit() else f"{v:,.2f}"
+            _sr_levels = [
+                ("🏆 스윙 고점", _sr_swing_hi, "#fbbf24"),
+                ("🔴 저항1 (R1)", _sr_r1, "#f87171"),
+                ("⚪ 피벗", _sr_pivot, "#94a3b8"),
+                ("🟡 지지1 (S1)", _sr_s1, "#fbbf24"),
+                ("🟢 스윙 저점", _sr_swing_lo, "#39ff14"),
+                ("🔵 2차지지 (S2)", _sr_s2, "#60a5fa"),
+            ]
+            _sr_name = "KODEX 미국S&P500TR" if _sr_list_key == '379800' else "SPY"
+            _sr_html = (
+                "<div style='background:linear-gradient(135deg,#0d1117,#1a1200);border:1px solid #fbbf2440;"
+                "border-radius:14px;padding:14px 18px;margin-bottom:14px'>"
+                "<div style='font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:10px'>"
+                f"🔑 핵심 지지·저항 레벨 — {_sr_name} (현재가 {_sr_fmt(_sr_cur)})</div>"
+                "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:6px'>"
+            )
+            for _lbl, _lv, _lc in _sr_levels:
+                _is_cur = abs(_lv / _sr_cur - 1) < 0.015
+                _bg = "background:#1a1a00;border:1px solid #fbbf24;" if _is_cur else "background:#0d1117;border:1px solid #1e293b;"
+                _sr_html += (
+                    f"<div style='{_bg}border-radius:8px;padding:8px 10px'>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:2px'>{_lbl}</div>"
+                    f"<div style='font-size:13px;font-weight:700;color:{_lc};font-family:monospace'>{_sr_fmt(_lv)}</div>"
+                    f"<div style='font-size:10px;color:#94a3b8'>{_sr_dist(_lv)}</div>"
+                    f"</div>"
+                )
+            _sr_html += "</div></div>"
+            st.markdown(_sr_html, unsafe_allow_html=True)
+    except Exception:
+        pass
 
     _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
 
