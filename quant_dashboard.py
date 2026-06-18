@@ -2080,139 +2080,231 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 """
 else:
     _theme_css = """
-/* ══ 라이트 테마 전체 override ══ */
+/* ══════════════════════════════════════════════════════
+   라이트 모드 UI — 퀀트 관제탑 V9.7
+   원칙: 눈부심 제거 · 정보 위계 유지 · 대비 10:1 이상
+══════════════════════════════════════════════════════ */
+
+/* ① 색상 토큰 */
 :root {
-    --bg-base: #f0f4f8; --bg-card: #ffffff; --bg-sidebar: #f8fafc;
-    --border: #d1dbe8; --accent: #3b82f6; --accent2: #6366f1;
-    --text-pri: #0f172a; --text-sec: #334155; --text-dim: #64748b;
-    --up: #dc2626; --down: #1d4ed8; --green: #15803d;
-    --shadow-sm: 0 1px 4px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
-    --shadow-md: 0 4px 16px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06);
+    --bg-base:     #F8FAFC;   /* 쿨 그레이 오프화이트 — 쨍한 화이트 대신 */
+    --bg-card:     #FFFFFF;   /* 카드만 순백 */
+    --bg-sidebar:  #F1F5F9;   /* 사이드바 약간 어둡게 */
+    --bg-hover:    #EFF6FF;   /* 호버: 아이스 블루 */
+    --border:      #E2E8F0;   /* 미세 보더 */
+    --border-focus:#3B82F6;
+    --text-pri:    #1E293B;   /* 슬레이트 블루 — 순검정보다 부드러움 */
+    --text-sec:    #475569;
+    --text-dim:    #94A3B8;
+    /* ② 금융 강조 색: 톤 다운 + 볼드로 대체 */
+    --color-up:    #991B1B;   /* 크림슨 레드 — 상승/손실 */
+    --color-down:  #1E40AF;   /* 딥 블루 — 하락 */
+    --color-profit:#166534;   /* 포레스트 그린 — 수익 */
+    --color-warn:  #92400E;   /* 앰버 브라운 — 경고 */
+    /* ④ 그림자 */
+    --shadow-sm:   0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+    --shadow-md:   0 4px 12px rgba(15,23,42,0.08), 0 2px 4px rgba(15,23,42,0.05);
+    --shadow-lg:   0 8px 24px rgba(15,23,42,0.10), 0 4px 8px rgba(15,23,42,0.06);
+    --shadow-card: 0 2px 8px rgba(15,23,42,0.07), 0 1px 3px rgba(15,23,42,0.05);
 }
+
+/* ── 앱 기반 배경 ── */
 html, body, [class*="css"] {
-    background-color: #f0f4f8 !important;
-    color: #0f172a !important;
+    background-color: var(--bg-base) !important;
+    color: var(--text-pri) !important;
 }
-.stApp { background: linear-gradient(160deg, #f0f4f8 0%, #e8eef6 100%) !important; }
+.stApp {
+    background: linear-gradient(160deg, #F8FAFC 0%, #EEF2F8 100%) !important;
+}
 
-/* 헤더 */
-h1 { background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
-     -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important; }
-h2, h3 { color: #1e293b !important; }
-h4 { color: #334155 !important; }
-hr { border-color: #d1dbe8 !important; }
+/* ── 헤더 텍스트 ── */
+h1 {
+    background: linear-gradient(135deg, #1D4ED8, #7C3AED) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    font-weight: 800 !important;
+}
+h2, h3 { color: #1E293B !important; font-weight: 700 !important; }
+h4      { color: #334155 !important; font-weight: 600 !important; }
+p, li   { color: var(--text-pri) !important; line-height: 1.7; }
+/* ③ 캡션/보조 텍스트 */
+.stCaption, caption, small { color: var(--text-dim) !important; }
+hr { border-color: var(--border) !important; }
 
-/* 사이드바 */
+/* ── 사이드바 ── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
-    border-right: 1px solid #d1dbe8 !important;
-    box-shadow: 2px 0 12px rgba(0,0,0,0.06) !important;
+    background: linear-gradient(180deg, #FFFFFF 0%, #F1F5F9 100%) !important;
+    border-right: 1px solid var(--border) !important;
+    box-shadow: 2px 0 16px rgba(15,23,42,0.07) !important;
 }
-[data-testid="stSidebar"] * { color: #334155 !important; }
-[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #1e293b !important; }
+[data-testid="stSidebar"] * { color: var(--text-sec) !important; }
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 { color: var(--text-pri) !important; }
+[data-testid="stSidebar"] label { color: var(--text-sec) !important; font-weight: 600 !important; }
 
-/* 탭 */
+/* ── 탭 바 ── */
 .stTabs [data-baseweb="tab-list"] {
-    background: #ffffff !important;
-    border: 1px solid #d1dbe8 !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+    background: #FFFFFF !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    box-shadow: var(--shadow-sm) !important;
+    padding: 3px !important;
 }
-.stTabs [data-baseweb="tab"] { color: #475569 !important; }
-.stTabs [data-baseweb="tab"]:hover { background: #eff6ff !important; color: #1d4ed8 !important; }
+.stTabs [data-baseweb="tab"] {
+    color: var(--text-sec) !important;
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+    transition: all 0.15s ease !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background: var(--bg-hover) !important;
+    color: #1D4ED8 !important;
+}
 .stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
-    color: #ffffff !important;
-    box-shadow: 0 3px 12px rgba(59,130,246,0.35) !important;
+    background: linear-gradient(135deg, #2563EB, #7C3AED) !important;
+    color: #FFFFFF !important;
+    font-weight: 700 !important;
+    box-shadow: 0 3px 10px rgba(37,99,235,0.30) !important;
 }
 
-/* 메트릭 카드 */
+/* ── 메트릭 카드 (④ 소프트 섀도우) ── */
 .metric-card {
-    background: #ffffff !important;
-    border: 1px solid #d1dbe8 !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07) !important;
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 14px !important;
+    box-shadow: var(--shadow-card) !important;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease !important;
 }
 .metric-card:hover {
-    border-color: #93c5fd !important;
-    box-shadow: 0 4px 16px rgba(59,130,246,0.15) !important;
+    border-color: #93C5FD !important;
+    box-shadow: var(--shadow-lg) !important;
 }
-.metric-card .label { color: #64748b !important; }
-.metric-card .value { color: #0f172a !important; }
+.metric-card .label { color: var(--text-dim) !important; font-size: 11px !important; }
+.metric-card .value { color: var(--text-pri) !important; font-weight: 700 !important; }
 
-/* 버튼 */
+/* ② 수익/손실 숫자 강조 (폰트 굵기로 대체) */
+.metric-card .value.up   { color: var(--color-up)     !important; font-weight: 800 !important; }
+.metric-card .value.down { color: var(--color-down)   !important; font-weight: 800 !important; }
+.metric-card .value.flat { color: var(--text-pri)      !important; }
+
+/* ── 버튼 ── */
+.stButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    transition: all 0.15s ease !important;
+}
 .stButton > button[kind="secondary"] {
-    background: #ffffff !important;
-    border: 1px solid #d1dbe8 !important;
-    color: #334155 !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.07) !important;
+    background: #FFFFFF !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-sec) !important;
+    box-shadow: var(--shadow-sm) !important;
 }
 .stButton > button[kind="secondary"]:hover {
-    background: #eff6ff !important;
-    border-color: #93c5fd !important;
-    color: #1d4ed8 !important;
+    background: var(--bg-hover) !important;
+    border-color: #93C5FD !important;
+    color: #1D4ED8 !important;
+    box-shadow: var(--shadow-md) !important;
+}
+.stButton > button[kind="primary"] {
+    box-shadow: 0 3px 10px rgba(37,99,235,0.25) !important;
 }
 
-/* 입력 필드 */
+/* ── 입력 필드 ── */
 .stTextInput input, .stNumberInput input, textarea {
-    background: #ffffff !important;
-    border: 1px solid #cbd5e1 !important;
-    color: #0f172a !important;
+    background: #FFFFFF !important;
+    border: 1px solid #CBD5E1 !important;
+    color: var(--text-pri) !important;
+    border-radius: 8px !important;
+    font-weight: 500 !important;
 }
 .stTextInput input:focus, .stNumberInput input:focus, textarea:focus {
-    border-color: #3b82f6 !important;
+    border-color: var(--border-focus) !important;
     box-shadow: 0 0 0 3px rgba(59,130,246,0.12) !important;
+    outline: none !important;
 }
 [data-baseweb="select"] > div {
-    background: #ffffff !important;
-    border-color: #cbd5e1 !important;
-    color: #0f172a !important;
+    background: #FFFFFF !important;
+    border-color: #CBD5E1 !important;
+    color: var(--text-pri) !important;
+    border-radius: 8px !important;
 }
 
-/* 카드/Expander */
+/* ── Expander / 카드 컨테이너 (④ 그림자) ── */
 [data-testid="stExpander"] {
-    background: #ffffff !important;
-    border: 1px solid #d1dbe8 !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
+    background: #FFFFFF !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    box-shadow: var(--shadow-sm) !important;
+    overflow: hidden !important;
 }
 .streamlit-expanderHeader {
-    background: #f8fafc !important;
-    border-color: #d1dbe8 !important;
-    color: #1e293b !important;
+    background: #F8FAFC !important;
+    border-color: var(--border) !important;
+    color: var(--text-pri) !important;
+    font-weight: 600 !important;
 }
 
-/* Metric */
+/* ── Metric 위젯 ── */
 [data-testid="stMetric"] {
-    background: #ffffff !important;
-    border: 1px solid #d1dbe8 !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+    background: #FFFFFF !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    box-shadow: var(--shadow-card) !important;
 }
-[data-testid="stMetricLabel"] { color: #475569 !important; }
-[data-testid="stMetricValue"] { color: #0f172a !important; }
+[data-testid="stMetricLabel"] { color: var(--text-dim) !important; font-weight: 500 !important; }
+[data-testid="stMetricValue"] { color: var(--text-pri) !important; font-weight: 700 !important; }
 [data-testid="stMetricDelta"] svg { filter: none !important; }
 
-/* 뱃지 (라이트) */
-.badge-buy     { background: rgba(21,128,61,0.10) !important; color: #15803d !important; border-color: rgba(21,128,61,0.25) !important; }
-.badge-sell    { background: rgba(220,38,38,0.08) !important; color: #dc2626 !important; border-color: rgba(220,38,38,0.2) !important; }
-.badge-watch   { background: rgba(37,99,235,0.08) !important; color: #1d4ed8 !important; border-color: rgba(37,99,235,0.2) !important; }
-.badge-neutral { background: rgba(71,85,105,0.07) !important; color: #475569 !important; border-color: rgba(71,85,105,0.15) !important; }
+/* ── 뱃지 (라이트 전용 색상) ── */
+.badge-buy     { background: rgba(22,101,52,0.10)  !important; color: #166534 !important; border-color: rgba(22,101,52,0.25) !important; font-weight: 700 !important; }
+.badge-sell    { background: rgba(153,27,27,0.08)  !important; color: #991B1B !important; border-color: rgba(153,27,27,0.20) !important; font-weight: 700 !important; }
+.badge-watch   { background: rgba(30,64,175,0.08)  !important; color: #1E40AF !important; border-color: rgba(30,64,175,0.20) !important; font-weight: 700 !important; }
+.badge-neutral { background: rgba(71,85,105,0.07)  !important; color: #475569 !important; border-color: rgba(71,85,105,0.15) !important; }
 
-/* Gemini 박스 */
+/* ── Gemini 분석 박스 ── */
 .gemini-box {
-    background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(99,102,241,0.03)) !important;
-    border-left: 3px solid #3b82f6 !important;
-    border-top: 1px solid rgba(59,130,246,0.15) !important;
-    border-right: 1px solid rgba(59,130,246,0.08) !important;
-    border-bottom: 1px solid rgba(59,130,246,0.08) !important;
-    color: #1e293b !important;
+    background: linear-gradient(135deg, rgba(37,99,235,0.05), rgba(99,102,241,0.03)) !important;
+    border-left: 3px solid #2563EB !important;
+    border-top: 1px solid rgba(37,99,235,0.15) !important;
+    border-right: 1px solid rgba(37,99,235,0.08) !important;
+    border-bottom: 1px solid rgba(37,99,235,0.08) !important;
+    border-radius: 0 10px 10px 0 !important;
+    color: var(--text-pri) !important;
+    box-shadow: var(--shadow-sm) !important;
 }
 
-/* 알림 */
-.stAlert { border-radius: 10px !important; }
-[data-testid="stNotification"] { border-radius: 10px !important; }
+/* ── 알림/경고 ── */
+.stAlert { border-radius: 10px !important; font-weight: 500 !important; }
+[data-baseweb="notification"] { border-radius: 10px !important; }
 
-/* 일반 텍스트 */
-p, li, span, div { color: #334155; }
-.stCaption, caption { color: #64748b !important; }
-[data-testid="stDataFrame"] { border: 1px solid #d1dbe8 !important; }
+/* ── 데이터프레임 ── */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    box-shadow: var(--shadow-sm) !important;
+    overflow: hidden !important;
+}
+[data-testid="stDataFrame"] th {
+    background: #F1F5F9 !important;
+    color: var(--text-sec) !important;
+    font-weight: 700 !important;
+    border-bottom: 2px solid var(--border) !important;
+}
+[data-testid="stDataFrame"] td { color: var(--text-pri) !important; }
+
+/* ── 구분선 / divider ── */
+[data-testid="stDivider"] { border-color: var(--border) !important; }
+
+/* ── 일반 텍스트 컬러 정규화 ── */
+span, div { color: inherit; }
+.stCaption { color: var(--text-dim) !important; }
+
+/* ③ 라이트 전용: 인라인 수익/손실 색상 재정의 */
+/* HTML 카드 내 색상은 inline style로 직접 입히므로
+   아래 클래스로 오버라이드 제공 */
+.lm-profit { color: #166534 !important; font-weight: 800 !important; }
+.lm-loss   { color: #991B1B !important; font-weight: 800 !important; }
+.lm-warn   { color: #92400E !important; font-weight: 700 !important; }
 """
 
 if st.session_state.ui_mobile:
@@ -2950,9 +3042,18 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                     _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
                     _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
                     _target_hit = _cur_p3 >= _target_p3
-                    # 형광 그린(수익)/형광 레드(손절 임박)
-                    _pnl_color  = "#39ff14" if _pnl_pct_p3 >= 0 else ("#ff003c" if _stop_warn else "#ef4444")
-                    _card_border_p3 = "#ff003c" if _stop_warn else ("#39ff14" if _target_hit else "#1e3a5f")
+                    # 라이트/다크 모드에 따라 색상 분기
+                    _is_light = not st.session_state.get('ui_dark', True)
+                    if _is_light:
+                        # 라이트: 포레스트 그린 / 크림슨 레드 (형광 대신 차분한 톤)
+                        _pnl_color = "#166534" if _pnl_pct_p3 >= 0 else ("#991B1B" if _stop_warn else "#B91C1C")
+                    else:
+                        # 다크: 형광 그린/레드
+                        _pnl_color = "#39ff14" if _pnl_pct_p3 >= 0 else ("#ff003c" if _stop_warn else "#ef4444")
+                    if _is_light:
+                        _card_border_p3 = "#991B1B" if _stop_warn else ("#166534" if _target_hit else "#CBD5E1")
+                    else:
+                        _card_border_p3 = "#ff003c" if _stop_warn else ("#39ff14" if _target_hit else "#1e3a5f")
 
                     # 트레일링 스탑 상태
                     _ts_key = f"trailing_stop_{_tk_p3}"
@@ -7709,11 +7810,18 @@ with tab_e:
         if idx_data:
             # 1행: 국내
             domestic = ["코스피","코스닥","코스피200선물"]
+            # 라이트/다크 모드 색상 분기 헬퍼
+            _lm = not st.session_state.get('ui_dark', True)
+            _c_up   = "#991B1B" if _lm else "#ff4d6d"
+            _c_down = "#1E40AF" if _lm else "#4da6ff"
+            _c_vix_up = "#991B1B" if _lm else "#ff4d6d"
+            _c_vix_dn = "#166534" if _lm else "#4dff91"
+
             cols_d = st.columns(3)
             for i, name in enumerate(domestic):
                 if name in idx_data:
                     d = idx_data[name]
-                    chg_c = '#ff4d6d' if d['등락']>0 else '#4da6ff'
+                    chg_c = _c_up if d['등락']>0 else _c_down
                     arrow = '▲' if d['등락']>0 else '▼'
                     # 지수/환율 포맷
                     if name == "달러/원":
@@ -7738,10 +7846,10 @@ with tab_e:
             for i, name in enumerate(global_names):
                 if name in idx_data:
                     d = idx_data[name]
-                    chg_c = '#ff4d6d' if d['등락']>0 else '#4da6ff'
+                    chg_c = _c_up if d['등락']>0 else _c_down
                     # VIX는 오를수록 위험 — 색상 반전
                     if name == "공포탐욕(VIX)":
-                        chg_c = '#ff4d6d' if d['등락']>0 else '#4dff91'
+                        chg_c = _c_vix_up if d['등락']>0 else _c_vix_dn
                     arrow = '▲' if d['등락']>0 else '▼'
                     val_str = f"{d['현재']:,.2f}"
                     cols_g[i].markdown(
