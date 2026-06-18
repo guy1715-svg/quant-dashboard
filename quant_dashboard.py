@@ -1212,6 +1212,26 @@ def fetch_ohlcv(ticker, lookback=80):
     return None
 
 @st.cache_data(ttl=300, show_spinner=False)
+def check_profit_recycling(current_krw_usd_rate, target_rate=1450):
+    """환율 기반 수익 순환 판단 — 국장 수익금 → 미장 배당 자산 이동 시점 결정"""
+    if current_krw_usd_rate <= target_rate:
+        urgency = "BUY_THE_DIP" if current_krw_usd_rate <= 1400 else "ACTION_REQUIRED"
+        return {
+            "status": urgency,
+            "color":  "#166534" if urgency == "BUY_THE_DIP" else "#1E40AF",
+            "icon":   "🟢" if urgency == "BUY_THE_DIP" else "🔵",
+            "message": f"환율 {current_krw_usd_rate:,.0f}원 — {'1,400원 이하: 추가 매수(Buy the Dip)' if urgency=='BUY_THE_DIP' else '1,450원 이하: 미장 자산 이동 최적기'}",
+            "action":  "삼성증권 수익금 → 토스 이체 후 JEPQ / SCHD / MAIN 즉시 매수"
+        }
+    else:
+        return {
+            "status": "HOLD",
+            "color":  "#92400E",
+            "icon":   "🟡",
+            "message": f"현재 환율 {current_krw_usd_rate:,.0f}원 — 환차손 위험 구간 (기준: 1,450원)",
+            "action":  "국장 파킹형 자산(단기채 ETF) 또는 현금으로 유지"
+        }
+
 def get_usd_krw():
     """USD/KRW 환율 — 5분 캐시로 중복 조회 방지"""
     try:
@@ -6837,7 +6857,7 @@ with tab_d:
 # ══════════════════════════════════════════
 
 with tab_e:
-    _sub_e1, _sub_e2, _sub_e3, _sub_e4 = st.tabs(["⭐ 관심종목", "📝 페이퍼", "🌏 시장지수", "📊 현황판"])
+    _sub_e1, _sub_e2, _sub_e3, _sub_e4, _sub_e5 = st.tabs(["⭐ 관심종목", "📝 페이퍼", "🌏 시장지수", "📊 현황판", "💰 하이브리드"])
 
     with _sub_e1:
         st.markdown("### ⚙️ 상태 제어 센터")
@@ -8407,6 +8427,247 @@ with tab_e:
             c3.markdown(f"<div class='metric-card'><div class='label'>과매도(RSI≤35)</div><div class='value' style='color:#38bdf8'>{oversold}종목</div></div>", unsafe_allow_html=True)
             c4.markdown(f"<div class='metric-card'><div class='label'>과매수(RSI≥65)</div><div class='value' style='color:#f43f5e'>{overbought}종목</div></div>", unsafe_allow_html=True)
 
+
+    # ══════════════════════════════════════════════════════════════
+    # 탭 5: 💰 하이브리드 시스템 — 공격(국장) + 방어(미장 배당)
+    # ══════════════════════════════════════════════════════════════
+    with _sub_e5:
+        st.markdown("### 💰 V9.7 퀀트-배당 하이브리드 시스템")
+        st.caption("국장(삼성증권) 수익금 → 환율 필터 → 미장 배당 자산(토스) 자동 순환 전략")
+
+        # ─── 환율 필터 헤더 카드 ───────────────────────────────
+        _fx_now = get_usd_krw()
+        _fx_result = check_profit_recycling(_fx_now)
+        _fx_c = _fx_result['color']
+        _fx_bg = (
+            "linear-gradient(135deg,#0a2a0a,#0d1f0d)" if _fx_result['status'] in ('ACTION_REQUIRED','BUY_THE_DIP')
+            else "linear-gradient(135deg,#1a1200,#2a1800)"
+        )
+        st.markdown(
+            f"<div style='background:{_fx_bg};border:2px solid {_fx_c}60;border-radius:16px;"
+            f"padding:20px 24px;margin-bottom:16px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+            f"<div>"
+            f"<div style='font-size:28px;margin-bottom:4px'>{_fx_result['icon']}</div>"
+            f"<div style='font-size:16px;font-weight:800;color:{_fx_c}'>{_fx_result['message']}</div>"
+            f"<div style='font-size:12px;color:#94a3b8;margin-top:6px'>→ {_fx_result['action']}</div>"
+            f"</div>"
+            f"<div style='text-align:right'>"
+            f"<div style='font-size:11px;color:#64748b'>기준 환율</div>"
+            f"<div style='font-size:32px;font-weight:900;color:{_fx_c};font-family:monospace'>{_fx_now:,.0f}</div>"
+            f"<div style='font-size:10px;color:#64748b'>KRW/USD</div>"
+            f"</div>"
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
+
+        # ─── 환율 임계값 슬라이더 ────────────────────────────
+        _fx_threshold = st.slider(
+            "환율 이동 기준선 (원)", min_value=1300, max_value=1600,
+            value=st.session_state.get('fx_threshold', 1450), step=10,
+            key="fx_threshold_slider",
+            help="이 값 이하일 때 미장 자산 이동 신호 발생"
+        )
+        st.session_state['fx_threshold'] = _fx_threshold
+        if _fx_threshold != 1450:
+            _fx_custom = check_profit_recycling(_fx_now, _fx_threshold)
+            st.caption(f"🎯 커스텀 기준 {_fx_threshold:,}원 적용 시: **{_fx_custom['message']}**")
+
+        st.divider()
+
+        # ─── 이중 엔진 현황판 ────────────────────────────────
+        st.markdown("#### ⚡ 이중 엔진 현황 — 공격(국장) vs 방어(미장)")
+        _acc_h = load_account()
+        _tv_h  = calc_portfolio_value(_acc_h)
+        _pnl_h = _tv_h - _acc_h['initial']
+        _pnl_pct_h = (_pnl_h / _acc_h['initial'] * 100) if _acc_h['initial'] > 0 else 0
+        _lm_h = not st.session_state.get('ui_dark', True)
+        _profit_c  = ("#166534" if _lm_h else "#39ff14") if _pnl_h >= 0 else ("#991B1B" if _lm_h else "#ff003c")
+
+        _eng_l, _eng_r = st.columns(2)
+
+        # 국장 공격 엔진
+        _eng_l.markdown(
+            "<div style='background:#0d1117;border:2px solid #3b82f620;border-radius:14px;"
+            "padding:16px 20px;height:100%'>"
+            "<div style='font-size:12px;font-weight:700;color:#3b82f6;margin-bottom:10px'>"
+            "🇰🇷 공격 엔진 — 국장 (삼성증권)</div>"
+            "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px'>"
+            f"<div><div style='font-size:10px;color:#64748b'>초기자본</div>"
+            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_acc_h['initial']/1e6:.1f}M</div></div>"
+            f"<div><div style='font-size:10px;color:#64748b'>현재 평가</div>"
+            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_tv_h/1e6:.1f}M</div></div>"
+            f"<div><div style='font-size:10px;color:#64748b'>총 손익</div>"
+            f"<div style='font-size:16px;font-weight:800;color:{_profit_c}'>{_pnl_h:+,.0f}원</div></div>"
+            f"<div><div style='font-size:10px;color:#64748b'>수익률</div>"
+            f"<div style='font-size:16px;font-weight:800;color:{_profit_c}'>{_pnl_pct_h:+.2f}%</div></div>"
+            "</div>"
+            "<div style='margin-top:12px;padding-top:10px;border-top:1px solid #1e293b'>"
+            "<div style='font-size:10px;color:#64748b;margin-bottom:4px'>킬스위치 규칙</div>"
+            "<div style='font-size:11px;color:#94a3b8'>-7% 스마트 킬 · -10% 하드 서킷 브레이커</div>"
+            "</div>"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+        # 미장 방어 엔진
+        _div_etfs = {
+            "JEPQ": {"name": "JPMorgan 나스닥 커버드콜", "freq": "월배당", "yield_pct": 10.5},
+            "SCHD": {"name": "Schwab 배당성장", "freq": "분기배당", "yield_pct": 3.4},
+            "MAIN": {"name": "Main Street Capital", "freq": "월배당+특별", "yield_pct": 6.2},
+            "JEPI": {"name": "JPMorgan S&P500 커버드콜", "freq": "월배당", "yield_pct": 7.8},
+        }
+        _daily_krw = st.session_state.get('daily_div_krw', 5000)
+        _monthly_div = _daily_krw * 30
+        _eng_r.markdown(
+            "<div style='background:#0d1117;border:2px solid #fbbf2420;border-radius:14px;"
+            "padding:16px 20px;height:100%'>"
+            "<div style='font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:10px'>"
+            "🇺🇸 방어 엔진 — 미장 배당 (토스)</div>"
+            "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px'>"
+            f"<div><div style='font-size:10px;color:#64748b'>일 적립 목표</div>"
+            f"<div style='font-size:14px;font-weight:700;color:#fbbf24'>{_daily_krw:,}원/일</div></div>"
+            f"<div><div style='font-size:10px;color:#64748b'>월 예상 배당</div>"
+            f"<div style='font-size:14px;font-weight:700;color:#39ff14'>{_monthly_div:,}원</div></div>"
+            "<div><div style='font-size:10px;color:#64748b'>핵심 종목</div>"
+            "<div style='font-size:11px;color:#f0f4ff'>JEPQ · SCHD · MAIN</div></div>"
+            "<div><div style='font-size:10px;color:#64748b'>전략</div>"
+            "<div style='font-size:11px;color:#f0f4ff'>Buy the Dip ≤1,400원</div></div>"
+            "</div>"
+            "<div style='margin-top:12px;padding-top:10px;border-top:1px solid #1e293b'>"
+            "<div style='font-size:10px;color:#64748b;margin-bottom:4px'>수익 순환 규칙</div>"
+            "<div style='font-size:11px;color:#94a3b8'>익절 수익 30% 달러 파킹 → 환율 ≤1,450 시 매수</div>"
+            "</div>"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+        st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+
+        # 일 배당 목표 설정
+        _new_daily = st.number_input(
+            "💵 일 배당 목표 (원)", min_value=1000, max_value=500000,
+            value=_daily_krw, step=1000, key="daily_div_krw_input"
+        )
+        st.session_state['daily_div_krw'] = int(_new_daily)
+
+        st.divider()
+
+        # ─── 배당 캘린더 ─────────────────────────────────────
+        st.markdown("#### 📅 배당 스케줄 — 매일 들어오는 현금 흐름")
+
+        # 배당 ETF 스케줄 (월별 ex-dividend 예상일)
+        import calendar as _cal_mod
+        from datetime import datetime as _dt_div, date as _date_div
+        _today = _date_div.today()
+        _yr, _mo = _today.year, _today.month
+
+        # 배당 종목별 지급 패턴
+        _DIV_SCHEDULE = {
+            "JEPQ":  {"color": "#3b82f6", "months": list(range(1,13)),    "day": 7,  "yield": 10.5, "freq": "매월"},
+            "JEPI":  {"color": "#8b5cf6", "months": list(range(1,13)),    "day": 7,  "yield": 7.8,  "freq": "매월"},
+            "MAIN":  {"color": "#f59e0b", "months": list(range(1,13)),    "day": 15, "yield": 6.2,  "freq": "매월+특별"},
+            "SCHD":  {"color": "#10b981", "months": [3,6,9,12],           "day": 25, "yield": 3.4,  "freq": "분기"},
+        }
+
+        # 이번 달 캘린더 그리드
+        _cal_days = _cal_mod.monthcalendar(_yr, _mo)
+        _mo_name  = f"{_yr}년 {_mo}월"
+        _div_days  = {}
+        for _sym, _info in _DIV_SCHEDULE.items():
+            if _mo in _info['months']:
+                _div_days[_info['day']] = _div_days.get(_info['day'], [])
+                _div_days[_info['day']].append((_sym, _info['color']))
+
+        _days_label = ["월","화","수","목","금","토","일"]
+        _cal_html = (
+            f"<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;"
+            f"padding:16px 20px;margin-bottom:16px'>"
+            f"<div style='font-size:13px;font-weight:700;color:#f0f4ff;margin-bottom:12px'>{_mo_name} 배당 캘린더</div>"
+            f"<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:4px'>"
+        )
+        for _dl in _days_label:
+            _cal_html += f"<div style='text-align:center;font-size:10px;font-weight:700;color:#64748b;padding:4px'>{_dl}</div>"
+        for _week in _cal_days:
+            for _d in _week:
+                if _d == 0:
+                    _cal_html += "<div></div>"
+                else:
+                    _is_today = (_d == _today.day)
+                    _has_div  = _d in _div_days
+                    _is_past  = _d < _today.day
+                    _bg = "#1e3a5f" if _is_today else ("#0a2a0a" if _has_div else "#0d1117")
+                    _border = "2px solid #3b82f6" if _is_today else ("1px solid #22c55e40" if _has_div else "1px solid #1e293b")
+                    _day_str = f"<div style='font-size:11px;font-weight:700;color:{'#3b82f6' if _is_today else ('#94a3b8' if _is_past else '#f0f4ff')}'>{_d}</div>"
+                    _badge_str = ""
+                    if _has_div:
+                        for _sym, _sc in _div_days[_d]:
+                            _badge_str += f"<div style='font-size:8px;color:{_sc};font-weight:700'>{_sym}</div>"
+                    _cal_html += (
+                        f"<div style='background:{_bg};border:{_border};border-radius:6px;"
+                        f"padding:5px 4px;text-align:center;min-height:44px'>"
+                        f"{_day_str}{_badge_str}</div>"
+                    )
+        _cal_html += "</div></div>"
+        st.markdown(_cal_html, unsafe_allow_html=True)
+
+        # ─── 배당 ETF 상세 카드 ─────────────────────────────
+        st.markdown("#### 📊 배당 자산 현황")
+        _div_cols = st.columns(len(_DIV_SCHEDULE))
+        for _di, (_sym, _info) in enumerate(_DIV_SCHEDULE.items()):
+            # yfinance로 현재가 조회
+            try:
+                import yfinance as _yf_div
+                _dh = _yf_div.Ticker(_sym).history(period="5d")
+                _dprice = float(_dh['Close'].iloc[-1]) if not _dh.empty else 0
+                _dprev  = float(_dh['Close'].iloc[-2]) if len(_dh) >= 2 else _dprice
+                _dchg   = (_dprice / _dprev - 1) * 100 if _dprev > 0 else 0
+                _annual_div = _dprice * _info['yield'] / 100
+                _monthly_est = _annual_div / 12 if '월' in _info['freq'] else _annual_div / 4
+            except Exception:
+                _dprice = 0; _dchg = 0; _monthly_est = 0
+            _dc = _info['color']
+            _chg_c = ("#166534" if _lm_h else "#39ff14") if _dchg >= 0 else ("#991B1B" if _lm_h else "#ff003c")
+            _div_cols[_di].markdown(
+                f"<div style='background:#0d1117;border:2px solid {_dc}30;border-radius:12px;padding:12px 14px;text-align:center'>"
+                f"<div style='font-size:14px;font-weight:800;color:{_dc}'>{_sym}</div>"
+                f"<div style='font-size:9px;color:#64748b;margin-bottom:8px'>{_info['name'][:12]}</div>"
+                f"<div style='font-size:16px;font-weight:700;color:#f0f4ff'>${_dprice:.2f}</div>"
+                f"<div style='font-size:11px;color:{_chg_c};margin:2px 0'>{'▲' if _dchg>=0 else '▼'}{abs(_dchg):.2f}%</div>"
+                f"<div style='border-top:1px solid #1e293b;margin-top:8px;padding-top:8px'>"
+                f"<div style='font-size:9px;color:#64748b'>예상 배당수익률</div>"
+                f"<div style='font-size:13px;font-weight:800;color:#fbbf24'>{_info['yield']:.1f}%</div>"
+                f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{_info['freq']}</div>"
+                f"<div style='font-size:10px;color:#39ff14;margin-top:4px'>月 ${_monthly_est:.2f}/주</div>"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
+
+        st.divider()
+
+        # ─── 수익 순환 가이드 ────────────────────────────────
+        st.markdown("#### 🔄 수익 순환 프로세스")
+        _guide_html = (
+            "<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;padding:16px 20px'>"
+            "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:4px;text-align:center'>"
+        )
+        _steps_g = [
+            ("🏆", "익절 발생", "국장 -7% 킬스위치\n이전 목표가 도달", "#3b82f6"),
+            ("💵", "30% 달러 파킹", "수익의 30%를\n달러 환전 후 대기", "#fbbf24"),
+            ("📡", "환율 모니터링", f"현재 {_fx_now:,.0f}원\n기준 {_fx_threshold:,}원 이하", _fx_c),
+            ("📈", "배당 자산 매수", "JEPQ · SCHD · MAIN\n시장가 즉시 매수", "#39ff14"),
+        ]
+        for _gi, (_icon, _title, _desc, _gc) in enumerate(_steps_g):
+            _arrow = "<div style='font-size:18px;color:#334155;align-self:center'>→</div>" if _gi < 3 else ""
+            _guide_html += (
+                f"<div style='background:#111827;border:1px solid {_gc}30;border-radius:10px;padding:12px 8px'>"
+                f"<div style='font-size:24px;margin-bottom:6px'>{_icon}</div>"
+                f"<div style='font-size:11px;font-weight:700;color:{_gc};margin-bottom:4px'>{_title}</div>"
+                f"<div style='font-size:10px;color:#64748b;white-space:pre-line'>{_desc}</div>"
+                f"</div>"
+            )
+        _guide_html += "</div></div>"
+        st.markdown(_guide_html, unsafe_allow_html=True)
 
     # ══════════════════════════════════════════
     # 탭 2: 차트 분석
