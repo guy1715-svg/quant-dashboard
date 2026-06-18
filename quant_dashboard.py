@@ -879,7 +879,7 @@ hr { border-color: #e2e8f0 !important; }
     border-radius: 10px !important;
     font-weight: 600 !important;
     font-size: var(--fs-sm) !important;
-    padding: 8px 16px !important;
+    padding: 10px 20px !important;
     transition: all 0.2s !important;
 }
 .stButton > button[kind="primary"] {
@@ -3233,17 +3233,25 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
 
 with tab_b:
     st.markdown("### 🔍 분석")
-    # 진입 금지 시간 / 매크로 블랙아웃 배너
+    # ── 진입 금지 / 매크로 블랙아웃 대형 배너 ──
     _v891_b = run_v891_system_check()
-    if not _v891_b['can_enter']:
-        for _ba in _v891_b['alerts']:
-            st.error(_ba)
-    else:
-        from datetime import datetime as _dt_tb
-        _kh_b = (_dt_tb.utcnow().hour + 9) % 24
-        _km_b = _dt_tb.utcnow().minute
-        if (9 <= _kh_b < 10) or (_kh_b == 10 and _km_b <= 30):
-            st.error("🔒 09:00~10:30 진입 금지 구간 — 차트 분석만 가능")
+    from datetime import datetime as _dt_tb
+    _kh_b = (_dt_tb.utcnow().hour + 9) % 24
+    _km_b = _dt_tb.utcnow().minute
+    _time_block_b = (9 <= _kh_b < 10) or (_kh_b == 10 and _km_b <= 30)
+    if not _v891_b['can_enter'] or _time_block_b:
+        _ban_msg  = _v891_b['alerts'][0] if not _v891_b['can_enter'] else "09:00~10:30 변동성 과다 구간"
+        _ban_title = "현재 매매 불가: " + ("FOMC 대기 모드" if _v891_b.get('blackout') else "진입 금지 구간")
+        st.markdown(f"""
+<div style='background:linear-gradient(135deg,#1a0000,#2d0a0a);border:2px solid #ef4444;
+border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
+  <div style='font-size:40px;margin-bottom:8px'>🚫</div>
+  <div style='font-size:22px;font-weight:900;color:#ef4444;margin-bottom:8px'>{_ban_title}</div>
+  <div style='font-size:14px;color:#fca5a5;margin-bottom:6px'>{_ban_msg}</div>
+  <div style='font-size:12px;color:#7f1d1d;margin-top:8px;border-top:1px solid #7f1d1d30;padding-top:8px'>
+    차트 분석 · 타점 계산은 가능 — 실제 주문은 금지 구간 해제 후 실행하세요
+  </div>
+</div>""", unsafe_allow_html=True)
     _sub_b1, _sub_b2, _sub_b3 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석", "📋 분석 기록"])
 
     with _sub_b1:
@@ -3464,7 +3472,7 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
             # ══════════════════════════════════════════
             # 3. MULTI-PANE CHART + TOGGLE + VALUATION BAND
             # ══════════════════════════════════════════
-            st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>MULTI-PANE CHART</div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:14px;font-size:11px;color:#64748b;font-weight:700;margin-bottom:8px'>MULTI-PANE CHART</div>", unsafe_allow_html=True)
 
             _mp_tc1, _mp_tc2, _mp_tc3, _mp_tc4 = st.columns(4)
             _mp_rsi  = _mp_tc1.toggle("RSI",    value=True,  key="mp_rsi")
@@ -3526,9 +3534,9 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                 (target2_price, '#a78bfa', 'dot',   '목표2'),
             ]:
                 if _sl_v and _sl_v > 0:
-                    _mp_fig.add_hline(y=_sl_v, line=dict(color=_sl_c, dash=_sl_d, width=1),
+                    _mp_fig.add_hline(y=_sl_v, line=dict(color=_sl_c, dash=_sl_d, width=2),
                                       annotation_text=f"<b>{_sl_lbl} {_sl_v:,.0f}</b>",
-                                      annotation_font=dict(color=_sl_c, size=10),
+                                      annotation_font=dict(color=_sl_c, size=12, family='IBM Plex Mono'),
                                       annotation_position="right", row=1, col=1)
 
             _mp_ri = 2
@@ -3652,20 +3660,37 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
   </div>
 </div>""", unsafe_allow_html=True)
 
-            # 이평선 현황
-            with st.expander("📐 이평선 현황", expanded=False):
-                ma_cols = st.columns(4)
-                for i, (ma, label) in enumerate([('MA5','5일'),('MA20','20일'),('MA60','60일'),('MA120','120일')]):
-                    val = l[ma]
-                    diff = round((l['종가']/val-1)*100, 2) if val > 0 else 0
-                    status = '위' if l['종가'] > val else '아래'
-                    c = 'up' if l['종가'] > val else 'down'
-                    _val_fmt = format_price(val, sel_ticker)
-                    ma_cols[i].markdown(
-                        f"<div class='metric-card'><div class='label'>{label}선</div>"
-                        f"<div class='value flat' style='font-size:16px'>{_val_fmt}</div>"
-                        f"<div style='font-size:12px; margin-top:4px' class='{c}'>현재가 {status} ({diff:+.1f}%)</div></div>",
-                        unsafe_allow_html=True)
+            # 이평선 현황 — 컬러 바 형태
+            st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+            with st.expander("📐 이평선 현황 — 현재가 대비 거리", expanded=True):
+                _ma_items = [('MA5','5일선','#fbbf24'),('MA20','20일선','#34d399'),
+                             ('MA60','60일선','#a78bfa'),('MA120','120일선','#f472b6')]
+                _ma_html = "<div style='display:flex;flex-direction:column;gap:8px;padding:4px 0'>"
+                for _mak, _mal, _mac in _ma_items:
+                    _mav = float(l.get(_mak, 0))
+                    if _mav <= 0:
+                        continue
+                    _diff = (l['종가'] / _mav - 1) * 100
+                    _abs  = abs(_diff)
+                    # 바 너비: 최대 ±10% = 100% 폭
+                    _bar_w = min(_abs / 10 * 100, 100)
+                    _above = _diff > 0
+                    _bar_c = "#16a34a" if _above else "#dc2626"
+                    _txt_c = "#34d399" if _above else "#f43f5e"
+                    _dir   = f"현재가 위 +{_diff:.2f}%" if _above else f"현재가 아래 {_diff:.2f}%"
+                    _ma_html += (
+                        f"<div style='display:flex;align-items:center;gap:10px'>"
+                        f"<span style='color:{_mac};font-size:11px;font-weight:700;min-width:52px'>{_mal}</span>"
+                        f"<span style='color:#64748b;font-size:11px;min-width:80px'>{format_price(_mav, sel_ticker)}</span>"
+                        f"<div style='flex:1;background:#1e293b;border-radius:4px;height:12px;position:relative'>"
+                        f"<div style='width:{_bar_w:.0f}%;background:{_bar_c};height:100%;border-radius:4px;"
+                        f"{'margin-left:auto;' if not _above else ''}'></div>"
+                        f"</div>"
+                        f"<span style='color:{_txt_c};font-size:12px;font-weight:700;min-width:80px;text-align:right'>{_dir}</span>"
+                        f"</div>"
+                    )
+                _ma_html += "</div>"
+                st.markdown(_ma_html, unsafe_allow_html=True)
 
 
     # ══════════════════════════════════════════
@@ -3827,6 +3852,23 @@ padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;a
 
 with tab_c:
     st.markdown("### 📡 V8.9.4 단기 스윙 스캐너")
+    # ── 진입 금지 대형 배너 ──
+    _v891_c = run_v891_system_check()
+    from datetime import datetime as _dt_tc
+    _kh_c = (_dt_tc.utcnow().hour + 9) % 24
+    _km_c = _dt_tc.utcnow().minute
+    _tblock_c = (9 <= _kh_c < 10) or (_kh_c == 10 and _km_c <= 30)
+    if not _v891_c['can_enter'] or _tblock_c:
+        _bc_msg   = _v891_c['alerts'][0] if not _v891_c['can_enter'] else "09:00~10:30 변동성 과다"
+        _bc_title = "현재 매매 불가: " + ("FOMC 대기 모드" if _v891_c.get('blackout') else "진입 금지 구간")
+        st.markdown(f"""
+<div style='background:linear-gradient(135deg,#1a0000,#2d0a0a);border:2px solid #ef4444;
+border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
+  <div style='font-size:36px;margin-bottom:6px'>🚫</div>
+  <div style='font-size:20px;font-weight:900;color:#ef4444;margin-bottom:6px'>{_bc_title}</div>
+  <div style='font-size:13px;color:#fca5a5'>{_bc_msg}</div>
+  <div style='font-size:11px;color:#7f1d1d;margin-top:8px'>스캔 결과 확인은 가능 — 실제 주문은 금지 구간 해제 후</div>
+</div>""", unsafe_allow_html=True)
     st.caption("하드필터(시총·ATR) + 스코어링(재무·수급·모멘텀·눌림목) — 70점 이상 종목만 포착")
     # 진입 금지 배너
     _v891_c = run_v891_system_check()
@@ -4744,68 +4786,119 @@ with tab_c:
 
         st.divider()
 
-        # ── 결과 테이블 ──
-        st.markdown("#### 📋 발굴 종목 테이블")
-        import pandas as pd
-        _rows = []
-        for item in _p_list:
-            _added = "✅" if item['ticker'] in _sc_ids else "➕"
-            _chg_arrow = "▲" if item['등락(%)']>0 else "▼"
-            _rows.append({
-                "추가":      _added,
-                "종목명":    item['name'],
-                "코드":      item['ticker'],
-                "현재가":    f"{item['현재가']:,.0f}",
-                "등락(%)":   f"{_chg_arrow}{abs(item['등락(%)']):+.2f}%",
-                "5일수익률": f"{item.get('5일수익률', 0):+.1f}%",
-                "ATR비율":   f"{item.get('ATR비율', 0):.1f}%",
-                "거래량%":   f"{item.get('거래량비율', 0):.0f}%",
-                "CMF":        f"{item.get('CMF', 0):.3f}",
-                "시총(억)":  str(item.get('시총(억)', '?')),
-                "조건":      item.get('조건', ''),
-                "신호":      " ".join(item.get('reasons', [])),
-            })
+        # ── 원클릭 분석 오버레이 카드 ──
+        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 원클릭 분석 — 종목을 클릭하면 즉시 판정 결과를 확인할 수 있습니다</div>", unsafe_allow_html=True)
 
-        _result_df = pd.DataFrame(_rows)
+        for _si, item in enumerate(_p_list):
+            _stk = item['ticker']; _snm = item['name']
+            _schg = item.get('등락(%)', 0); _ssc = item.get('score', 0)
+            _sgrd = item.get('등급', '')
+            _scc  = "#ffd166" if '🏆' in _sgrd else "#3b82f6"
+            _schg_c = "#ef4444" if _schg > 0 else "#3b82f6"
+            _is_in_wl = _stk in _sc_ids
+            _exp_open = st.session_state.get(f"scan_exp_{_stk}", False)
 
-        # 스타일 적용
-        def _color_row(row):
-            styles = []
-            for col in row.index:
-                if col == '등락(%)':
-                    styles.append('color: #f63d68' if '▲' in str(row[col]) else 'color: #3b82f6')
-                elif col == '5일수익률':
-                    styles.append('color: #f63d68; font-weight:bold')
-                elif col == 'ATR비율':
-                    styles.append('color: #f59e0b')
-                elif col == '거래량%':
-                    v = float(str(row[col]).replace('%','') or 0)
-                    styles.append('color: #10b981' if v < 30 else 'color: #64748b')
-                elif col == 'OBV':
-                    styles.append('color: #34d399' if row[col]=='✅' else 'color: #f43f5e')
-                elif col == '추가':
-                    styles.append('color: #34d399' if row[col]=='✅' else 'color: #f59e0b')
+            # 요약 헤더 클릭 → 분석 오버레이
+            with st.expander(
+                f"{'🏆' if '🏆' in _sgrd else '🎯'} {_snm} ({_stk}) | {_ssc}점 | {'▲' if _schg>0 else '▼'}{abs(_schg):.2f}%",
+                expanded=st.session_state.get(f"scan_exp_{_stk}", _si == 0)
+            ):
+                # 빠른 메타 칩
+                _smeta_html = (
+                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>"
+                    f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:3px 10px;border-radius:20px'>점수 {_ssc}</span>"
+                    f"<span style='background:#1e293b;color:{_schg_c};font-size:11px;padding:3px 10px;border-radius:20px'>{'▲' if _schg>0 else '▼'}{abs(_schg):.2f}%</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>거래량 {item.get('거래량비율',0):.0f}%</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>CMF {item.get('CMF',0):.3f}</span>"
+                    f"<span style='background:#1e293b;color:#94a3b8;font-size:11px;padding:3px 10px;border-radius:20px'>5일 {item.get('5일수익률',0):+.1f}%</span>"
+                    f"<span style='background:#1e293b;color:{_scc};font-size:11px;padding:3px 10px;border-radius:20px'>{_sgrd}</span>"
+                    f"</div>"
+                )
+                st.markdown(_smeta_html, unsafe_allow_html=True)
+
+                # ⚡ 즉시 Verdict 분석
+                try:
+                    _df_ov = fetch_ohlcv(_stk, 60)
+                    if _df_ov is not None and len(_df_ov) >= 20:
+                        _df_ov = calc_indicators(_df_ov)
+                        _ep_ov = calc_entry_point(_df_ov, st.session_state.get('scan_preset', 'bounce'))
+                        _sigs_ov = get_signal(_df_ov)
+                        _buy_ov  = sum(1 for _, t in _sigs_ov if t == 'buy')
+                        _v891_ov = run_v891_system_check()
+
+                        if not _v891_ov['can_enter']:
+                            _vd_ov = "🚫 진입 차단"; _vc_ov = "#f43f5e"; _vb_ov = "rgba(244,63,94,0.10)"
+                        elif _ep_ov['rr'] < 2.0:
+                            _vd_ov = "❌ 진입 불가"; _vc_ov = "#f43f5e"; _vb_ov = "rgba(244,63,94,0.08)"
+                        elif _buy_ov >= 2 and _ep_ov['rr'] >= 2.0:
+                            _vd_ov = "✅ 매수 권장"; _vc_ov = "#34d399"; _vb_ov = "rgba(52,211,153,0.10)"
+                        else:
+                            _vd_ov = "⚠️ 관망"; _vc_ov = "#fbbf24"; _vb_ov = "rgba(251,191,36,0.08)"
+
+                        st.markdown(f"""
+<div style='background:{_vb_ov};border:2px solid {_vc_ov}50;border-radius:12px;
+padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'>
+  <div>
+    <div style='font-size:18px;font-weight:900;color:{_vc_ov}'>{_vd_ov}</div>
+    <div style='font-size:11px;color:#64748b;margin-top:4px'>
+      진입 {_ep_ov["entry"]:,.0f} &nbsp;|&nbsp; 손절 {_ep_ov["stoploss"]:,.0f} &nbsp;|&nbsp; 목표 {_ep_ov["target1"]:,.0f}
+    </div>
+  </div>
+  <div style='text-align:right'>
+    <div style='font-size:11px;color:#64748b'>R:R</div>
+    <div style='font-size:26px;font-weight:900;color:{_vc_ov};font-family:IBM Plex Mono'>{_ep_ov["rr"]}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+                        # 저장
+                        save_analysis_log(_stk, _snm, _vd_ov, _ep_ov['rr'],
+                                          _ep_ov['entry'], _ep_ov['stoploss'],
+                                          _ep_ov['target1'], _ep_ov['target2'],
+                                          preset=st.session_state.get('scan_preset',''),
+                                          score=_ssc, source="스캐너오버레이")
+                    else:
+                        st.caption("데이터 부족 — 분석 불가")
+                except Exception as _ov_e:
+                    st.caption(f"분석 오류: {_ov_e}")
+
+                # 액션 버튼
+                _ov_c1, _ov_c2, _ov_c3 = st.columns(3)
+                if _is_in_wl:
+                    _ov_c1.markdown("<div style='color:#34d399;padding:10px 0;font-size:12px'>✅ 관심종목 등록됨</div>", unsafe_allow_html=True)
                 else:
-                    styles.append('')
-            return styles
+                    if _ov_c1.button("⭐ 관심종목 추가", key=f"ov_add_{_stk}", use_container_width=True):
+                        if add_ticker(_stk, _snm):
+                            st.success(f"✅ {_snm} 추가!"); st.rerun()
 
-        st.dataframe(
-            _result_df.style.apply(_color_row, axis=1),
-            use_container_width=True,
-            height=min(400, 35 + len(_rows)*35),
-            hide_index=True,
-        )
+                _chart_key_ov = f"ov_chart_{_stk}"
+                if _ov_c2.button(
+                    "📈 차트 닫기" if st.session_state.get(_chart_key_ov) else "📈 차트 보기",
+                    key=f"ov_chart_btn_{_stk}", use_container_width=True
+                ):
+                    st.session_state[_chart_key_ov] = not st.session_state.get(_chart_key_ov, False)
+                    st.rerun()
+
+                if st.session_state.get(_chart_key_ov):
+                    try:
+                        _df_ch = fetch_ohlcv(_stk, 60)
+                        if _df_ch is not None:
+                            _df_ch = calc_indicators(_df_ch)
+                            _ep_ch = calc_entry_point(_df_ch, st.session_state.get('scan_preset', 'bounce'))
+                            st.plotly_chart(make_chart(_df_ch, _snm,
+                                entry=_ep_ch['entry'], stoploss=_ep_ch['stoploss'],
+                                target1=_ep_ch['target1'], target2=_ep_ch['target2']),
+                                use_container_width=True)
+                    except Exception:
+                        st.caption("차트 로드 실패")
 
         st.divider()
 
-        # ── 종목 선택 → 상세 분석 ──
-        st.markdown("#### 🔍 종목 선택 → 상세 분석")
+        # ── 종목 선택 → Gemini 정밀분석 ──
+        st.markdown("#### 🤖 Gemini 정밀분석 (선택)")
         _sel_names = [f"{item['name']} ({item['ticker']}) | {item['score']}점" for item in _p_list]
-        _sel_scan  = st.selectbox("분석할 종목", _sel_names, key="scan_detail_sel")
+        _sel_scan  = st.selectbox("Gemini 분석할 종목", _sel_names, key="scan_detail_sel")
         _sel_scan_idx = _sel_names.index(_sel_scan)
         _sel_scan_item = _p_list[_sel_scan_idx]
 
-        # 액션 버튼
         _ab1, _ab2, _ab3 = st.columns(3)
         _is_added_scan = _sel_scan_item['ticker'] in _sc_ids
 
