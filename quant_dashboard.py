@@ -489,6 +489,45 @@ def _load_trade_log_firebase():
         pass
     return []
 
+def save_analysis_log(ticker, name, verdict, rr, entry, stop, target1, target2, preset="", score=0, source="분석탭"):
+    """분석 기록을 Firebase에 저장"""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    _row = {
+        '날짜':   now.strftime('%Y-%m-%d'),
+        '시간':   now.strftime('%H:%M:%S'),
+        '종목코드': ticker,
+        '종목명':   name,
+        '판정':     verdict,
+        'R:R':      float(rr),
+        '진입가':   float(entry) if entry else 0,
+        '손절가':   float(stop) if stop else 0,
+        '목표1':    float(target1) if target1 else 0,
+        '목표2':    float(target2) if target2 else 0,
+        '프리셋':   preset,
+        '점수':     int(score),
+        '출처':     source,
+    }
+    try:
+        _key = now.strftime('%Y%m%d_%H%M%S_') + ticker
+        _fb_ref(f"/quant_analysis/{_key}").set(_row)
+    except Exception:
+        if 'local_analysis_log' not in st.session_state:
+            st.session_state.local_analysis_log = []
+        st.session_state.local_analysis_log.append(_row)
+
+def load_analysis_log(limit=50):
+    """Firebase에서 분석 기록 로드"""
+    rows = []
+    try:
+        data = _fb_ref("/quant_analysis").get()
+        if data:
+            rows = sorted(data.values(), key=lambda x: x.get('날짜','') + x.get('시간',''), reverse=True)
+    except Exception:
+        pass
+    rows += st.session_state.get('local_analysis_log', [])
+    return rows[:limit]
+
 def get_position(acc, ticker):
     """보유 포지션 조회"""
     for p in acc['positions']:
@@ -3205,7 +3244,7 @@ with tab_b:
         _km_b = _dt_tb.utcnow().minute
         if (9 <= _kh_b < 10) or (_kh_b == 10 and _km_b <= 30):
             st.error("🔒 09:00~10:30 진입 금지 구간 — 차트 분석만 가능")
-    _sub_b1, _sub_b2 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석"])
+    _sub_b1, _sub_b2, _sub_b3 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석", "📋 분석 기록"])
 
     with _sub_b1:
         def _display_name(ticker, name):
@@ -3329,6 +3368,16 @@ with tab_b:
                     "현재 가격대는 추가 확인이 필요한 구간입니다.",
                     "신호 강화 또는 지지선 근접 시 재진입 검토하세요."
                 ]
+
+            # ── 분석 기록 자동 저장 (종목 변경 또는 프리셋 변경 시) ──
+            _log_key = f"{sel_ticker}_{st.session_state.analysis_preset}_{_ep['rr']}"
+            if st.session_state.get('_last_analysis_key') != _log_key:
+                st.session_state['_last_analysis_key'] = _log_key
+                save_analysis_log(
+                    sel_ticker, sel_name, _vd_label, _ep['rr'],
+                    _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
+                    preset=st.session_state.analysis_preset, score=0, source="분석탭"
+                )
 
             _vd_check = "✅" if _vd_icon == "🟢" else "⚠️" if _vd_icon == "🟡" else "❌"
             st.markdown(f"""
@@ -3695,6 +3744,82 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                             except Exception as e:
                                 st.error(f"오류: {e}")
 
+
+    # ══════════════════════════════════════════
+    # 탭 3: 분석 기록
+    # ══════════════════════════════════════════
+    with _sub_b3:
+        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:12px'>📋 분석 기록 — 최근 50건</div>", unsafe_allow_html=True)
+
+        _col_hist_r, _col_hist_del = st.columns([5, 1])
+        if _col_hist_del.button("🗑️ 기록 초기화", key="clear_analysis_log", use_container_width=True):
+            try:
+                _fb_ref("/quant_analysis").delete()
+            except Exception:
+                pass
+            st.session_state.pop('local_analysis_log', None)
+            st.session_state.pop('_last_analysis_key', None)
+            st.rerun()
+
+        _hist_rows = load_analysis_log(50)
+        if not _hist_rows:
+            st.info("아직 분석 기록이 없습니다. 종목을 선택하면 자동으로 저장됩니다.")
+        else:
+            # 요약 통계
+            _h_buy  = sum(1 for r in _hist_rows if '매수' in r.get('판정',''))
+            _h_wait = sum(1 for r in _hist_rows if '관망' in r.get('판정',''))
+            _h_no   = sum(1 for r in _hist_rows if '불가' in r.get('판정','') or '차단' in r.get('판정',''))
+            st.markdown(f"""
+<div style='display:flex;gap:12px;margin-bottom:12px'>
+  <div style='background:rgba(52,211,153,0.12);border:1px solid #34d39940;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px'>
+    <div style='font-size:11px;color:#64748b'>매수권장</div>
+    <div style='font-size:20px;font-weight:800;color:#34d399'>{_h_buy}</div>
+  </div>
+  <div style='background:rgba(251,191,36,0.10);border:1px solid #fbbf2440;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px'>
+    <div style='font-size:11px;color:#64748b'>관망</div>
+    <div style='font-size:20px;font-weight:800;color:#fbbf24'>{_h_wait}</div>
+  </div>
+  <div style='background:rgba(244,63,94,0.10);border:1px solid #f43f5e40;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px'>
+    <div style='font-size:11px;color:#64748b'>진입불가</div>
+    <div style='font-size:20px;font-weight:800;color:#f43f5e'>{_h_no}</div>
+  </div>
+  <div style='background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px'>
+    <div style='font-size:11px;color:#64748b'>총 기록</div>
+    <div style='font-size:20px;font-weight:800;color:#f0f4ff'>{len(_hist_rows)}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            for _hr in _hist_rows:
+                _hv = _hr.get('판정', '')
+                _hvc = "#34d399" if '매수' in _hv else "#fbbf24" if '관망' in _hv else "#f43f5e"
+                _hvb = "rgba(52,211,153,0.08)" if '매수' in _hv else "rgba(251,191,36,0.06)" if '관망' in _hv else "rgba(244,63,94,0.06)"
+                _hrr = _hr.get('R:R', 0)
+                _hentry = _hr.get('진입가', 0)
+                _hstop = _hr.get('손절가', 0)
+                _ht1 = _hr.get('목표1', 0)
+                _hsrc = _hr.get('출처', '')
+                _hpre = _hr.get('프리셋', '')
+                _hsc  = _hr.get('점수', 0)
+                st.markdown(f"""
+<div style='background:{_hvb};border:1px solid {_hvc}30;border-radius:10px;
+padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center'>
+  <div>
+    <span style='font-weight:700;font-size:13px;color:#f0f4ff'>{_hr.get("종목명","?")}</span>
+    <span style='color:#64748b;font-size:11px;margin-left:6px'>{_hr.get("종목코드","")}</span>
+    <span style='background:#1e293b;color:#64748b;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px'>{_hsrc} · {_hpre}</span>
+    <div style='font-size:11px;color:#64748b;margin-top:3px'>
+      {_hr.get("날짜","")} {_hr.get("시간","")[:5]}
+      {'&nbsp;·&nbsp;진입 <b style="color:#fbbf24">' + f"{_hentry:,.0f}" + '</b>' if _hentry > 0 else ''}
+      {'&nbsp;·&nbsp;손절 <b style="color:#f43f5e">' + f"{_hstop:,.0f}" + '</b>' if _hstop > 0 else ''}
+      {'&nbsp;·&nbsp;목표 <b style="color:#34d399">' + f"{_ht1:,.0f}" + '</b>' if _ht1 > 0 else ''}
+      {'&nbsp;·&nbsp;점수 <b style="color:#fbbf24">' + str(_hsc) + '</b>' if _hsc > 0 else ''}
+    </div>
+  </div>
+  <div style='text-align:right'>
+    <div style='font-size:13px;font-weight:800;color:{_hvc}'>{_hv}</div>
+    <div style='font-size:12px;color:#64748b'>R:R <b style="color:{_hvc}">{_hrr}</b></div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
     # ══════════════════════════════════════════
     # 탭 4: 추천 스캐너
@@ -4426,6 +4551,41 @@ with tab_c:
             _ma5_diff = (cur - _ma5_val) / _ma5_val * 100 if _ma5_val > 0 else 0
             _overheat = (_gap_pct >= 3.0) or (abs(_ma5_diff) >= 3.0)
 
+            # ── 프리셋 게이트: 선택된 필터 조건을 반드시 통과해야 함 ──
+            _active_preset = st.session_state.get('scan_preset')
+            if _active_preset and _active_preset != 'custom':
+                _cl = df['종가']
+                # RSI 계산
+                _d = _cl.diff(); _g = _d.clip(lower=0).ewm(alpha=1/14,adjust=False).mean()
+                _ls = (-_d.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+                _rsi_g = float(100 - 100/(1 + _g.iloc[-1]/max(_ls.iloc[-1],1e-9)))
+                # 거래량 비율
+                _vr_g = vol_t / max_vol_20 * 100 if max_vol_20 > 0 else 0
+                # MACD 골든크로스
+                _m12 = _cl.ewm(span=12,adjust=False).mean()
+                _m26 = _cl.ewm(span=26,adjust=False).mean()
+                _mc = _m12 - _m26; _sg = _mc.ewm(span=9,adjust=False).mean()
+                _gc = (_mc.iloc[-1] > _sg.iloc[-1] and _mc.iloc[-2] <= _sg.iloc[-2])
+                # BB 위치
+                _bb_m = _cl.rolling(20).mean().iloc[-1]; _bb_s = _cl.rolling(20).std().iloc[-1]
+                _bb_lo_g = _bb_m - 2*_bb_s; _bb_up_g = _bb_m + 2*_bb_s
+                _bb_pos_g = (cur - _bb_lo_g)/(_bb_up_g - _bb_lo_g + 1e-9)*100
+                # MA 정배열
+                _ma5_g  = float(_cl.tail(5).mean())
+                _ma20_g = float(_cl.tail(20).mean())
+                _ma60_g = float(_cl.tail(60).mean()) if len(_cl) >= 60 else _ma20_g
+                _align_g = _ma5_g > _ma20_g > _ma60_g
+
+                _gate_fail = (
+                    (use_rsi   and _rsi_g > 35) or
+                    (use_vol   and _vr_g < 150) or
+                    (use_macd  and not _gc) or
+                    (use_bb    and _bb_pos_g > 25) or
+                    (use_align and not _align_g)
+                )
+                if _gate_fail:
+                    return False, {'조건': '프리셋 조건 미충족', '점수': 0, '등급': 'Filtered'}
+
             # ── 등급 판정 ──
             all6_pass = c1_pass and c2_pass and c3_ok and c4_ok and c5_ok and c6_ok
 
@@ -4529,6 +4689,16 @@ with tab_c:
         prog.empty(); status.empty()
         passed = sorted(passed, key=lambda x: x.get('점수', 0), reverse=True)
         st.session_state.passed = passed
+        # 스캔 결과 → 분석 기록 일괄 저장
+        _scan_preset_name = st.session_state.get('scan_preset', '')
+        for _sp in passed[:10]:
+            save_analysis_log(
+                _sp['ticker'], _sp['name'],
+                _sp.get('등급', '스캔발굴'), 0,
+                0, 0, 0, 0,
+                preset=_scan_preset_name or 'yfinance',
+                score=_sp.get('점수', 0), source="스캐너"
+            )
         _errs = st.session_state.pop('_scan_errors', [])
         if _errs:
             with st.expander(f"⚠️ 스캔 중 오류 {len(_errs)}건 (데이터 없음 / API 오류)", expanded=False):
