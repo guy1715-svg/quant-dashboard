@@ -342,6 +342,55 @@ def check_smart_killswitch(ticker, entry_price, current_price):
         return 'EXECUTE_MARKET_SELL', f"🚨 킬스위치 — {_chg_pct:.2f}% → EXECUTE_MARKET_SELL"
     return 'SAFE', ""
 
+def check_reentry_allowed(ticker, kill_date_str, df=None):
+    """
+    손절 후 재진입 가능 여부 — Gemini T2 모범 답안 3단계 필터
+    1. 쿨링오프: 손절일로부터 3 거래일 경과
+    2. 조건 회복: 종가 > MA20 & 거래량 실린 돌파
+    3. 지표 복원: RSI 40 상향 돌파 또는 이전 저점 위 지지 확인
+    Returns: (can_reenter: bool, reason: str)
+    """
+    from datetime import datetime as _dt_re, timedelta as _td_re
+    import numpy as np
+    try:
+        _kill_dt = _dt_re.strptime(kill_date_str, '%Y-%m-%d')
+        _elapsed = (_dt_re.now() - _kill_dt).days
+        if _elapsed < 3:
+            return False, f"쿨링오프 중 ({_elapsed}일 경과 / 최소 3거래일 필요)"
+
+        if df is None or len(df) < 20:
+            return False, "데이터 부족 — 조건 확인 불가"
+
+        _cl   = df['종가'] if '종가' in df.columns else df['Close']
+        _vol  = df['거래량'] if '거래량' in df.columns else df['Volume']
+        _ma20 = _cl.rolling(20).mean()
+        _cur  = float(_cl.iloc[-1])
+        _m20  = float(_ma20.iloc[-1]) if not np.isnan(_ma20.iloc[-1]) else _cur
+
+        # 조건 회복: 종가 > MA20 + 거래량 > 5일 평균 120%
+        _vol_ratio = float(_vol.iloc[-1]) / float(_vol.tail(5).mean()) if float(_vol.tail(5).mean()) > 0 else 0
+        _above_ma20 = _cur > _m20
+        _vol_ok     = _vol_ratio >= 1.2
+
+        # RSI 복원
+        _d = _cl.diff()
+        _g = _d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+        _l = (-_d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+        _rsi_now  = float(100 - 100 / (1 + _g.iloc[-1] / max(_l.iloc[-1], 1e-9)))
+        _rsi_prev = float(100 - 100 / (1 + _g.iloc[-2] / max(_l.iloc[-2], 1e-9))) if len(_cl) >= 2 else _rsi_now
+        _rsi_cross40 = _rsi_now >= 40 and _rsi_prev < 40
+
+        if _above_ma20 and _vol_ok and (_rsi_cross40 or _rsi_now >= 45):
+            return True, f"재진입 허용 — MA20 돌파 + 거래량 {_vol_ratio*100:.0f}% + RSI {_rsi_now:.1f}"
+        elif _above_ma20 and not _vol_ok:
+            return False, f"MA20 위이나 거래량 부족 ({_vol_ratio*100:.0f}%) — 돌파 확인 대기"
+        elif not _above_ma20:
+            return False, f"MA20({_m20:,.0f}) 미돌파 — 현재가 {_cur:,.0f}"
+        else:
+            return False, f"RSI {_rsi_now:.1f} — 40 상향 돌파 대기"
+    except Exception as _e:
+        return False, f"조건 확인 오류: {_e}"
+
 def run_v891_system_check(ticker="", entry_price=0, current_price=0):
     # 무인수 호출(진입 여부만 체크)은 5분 캐시 재사용
     _cache_key = '_v891_base_cache'
@@ -4952,8 +5001,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── V9.7 사이드 패널 Drawer — 좌: 목록 / 우: 상세 분석 ──
         st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 종목 선택 → 우측 패널에서 즉시 분석</div>", unsafe_allow_html=True)
 
+        # 초기 선택값 1회만 설정 (rerun 없이 콜백으로 즉시 반영)
         if 'scan_drawer_sel' not in st.session_state:
             st.session_state['scan_drawer_sel'] = _p_list[0]['ticker'] if _p_list else None
+
+        def _set_drawer(tk):
+            st.session_state['scan_drawer_sel'] = tk
 
         _drawer_left, _drawer_right = st.columns([2, 3])
 
@@ -4963,13 +5016,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _stk = item['ticker']; _snm = item['name']
                 _schg = item.get('등락(%)', 0); _ssc = item.get('score', 0)
                 _sgrd = item.get('등급', '')
-                _schg_c = "#39ff14" if _schg > 0 else "#3b82f6"
                 _is_sel = st.session_state.get('scan_drawer_sel') == _stk
                 _btn_style = "primary" if _is_sel else "secondary"
                 _btn_lbl = f"{'🏆' if '🏆' in _sgrd else '🎯'} {_snm[:8]} | {_ssc}점 | {'▲' if _schg>0 else '▼'}{abs(_schg):.1f}%"
-                if st.button(_btn_lbl, key=f"drawer_btn_{_stk}", use_container_width=True, type=_btn_style):
-                    st.session_state['scan_drawer_sel'] = _stk
-                    st.rerun()
+                # on_click 콜백 — st.rerun() 없이 session_state만 갱신 → 딜레이 제거
+                st.button(_btn_lbl, key=f"drawer_btn_{_stk}",
+                          use_container_width=True, type=_btn_style,
+                          on_click=_set_drawer, args=(_stk,))
 
         with _drawer_right:
             _sel_tk = st.session_state.get('scan_drawer_sel')
@@ -6814,7 +6867,7 @@ with tab_e:
                         try:
                             _sdf = all_data[_st2]['df']
                             _sc  = _sdf['Close'].iloc[-1]; _sp = _sdf['Close'].iloc[-2]
-                            _chgs.append((_sc/_sp - 1)*100)
+                            _chgs.append((_sc / _sp - 1) * 100 if _sp and _sp > 0 else 0)
                         except Exception: pass
                 _avg_chg = sum(_chgs)/len(_chgs) if _chgs else 0
                 _chg_c = "#39ff14" if _avg_chg > 0 else "#ff003c"
@@ -6836,7 +6889,7 @@ with tab_e:
                         try:
                             _sdf2 = all_data[_st2]['df']
                             _sc2  = _sdf2['Close'].iloc[-1]; _sp2 = _sdf2['Close'].iloc[-2]
-                            _sc_chg = (_sc2/_sp2 - 1)*100
+                            _sc_chg = (_sc2 / _sp2 - 1) * 100 if _sp2 and _sp2 > 0 else 0
                         except Exception: pass
                     _sc_c = "#39ff14" if _sc_chg > 0 else "#ff003c"
                     _tbl_html += (
@@ -7752,12 +7805,13 @@ with tab_e:
                     # 수치 테이블
                     st.markdown("**수치 (억원)**")
                     inv_disp = (inv_show/1e8).round(0).astype(int)
-                    st.dataframe(
-                        inv_disp.style.applymap(
-                            lambda v: 'color: #ff4d6d' if v > 0 else 'color: #4da6ff'
-                        ),
-                        use_container_width=True
-                    )
+                    # pandas 2.x: applymap deprecated → map 사용
+                    _style_fn = lambda v: 'color: #39ff14' if v > 0 else 'color: #ff003c'
+                    try:
+                        _styled = inv_disp.style.map(_style_fn)
+                    except AttributeError:
+                        _styled = inv_disp.style.applymap(_style_fn)
+                    st.dataframe(_styled, use_container_width=True)
             except Exception as e:
                 st.warning(f"투자자 데이터 표시 오류: {e}")
         else:
@@ -7794,15 +7848,14 @@ with tab_e:
 
         def _to_heikin_ashi(df):
             ha = df.copy()
+            # HA Close: 4가 평균
             ha['Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-            ha['Open']  = 0.0
-            for i in range(len(df)):
-                if i == 0:
-                    ha.iloc[0, ha.columns.get_loc('Open')] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
-                else:
-                    ha.iloc[i, ha.columns.get_loc('Open')] = (ha['Open'].iloc[i-1] + ha['Close'].iloc[i-1]) / 2
-            ha['High'] = df[['High','Open','Close']].max(axis=1)
-            ha['Low']  = df[['Low','Open','Close']].min(axis=1)
+            # HA Open: 전봉 (HA_Open + HA_Close) / 2 — shift()로 벡터화
+            ha['Open'] = ((df['Open'].shift(1) + df['Close'].shift(1)) / 2)
+            ha.iloc[0, ha.columns.get_loc('Open')] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
+            # HA High/Low: 원본 고가/저가와 HA Open/Close 중 max/min (정확한 꼬리 계산)
+            ha['High'] = ha[['Open', 'Close']].join(df['High']).max(axis=1)
+            ha['Low']  = ha[['Open', 'Close']].join(df['Low']).min(axis=1)
             return ha
 
         def _calc_rsi(close, period=14):
@@ -7828,6 +7881,11 @@ with tab_e:
 
         with st.spinner("차트 데이터 로딩 중..."):
             _cdf = _fetch_chart_df(_sel_sym)
+
+        # U1: 마지막 갱신 시각 표시 (캐시 TTL 1800초 기준)
+        from datetime import datetime as _dt_chart
+        _chart_fetched_at = _dt_chart.now().strftime('%H:%M:%S')
+        st.caption(f"📡 데이터 기준: {_chart_fetched_at} (30분 캐시 — 최대 30분 지연 가능)")
 
         if _cdf is not None and len(_cdf) >= 20:
             import plotly.graph_objects as go
@@ -7970,10 +8028,17 @@ with tab_e:
                 font=dict(color='#8899bb', size=11),
                 xaxis_rangeslider_visible=False,
                 height=520,
+                autosize=True,
                 margin=dict(l=10, r=10, t=30, b=10),
                 legend=dict(orientation='h', y=1.02, x=0,
                             font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
                 hovermode='x unified',
+            )
+            # U3: 모바일 반응형 — Plotly autosize + CSS로 높이 제한 해제
+            st.markdown(
+                "<style>.js-plotly-plot .plotly{width:100%!important;}"
+                ".js-plotly-plot .plotly svg{max-height:none!important;}</style>",
+                unsafe_allow_html=True
             )
             _fig.update_xaxes(gridcolor='#1a2535', showgrid=True)
             _fig.update_yaxes(gridcolor='#1a2535', showgrid=True)
