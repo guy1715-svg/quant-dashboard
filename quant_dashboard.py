@@ -8564,10 +8564,10 @@ with tab_e:
 
         # 배당 종목별 지급 패턴
         _DIV_SCHEDULE = {
-            "JEPQ":  {"color": "#3b82f6", "months": list(range(1,13)),    "day": 7,  "yield": 10.5, "freq": "매월"},
-            "JEPI":  {"color": "#8b5cf6", "months": list(range(1,13)),    "day": 7,  "yield": 7.8,  "freq": "매월"},
-            "MAIN":  {"color": "#f59e0b", "months": list(range(1,13)),    "day": 15, "yield": 6.2,  "freq": "매월+특별"},
-            "SCHD":  {"color": "#10b981", "months": [3,6,9,12],           "day": 25, "yield": 3.4,  "freq": "분기"},
+            "JEPQ":  {"color": "#3b82f6", "months": list(range(1,13)),    "day": 7,  "yield": 10.5, "freq": "매월",    "name": "JP모건 나스닥"},
+            "JEPI":  {"color": "#8b5cf6", "months": list(range(1,13)),    "day": 7,  "yield": 7.8,  "freq": "매월",    "name": "JP모건 프리미엄"},
+            "MAIN":  {"color": "#f59e0b", "months": list(range(1,13)),    "day": 15, "yield": 6.2,  "freq": "매월+특별", "name": "메인 스트리트"},
+            "SCHD":  {"color": "#10b981", "months": [3,6,9,12],           "day": 25, "yield": 3.4,  "freq": "분기",    "name": "슈왑 배당주"},
         }
 
         # 이번 달 캘린더 그리드
