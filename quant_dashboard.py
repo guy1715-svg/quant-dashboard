@@ -6646,54 +6646,68 @@ with tab_e:
     _sub_e1, _sub_e2, _sub_e3, _sub_e4 = st.tabs(["⭐ 관심종목", "📝 페이퍼", "🌏 시장지수", "📊 현황판"])
 
     with _sub_e1:
-        st.markdown("### ⭐ 관심종목 관리")
-        st.caption("추가/삭제 후 현황판 탭으로 이동하면 즉시 반영됩니다.")
+        st.markdown("### ⚙️ 상태 제어 센터")
 
-        # ── 연결 상태 디버그 ──
-        with st.expander("🔧 연결 상태 확인", expanded=True):
-            try:
-                _sheet_id = st.secrets["SHEET_ID"]
-                st.success(f"✅ SHEET_ID 확인: {_sheet_id[:20]}...")
-            except Exception as e:
-                st.error(f"❌ SHEET_ID 없음: {e}")
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 1. 연동 상태 대형 카드 3개
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        _conn_c1, _conn_c2, _conn_c3 = st.columns(3)
 
-            try:
-                _sa = st.secrets["gcp_service_account"]
-                st.success(f"✅ 서비스 계정 확인: {_sa['client_email']}")
-            except Exception as e:
-                st.error(f"❌ 서비스 계정 없음: {e}")
+        # Sheets 상태
+        _sh_ok = False; _sh_msg = ""
+        try:
+            _ws = get_gsheet(); _sh_ok = True; _sh_msg = st.secrets.get("SHEET_ID","")[:16] + "…"
+        except Exception as _e: _sh_msg = str(_e)[:40]
+        _conn_c1.markdown(
+            f"<div style='background:#0d1117;border:2px solid {'#39ff14' if _sh_ok else '#ff003c'};"
+            f"border-radius:14px;padding:16px 18px;position:relative'>"
+            f"<div style='position:absolute;top:12px;right:14px;width:14px;height:14px;border-radius:50%;"
+            f"background:{'#39ff14' if _sh_ok else '#ff003c'};box-shadow:0 0 8px {'#39ff14' if _sh_ok else '#ff003c'}'></div>"
+            f"<div style='font-size:22px;margin-bottom:6px'>📊</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#f0f4ff;margin-bottom:4px'>Google Sheets</div>"
+            f"<div style='font-size:10px;color:{'#39ff14' if _sh_ok else '#ff003c'};margin-bottom:4px'>{'● 연결됨' if _sh_ok else '● 연결 실패'}</div>"
+            f"<div style='font-size:10px;color:#64748b;word-break:break-all'>{_sh_msg}</div>"
+            f"</div>", unsafe_allow_html=True
+        )
 
-            try:
-                _ws = get_gsheet()
-                st.success("✅ Google Sheets 연결 성공!")
-            except Exception as e:
-                st.error(f"❌ Sheets 연결 오류: {e}")
+        # App 상태 (yfinance / 데이터 가용)
+        _app_ok = len(all_data) > 0
+        _app_cnt = len(all_data)
+        _conn_c2.markdown(
+            f"<div style='background:#0d1117;border:2px solid {'#39ff14' if _app_ok else '#ff003c'};"
+            f"border-radius:14px;padding:16px 18px;position:relative'>"
+            f"<div style='position:absolute;top:12px;right:14px;width:14px;height:14px;border-radius:50%;"
+            f"background:{'#39ff14' if _app_ok else '#ff003c'};box-shadow:0 0 8px {'#39ff14' if _app_ok else '#ff003c'}'></div>"
+            f"<div style='font-size:22px;margin-bottom:6px'>📡</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#f0f4ff;margin-bottom:4px'>앱 데이터 (yfinance)</div>"
+            f"<div style='font-size:10px;color:{'#39ff14' if _app_ok else '#ff003c'};margin-bottom:4px'>{'● 정상' if _app_ok else '● 데이터 없음'}</div>"
+            f"<div style='font-size:10px;color:#64748b'>{_app_cnt}개 종목 캐시됨</div>"
+            f"</div>", unsafe_allow_html=True
+        )
 
-            # ── Firebase 연결 상태 ──
-            st.markdown("---")
-            try:
-                _fb_cfg = st.secrets["firebase"]
-                st.success(f"✅ Firebase 계정 확인: {_fb_cfg['client_email']}")
-            except Exception as e:
-                st.error(f"❌ Firebase secrets 없음: {e}")
+        # Firebase DB 상태
+        _fb_ok = False; _fb_msg = ""
+        try:
+            _get_firebase_app()
+            _td = _fb_ref("/quant_watchlist").get()
+            _fb_ok = True; _fb_msg = f"관심종목 {len(_td) if _td else 0}개"
+        except Exception as _e: _fb_msg = str(_e)[:40]
+        _conn_c3.markdown(
+            f"<div style='background:#0d1117;border:2px solid {'#39ff14' if _fb_ok else '#ff003c'};"
+            f"border-radius:14px;padding:16px 18px;position:relative'>"
+            f"<div style='position:absolute;top:12px;right:14px;width:14px;height:14px;border-radius:50%;"
+            f"background:{'#39ff14' if _fb_ok else '#ff003c'};box-shadow:0 0 8px {'#39ff14' if _fb_ok else '#ff003c'}'></div>"
+            f"<div style='font-size:22px;margin-bottom:6px'>🔥</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#f0f4ff;margin-bottom:4px'>Firebase DB</div>"
+            f"<div style='font-size:10px;color:{'#39ff14' if _fb_ok else '#ff003c'};margin-bottom:4px'>{'● 연결됨' if _fb_ok else '● 연결 실패'}</div>"
+            f"<div style='font-size:10px;color:#64748b;word-break:break-all'>{_fb_msg}</div>"
+            f"</div>", unsafe_allow_html=True
+        )
+        st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
 
-            try:
-                _db_url = st.secrets["firebase_config"]["database_url"]
-                st.success(f"✅ Firebase DB URL: {_db_url}")
-            except Exception as e:
-                st.error(f"❌ firebase_config 없음: {e}")
-
-            try:
-                _get_firebase_app()
-                _test_ref = _fb_ref("/quant_watchlist")
-                _test_data = _test_ref.get()
-                st.success(f"✅ Firebase 연결 성공! (관심종목 {len(_test_data) if _test_data else 0}개)")
-            except Exception as e:
-                st.error(f"❌ Firebase 연결 오류: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        # 항상 최신 데이터 로드
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 2 & 3. 중단 2열: 좌=스마트 입력, 우=섹터/시장 현황
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         _wl    = get_watchlist()
         _lines = [l.strip() for l in _wl.split("\n") if "," in l.strip()]
         _pairs = []
@@ -6703,101 +6717,155 @@ with tab_e:
                 _pairs.append((_p[0].strip(), _p[1].strip()))
         _tids = [t for t, n in _pairs]
 
-        # ── 현재 종목 목록 + 삭제 콜백 ──
-        def _do_delete(tk):
-            remove_ticker(tk)
+        def _do_delete(tk): remove_ticker(tk)
 
-        st.markdown(f"#### 📋 현재 종목 ({len(_pairs)}개)")
-        for _idx, (_tk, _nm) in enumerate(_pairs):
-            _ca, _cb = st.columns([5, 1])
-            _ca.markdown(
-                f"<div style='padding:10px; background:rgba(255,255,255,0.04); border-radius:8px;"
-                f"border:1px solid rgba(255,255,255,0.08); margin-bottom:6px'>"
-                f"<b>{_nm}</b>&nbsp;&nbsp;"
-                f"<code style='color:#64748b;font-size:11px'>{_tk}</code></div>",
-                unsafe_allow_html=True
-            )
-            _cb.button(
-                "삭제", key=f"t5_del_{_idx}_{_tk}",
-                on_click=_do_delete, args=(_tk,)
-            )
+        _mid_l, _mid_r = st.columns([1, 1])
 
-        st.divider()
+        with _mid_l:
+            st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>➕ 종목 추가</div>", unsafe_allow_html=True)
+            with st.form("add_ticker_form", clear_on_submit=True):
+                _fc2, _fn2 = st.columns(2)
+                _f_code = _fc2.text_input("종목코드", placeholder="005930")
+                _f_name = _fn2.text_input("종목명",   placeholder="삼성전자")
+                st.form_submit_button("✅ 추가", use_container_width=True)
+                if _f_code and _f_name:
+                    _code = _f_code.strip(); _name = _f_name.strip()
+                    if _code not in _tids:
+                        if add_ticker(_code, _name):
+                            st.rerun()
+                    else:
+                        st.warning("이미 등록됨")
 
-        # ── 직접 추가 ──
-        st.markdown("#### ➕ 직접 추가")
-
-        # session_state로 입력값 보존
-        if 'form_code' not in st.session_state:
-            st.session_state.form_code = ''
-        if 'form_name' not in st.session_state:
-            st.session_state.form_name = ''
-        if 'form_msg' not in st.session_state:
-            st.session_state.form_msg = None
-
-        with st.form("add_ticker_form", clear_on_submit=True):
-            _fc, _fn = st.columns(2)
-            _f_code = _fc.text_input("종목코드", placeholder="005930")
-            _f_name = _fn.text_input("종목명",   placeholder="삼성전자")
-            _submitted = st.form_submit_button("✅ 추가", use_container_width=True)
-            if _submitted:
-                st.session_state.form_code = _f_code
-                st.session_state.form_name = _f_name
-
-        # form 밖에서 처리
-        if st.session_state.form_code and st.session_state.form_name:
-            _code = st.session_state.form_code.strip()
-            _name = st.session_state.form_name.strip()
-            st.session_state.form_code = ''
-            st.session_state.form_name = ''
-            try:
-                if _code not in [t for t, _ in get_watchlist_tickers()]:
-                    # append_rows 방식으로 변경 (clear 없이 한 줄만 추가)
-                    if add_ticker(_code, _name):
-                        st.success(f"✅ {_name} 추가 완료!")
-                        st.rerun()
-                else:
-                    st.warning("이미 등록된 종목입니다.")
-            except Exception as _e:
-                import traceback
-                st.error(f"오류: {_e}")
-                st.code(traceback.format_exc())
-
-        st.divider()
-
-        # ── 스캐너 추천 종목 — 콜백 방식 ──
-        st.markdown("#### 🔍 스캐너 추천 종목")
-
-        def _do_add(tk, nm):
-            add_ticker(tk, nm)
-
-        if st.session_state.passed:
-            for _idx2, _item in enumerate(st.session_state.passed):
-                _tk2  = _item["ticker"]
-                _nm2  = _item["name"]
-                _chg  = _item["등락(%)"]
-                _cc   = "#ff4d6d" if _chg > 0 else "#4da6ff"
-                _done = _tk2 in _tids
-                _ra, _rb = st.columns([5, 1])
-                _ra.markdown(
-                    f"<div style='padding:10px;"
-                    f"background:{'#0a1a0a' if _done else '#111827'};"
-                    f"border-radius:8px;"
-                    f"border:1px solid {'#2d6644' if _done else '#1e3a5f'};"
-                    f"margin-bottom:6px'>"
-                    f"<b>{_nm2}</b>&nbsp;"
-                    f"<code style='color:#64748b;font-size:11px'>{_tk2}</code>&nbsp;"
-                    f"<span style='color:{_cc}'>{_chg:+.2f}%</span>"
-                    f"{'&nbsp;✅' if _done else ''}</div>",
+            # 태그형 목록 + 인라인 X 버튼
+            st.markdown(f"<div style='font-size:11px;color:#64748b;margin:10px 0 6px'>📋 관심종목 {len(_pairs)}개 — X 클릭 시 즉시 삭제</div>", unsafe_allow_html=True)
+            for _idx, (_tk, _nm) in enumerate(_pairs):
+                _is_kr = _tk.isdigit()
+                _flag = "🇰🇷" if _is_kr else "🇺🇸"
+                _tag_col, _del_col = st.columns([5, 1])
+                _tag_col.markdown(
+                    f"<div style='background:#1e293b;border:1px solid #334155;border-radius:20px;"
+                    f"padding:5px 14px;font-size:12px;display:inline-flex;align-items:center;gap:6px'>"
+                    f"{_flag} <span style='color:#f0f4ff;font-weight:700'>{_nm[:10]}</span>"
+                    f"<span style='color:#64748b;font-size:10px'>{_tk}</span></div>",
                     unsafe_allow_html=True
                 )
-                if not _done:
-                    _rb.button(
-                        "추가", key=f"A_{_tk2}",
-                        on_click=_do_add, args=(_tk2, _nm2)
+                _del_col.button("✕", key=f"tag_del_{_idx}_{_tk}", on_click=_do_delete, args=(_tk,))
+
+        with _mid_r:
+            st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>📈 시장별 종목 현황</div>", unsafe_allow_html=True)
+            # 국장 / 미장 분류
+            _kr_pairs = [(t, n) for t, n in _pairs if t.isdigit()]
+            _us_pairs = [(t, n) for t, n in _pairs if not t.isdigit()]
+            _sectors  = [("🇰🇷 국장 ETF/주식", _kr_pairs), ("🇺🇸 미장 ETF", _us_pairs)]
+            _tbl_html = (
+                "<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;overflow:hidden'>"
+                "<div style='display:grid;grid-template-columns:2fr 1fr 1fr 1fr;"
+                "padding:8px 12px;background:#1e293b;font-size:10px;font-weight:700;color:#64748b;gap:4px'>"
+                "<div>테마/시장</div><div style='text-align:center'>종목수</div>"
+                "<div style='text-align:center'>평균등락</div><div style='text-align:center'>상태</div></div>"
+            )
+            for _sec_name, _sec_pairs in _sectors:
+                if not _sec_pairs:
+                    continue
+                # 평균 등락률 계산
+                _chgs = []
+                for _st2, _sn2 in _sec_pairs:
+                    if _st2 in all_data:
+                        try:
+                            _sdf = all_data[_st2]['df']
+                            _sc  = _sdf['Close'].iloc[-1]; _sp = _sdf['Close'].iloc[-2]
+                            _chgs.append((_sc/_sp - 1)*100)
+                        except Exception: pass
+                _avg_chg = sum(_chgs)/len(_chgs) if _chgs else 0
+                _chg_c = "#39ff14" if _avg_chg > 0 else "#ff003c"
+                _status = "▲ 상승" if _avg_chg > 0.3 else ("▼ 하락" if _avg_chg < -0.3 else "→ 중립")
+                _st_c   = "#39ff14" if _avg_chg > 0.3 else ("#ff003c" if _avg_chg < -0.3 else "#94a3b8")
+                _tbl_html += (
+                    "<div style='display:grid;grid-template-columns:2fr 1fr 1fr 1fr;"
+                    "padding:8px 12px;border-top:1px solid #1e293b30;font-size:11px;gap:4px;align-items:center'>"
+                    f"<div style='color:#f0f4ff;font-weight:600'>{_sec_name}</div>"
+                    f"<div style='text-align:center;color:#fbbf24;font-weight:700'>{len(_sec_pairs)}</div>"
+                    f"<div style='text-align:center;color:{_chg_c};font-weight:700'>{_avg_chg:+.2f}%</div>"
+                    f"<div style='text-align:center;color:{_st_c}'>{_status}</div>"
+                    "</div>"
+                )
+                # 개별 종목 행 (최대 5개)
+                for _st2, _sn2 in _sec_pairs[:5]:
+                    _sc_chg = 0
+                    if _st2 in all_data:
+                        try:
+                            _sdf2 = all_data[_st2]['df']
+                            _sc2  = _sdf2['Close'].iloc[-1]; _sp2 = _sdf2['Close'].iloc[-2]
+                            _sc_chg = (_sc2/_sp2 - 1)*100
+                        except Exception: pass
+                    _sc_c = "#39ff14" if _sc_chg > 0 else "#ff003c"
+                    _tbl_html += (
+                        "<div style='display:grid;grid-template-columns:2fr 1fr 1fr 1fr;"
+                        "padding:5px 12px;font-size:10px;gap:4px;align-items:center;background:#0a0f1a'>"
+                        f"<div style='color:#94a3b8;padding-left:8px'>{_sn2[:12]}</div>"
+                        f"<div style='text-align:center;color:#64748b;font-size:9px'>{_st2}</div>"
+                        f"<div style='text-align:center;color:{_sc_c};font-weight:600'>{_sc_chg:+.2f}%</div>"
+                        f"<div></div>"
+                        "</div>"
                     )
+            _tbl_html += "</div>"
+            st.markdown(_tbl_html, unsafe_allow_html=True)
+
+        st.divider()
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 4. 스캐너 종목 그리드 타일 (C1~C6 2×3)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>📊 스캐너 발굴 종목 — 점수 타일 (C1~C6)</div>", unsafe_allow_html=True)
+
+        def _do_add(tk, nm): add_ticker(tk, nm)
+
+        if st.session_state.passed:
+            _tile_html = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px'>"
+            for _item in st.session_state.passed:
+                _tk2  = _item["ticker"]; _nm2 = _item["name"]
+                _chg  = _item.get("等락(%)", _item.get("등락(%)", 0))
+                _ssc2 = _item.get("score", 0)
+                _sgrd2 = _item.get("등급","")
+                _done = _tk2 in _tids
+                _gc2  = "#ffd166" if '🏆' in _sgrd2 else "#3b82f6"
+                _chg_c2 = "#39ff14" if _chg > 0 else "#ff003c"
+                _gcond2 = _item.get("조건","")
+                def _cx2(cs, n): return 1 if f"C{n}✅" in cs else 0
+                _scores = [_cx2(_gcond2, i) for i in range(1, 7)]
+                _score_html = "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:6px'>"
+                for _ci2, _cv2 in enumerate(_scores):
+                    _sc_bg = "#0a2a0a" if _cv2 else "#2a0a0a"
+                    _sc_c2 = "#39ff14" if _cv2 else "#ff003c"
+                    _score_html += (
+                        f"<div style='background:{_sc_bg};border-radius:3px;padding:2px;text-align:center;"
+                        f"font-size:9px;color:{_sc_c2};font-weight:700'>C{_ci2+1}</div>"
+                    )
+                _score_html += "</div>"
+                _tile_html += (
+                    f"<div style='background:#0d1117;border:1px solid {_gc2}40;border-radius:10px;"
+                    f"padding:10px 10px;{'opacity:0.6;' if _done else ''}'>"
+                    f"<div style='font-size:11px;font-weight:700;color:#f0f4ff'>{_nm2[:9]}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:1px'>{_tk2}</div>"
+                    f"<div style='display:flex;justify-content:space-between;margin-top:4px'>"
+                    f"<span style='font-size:10px;color:{_chg_c2}'>{'▲' if _chg>0 else '▼'}{abs(_chg):.1f}%</span>"
+                    f"<span style='font-size:10px;color:#fbbf24;font-weight:700'>{_ssc2}점</span>"
+                    f"</div>"
+                    + _score_html +
+                    ("<div style='font-size:9px;color:#39ff14;margin-top:4px'>✅ 관심등록됨</div>" if _done else "") +
+                    f"</div>"
+                )
+            _tile_html += "</div>"
+            st.markdown(_tile_html, unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
+            # 일괄 추가 버튼
+            _new_items2 = [i for i in st.session_state.passed if i['ticker'] not in _tids]
+            if _new_items2:
+                if st.button(f"⭐ 미등록 {len(_new_items2)}개 전체 추가", key="bulk_add_e1", use_container_width=True, type="primary"):
+                    _added = sum(1 for _it in _new_items2 if add_ticker(_it['ticker'], _it['name']))
+                    if _added: st.success(f"✅ {_added}개 추가!"); st.rerun()
         else:
-            st.info("💡 추천 스캐너 탭에서 먼저 스캔을 실행해주세요.")
+            st.info("💡 스캐너 탭에서 먼저 스캔을 실행하면 발굴 종목이 여기에 표시됩니다.")
 
     # ══════════════════════════════════════════
     # 탭 6: ETF 로테이션 랭킹판
