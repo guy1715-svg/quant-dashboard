@@ -5808,6 +5808,33 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
         _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
+
+        # ── 검증 배지 ──
+        _validated = row.get('_validated', True)
+        _val_badge = (
+            "<span style='background:#16a34a20;color:#4ade80;font-size:9px;"
+            "padding:2px 6px;border-radius:6px;margin-left:6px;border:1px solid #16a34a40'>"
+            "✅ 검증완료</span>"
+            if _validated else
+            "<span style='background:#f9731620;color:#fb923c;font-size:9px;"
+            "padding:2px 6px;border-radius:6px;margin-left:6px;border:1px solid #f9731640'>"
+            "⚠️ 명칭불일치</span>"
+        )
+
+        # ── ⓘ 툴팁 HTML (title 속성) ──
+        from datetime import datetime as _dt_tip
+        _tip_time = _dt_tip.now().strftime('%Y-%m-%d %H:%M')
+        _tip_exp  = row.get('_expected_name', '')
+        _tip_text = f"티커: {row['코드']} | 명칭: {row['ETF명']}"
+        if _tip_exp:
+            _tip_text += f" | DB기준: {_tip_exp}"
+        _tip_text += f" | 업데이트: {_tip_time}"
+        _info_icon = (
+            f"<span title='{_tip_text}' style='color:#64748b;font-size:11px;"
+            f"cursor:help;margin-left:6px;background:#1e293b;padding:1px 5px;"
+            f"border-radius:4px'>ⓘ</span>"
+        )
+
         if show_add_btn:
             _card_col, _btn_col = st.columns([9, 1])
         else:
@@ -5819,7 +5846,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<div><b style='font-size:15px'>{_rank}{_rank_change_html} {row['ETF명']}</b>"
                 f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-                f"{_tag}{_crown_badge}{_dot_bar}</div>"
+                f"{_info_icon}{_val_badge}{_tag}{_crown_badge}{_dot_bar}</div>"
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
                 f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
@@ -5832,6 +5859,58 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"</div></div>",
                 unsafe_allow_html=True
             )
+
+            # ── 명칭 불일치 경고 상세 ──
+            if not _validated:
+                _exp_nm = row.get('_expected_name', '?')
+                st.warning(
+                    f"⚠️ **데이터 불일치 감지** — `{row['코드']}`: "
+                    f"대시보드 `{row['ETF명']}` ≠ 마스터DB `{_exp_nm}`. "
+                    "진입 전 반드시 종목코드를 증권사 앱에서 재확인하세요."
+                )
+
+            # ── 팩트체크 버튼 (국장=Naver, 미장=yfinance) ──
+            _fc_key = f"{key_prefix}_fc_{row['코드']}_{_i}"
+            _fc_result_key = f"_fc_result_{row['코드']}"
+            _is_kr_fc = str(row['코드']).isdigit() and len(str(row['코드'])) == 6
+            if st.button("🔍 데이터 검증", key=_fc_key,
+                         help="외부 소스(Naver/yfinance)와 종목명 일치 여부 대조"):
+                with st.spinner("검증 중..."):
+                    try:
+                        if _is_kr_fc:
+                            import urllib.request as _ur
+                            _naver_url = f"https://finance.naver.com/item/main.naver?code={row['코드']}"
+                            _req = _ur.Request(_naver_url, headers={'User-Agent': 'Mozilla/5.0'})
+                            _html = _ur.urlopen(_req, timeout=5).read().decode('euc-kr', errors='ignore')
+                            # <title> 태그에서 종목명 추출: "TIGER Fn반도체TOP10 : 네이버 금융"
+                            import re as _re_fc
+                            _m = _re_fc.search(r'<title>([^:]+)\s*:', _html)
+                            _naver_name = _m.group(1).strip() if _m else None
+                        else:
+                            import yfinance as _yf_fc
+                            _info_fc = _yf_fc.Ticker(str(row['코드'])).fast_info
+                            _naver_name = getattr(_info_fc, 'long_name', None) or getattr(_info_fc, 'short_name', None)
+
+                        if _naver_name:
+                            _dash_name = str(row['ETF명']).replace(' ', '').replace('&', '')
+                            _src_name  = _naver_name.replace(' ', '').replace('&', '')
+                            _match = (_dash_name in _src_name) or (_src_name in _dash_name)
+                            st.session_state[_fc_result_key] = (True, _naver_name, _match)
+                        else:
+                            st.session_state[_fc_result_key] = (False, None, False)
+                    except Exception as _fc_e:
+                        st.session_state[_fc_result_key] = (False, str(_fc_e), False)
+
+            if _fc_result_key in st.session_state:
+                _fc_ok, _fc_nm, _fc_match = st.session_state[_fc_result_key]
+                if not _fc_ok:
+                    st.caption(f"⚠️ 검증 불가: {_fc_nm or '응답 없음'}")
+                elif _fc_match:
+                    _src_label = "Naver 금융" if _is_kr_fc else "yfinance"
+                    st.success(f"✅ 정합성 확인 — {_src_label}: **{_fc_nm}**")
+                else:
+                    st.error(f"⚠️ 불일치 보고 — 외부소스: **{_fc_nm}** / 대시보드: **{row['ETF명']}** — 진입 전 재확인 필수!")
+
         if show_add_btn:
             with _btn_col:
                 st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
@@ -6452,31 +6531,60 @@ with _tab_d1:
     ]
 
     # ── ETF 데이터 fetch 함수 (호출 전에 반드시 정의) ──
+
+    # ETF 마스터 DB: 코드 → 공식명칭 매핑 (입력 데이터 무결성 검증용)
+    _ETF_MASTER_DB = {c: n for c, n in _KR_ETF_LIST}
+    _ETF_MASTER_DB.update({c: n for c, n in _US_ETF_LIST})
+
+    def _validate_etf_ticker(code: str, name: str) -> tuple:
+        """ETF 마스터 DB와 티커-이름 일치 여부 확인. (ok, expected_name) 반환."""
+        _expected = _ETF_MASTER_DB.get(code)
+        if _expected is None:
+            return True, None  # DB에 없는 경우 검증 패스 (신규 종목)
+        _ok = (_expected.replace(' ', '') == name.replace(' ', ''))
+        return _ok, _expected
+
     @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_kr_etf_data():
         results = []
+        _mismatch_log = []
         for ticker, name in _KR_ETF_LIST:
             _sym = f"{ticker}.KS"
+            # 마스터 DB 검증
+            _v_ok, _v_exp = _validate_etf_ticker(ticker, name)
+            if not _v_ok:
+                _mismatch_log.append((ticker, name, _v_exp))
             _ind = _calc_etf_indicators(_sym)
             if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
+                results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
+                                '_expected_name': _v_exp, **_ind})
             else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+                results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
+                                '_expected_name': _v_exp,
+                                '현재가': 0, '등락(%)': 0, 'ADX': 0, 'RSI': 0, 'MACD': '',
+                                'Z-Score': 0, '모멘텀(%)': 0, '거래량%': 0,
+                                '정배열': '❌', '종합점수': 0, '상태': '오류'})
+        if _mismatch_log:
+            import logging as _lg
+            for _mc, _mn, _me in _mismatch_log:
+                _lg.warning("ETF 마스터 불일치: %s ('%s' ≠ '%s')", _mc, _mn, _me)
         return results
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_us_etf_data():
         results = []
         for ticker, name in _US_ETF_LIST:
+            _v_ok, _v_exp = _validate_etf_ticker(ticker, name)
             _ind = _calc_etf_indicators(ticker)
             if _ind:
-                results.append({'코드': ticker, 'ETF명': name, **_ind})
+                results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
+                                '_expected_name': _v_exp, **_ind})
             else:
-                results.append({'코드': ticker, 'ETF명': name, '현재가': 0, '등락(%)': 0,
-                                'ADX': 0, 'RSI': 0, 'MACD': '', 'Z-Score': 0,
-                                '모멘텀(%)': 0, '거래량%': 0, '정배열': '❌', '종합점수': 0, '상태': '오류'})
+                results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
+                                '_expected_name': _v_exp,
+                                '현재가': 0, '등락(%)': 0, 'ADX': 0, 'RSI': 0, 'MACD': '',
+                                'Z-Score': 0, '모멘텀(%)': 0, '거래량%': 0,
+                                '정배열': '❌', '종합점수': 0, '상태': '오류'})
         return results
 
     # ── 시장별 분기: 라디오 토글에 따라 국장/미장/전체 랭킹판 표시 ──
