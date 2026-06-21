@@ -3511,8 +3511,9 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
         for _bt, _bn in _b_missing_pre:
             _bdf = fetch_ohlcv(_bt, 80)
             if _bdf is not None and len(_bdf) >= 20:
-                all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
-        st.session_state.all_data_cache = all_data
+                # M1: 루프 안에서 즉시 캐시 반영 — 부분 실패 시 이전 성공분 보존
+                st.session_state.all_data_cache[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+        all_data = st.session_state.all_data_cache
     if _b_tickers:
         _b_quick_sel = st.selectbox(
             "▶ 분석 종목 선택 (결론 우선 표시)",
@@ -5667,13 +5668,16 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
     """ETF 랭킹 카드 렌더링 공용 함수."""
     _rh = rank_history or {}  # {ticker: [rank_d0(today), rank_d1, rank_d2, ...]}
 
+    # P1: O(1) 이름 조회를 위한 dict — iterrows() 대신 set_index 활용
+    _code_to_name = df_ranked.set_index('코드')['ETF명'].to_dict()
+
     # ── On-Deck: 최근 5일간 순위 가장 많이 상승한 TOP3 ──────────────────────
     _ondeck_candidates = []
     for _tk, _history in _rh.items():
         if len(_history) >= 2:
             _oldest = _history[-1]; _newest = _history[0]
-            _rise = _oldest - _newest  # 양수 = 순위 상승 (숫자 감소)
-            if _rise > 0 and _newest > 1:  # 1위 아니면서 상승 중
+            _rise = _oldest - _newest
+            if _rise > 0 and _newest > 1:
                 _ondeck_candidates.append((_tk, _newest, _rise, _history))
     _ondeck_candidates.sort(key=lambda x: x[2], reverse=True)
     if _ondeck_candidates[:3]:
@@ -5685,7 +5689,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             "<div style='display:flex;gap:10px;flex-wrap:wrap'>"
         )
         for _od_tk, _od_rank, _od_rise, _od_hist in _ondeck_candidates[:3]:
-            _od_name = next((row['ETF명'] for _, row in df_ranked.iterrows() if row['코드'] == _od_tk), _od_tk)
+            _od_name = _code_to_name.get(_od_tk, _od_tk)  # P1: O(1) 조회
             _od_hist_str = " ".join(["●" if r <= 2 else "◑" if r <= 4 else "○" for r in _od_hist[:5]])
             _od_html += (
                 f"<div style='background:#1e1040;border:1px solid #7c3aed60;border-radius:8px;"
@@ -5734,17 +5738,21 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             )
 
         # 도트 바: 최근 5일 순위 (● = 1위, ◕ = 2위, ◑ = 3위, ◔ = 4위, ○ = 5위↓)
-        _dot_map = {1: ("●", "#ffd166"), 2: ("◕", "#34d399"), 3: ("◑", "#60a5fa"),
-                    4: ("◔", "#94a3b8"), 99: ("○", "#374151")}
+        # M3: 순위별 색상 그라데이션 — 상위권 밝은 톤 / 하위권 무채색
+        def _rank_dot(r):
+            if r == 1:   return ("●", "#ffd166")  # 금
+            if r == 2:   return ("●", "#34d399")  # 초록
+            if r == 3:   return ("●", "#60a5fa")  # 파랑
+            if r <= 5:   return ("◕", "#94a3b8")  # 연회색
+            if r <= 10:  return ("◑", "#475569")  # 중간회색
+            return           ("○", "#1e293b")     # 어두운 회색 (탈락 직전)
         _dot_bar = ""
         if len(_hist_ranks) >= 2:
             _trend  = _hist_ranks[0] - _hist_ranks[-1]  # 음수 = 상승
             _t_icon = "▲" if _trend < 0 else ("▼" if _trend > 0 else "─")
             _t_c    = "#34d399" if _trend < 0 else ("#ef4444" if _trend > 0 else "#64748b")
-            _default_dot = ("○", "#374151")
             _dots = "".join(
-                "<span style='color:" + _dot_map.get(r, _default_dot)[1] + "'>"
-                + _dot_map.get(r, _default_dot)[0] + "</span>"
+                "<span style='color:" + _rank_dot(r)[1] + "'>" + _rank_dot(r)[0] + "</span>"
                 for r in list(_hist_ranks)[:5]
             )
             _dot_bar = (
@@ -5894,6 +5902,29 @@ with tab_d:
         if _op_key not in st.session_state:
             st.session_state[_op_key] = []
 
+        # ── H2: LocalStorage에서 포지션 복원 (세션 재시작 대비) ──
+        try:
+            from streamlit_js_eval import streamlit_js_eval as _sje
+            _ls_raw = _sje(js_expressions="localStorage.getItem('op_positions')", key="_ls_load_op")
+            if _ls_raw and not st.session_state[_op_key]:
+                import json as _json_ls
+                _loaded = _json_ls.loads(_ls_raw)
+                if isinstance(_loaded, list) and _loaded:
+                    st.session_state[_op_key] = _loaded
+        except Exception:
+            pass  # streamlit-js-eval 미설치 시 무시
+
+        def _save_positions_to_ls():
+            """LocalStorage에 포지션 동기화 (C1 uuid 포함)."""
+            try:
+                from streamlit_js_eval import streamlit_js_eval as _sje2
+                import json as _json_ls2
+                _data_str = _json_ls2.dumps(st.session_state[_op_key], default=str)
+                _safe = _data_str.replace("'", "\\'")
+                _sje2(js_expressions=f"localStorage.setItem('op_positions', '{_safe}')", key="_ls_save_op")
+            except Exception:
+                pass
+
         with st.expander("➕ 보유 종목 등록 / 수정", expanded=not bool(st.session_state[_op_key])):
             _op_c1, _op_c2, _op_c3, _op_c4 = st.columns([2, 1.5, 1.5, 1])
             with _op_c1:
@@ -5911,47 +5942,61 @@ with tab_d:
                 _op_t2_pct = st.number_input("2차 익절(%)", min_value=1.0, value=15.0, step=0.5, key="op_inp_t2")
             if st.button("✅ 종목 추가", type="primary", use_container_width=True, key="op_add_btn"):
                 if _op_ticker:
-                    _exist_idx = next((i for i, p in enumerate(st.session_state[_op_key]) if p['ticker'] == _op_ticker), None)
+                    import uuid as _uuid_op
+                    # C1: 기존 ticker가 있으면 업데이트, 없으면 신규 uuid 부여
+                    _exist = next((p for p in st.session_state[_op_key] if p['ticker'] == _op_ticker), None)
                     _new_pos = {
+                        'id':        str(_exist['id'] if _exist else _uuid_op.uuid4()),
                         'ticker':    _op_ticker,
                         'qty':       _op_qty,
                         'avg':       _op_avg,
                         'stop_pct':  _op_stop_pct,
                         't1_pct':    _op_t1_pct,
                         't2_pct':    _op_t2_pct,
-                        't1_done':   False,
+                        't1_done':   _exist.get('t1_done', False) if _exist else False,
                     }
-                    if _exist_idx is not None:
-                        st.session_state[_op_key][_exist_idx] = _new_pos
+                    if _exist:
+                        st.session_state[_op_key] = [_new_pos if p['ticker'] == _op_ticker else p
+                                                      for p in st.session_state[_op_key]]
                         st.success(f"✅ {_op_ticker} 업데이트 완료")
                     else:
                         st.session_state[_op_key].append(_new_pos)
                         st.success(f"✅ {_op_ticker} 등록 완료")
+                    _save_positions_to_ls()
                     st.rerun()
 
         if not st.session_state[_op_key]:
             st.info("💡 위에서 보유 종목을 등록하면 손절/익절 기준선이 자동 계산됩니다.")
         else:
-            # ── 실시간 현재가 조회 + 카드 렌더링 ────────────────────────────
+            # ── H1: 현재가 조회 (한국/미국 자동 구분 + 실패 알림) ────────────
             import yfinance as _yf_op
+
+            def _get_live_price(tk: str):
+                """한국(6자리 숫자)=.KS→.KQ, 미국=suffix 없음. 실패 시 None 반환."""
+                _is_kr_tk = tk.isdigit() and len(tk) == 6
+                _suffixes = [".KS", ".KQ"] if _is_kr_tk else [""]
+                for _sfx in _suffixes:
+                    try:
+                        _h = _yf_op.Ticker(tk + _sfx).history(period="2d", interval="1d")
+                        if _h is not None and not _h.empty:
+                            return float(_h['Close'].iloc[-1]), (float(_h['Close'].iloc[-2]) if len(_h) >= 2 else float(_h['Close'].iloc[-1])), True
+                    except Exception:
+                        continue
+                return None, None, False  # 조회 실패
+
             _has_danger = False
 
-            for _op_i, _pos in enumerate(st.session_state[_op_key]):
+            for _pos in list(st.session_state[_op_key]):  # C1: uuid 기반 — list copy로 안전 순회
+                _pos_id = _pos.get('id', _pos['ticker'])  # 구버전 호환
                 _tk    = _pos['ticker']
                 _avg   = _pos['avg']
                 _qty   = _pos['qty']
-                _is_kr = _tk.isdigit()
+                _is_kr = _tk.isdigit() and len(_tk) == 6
 
-                # 현재가 조회
-                try:
-                    _sfx = ".KS" if _is_kr else ""
-                    _oh  = _yf_op.Ticker(_tk + _sfx).history(period="2d", interval="1d")
-                    if _oh is None or _oh.empty:
-                        _sfx = ".KQ"
-                        _oh  = _yf_op.Ticker(_tk + _sfx).history(period="2d", interval="1d")
-                    _cur_p  = float(_oh['Close'].iloc[-1]) if not _oh.empty else _avg
-                    _prev_p = float(_oh['Close'].iloc[-2]) if len(_oh) >= 2 else _cur_p
-                except Exception:
+                # H1: 현재가 조회
+                _cur_p, _prev_p, _price_ok = _get_live_price(_tk)
+                if not _price_ok:
+                    st.warning(f"⚠️ {_tk} 현재가 조회 실패 — 평단가로 대체 표시 중. 티커를 확인하세요.")
                     _cur_p  = _avg
                     _prev_p = _avg
 
@@ -5961,7 +6006,7 @@ with tab_d:
                 _t2_p     = round(_avg * (1 + _pos['t2_pct']  / 100), 2)
                 _pnl_pct  = (_cur_p / _avg - 1) * 100
                 _pnl_amt  = (_cur_p - _avg) * _qty
-                _chg_pct  = (_cur_p / _prev_p - 1) * 100 if _prev_p > 0 else 0
+                _chg_pct  = (_cur_p / _prev_p - 1) * 100 if _prev_p and _prev_p > 0 else 0
 
                 # 거리 계산
                 _dist_stop = (_cur_p - _stop_p) / _avg * 100
@@ -5969,10 +6014,10 @@ with tab_d:
                 _dist_t2   = (_t2_p  - _cur_p)  / _avg * 100
 
                 # 상태 판정
-                _danger  = _cur_p <= _stop_p * 1.03          # 손절가 3% 이내 진입
-                _t2_hit  = _cur_p >= _t2_p                   # 2차 목표가 돌파
-                _t1_hit  = _cur_p >= _t1_p                   # 1차 목표가 도달
-                _trail   = _t2_hit                            # 트레일링 스톱 활성화
+                _danger  = _cur_p <= _stop_p * 1.03
+                _t2_hit  = _cur_p >= _t2_p
+                _t1_hit  = _cur_p >= _t1_p
+                _trail   = _t2_hit
 
                 if _danger: _has_danger = True
 
@@ -5989,7 +6034,8 @@ with tab_d:
                 _pnl_c   = "#39ff14" if _pnl_pct >= 0 else "#ff003c"
                 _chg_c   = "#39ff14" if _chg_pct >= 0 else "#ff003c"
                 _unit    = "원" if _is_kr else "$"
-                _fmt     = (lambda v: f"{v:,.0f}") if _is_kr else (lambda v: f"{v:.2f}")
+                _fmt_p   = (lambda v: f"{v:,.0f}") if _is_kr else (lambda v: f"{v:.2f}")
+                _price_warn = "" if _price_ok else " ⚠️조회실패"
 
                 # ── 카드 렌더링 ──
                 _danger_anim = "animation:blink 0.8s step-start infinite;" if _danger else ""
@@ -5998,7 +6044,6 @@ with tab_d:
                     "padding:2px 8px;border-radius:10px;margin-left:8px'>🎯 TRAILING STOP ON</span>"
                 ) if _trail else ""
 
-                # 진행바 (손절 → 현재가 → 목표가)
                 _total_range = _t2_p - _stop_p
                 _cur_pos_pct = max(0, min(100, (_cur_p - _stop_p) / _total_range * 100)) if _total_range > 0 else 50
 
@@ -6006,48 +6051,44 @@ with tab_d:
                     f"<style>@keyframes blink{{50%{{opacity:0}}}}</style>"
                     f"<div style='background:{_bg};border:2px solid {_brd};border-radius:14px;"
                     f"padding:16px 20px;margin-bottom:12px;{_danger_anim}'>"
-                    # 헤더
                     f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
                     f"<div>"
-                    f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_tk}</span>"
-                    f"<span style='font-size:11px;color:#64748b;margin-left:10px'>{_qty}주 @ {_unit}{_fmt(_avg)}</span>"
+                    f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_tk}{_price_warn}</span>"
+                    f"<span style='font-size:11px;color:#64748b;margin-left:10px'>{_qty}주 @ {_unit}{_fmt_p(_avg)}</span>"
                     f"{_trail_badge}"
                     f"</div>"
                     f"<div style='text-align:right'>"
-                    f"<div style='font-size:20px;font-weight:900;color:#f0f4ff'>{_unit}{_fmt(_cur_p)}</div>"
+                    f"<div style='font-size:20px;font-weight:900;color:#f0f4ff'>{_unit}{_fmt_p(_cur_p)}</div>"
                     f"<div style='font-size:11px;color:{_chg_c}'>당일 {'▲' if _chg_pct>=0 else '▼'}{abs(_chg_pct):.2f}%</div>"
                     f"</div>"
                     f"</div>"
-                    # 손익 + 상태
                     f"<div style='display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap'>"
                     f"<span style='background:#1e293b;padding:4px 12px;border-radius:20px;font-size:12px;"
                     f"color:{_pnl_c};font-weight:700'>"
-                    f"{'▲' if _pnl_pct>=0 else '▼'}{abs(_pnl_pct):.2f}% &nbsp; ({'+' if _pnl_amt>=0 else ''}{_fmt(_pnl_amt)}{_unit})</span>"
+                    f"{'▲' if _pnl_pct>=0 else '▼'}{abs(_pnl_pct):.2f}% &nbsp; ({'+' if _pnl_amt>=0 else ''}{_fmt_p(_pnl_amt)}{_unit})</span>"
                     f"<span style='background:{_brd}20;color:{_brd};padding:4px 12px;border-radius:20px;"
                     f"font-size:12px;font-weight:700;border:1px solid {_brd}60'>{_status_label}</span>"
                     f"</div>"
-                    # 3단계 가격 척도
                     f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px'>"
                     f"<div style='background:#2a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 10px;text-align:center'>"
                     f"<div style='font-size:9px;color:#ef4444;font-weight:700;margin-bottom:4px'>🛑 손절가 (생존 마지노선)</div>"
-                    f"<div style='font-size:15px;font-weight:900;color:#ef4444'>{_unit}{_fmt(_stop_p)}</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#ef4444'>{_unit}{_fmt_p(_stop_p)}</div>"
                     f"<div style='font-size:9px;color:#64748b;margin-top:2px'>-{_pos['stop_pct']:.1f}% | 현재까지 {_dist_stop:+.2f}%</div>"
                     f"</div>"
                     f"<div style='background:#0a1a0a;border:1px solid #34d39940;border-radius:8px;padding:8px 10px;text-align:center'>"
                     f"<div style='font-size:9px;color:#34d399;font-weight:700;margin-bottom:4px'>🎯 1차 익절 ({'+' if _pos['t1_pct']>=0 else ''}{_pos['t1_pct']:.1f}%)</div>"
-                    f"<div style='font-size:15px;font-weight:900;color:#34d399'>{_unit}{_fmt(_t1_p)}</div>"
-                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'✅ 완료' if _pos.get('t1_done') else f'남은거리 {_dist_t1:+.2f}%'}</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#34d399'>{_unit}{_fmt_p(_t1_p)}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'✅ 완료' if _pos.get('t1_done') else ('남은거리 ' + str(round(_dist_t1, 2)) + '%')}</div>"
                     f"</div>"
                     f"<div style='background:#1a1200;border:1px solid #fbbf2440;border-radius:8px;padding:8px 10px;text-align:center'>"
                     f"<div style='font-size:9px;color:#fbbf24;font-weight:700;margin-bottom:4px'>🚀 2차 익절 / 추격모드 ({'+' if _pos['t2_pct']>=0 else ''}{_pos['t2_pct']:.1f}%)</div>"
-                    f"<div style='font-size:15px;font-weight:900;color:#fbbf24'>{_unit}{_fmt(_t2_p)}</div>"
-                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'🎯 추격 활성' if _trail else f'남은거리 {_dist_t2:+.2f}%'}</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#fbbf24'>{_unit}{_fmt_p(_t2_p)}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'🎯 추격 활성' if _trail else ('남은거리 ' + str(round(_dist_t2, 2)) + '%')}</div>"
                     f"</div>"
                     f"</div>"
-                    # 진행 바
                     f"<div style='margin-bottom:4px'>"
                     f"<div style='display:flex;justify-content:space-between;font-size:9px;color:#475569;margin-bottom:2px'>"
-                    f"<span>손절 {_unit}{_fmt(_stop_p)}</span><span>현재가</span><span>2차목표 {_unit}{_fmt(_t2_p)}</span>"
+                    f"<span>손절 {_unit}{_fmt_p(_stop_p)}</span><span>현재가</span><span>2차목표 {_unit}{_fmt_p(_t2_p)}</span>"
                     f"</div>"
                     f"<div style='background:#1e293b;border-radius:4px;height:8px;position:relative'>"
                     f"<div style='position:absolute;left:0;top:0;height:100%;width:{_cur_pos_pct:.1f}%;"
@@ -6060,21 +6101,27 @@ with tab_d:
                     unsafe_allow_html=True
                 )
 
-                # 1차 익절 완료 토글 + 삭제
+                # C1: uuid 기반 버튼 key + id 필터 삭제
                 _btn_c1, _btn_c2, _btn_c3 = st.columns([2, 2, 1])
                 with _btn_c1:
                     _t1_label = "✅ 1차 익절 완료 표시" if not _pos.get('t1_done') else "↩️ 1차 익절 취소"
-                    if st.button(_t1_label, key=f"op_t1_{_op_i}", use_container_width=True):
-                        st.session_state[_op_key][_op_i]['t1_done'] = not _pos.get('t1_done', False)
-                        st.rerun()
+                    def _toggle_t1(_pid=_pos_id):
+                        for _pp in st.session_state[_op_key]:
+                            if _pp.get('id', _pp['ticker']) == _pid:
+                                _pp['t1_done'] = not _pp.get('t1_done', False)
+                                break
+                        _save_positions_to_ls()
+                    st.button(_t1_label, key=f"op_t1_{_pos_id}", use_container_width=True,
+                              on_click=_toggle_t1)
                 with _btn_c2:
-                    if st.button("📝 수정", key=f"op_edit_{_op_i}", use_container_width=True):
-                        st.session_state['op_edit_idx'] = _op_i
-                        st.rerun()
+                    st.button("📝 수정", key=f"op_edit_{_pos_id}", use_container_width=True)
                 with _btn_c3:
-                    if st.button("🗑️ 청산", key=f"op_del_{_op_i}", use_container_width=True, type="secondary"):
-                        st.session_state[_op_key].pop(_op_i)
-                        st.rerun()
+                    def _del_pos(_pid=_pos_id):
+                        st.session_state[_op_key] = [p for p in st.session_state[_op_key]
+                                                      if p.get('id', p['ticker']) != _pid]
+                        _save_positions_to_ls()
+                    st.button("🗑️ 청산", key=f"op_del_{_pos_id}", use_container_width=True,
+                              type="secondary", on_click=_del_pos)
 
             # ── 핵심 원칙 고정 배너 ───────────────────────────────────────────
             _danger_html = (
