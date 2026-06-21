@@ -5432,6 +5432,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             if st.button("⭐ 관심종목 추가", key=f"ov_add_{_stk}", use_container_width=True):
                                 if add_ticker(_stk, _snm):
                                     st.success(f"✅ {_snm} 추가!"); st.rerun()
+
+                        # ➕ 실전 운용 연동 버튼
+                        def _bind_to_op(_t=_stk):
+                            st.session_state['scanner_selection'] = _t
+                        st.button("➕ 포트폴리오 추가", key=f"ov_op_add_{_stk}",
+                                  use_container_width=True, type="primary",
+                                  on_click=_bind_to_op)
                     else:
                         st.caption("데이터 부족 — 분석 불가")
                 except Exception as _ov_e:
@@ -5928,7 +5935,9 @@ with tab_d:
         with st.expander("➕ 보유 종목 등록 / 수정", expanded=not bool(st.session_state[_op_key])):
             _op_c1, _op_c2, _op_c3, _op_c4 = st.columns([2, 1.5, 1.5, 1])
             with _op_c1:
-                _op_ticker = st.text_input("종목코드 / 티커", placeholder="005930 / JEPQ", key="op_inp_ticker").strip().upper()
+                _op_ticker_default = st.session_state.pop('scanner_selection', '')
+                _op_ticker = st.text_input("종목코드 / 티커", placeholder="005930 / JEPQ",
+                                           value=_op_ticker_default, key="op_inp_ticker").strip().upper()
             with _op_c2:
                 _op_qty    = st.number_input("보유수량", min_value=1, value=10, key="op_inp_qty")
             with _op_c3:
@@ -5943,6 +5952,17 @@ with tab_d:
             if st.button("✅ 종목 추가", type="primary", use_container_width=True, key="op_add_btn"):
                 if _op_ticker:
                     import uuid as _uuid_op
+                    import yfinance as _yf_cur
+                    # 통화 자동 감지
+                    _is_kr_new = _op_ticker.isdigit() and len(_op_ticker) == 6
+                    if _is_kr_new:
+                        _detected_currency = 'KRW'
+                    else:
+                        try:
+                            _cur_info = _yf_cur.Ticker(_op_ticker).fast_info
+                            _detected_currency = getattr(_cur_info, 'currency', None) or 'USD'
+                        except Exception:
+                            _detected_currency = 'USD'
                     # C1: 기존 ticker가 있으면 업데이트, 없으면 신규 uuid 부여
                     _exist = next((p for p in st.session_state[_op_key] if p['ticker'] == _op_ticker), None)
                     _new_pos = {
@@ -5954,6 +5974,7 @@ with tab_d:
                         't1_pct':    _op_t1_pct,
                         't2_pct':    _op_t2_pct,
                         't1_done':   _exist.get('t1_done', False) if _exist else False,
+                        'currency':  _detected_currency,
                     }
                     if _exist:
                         st.session_state[_op_key] = [_new_pos if p['ticker'] == _op_ticker else p
@@ -6033,8 +6054,15 @@ with tab_d:
 
                 _pnl_c   = "#39ff14" if _pnl_pct >= 0 else "#ff003c"
                 _chg_c   = "#39ff14" if _chg_pct >= 0 else "#ff003c"
-                _unit    = "원" if _is_kr else "$"
-                _fmt_p   = (lambda v: f"{v:,.0f}") if _is_kr else (lambda v: f"{v:.2f}")
+                _currency = _pos.get('currency', 'KRW' if _is_kr else 'USD')
+                _unit    = "원" if _currency == 'KRW' else "$"
+                _fmt_p   = (lambda v: f"{v:,.0f}") if _currency == 'KRW' else (lambda v: f"{v:.2f}")
+                _cur_badge_color = "#34d399" if _currency == 'USD' else "#64748b"
+                _cur_badge = (
+                    f"<span style='background:{_cur_badge_color}25;color:{_cur_badge_color};"
+                    f"font-size:9px;padding:2px 7px;border-radius:8px;border:1px solid {_cur_badge_color}60;"
+                    f"margin-left:6px'>{_currency}</span>"
+                )
                 _price_warn = "" if _price_ok else " ⚠️조회실패"
 
                 # ── 카드 렌더링 ──
@@ -6047,13 +6075,16 @@ with tab_d:
                 _total_range = _t2_p - _stop_p
                 _cur_pos_pct = max(0, min(100, (_cur_p - _stop_p) / _total_range * 100)) if _total_range > 0 else 50
 
+                _cur_left_brd = "#34d399" if _currency == 'USD' else "#64748b"
                 st.markdown(
                     f"<style>@keyframes blink{{50%{{opacity:0}}}}</style>"
-                    f"<div style='background:{_bg};border:2px solid {_brd};border-radius:14px;"
+                    f"<div style='background:{_bg};border:2px solid {_brd};"
+                    f"border-left:4px solid {_cur_left_brd};border-radius:14px;"
                     f"padding:16px 20px;margin-bottom:12px;{_danger_anim}'>"
                     f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
                     f"<div>"
                     f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_tk}{_price_warn}</span>"
+                    f"{_cur_badge}"
                     f"<span style='font-size:11px;color:#64748b;margin-left:10px'>{_qty}주 @ {_unit}{_fmt_p(_avg)}</span>"
                     f"{_trail_badge}"
                     f"</div>"
