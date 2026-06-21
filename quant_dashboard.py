@@ -65,9 +65,12 @@ def _get_firebase_app():
 class _NullRef:
     """Firebase 미연결 시 get/set/push 호출이 조용히 실패하도록 하는 더미 레퍼런스"""
     def get(self): return None
-    def set(self, v): pass
-    def push(self, v): pass
-    def update(self, v): pass
+    def set(self, v):
+        st.toast("⚠️ DB 저장 지연: 세션에 임시 보관됩니다.", icon="🚨")
+    def push(self, v):
+        st.toast("⚠️ DB 저장 지연: 세션에 임시 보관됩니다.", icon="🚨")
+    def update(self, v):
+        st.toast("⚠️ DB 저장 지연: 세션에 임시 보관됩니다.", icon="🚨")
 
 def _fb_ref(path):
     """Firebase DB 레퍼런스 반환. 앱 미초기화 시 NullRef 반환(AttributeError 방지)"""
@@ -94,14 +97,9 @@ _KIS_URL_INVESTOR = f"{_KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-inve
 
 import time as _time_kis
 
-def kis_get_token():
-    """KIS API 접근 토큰 발급 — 6시간 TTL 자동 갱신"""
-    _now = _time_kis.time()
-    # 유효한 토큰이 있으면 바로 반환
-    if (st.session_state.get('_k_t') and
-            _now - st.session_state.get('_k_ts', 0) < 21600):
-        return st.session_state['_k_t']
-    # 토큰 없거나 만료 → 재발급
+@st.cache_resource(ttl=80000, show_spinner=False)
+def _get_kis_token_cached():
+    """KIS API 접근 토큰 발급 — cache_resource로 격리 (80000초 TTL)"""
     try:
         _key    = st.secrets["KIS_APP_KEY"]
         _secret = st.secrets["KIS_APP_SECRET"]
@@ -113,13 +111,14 @@ def kis_get_token():
         }, timeout=10)
         _token = _res.json().get("access_token")
         if _token:
-            # 토큰을 노출되기 쉬운 'kis_token' 키 대신 짧은 내부 키로 저장
-            st.session_state['_k_t']  = _token
-            st.session_state['_k_ts'] = _now
             return _token
     except Exception:
         pass
     return None
+
+def kis_get_token():
+    """KIS API 접근 토큰 발급 — 6시간 TTL 자동 갱신"""
+    return _get_kis_token_cached()
 
 def kis_get_price(ticker):
     """KIS API 실시간 현재가 조회"""
@@ -765,7 +764,7 @@ def remove_ticker(ticker):
 
 # session_state 초기화
 if 'passed' not in st.session_state:
-    st.session_state.passed = None
+    st.session_state.passed = []
 # watchlist_data는 get_watchlist() 첫 호출 시 Firebase에서 자동 로드
 
 # ── 스타일 (반응형 — Desktop / Mobile) ──
@@ -1320,14 +1319,17 @@ def check_profit_recycling(current_krw_usd_rate, target_rate=1450):
             "action":  "국장 파킹형 자산(단기채 ETF) 또는 현금으로 유지"
         }
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_usd_krw():
     """USD/KRW 환율 — 5분 캐시로 중복 조회 방지"""
     try:
         import yfinance as _yf_fx
         _h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
-        return float(_h['Close'].dropna().iloc[-1]) if not _h.empty else 1350.0
+        result = float(_h['Close'].dropna().iloc[-1]) if not _h.empty else 1350.0
+        st.session_state['_last_usd_krw'] = result
+        return result
     except:
-        return 1350.0
+        return st.session_state.get('_last_usd_krw', 1350.0)
 
 def calc_indicators(df):
     """V8.9.2 — indicators.py 위임 (Wilder RSI, CMF20, ATR14)."""
@@ -3601,7 +3603,6 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
             if _bdf is not None and len(_bdf) >= 20:
                 # M1: 루프 안에서 즉시 캐시 반영 — 부분 실패 시 이전 성공분 보존
                 st.session_state.all_data_cache[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
-        all_data = st.session_state.all_data_cache
     if _b_tickers:
         _b_quick_sel = st.selectbox(
             "▶ 분석 종목 선택 (결론 우선 표시)",
@@ -3659,10 +3660,9 @@ padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;
                     for _bt, _bn in _b1_missing:
                         _bdf = fetch_ohlcv(_bt, 80)
                         if _bdf is not None and len(_bdf) >= 20:
-                            all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
+                            st.session_state.all_data_cache[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
                         else:
                             _load_failed.append(f"{_bn}({_bt})")
-                    st.session_state.all_data_cache = all_data
                     import time as _time_ad
                     st.session_state.all_data_time = _time_ad.time()
                 if _load_failed:
@@ -4132,8 +4132,7 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                     for _bt, _bn in _b2_missing:
                         _bdf = fetch_ohlcv(_bt, 80)
                         if _bdf is not None and len(_bdf) >= 20:
-                            all_data[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
-                    st.session_state.all_data_cache = all_data
+                            st.session_state.all_data_cache[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
 
             for ticker, name in _b2_tickers:
                 if ticker not in all_data:
@@ -4606,7 +4605,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
 
     if scan_btn:
-        st.session_state.passed = None
+        st.session_state.passed = []
 
         # 종목 리스트 — scanner_tickers.json 로드
         try:
@@ -5343,7 +5342,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         pass
 
     # ── 결과 표시 ──
-    if st.session_state.get('passed') is None:
+    if not st.session_state.get('passed'):
         st.info("💡 스캔 버튼을 눌러 오늘의 매수 후보를 발굴하세요.")
     elif not st.session_state.passed:
         st.warning("⚠️ B등급(50점↑) 이상 종목 없음. 시장 레짐 확인 후 다른 시장대를 시도하세요.")
@@ -9047,12 +9046,11 @@ with tab_e:
             for _mt, _mn in _missing:
                 _mdf = fetch_ohlcv(_mt, 80)
                 if _mdf is not None and len(_mdf) >= 20:
-                    all_data[_mt] = {'name': _mn, 'df': calc_indicators(_mdf)}
-            st.session_state.all_data_cache = all_data
+                    st.session_state.all_data_cache[_mt] = {'name': _mn, 'df': calc_indicators(_mdf)}
 
         if not all_data:
             _lookback = 80
-            all_data = {}
+            st.session_state.all_data_cache.clear()
             total = len(_cur_tickers)
             prog_bar = st.progress(0, text="데이터 로딩 중...")
             for idx, (ticker, name) in enumerate(_cur_tickers):
@@ -9068,9 +9066,8 @@ with tab_e:
                     except: pass
                 if df is None or len(df) < 20: continue
                 df = calc_indicators(df)
-                all_data[ticker] = {'name': name, 'df': df}
+                st.session_state.all_data_cache[ticker] = {'name': name, 'df': df}
             prog_bar.empty()
-            st.session_state.all_data_cache = all_data
             import time
             st.session_state.all_data_time = time.time()
 
@@ -9193,8 +9190,7 @@ with tab_e:
                 _e4_prog.progress((_ei+1)/max(len(_e4_missing),1), text=f"📡 {_en} 수집 중... ({_ei+1}/{len(_e4_missing)})")
                 _edf = fetch_ohlcv(_et, lookback)
                 if _edf is not None and len(_edf) >= 20:
-                    all_data[_et] = {'name': _en, 'df': calc_indicators(_edf)}
-            st.session_state.all_data_cache = all_data
+                    st.session_state.all_data_cache[_et] = {'name': _en, 'df': calc_indicators(_edf)}
             _e4_prog.empty()
 
         for ticker, name in _cur_tickers_e4:
