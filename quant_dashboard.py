@@ -5974,23 +5974,47 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                             import urllib.request as _ur
                             _naver_url = f"https://finance.naver.com/item/main.naver?code={row['코드']}"
                             _req = _ur.Request(_naver_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            _html = _ur.urlopen(_req, timeout=5).read().decode('euc-kr', errors='ignore')
-                            # <title> 태그에서 종목명 추출: "TIGER Fn반도체TOP10 : 네이버 금융"
+                            _raw = _ur.urlopen(_req, timeout=5).read()
+                            # 인코딩 자동 감지: charset 힌트 추출 후 시도, 없으면 UTF-8 → EUC-KR 순
                             import re as _re_fc
-                            _m = _re_fc.search(r'<title>([^:]+)\s*:', _html)
+                            _charset_m = _re_fc.search(rb'charset=["\']?([A-Za-z0-9_-]+)', _raw)
+                            _enc_hint = _charset_m.group(1).decode('ascii').lower() if _charset_m else 'utf-8'
+                            for _enc in ([_enc_hint] if _enc_hint else []) + ['utf-8', 'euc-kr']:
+                                try:
+                                    _html = _raw.decode(_enc, errors='strict')
+                                    break
+                                except (UnicodeDecodeError, LookupError):
+                                    continue
+                            else:
+                                _html = _raw.decode('utf-8', errors='replace')
+                            _m = _re_fc.search(r'<title>([^:<]+)', _html)
                             _naver_name = _m.group(1).strip() if _m else None
+                            # 인코딩 깨짐 감지: 한글 비율이 너무 낮으면 신뢰 불가
+                            if _naver_name:
+                                _kor_ratio = sum(1 for c in _naver_name if '가' <= c <= '힣') / max(len(_naver_name), 1)
+                                _has_garbage = any(ord(c) > 0xD7A3 and not c.isascii() for c in _naver_name)
+                                if _has_garbage or (_kor_ratio < 0.1 and len(_naver_name) > 5):
+                                    _naver_name = None  # 인코딩 깨짐 → 검증 포기
                         else:
                             import yfinance as _yf_fc
                             _info_fc = _yf_fc.Ticker(str(row['코드'])).fast_info
                             _naver_name = getattr(_info_fc, 'long_name', None) or getattr(_info_fc, 'short_name', None)
 
                         if _naver_name:
-                            _dash_name = str(row['ETF명']).replace(' ', '').replace('&', '')
-                            _src_name  = _naver_name.replace(' ', '').replace('&', '')
-                            _match = (_dash_name in _src_name) or (_src_name in _dash_name)
+                            def _norm(s): return s.replace(' ','').replace('&','').upper()
+                            _dash_n = _norm(str(row['ETF명']))
+                            _src_n  = _norm(_naver_name)
+                            _db_n   = _norm(_MASTER_ETF_DB.get(str(row['코드']), ''))
+                            # 매치 조건: 대시보드명 OR 내부 DB 공식명과 외부명이 겹치면 통과
+                            _match = (
+                                (_dash_n in _src_n) or (_src_n in _dash_n) or
+                                (_db_n and ((_db_n in _src_n) or (_src_n in _db_n)))
+                            )
                             st.session_state[_fc_result_key] = (True, _naver_name, _match)
                         else:
-                            st.session_state[_fc_result_key] = (False, None, False)
+                            # 외부 소스 응답 불가 → 내부 DB 검증 결과로 대체
+                            _db_ok, _db_cn, _ = check_ticker_integrity(str(row['코드']), str(row['ETF명']))
+                            st.session_state[_fc_result_key] = (True, f"외부 응답 없음 (내부DB: {'일치' if _db_ok else '불일치'})", _db_ok)
                     except Exception as _fc_e:
                         st.session_state[_fc_result_key] = (False, str(_fc_e), False)
 
