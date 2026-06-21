@@ -1121,6 +1121,94 @@ caption, .stCaption { font-size: var(--fs-xs) !important; color: var(--text-dim)
 
 
 # ══════════════════════════════════════════
+# 데이터 무결성 검증 계층 (Validation Layer)
+# 정확성 > 속도 — 자산 운용 시스템의 신뢰성 기반
+# ══════════════════════════════════════════
+
+# 마스터 ETF DB: KRX 공식 코드 기준 (코드 → 공식명)
+# 외부 데이터소스(yfinance 등)가 이 DB와 충돌할 경우 이 DB를 우선함
+_MASTER_ETF_DB: dict = {
+    # 국내 지수
+    "069500": "KODEX 200",
+    "102110": "TIGER 200",
+    "229200": "KODEX 코스닥150",
+    "233740": "KODEX 코스닥150레버리지",
+    "153130": "KODEX 단기채권PLUS",
+    # 미국 지수 추종 (국내상장)
+    "133690": "TIGER 나스닥100",
+    "379800": "KODEX 미국S&P500TR",
+    "360750": "TIGER 미국S&P500",
+    "161490": "TIGER 미국나스닥100",
+    "299030": "KODEX 미국나스닥100TR",
+    # 반도체 / IT
+    "091160": "KODEX 반도체",
+    "395160": "KODEX AI반도체TOP2+",
+    "396500": "TIGER Fn반도체TOP10",   # ← 수정: 441680은 오매핑이었음
+    "457450": "KODEX AI테크TOP10",
+    # 방산 / 중공업
+    "463250": "TIGER K방산&우주",
+    "364980": "TIGER 조선TOP10",
+    # 에너지 / 전력
+    "459580": "KODEX AI전력핵심설비",
+    "140710": "TIGER 원자력테마",
+    "455890": "KODEX 원자력",
+    # 2차전지
+    "305720": "KODEX 2차전지산업",
+    # 금 / 원자재
+    "411060": "ACE KRX금현물",
+    "132030": "KODEX 골드선물(H)",
+    # 채권
+    "385560": "TIGER 미국채10년선물",
+    "308620": "KODEX 미국채울트라30년선물(H)",
+    # 배당
+    "266160": "KODEX 코스피고배당",
+    "161510": "TIGER 배당성장",
+    # 헬스케어
+    "143460": "TIGER 헬스케어",
+    "143850": "TIGER 200 헬스케어",
+    # 미국 ETF
+    "SPY":  "SPDR S&P500",
+    "QQQ":  "Invesco 나스닥100",
+    "IWM":  "iShares 러셀2000",
+    "DIA":  "SPDR 다우존스",
+    "VTI":  "Vanguard 전체주식시장",
+    "VOO":  "Vanguard S&P500",
+    "XLK":  "Technology Select",
+    "SOXX": "iShares 반도체",
+    "SMH":  "VanEck 반도체",
+    "ARKK": "ARK 혁신",
+    "GLD":  "SPDR 금",
+    "TLT":  "iShares 미국채20년",
+    "JEPQ": "JPMorgan Nasdaq Equity Premium Income",
+    "JEPI": "JPMorgan Equity Premium Income",
+    "SCHD": "Schwab US Dividend Equity",
+}
+
+
+def check_ticker_integrity(ticker: str, name: str) -> tuple:
+    """
+    티커-종목명 정합성 검증. 내부 MASTER_ETF_DB를 우선 신뢰.
+    Returns: (is_ok: bool, canonical_name: str | None, error_msg: str | None)
+    - is_ok=True: 검증 통과 (DB에 없거나 일치)
+    - is_ok=False: 불일치 감지 → 화면에 노출 차단 권고
+    """
+    canonical = _MASTER_ETF_DB.get(str(ticker).strip())
+    if canonical is None:
+        return True, None, None  # DB 미등록 종목 → 패스 (신규/비ETF)
+    _dash = name.strip().replace(' ', '')
+    _canon = canonical.strip().replace(' ', '')
+    if _dash == _canon:
+        return True, canonical, None
+    # 불일치
+    _msg = (
+        f"데이터 정합성 오류: [{ticker}] 입력명칭 '{name}' ≠ "
+        f"DB공식명칭 '{canonical}'. "
+        "종목 정보 재설정 필요 — 진입 금지."
+    )
+    return False, canonical, _msg
+
+
+# ══════════════════════════════════════════
 # 데이터 함수
 # ══════════════════════════════════════════
 
@@ -5809,8 +5897,14 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
         _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
 
-        # ── 검증 배지 ──
+        # ── 검증 배지 (내부 DB 우선: check_ticker_integrity 결과) ──
         _validated = row.get('_validated', True)
+        _integrity_ok, _canon_name, _integrity_msg = check_ticker_integrity(
+            str(row['코드']), str(row['ETF명'])
+        )
+        # 내부 DB가 불일치를 감지한 경우 _validated를 강제 override
+        if not _integrity_ok:
+            _validated = False
         _val_badge = (
             "<span style='background:#16a34a20;color:#4ade80;font-size:9px;"
             "padding:2px 6px;border-radius:6px;margin-left:6px;border:1px solid #16a34a40'>"
@@ -5860,13 +5954,12 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 unsafe_allow_html=True
             )
 
-            # ── 명칭 불일치 경고 상세 ──
-            if not _validated:
-                _exp_nm = row.get('_expected_name', '?')
-                st.warning(
-                    f"⚠️ **데이터 불일치 감지** — `{row['코드']}`: "
-                    f"대시보드 `{row['ETF명']}` ≠ 마스터DB `{_exp_nm}`. "
-                    "진입 전 반드시 종목코드를 증권사 앱에서 재확인하세요."
+            # ── 명칭 불일치 → st.error + 진입 차단 경고 ──
+            if not _validated and _integrity_msg:
+                st.error(
+                    f"🚨 **데이터 정합성 오류: 종목 정보 재설정 필요**\n\n"
+                    f"{_integrity_msg}\n\n"
+                    "⛔ **이 종목은 진입 금지** — 증권사 앱에서 코드 직접 확인 후 시스템 관리자에게 보고하세요."
                 )
 
             # ── 팩트체크 버튼 (국장=Naver, 미장=yfinance) ──
@@ -6419,6 +6512,7 @@ with _tab_d1:
     _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
 
     # ── ETF 리스트 정의 (국장 / 미장) ──
+    # ⚠️ 매핑 정확성 최우선 — KRX 공식 종목코드 기준 (2024년 검증)
     _KR_ETF_LIST = [
         # ── 국내 지수 ──
         ("069500", "KODEX 200"),
@@ -6435,11 +6529,10 @@ with _tab_d1:
         # ── 반도체 / IT ──
         ("091160", "KODEX 반도체"),
         ("395160", "KODEX AI반도체TOP2+"),
-        ("441680", "TIGER Fn반도체TOP10"),
+        ("396500", "TIGER Fn반도체TOP10"),   # ✅ KRX 공식 코드 396500 (수정: 441680은 오매핑)
         ("457450", "KODEX AI테크TOP10"),
         # ── 방산 / 중공업 ──
         ("463250", "TIGER K방산&우주"),
-        ("329180", "HD현대중공업"),
         ("364980", "TIGER 조선TOP10"),
         # ── 에너지 / 전력 ──
         ("459580", "KODEX AI전력핵심설비"),
@@ -6533,16 +6626,8 @@ with _tab_d1:
     # ── ETF 데이터 fetch 함수 (호출 전에 반드시 정의) ──
 
     # ETF 마스터 DB: 코드 → 공식명칭 매핑 (입력 데이터 무결성 검증용)
-    _ETF_MASTER_DB = {c: n for c, n in _KR_ETF_LIST}
-    _ETF_MASTER_DB.update({c: n for c, n in _US_ETF_LIST})
-
-    def _validate_etf_ticker(code: str, name: str) -> tuple:
-        """ETF 마스터 DB와 티커-이름 일치 여부 확인. (ok, expected_name) 반환."""
-        _expected = _ETF_MASTER_DB.get(code)
-        if _expected is None:
-            return True, None  # DB에 없는 경우 검증 패스 (신규 종목)
-        _ok = (_expected.replace(' ', '') == name.replace(' ', ''))
-        return _ok, _expected
+    # 전략탭 검증은 모듈 상단의 _MASTER_ETF_DB + check_ticker_integrity() 사용
+    # 내부 DB가 외부 소스보다 항상 우선 (신뢰성 > 편의성)
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_kr_etf_data():
@@ -6551,7 +6636,7 @@ with _tab_d1:
         for ticker, name in _KR_ETF_LIST:
             _sym = f"{ticker}.KS"
             # 마스터 DB 검증
-            _v_ok, _v_exp = _validate_etf_ticker(ticker, name)
+            _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
             if not _v_ok:
                 _mismatch_log.append((ticker, name, _v_exp))
             _ind = _calc_etf_indicators(_sym)
@@ -6574,7 +6659,7 @@ with _tab_d1:
     def fetch_us_etf_data():
         results = []
         for ticker, name in _US_ETF_LIST:
-            _v_ok, _v_exp = _validate_etf_ticker(ticker, name)
+            _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
             _ind = _calc_etf_indicators(ticker)
             if _ind:
                 results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
@@ -6612,7 +6697,7 @@ with _tab_d1:
             _cat_map = {
                 "국내지수":    ["069500","102110","229200","233740","153130"],
                 "미국지수추종":["133690","379800","360750","161490","299030"],
-                "반도체/IT":   ["091160","395160","441680","457450"],
+                "반도체/IT":   ["091160","395160","396500","457450"],
                 "방산/중공업": ["463250","364980"],
                 "에너지/전력": ["459580","140710","455890"],
                 "2차전지":     ["305720"],
