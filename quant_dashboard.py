@@ -5774,6 +5774,224 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
 
 
 with tab_d:
+    _tab_d1, _tab_d2 = st.tabs(["🔄 전략 로테이션", "⚔️ 실전 운용"])
+
+    with _tab_d2:
+        st.markdown("### ⚔️ 실전 운용 관제 센터")
+        st.caption("현재 보유 종목의 손절·익절 기준선을 실시간으로 모니터링합니다.")
+
+        # ── 보유 종목 입력 ──────────────────────────────────────────────────
+        _op_key = 'op_positions'
+        if _op_key not in st.session_state:
+            st.session_state[_op_key] = []
+
+        with st.expander("➕ 보유 종목 등록 / 수정", expanded=not bool(st.session_state[_op_key])):
+            _op_c1, _op_c2, _op_c3, _op_c4 = st.columns([2, 1.5, 1.5, 1])
+            with _op_c1:
+                _op_ticker = st.text_input("종목코드 / 티커", placeholder="005930 / JEPQ", key="op_inp_ticker").strip().upper()
+            with _op_c2:
+                _op_qty    = st.number_input("보유수량", min_value=1, value=10, key="op_inp_qty")
+            with _op_c3:
+                _op_avg    = st.number_input("평단가", min_value=0.01, value=50000.0, format="%.2f", key="op_inp_avg")
+            with _op_c4:
+                _op_t1_pct = st.number_input("1차 익절(%)", min_value=1.0, value=8.0, step=0.5, key="op_inp_t1")
+            _op_c5, _op_c6 = st.columns([1, 1])
+            with _op_c5:
+                _op_stop_pct = st.number_input("손절 기준(%)", min_value=1.0, value=7.0, step=0.5, key="op_inp_stop")
+            with _op_c6:
+                _op_t2_pct = st.number_input("2차 익절(%)", min_value=1.0, value=15.0, step=0.5, key="op_inp_t2")
+            if st.button("✅ 종목 추가", type="primary", use_container_width=True, key="op_add_btn"):
+                if _op_ticker:
+                    _exist_idx = next((i for i, p in enumerate(st.session_state[_op_key]) if p['ticker'] == _op_ticker), None)
+                    _new_pos = {
+                        'ticker':    _op_ticker,
+                        'qty':       _op_qty,
+                        'avg':       _op_avg,
+                        'stop_pct':  _op_stop_pct,
+                        't1_pct':    _op_t1_pct,
+                        't2_pct':    _op_t2_pct,
+                        't1_done':   False,
+                    }
+                    if _exist_idx is not None:
+                        st.session_state[_op_key][_exist_idx] = _new_pos
+                        st.success(f"✅ {_op_ticker} 업데이트 완료")
+                    else:
+                        st.session_state[_op_key].append(_new_pos)
+                        st.success(f"✅ {_op_ticker} 등록 완료")
+                    st.rerun()
+
+        if not st.session_state[_op_key]:
+            st.info("💡 위에서 보유 종목을 등록하면 손절/익절 기준선이 자동 계산됩니다.")
+        else:
+            # ── 실시간 현재가 조회 + 카드 렌더링 ────────────────────────────
+            import yfinance as _yf_op
+            _has_danger = False
+
+            for _op_i, _pos in enumerate(st.session_state[_op_key]):
+                _tk    = _pos['ticker']
+                _avg   = _pos['avg']
+                _qty   = _pos['qty']
+                _is_kr = _tk.isdigit()
+
+                # 현재가 조회
+                try:
+                    _sfx = ".KS" if _is_kr else ""
+                    _oh  = _yf_op.Ticker(_tk + _sfx).history(period="2d", interval="1d")
+                    if _oh is None or _oh.empty:
+                        _sfx = ".KQ"
+                        _oh  = _yf_op.Ticker(_tk + _sfx).history(period="2d", interval="1d")
+                    _cur_p  = float(_oh['Close'].iloc[-1]) if not _oh.empty else _avg
+                    _prev_p = float(_oh['Close'].iloc[-2]) if len(_oh) >= 2 else _cur_p
+                except Exception:
+                    _cur_p  = _avg
+                    _prev_p = _avg
+
+                # 핵심 계산
+                _stop_p   = round(_avg * (1 - _pos['stop_pct'] / 100), 2)
+                _t1_p     = round(_avg * (1 + _pos['t1_pct']  / 100), 2)
+                _t2_p     = round(_avg * (1 + _pos['t2_pct']  / 100), 2)
+                _pnl_pct  = (_cur_p / _avg - 1) * 100
+                _pnl_amt  = (_cur_p - _avg) * _qty
+                _chg_pct  = (_cur_p / _prev_p - 1) * 100 if _prev_p > 0 else 0
+
+                # 거리 계산
+                _dist_stop = (_cur_p - _stop_p) / _avg * 100
+                _dist_t1   = (_t1_p  - _cur_p)  / _avg * 100
+                _dist_t2   = (_t2_p  - _cur_p)  / _avg * 100
+
+                # 상태 판정
+                _danger  = _cur_p <= _stop_p * 1.03          # 손절가 3% 이내 진입
+                _t2_hit  = _cur_p >= _t2_p                   # 2차 목표가 돌파
+                _t1_hit  = _cur_p >= _t1_p                   # 1차 목표가 도달
+                _trail   = _t2_hit                            # 트레일링 스톱 활성화
+
+                if _danger: _has_danger = True
+
+                # 색상 / 상태 레이블
+                if _danger:
+                    _brd = "#ef4444"; _bg = "#1a0505"; _status_label = "🚨 손절 경고"
+                elif _trail:
+                    _brd = "#fbbf24"; _bg = "#1a1200"; _status_label = "🎯 추격 모드"
+                elif _t1_hit:
+                    _brd = "#34d399"; _bg = "#051a10"; _status_label = "✅ 1차 목표 도달"
+                else:
+                    _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🔵 정상 보유"
+
+                _pnl_c   = "#39ff14" if _pnl_pct >= 0 else "#ff003c"
+                _chg_c   = "#39ff14" if _chg_pct >= 0 else "#ff003c"
+                _unit    = "원" if _is_kr else "$"
+                _fmt     = (lambda v: f"{v:,.0f}") if _is_kr else (lambda v: f"{v:.2f}")
+
+                # ── 카드 렌더링 ──
+                _danger_anim = "animation:blink 0.8s step-start infinite;" if _danger else ""
+                _trail_badge = (
+                    "<span style='background:#fbbf2430;color:#fbbf24;font-size:10px;"
+                    "padding:2px 8px;border-radius:10px;margin-left:8px'>🎯 TRAILING STOP ON</span>"
+                ) if _trail else ""
+
+                # 진행바 (손절 → 현재가 → 목표가)
+                _total_range = _t2_p - _stop_p
+                _cur_pos_pct = max(0, min(100, (_cur_p - _stop_p) / _total_range * 100)) if _total_range > 0 else 50
+
+                st.markdown(
+                    f"<style>@keyframes blink{{50%{{opacity:0}}}}</style>"
+                    f"<div style='background:{_bg};border:2px solid {_brd};border-radius:14px;"
+                    f"padding:16px 20px;margin-bottom:12px;{_danger_anim}'>"
+                    # 헤더
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
+                    f"<div>"
+                    f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_tk}</span>"
+                    f"<span style='font-size:11px;color:#64748b;margin-left:10px'>{_qty}주 @ {_unit}{_fmt(_avg)}</span>"
+                    f"{_trail_badge}"
+                    f"</div>"
+                    f"<div style='text-align:right'>"
+                    f"<div style='font-size:20px;font-weight:900;color:#f0f4ff'>{_unit}{_fmt(_cur_p)}</div>"
+                    f"<div style='font-size:11px;color:{_chg_c}'>당일 {'▲' if _chg_pct>=0 else '▼'}{abs(_chg_pct):.2f}%</div>"
+                    f"</div>"
+                    f"</div>"
+                    # 손익 + 상태
+                    f"<div style='display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap'>"
+                    f"<span style='background:#1e293b;padding:4px 12px;border-radius:20px;font-size:12px;"
+                    f"color:{_pnl_c};font-weight:700'>"
+                    f"{'▲' if _pnl_pct>=0 else '▼'}{abs(_pnl_pct):.2f}% &nbsp; ({'+' if _pnl_amt>=0 else ''}{_fmt(_pnl_amt)}{_unit})</span>"
+                    f"<span style='background:{_brd}20;color:{_brd};padding:4px 12px;border-radius:20px;"
+                    f"font-size:12px;font-weight:700;border:1px solid {_brd}60'>{_status_label}</span>"
+                    f"</div>"
+                    # 3단계 가격 척도
+                    f"<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px'>"
+                    f"<div style='background:#2a0a0a;border:1px solid #ef444440;border-radius:8px;padding:8px 10px;text-align:center'>"
+                    f"<div style='font-size:9px;color:#ef4444;font-weight:700;margin-bottom:4px'>🛑 손절가 (생존 마지노선)</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#ef4444'>{_unit}{_fmt(_stop_p)}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>-{_pos['stop_pct']:.1f}% | 현재까지 {_dist_stop:+.2f}%</div>"
+                    f"</div>"
+                    f"<div style='background:#0a1a0a;border:1px solid #34d39940;border-radius:8px;padding:8px 10px;text-align:center'>"
+                    f"<div style='font-size:9px;color:#34d399;font-weight:700;margin-bottom:4px'>🎯 1차 익절 ({'+' if _pos['t1_pct']>=0 else ''}{_pos['t1_pct']:.1f}%)</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#34d399'>{_unit}{_fmt(_t1_p)}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'✅ 완료' if _pos.get('t1_done') else f'남은거리 {_dist_t1:+.2f}%'}</div>"
+                    f"</div>"
+                    f"<div style='background:#1a1200;border:1px solid #fbbf2440;border-radius:8px;padding:8px 10px;text-align:center'>"
+                    f"<div style='font-size:9px;color:#fbbf24;font-weight:700;margin-bottom:4px'>🚀 2차 익절 / 추격모드 ({'+' if _pos['t2_pct']>=0 else ''}{_pos['t2_pct']:.1f}%)</div>"
+                    f"<div style='font-size:15px;font-weight:900;color:#fbbf24'>{_unit}{_fmt(_t2_p)}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'🎯 추격 활성' if _trail else f'남은거리 {_dist_t2:+.2f}%'}</div>"
+                    f"</div>"
+                    f"</div>"
+                    # 진행 바
+                    f"<div style='margin-bottom:4px'>"
+                    f"<div style='display:flex;justify-content:space-between;font-size:9px;color:#475569;margin-bottom:2px'>"
+                    f"<span>손절 {_unit}{_fmt(_stop_p)}</span><span>현재가</span><span>2차목표 {_unit}{_fmt(_t2_p)}</span>"
+                    f"</div>"
+                    f"<div style='background:#1e293b;border-radius:4px;height:8px;position:relative'>"
+                    f"<div style='position:absolute;left:0;top:0;height:100%;width:{_cur_pos_pct:.1f}%;"
+                    f"background:linear-gradient(90deg,#ef4444,#fbbf24,#34d399);border-radius:4px'></div>"
+                    f"<div style='position:absolute;top:-4px;height:16px;width:3px;background:#f0f4ff;"
+                    f"border-radius:2px;left:calc({_cur_pos_pct:.1f}% - 1px)'></div>"
+                    f"</div>"
+                    f"</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+                # 1차 익절 완료 토글 + 삭제
+                _btn_c1, _btn_c2, _btn_c3 = st.columns([2, 2, 1])
+                with _btn_c1:
+                    _t1_label = "✅ 1차 익절 완료 표시" if not _pos.get('t1_done') else "↩️ 1차 익절 취소"
+                    if st.button(_t1_label, key=f"op_t1_{_op_i}", use_container_width=True):
+                        st.session_state[_op_key][_op_i]['t1_done'] = not _pos.get('t1_done', False)
+                        st.rerun()
+                with _btn_c2:
+                    if st.button("📝 수정", key=f"op_edit_{_op_i}", use_container_width=True):
+                        st.session_state['op_edit_idx'] = _op_i
+                        st.rerun()
+                with _btn_c3:
+                    if st.button("🗑️ 청산", key=f"op_del_{_op_i}", use_container_width=True, type="secondary"):
+                        st.session_state[_op_key].pop(_op_i)
+                        st.rerun()
+
+            # ── 핵심 원칙 고정 배너 ───────────────────────────────────────────
+            _danger_html = (
+                "<div style='background:#1a0505;border:2px solid #ef4444;border-radius:10px;"
+                "padding:12px 18px;margin-top:8px;animation:blink 1s step-start infinite'>"
+                "<span style='color:#ef4444;font-size:14px;font-weight:900'>🚨 손절가 도달 종목 감지 — 즉각 매도 실행</span>"
+                "</div>"
+            ) if _has_danger else ""
+
+            st.markdown(
+                (_danger_html if _has_danger else "") +
+                "<div style='background:#0d1117;border:2px solid #ef444460;border-radius:12px;"
+                "padding:14px 20px;margin-top:16px'>"
+                "<div style='font-size:13px;font-weight:900;color:#ef4444;margin-bottom:6px'>"
+                "⚠️ 시스템 운영 핵심 원칙 — 항시 준수</div>"
+                "<div style='font-size:12px;color:#94a3b8;line-height:2'>"
+                "🛑 <b style='color:#f0f4ff'>손절가 도달 시, 전략 로테이션 순위와 무관하게 즉시 전량 매도</b><br>"
+                "🎯 1차 익절 후 잔량은 <b style='color:#fbbf24'>2차 목표가까지 추격 보유</b><br>"
+                "🔄 스위칭 전에 반드시 <b style='color:#34d399'>손절가 여유 3% 이상</b> 확인 후 실행<br>"
+                "📊 순위 1위라도 손절가 근접 시 <b style='color:#ef4444'>빨간 경고등 점등 = 즉시 행동</b>"
+                "</div>"
+                "</div>",
+                unsafe_allow_html=True
+            )
+
+with _tab_d1:
     st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
     st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
 
