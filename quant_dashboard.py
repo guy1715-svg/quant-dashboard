@@ -5102,64 +5102,76 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             unsafe_allow_html=True
         )
 
-        for idx, ticker in enumerate(scan_tickers):
-            prog.progress((idx+1)/len(scan_tickers))
-            name = name_map.get(ticker, ticker)
-            status.markdown(f"<span style='font-size:12px;color:#64748b'>V8.9 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+        _scan_fatal = None
+        try:
+            for idx, ticker in enumerate(scan_tickers):
+                prog.progress((idx+1)/len(scan_tickers))
+                name = name_map.get(ticker, ticker)
+                status.markdown(f"<span style='font-size:12px;color:#64748b'>V8.9 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
-            try:
-                if market_type == "미국(S&P500)":
-                    import yfinance as yf
-                    _yt   = yf.Ticker(ticker)
-                    _hist = _yt.history(period="6mo", interval="1d")
-                    if _hist is None or _hist.empty: continue
-                    df = _hist.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(60)
-                    df = df[df['거래량']>0]
-                else:
-                    df = fetch_ohlcv(ticker, 60)
-                if df is None or len(df) < 22: continue
+                try:
+                    if market_type == "미국(S&P500)":
+                        import yfinance as yf
+                        _yt   = yf.Ticker(ticker)
+                        _hist = _yt.history(period="6mo", interval="1d")
+                        if _hist is None or _hist.empty: continue
+                        df = _hist.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(60)
+                        df = df[df['거래량']>0]
+                    else:
+                        df = fetch_ohlcv(ticker, 60)
+                    if df is None or len(df) < 22: continue
 
-                _price = float(df['종가'].iloc[-1])
-                if _price < min_price or _price > max_price: continue
+                    _price = float(df['종가'].iloc[-1])
+                    if _price < min_price or _price > max_price: continue
 
-                _is_etf = (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
-                if _is_etf:
-                    _ok, _meta = _etf_scorer(df, ticker)
-                else:
-                    _ok, _meta = _v89_scanner(df, ticker)
-                if not _ok:
+                    _is_etf = (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
+                    if _is_etf:
+                        _ok, _meta = _etf_scorer(df, ticker)
+                    else:
+                        _ok, _meta = _v89_scanner(df, ticker)
+                    if not _ok:
+                        continue
+
+                    df = calc_indicators(df)
+                    l = df.iloc[-1]; p = df.iloc[-2]
+                    chg = (l['종가']/p['종가']-1)*100
+
+                    passed.append({
+                        'ticker':    ticker,
+                        'name':      name,
+                        '현재가':    l['종가'],
+                        '등락(%)':   round(chg, 2),
+                        'RSI':       l['RSI'],
+                        'MACD':      '골든크로스' if (l['MACD']>l['Signal'] and p['MACD']<=p['Signal']) else ('▲' if l['MACD']>l['Signal'] else '▼'),
+                        'BB위치':    f"{round((l['종가']-l['BB_lower'])/(l['BB_upper']-l['BB_lower'])*100,1) if (l['BB_upper']-l['BB_lower'])>0 else 50}%",
+                        '거래량비율': _meta['거래량비율'],
+                        'ATR비율':   _meta['ATR비율'],
+                        '5일수익률': _meta['5일수익률'],
+                        'CMF':       _meta.get('CMF', 0),
+                        '시총(억)':  _meta['시총(억)'],
+                        '점수':      _meta.get('점수', 0),
+                        '등급':      _meta.get('등급', ''),
+                        '조건':      _meta['조건'],
+                        'score':     _meta.get('점수', 0),
+                        'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
+                                      f"📉거래량 {_meta['거래량비율']}%", f"CMF {_meta.get('CMF', 0):.3f}"],
+                    })
+                except Exception as _scan_e:
+                    st.session_state.setdefault('_scan_errors', []).append(f"{ticker}: {_scan_e}")
                     continue
-
-                df = calc_indicators(df)
-                l = df.iloc[-1]; p = df.iloc[-2]
-                chg = (l['종가']/p['종가']-1)*100
-
-                passed.append({
-                    'ticker':    ticker,
-                    'name':      name,
-                    '현재가':    l['종가'],
-                    '등락(%)':   round(chg, 2),
-                    'RSI':       l['RSI'],
-                    'MACD':      '골든크로스' if (l['MACD']>l['Signal'] and p['MACD']<=p['Signal']) else ('▲' if l['MACD']>l['Signal'] else '▼'),
-                    'BB위치':    f"{round((l['종가']-l['BB_lower'])/(l['BB_upper']-l['BB_lower'])*100,1) if (l['BB_upper']-l['BB_lower'])>0 else 50}%",
-                    '거래량비율': _meta['거래량비율'],
-                    'ATR비율':   _meta['ATR비율'],
-                    '5일수익률': _meta['5일수익률'],
-                    'CMF':       _meta.get('CMF', 0),
-                    '시총(억)':  _meta['시총(억)'],
-                    '점수':      _meta.get('점수', 0),
-                    '등급':      _meta.get('등급', ''),
-                    '조건':      _meta['조건'],
-                    'score':     _meta.get('점수', 0),
-                    'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
-                                  f"📉거래량 {_meta['거래량비율']}%", f"CMF {_meta.get('CMF', 0):.3f}"],
-                })
-            except Exception as _scan_e:
-                st.session_state.setdefault('_scan_errors', []).append(f"{ticker}: {_scan_e}")
-                continue
+        except Exception as _fatal_e:
+            _scan_fatal = _fatal_e
 
         # yfinance 폴백 결과 저장
         prog.empty(); status.empty()
+        if _scan_fatal is not None:
+            st.error(
+                f"🚨 실시간 데이터 조회 실패: 장외 시간 혹은 서버 지연\n\n"
+                f"오류 내용: `{type(_scan_fatal).__name__}: {_scan_fatal}`\n\n"
+                "장중(09:00~15:30 KST / 미국 시장 시간) 이후 다시 시도하거나, "
+                "잠시 후 [🚀 스캔 시작] 버튼을 다시 눌러주세요."
+            )
+            st.stop()
         # 약세장에서는 ETF를 결과 상단으로 배치 (방어 포트폴리오 유도)
         _regime_sort = st.session_state.get('_market_regime', 'neutral')
         if _regime_sort == 'bear':
@@ -5190,7 +5202,20 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _a_cnt  = sum(1 for p in passed if 'A등급' in str(p.get('등급','')))
         _b_cnt  = sum(1 for p in passed if 'B등급' in str(p.get('등급','')))
         if not passed:
-            pass
+            _errs_empty = st.session_state.get('_scan_errors', [])
+            if _errs_empty:
+                st.error(
+                    "📡 실시간 데이터 조회 실패: 장외 시간이거나 서버 지연이 발생했습니다.\n\n"
+                    f"오류 {len(_errs_empty)}건 발생 — 잠시 후 다시 스캔하거나, 장중(09:00~15:30) 시간에 시도해 주세요."
+                )
+                with st.expander("🔍 오류 상세 보기", expanded=False):
+                    for _em in _errs_empty[:10]:
+                        st.caption(_em)
+            else:
+                st.warning(
+                    "🔍 조건을 충족하는 종목이 없습니다.\n\n"
+                    "필터 조건을 완화하거나 다른 프리셋을 선택해 보세요."
+                )
         else:
             _sc1, _sc2 = st.columns([4, 1])
             _sc1.success(f"✅ {len(passed)}개 발굴! 🥇S등급 {_s_cnt}개 / 🎯A등급 {_a_cnt}개 / 🔎B등급 {_b_cnt}개")
