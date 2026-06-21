@@ -5633,13 +5633,78 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
 
 # ══════════════════════════════════════════
+# 랭킹 히스토리 헬퍼
+def _update_rank_history(df_ranked, history_key: str, max_days: int = 7) -> dict:
+    """
+    오늘의 순위를 히스토리에 기록하고 반환.
+    history_key: st.session_state 저장 키 (e.g. '_rh_kr', '_rh_us')
+    반환: {ticker: [rank_today, rank_d-1, rank_d-2, ...]} (index 0 = 최신)
+    """
+    from datetime import date as _date_rh
+    _today = str(_date_rh.today())
+    _rh_store = st.session_state.setdefault(history_key, {'dates': [], 'snapshots': {}})
+    # 오늘 날짜가 없으면 오늘 순위 기록
+    if not _rh_store['dates'] or _rh_store['dates'][-1] != _today:
+        _today_snapshot = {}
+        for _idx, _row in df_ranked.iterrows():
+            if _row.get('상태') == '활성':
+                _today_snapshot[str(_row['코드'])] = _idx + 1
+        _rh_store['dates'].append(_today)
+        _rh_store['snapshots'][_today] = _today_snapshot
+        # max_days 초과분 정리
+        if len(_rh_store['dates']) > max_days:
+            _old_date = _rh_store['dates'].pop(0)
+            _rh_store['snapshots'].pop(_old_date, None)
+    # {ticker: [rank_newest, ..., rank_oldest]} 형태로 변환
+    _result = {}
+    for _d in reversed(_rh_store['dates']):  # 최신 → 오래된 순
+        for _tk, _r in _rh_store['snapshots'][_d].items():
+            _result.setdefault(_tk, []).append(_r)
+    return _result
+
 # 국장ETF / 미장ETF 공용 지표 계산 함수
-def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False):
+def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False, rank_history=None):
     """ETF 랭킹 카드 렌더링 공용 함수."""
+    _rh = rank_history or {}  # {ticker: [rank_d0(today), rank_d1, rank_d2, ...]}
+
+    # ── On-Deck: 최근 5일간 순위 가장 많이 상승한 TOP3 ──────────────────────
+    _ondeck_candidates = []
+    for _tk, _history in _rh.items():
+        if len(_history) >= 2:
+            _oldest = _history[-1]; _newest = _history[0]
+            _rise = _oldest - _newest  # 양수 = 순위 상승 (숫자 감소)
+            if _rise > 0 and _newest > 1:  # 1위 아니면서 상승 중
+                _ondeck_candidates.append((_tk, _newest, _rise, _history))
+    _ondeck_candidates.sort(key=lambda x: x[2], reverse=True)
+    if _ondeck_candidates[:3]:
+        _od_html = (
+            "<div style='background:#0d1117;border:1px solid #7c3aed40;border-radius:12px;"
+            "padding:12px 16px;margin-bottom:10px'>"
+            "<div style='font-size:11px;font-weight:700;color:#7c3aed;margin-bottom:8px'>"
+            "🎯 스위칭 대기 (On-Deck) — 최근 순위 급상승 종목</div>"
+            "<div style='display:flex;gap:10px;flex-wrap:wrap'>"
+        )
+        for _od_tk, _od_rank, _od_rise, _od_hist in _ondeck_candidates[:3]:
+            _od_name = next((row['ETF명'] for _, row in df_ranked.iterrows() if row['코드'] == _od_tk), _od_tk)
+            _od_hist_str = " ".join(["●" if r <= 2 else "◑" if r <= 4 else "○" for r in _od_hist[:5]])
+            _od_html += (
+                f"<div style='background:#1e1040;border:1px solid #7c3aed60;border-radius:8px;"
+                f"padding:8px 12px;flex:1;min-width:120px'>"
+                f"<div style='font-size:12px;font-weight:700;color:#a78bfa'>{_od_tk}</div>"
+                f"<div style='font-size:10px;color:#64748b'>{_od_name[:10]}</div>"
+                f"<div style='font-size:11px;color:#7c3aed;margin-top:4px'>현재 {_od_rank}위 "
+                f"<span style='color:#34d399'>+{_od_rise}계단 ↑</span></div>"
+                f"<div style='font-size:10px;color:#475569;letter-spacing:2px;margin-top:2px'>{_od_hist_str}</div>"
+                f"</div>"
+            )
+        _od_html += "</div></div>"
+        st.markdown(_od_html, unsafe_allow_html=True)
+
     for _i, row in df_ranked.iterrows():
         _is_top  = (_i == 0 and row['상태'] == '활성')
         _is_dead = (row['상태'] != '활성')
         _rank   = '🥇' if _is_top else f"{_i+1}위"
+        _tk_code = str(row['코드'])
 
         # ── 탈락 종목: 컴팩트 한 줄 표시 ──
         if _is_dead:
@@ -5651,6 +5716,50 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 unsafe_allow_html=True
             )
             continue
+
+        # ── 랭킹 히스토리: 크라운 배지 + 도트 바 ──
+        _hist_ranks = _rh.get(_tk_code, [])
+        _consec_1   = sum(1 for r in _hist_ranks if r == 1)
+        _crown_badge = ""
+        if _is_top and _consec_1 >= 3:
+            _crown_badge = (
+                f" <span style='background:#ffd16620;color:#ffd166;padding:2px 8px;"
+                f"border-radius:8px;font-size:10px;font-weight:700'>"
+                f"👑 {_consec_1}일 연속 1위</span>"
+            )
+        elif _is_top and _consec_1 >= 2:
+            _crown_badge = (
+                f" <span style='background:#fbbf2420;color:#fbbf24;padding:2px 8px;"
+                f"border-radius:8px;font-size:10px'>🔥 {_consec_1}일 연속</span>"
+            )
+
+        # 도트 바: 최근 5일 순위 (● = 1위, ◕ = 2위, ◑ = 3위, ◔ = 4위, ○ = 5위↓)
+        _dot_map = {1: ("●", "#ffd166"), 2: ("◕", "#34d399"), 3: ("◑", "#60a5fa"),
+                    4: ("◔", "#94a3b8"), 99: ("○", "#374151")}
+        _dot_bar = ""
+        if len(_hist_ranks) >= 2:
+            _trend  = _hist_ranks[0] - _hist_ranks[-1]  # 음수 = 상승
+            _t_icon = "▲" if _trend < 0 else ("▼" if _trend > 0 else "─")
+            _t_c    = "#34d399" if _trend < 0 else ("#ef4444" if _trend > 0 else "#64748b")
+            _default_dot = ("○", "#374151")
+            _dots = "".join(
+                "<span style='color:" + _dot_map.get(r, _default_dot)[1] + "'>"
+                + _dot_map.get(r, _default_dot)[0] + "</span>"
+                for r in list(_hist_ranks)[:5]
+            )
+            _dot_bar = (
+                f"<span style='font-size:11px;letter-spacing:2px;margin-left:10px'>{_dots}</span>"
+                f"<span style='font-size:10px;color:{_t_c};margin-left:4px'>{_t_icon}</span>"
+            )
+
+        # 순위 변동 화살표 (직전 vs 현재)
+        _rank_change_html = ""
+        if len(_hist_ranks) >= 2:
+            _prev_r = _hist_ranks[1]; _cur_r = _i + 1
+            if _cur_r < _prev_r:
+                _rank_change_html = f"<span style='color:#34d399;font-size:10px;margin-left:4px'>▲{_prev_r-_cur_r}</span>"
+            elif _cur_r > _prev_r:
+                _rank_change_html = f"<span style='color:#ef4444;font-size:10px;margin-left:4px'>▼{_cur_r-_prev_r}</span>"
 
         _bg     = '#1a1400' if _is_top else '#111827'
         _macd   = row.get('MACD', '')
@@ -5668,9 +5777,9 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"<div style='background:{_bg};border:1px solid {_border_color};border-radius:10px;"
                 f"padding:14px 18px;margin-bottom:4px'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                f"<div><b style='font-size:15px'>{_rank} {row['ETF명']}</b>"
+                f"<div><b style='font-size:15px'>{_rank}{_rank_change_html} {row['ETF명']}</b>"
                 f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-                f"{_tag}</div>"
+                f"{_tag}{_crown_badge}{_dot_bar}</div>"
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
                 f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
@@ -6332,7 +6441,8 @@ with _tab_d1:
                     )
                     st.plotly_chart(_kr_hm_fig, use_container_width=True)
 
-            _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True)
+            _kr_rh = _update_rank_history(_kr_ranked, '_rh_kr')
+            _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True, rank_history=_kr_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
             # ── 🎯 개별종목 스나이핑 리스트 (ETF 1위 구성종목 자동 추적) ──
@@ -6435,7 +6545,8 @@ with _tab_d1:
                     )
                     st.plotly_chart(_hm_fig, use_container_width=True)
 
-            _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True)
+            _us_rh = _update_rank_history(_us_ranked, '_rh_us')
+            _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True, rank_history=_us_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
             # ── 🎯 개별종목 스나이핑 리스트 (미장 ETF 1위 구성종목) ──
@@ -6516,7 +6627,8 @@ with _tab_d1:
             # 1위 ETF 시장에 따라 통화 단위 결정
             _all_top_row = _all_ranked.iloc[0] if not _all_ranked.empty else None
             _all_top_sym = '$' if (_all_top_row is not None and _all_top_row.get('시장') == '🇺🇸 미장') else '원'
-            _render_etf_ranking(_all_ranked, currency_symbol=_all_top_sym, key_prefix='all_etf', show_add_btn=True)
+            _all_rh = _update_rank_history(_all_ranked, '_rh_all')
+            _render_etf_ranking(_all_ranked, currency_symbol=_all_top_sym, key_prefix='all_etf', show_add_btn=True, rank_history=_all_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
     ETF_LIST = [
