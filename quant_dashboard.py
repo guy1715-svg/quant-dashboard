@@ -6682,6 +6682,206 @@ with _tab_d1:
     except Exception:
         pass
 
+    # ── 🔥 AI 파라미터 자동 최적화 (Walk-Forward) — ETF 로테이션 ──
+    with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward) — ETF 로테이션", expanded=False):
+        st.markdown("""
+**Walk-Forward Grid Search** — ETF 로테이션 핵심 파라미터를 과거 데이터로 자동 튜닝합니다.
+
+| 파라미터 | 탐색 범위 | 설명 |
+|---|---|---|
+| 모멘텀 룩백 | 1~6개월 | 순위 산정 기준 기간 |
+| ADX 임계값 | 15~30 | 추세 강도 필터 기준 |
+| RSI 과열 기준 | 70~85 | 부분 익절 트리거 |
+| In-sample | 선택 기간 × 2/3 | 파라미터 학습 구간 |
+| Out-of-sample | 선택 기간 × 1/3 | 과적합 검증 구간 |
+        """)
+
+        _wf_etf_c1, _wf_etf_c2, _wf_etf_c3 = st.columns([2, 1, 1])
+        with _wf_etf_c1:
+            _wf_etf_months = st.slider("백테스트 기간 (개월)", 6, 24, 12, key="wf_etf_months",
+                                        help="길수록 안정적이지만 속도가 느립니다")
+        with _wf_etf_c2:
+            _wf_etf_market = st.selectbox("대상 ETF", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"],
+                                           key="wf_etf_market_sel")
+        with _wf_etf_c3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _run_wf_etf = st.button("🔥 ETF 최적화 시작", use_container_width=True,
+                                     type="primary", key="run_wf_etf")
+
+        # 현재 적용 파라미터 표시
+        _cur_wf_mom  = st.session_state.get("wf_etf_best_momentum_months", 3)
+        _cur_wf_adx  = st.session_state.get("wf_etf_best_adx", 25)
+        _cur_wf_rsi  = st.session_state.get("wf_etf_best_rsi_ob", 78)
+        st.info(f"📌 현재 적용 파라미터 — 모멘텀 룩백: **{_cur_wf_mom}개월** | ADX 임계값: **{_cur_wf_adx}** | RSI 과열: **{_cur_wf_rsi}**")
+
+        if _run_wf_etf:
+            import itertools as _itertools_wf
+            import numpy as _np_wf
+            import yfinance as _yf_wf
+
+            # 대상 ETF 목록 선택
+            if "국장" in _wf_etf_market:
+                _wf_etf_targets = [("379800", "KODEX 미국S&P500TR"), ("069500", "KODEX 200"),
+                                    ("229200", "KODEX 코스닥150"), ("114800", "KODEX 인버스"),
+                                    ("102110", "TIGER 200"), ("251340", "KODEX 코스피100"),
+                                    ("395160", "KODEX AI반도체TOP2+"), ("396500", "TIGER Fn반도체TOP10"),
+                                    ("381170", "TIGER 미국테크TOP10 INDXX"), ("148020", "KBSTAR 200")]
+                _wf_suffix = ".KS"
+            elif "미장" in _wf_etf_market:
+                _wf_etf_targets = [("SPY","S&P500"), ("QQQ","나스닥100"), ("IWM","러셀2000"),
+                                    ("VTI","전체주식시장"), ("SOXX","반도체"), ("XLK","테크"),
+                                    ("GLD","금"), ("TLT","장기국채"), ("SCHD","배당"), ("ITA","방산")]
+                _wf_suffix = ""
+            else:
+                _wf_etf_targets = [("SPY","S&P500"), ("QQQ","나스닥100"), ("VTI","전체주식시장"),
+                                    ("SOXX","반도체"), ("GLD","금"), ("TLT","장기국채"),
+                                    ("379800","KODEX S&P500"), ("069500","KODEX 200"),
+                                    ("395160","KODEX AI반도체"), ("396500","TIGER 반도체TOP10")]
+                _wf_suffix = ""
+
+            # 그리드 파라미터 정의
+            _mom_grid = [1, 2, 3, 4, 6]        # 모멘텀 룩백 (개월)
+            _adx_grid = [15, 20, 25, 30]        # ADX 임계값
+            _rsi_grid = [70, 73, 76, 78, 80, 85] # RSI 과열 기준
+
+            _total_combos = len(_mom_grid) * len(_adx_grid) * len(_rsi_grid)
+
+            st.markdown("**① ETF 데이터 다운로드 중...**")
+            _wf_etf_dl_prog = st.progress(0)
+            _wf_etf_status  = st.empty()
+
+            # 데이터 수집
+            _wf_etf_data = {}
+            for _wi, (_wtick, _wname) in enumerate(_wf_etf_targets):
+                try:
+                    _wsym = _wtick + (".KS" if _wtick.isdigit() else "")
+                    _wdf  = _yf_wf.Ticker(_wsym).history(period=f"{_wf_etf_months}mo", interval="1mo")
+                    if _wdf is not None and len(_wdf) >= 4:
+                        _wdf = _wdf[['Close']].dropna()
+                        _wdf['ret'] = _wdf['Close'].pct_change()
+                        _wdf['adx_proxy'] = _wdf['Close'].pct_change().abs().rolling(3).mean() * 100
+                        _wdf['rsi14'] = _wdf['Close'].ewm(span=14).mean().pct_change()
+                        _wf_etf_data[_wtick] = _wdf
+                except Exception:
+                    pass
+                _wf_etf_dl_prog.progress((_wi + 1) / len(_wf_etf_targets))
+                _wf_etf_status.caption(f"{_wi+1}/{len(_wf_etf_targets)} ETF 다운로드 중...")
+
+            _wf_etf_dl_prog.progress(1.0)
+            _wf_etf_status.caption(f"✅ {len(_wf_etf_data)}/{len(_wf_etf_targets)} ETF 데이터 로드 완료")
+
+            if len(_wf_etf_data) < 3:
+                st.error("ETF 데이터를 충분히 가져오지 못했습니다. 네트워크를 확인해주세요.")
+            else:
+                st.markdown("**② Walk-Forward Grid Search 실행 중...**")
+                _wf_etf_gs_prog   = st.progress(0)
+                _wf_etf_gs_status = st.empty()
+
+                # Walk-Forward 분할: in-sample 2/3, out-of-sample 1/3
+                _all_dates_wf = None
+                for _wt in _wf_etf_data.values():
+                    _idx = set(_wt.index)
+                    _all_dates_wf = _idx if _all_dates_wf is None else _all_dates_wf & _idx
+                _all_dates_wf = sorted(_all_dates_wf)
+
+                _split_wf   = int(len(_all_dates_wf) * 2 / 3)
+                _in_dates   = _all_dates_wf[:_split_wf]
+                _out_dates  = _all_dates_wf[_split_wf:]
+
+                if len(_in_dates) < 3 or len(_out_dates) < 1:
+                    st.error("데이터 기간이 너무 짧습니다. 백테스트 기간을 늘려주세요.")
+                else:
+                    def _wf_etf_score(mom_m, adx_th, rsi_ob, dates_subset):
+                        """단순화된 모멘텀 스코어 기반 수익률 시뮬레이션."""
+                        _port = [1.0]
+                        _prev_pick = None
+                        for _di in range(mom_m, len(dates_subset)):
+                            _d = dates_subset[_di]
+                            _scores_wf = {}
+                            for _t, _df in _wf_etf_data.items():
+                                _sub = _df[_df.index <= _d]
+                                if len(_sub) < mom_m + 1:
+                                    continue
+                                _mom_ret = float(_sub['Close'].iloc[-1] / _sub['Close'].iloc[-mom_m] - 1)
+                                _adx_v   = float(_sub['adx_proxy'].iloc[-1]) if not _np_wf.isnan(_sub['adx_proxy'].iloc[-1]) else 0
+                                if _adx_v < adx_th / 100:
+                                    continue
+                                _scores_wf[_t] = _mom_ret
+                            if not _scores_wf:
+                                _port.append(_port[-1])
+                                continue
+                            _best_t = max(_scores_wf, key=_scores_wf.get)
+                            if _di < len(dates_subset) - 1:
+                                _nd = dates_subset[_di + 1] if _di + 1 < len(dates_subset) else None
+                                if _nd is not None and _best_t in _wf_etf_data:
+                                    _ndf = _wf_etf_data[_best_t]
+                                    _nret_ser = _ndf[_ndf.index == _nd]['ret']
+                                    _nret = float(_nret_ser.iloc[0]) if len(_nret_ser) else 0.0
+                                    if _np_wf.isnan(_nret):
+                                        _nret = 0.0
+                                    # RSI 과열 시 50% 익절
+                                    _rsi_val = float(_ndf[_ndf.index == _nd]['rsi14'].iloc[0]) * 100 if len(_ndf[_ndf.index == _nd]) else 0
+                                    _scale = 0.5 if _rsi_val >= rsi_ob else 1.0
+                                    _port.append(_port[-1] * (1 + _nret * _scale))
+                        if len(_port) < 2:
+                            return 0.0
+                        _total_ret = _port[-1] / _port[0] - 1
+                        _max_dd = min((_port[i] / max(_port[:i+1]) - 1) for i in range(1, len(_port)))
+                        if _max_dd < -0.15:
+                            return -999.0  # MDD 15% 초과 패널티
+                        return _total_ret
+
+                    # Grid Search on in-sample
+                    _best_params_wf = None
+                    _best_score_wf  = -9999.0
+                    _combo_done     = 0
+
+                    for _mp, _ap, _rp in _itertools_wf.product(_mom_grid, _adx_grid, _rsi_grid):
+                        _sc = _wf_etf_score(_mp, _ap, _rp, _in_dates)
+                        if _sc > _best_score_wf:
+                            _best_score_wf  = _sc
+                            _best_params_wf = (_mp, _ap, _rp)
+                        _combo_done += 1
+                        _wf_etf_gs_prog.progress(_combo_done / _total_combos)
+                        _wf_etf_gs_status.caption(f"그리드 탐색: {_combo_done}/{_total_combos} 조합")
+
+                    _wf_etf_gs_prog.progress(1.0)
+                    _wf_etf_gs_status.caption("✅ 그리드 탐색 완료")
+
+                    # Out-of-sample 검증
+                    _best_mp, _best_ap, _best_rp = _best_params_wf
+                    _oos_score = _wf_etf_score(_best_mp, _best_ap, _best_rp, _out_dates)
+
+                    # 세션 저장 (랭킹판에 반영)
+                    st.session_state["wf_etf_best_momentum_months"] = _best_mp
+                    st.session_state["wf_etf_best_adx"]             = _best_ap
+                    st.session_state["wf_etf_best_rsi_ob"]          = _best_rp
+
+                    _oos_label = f"{_oos_score*100:+.1f}%" if _oos_score != -999.0 else "MDD 초과 (불합격)"
+                    st.success(
+                        f"🎯 최적 파라미터 도출 완료!\n\n"
+                        f"**모멘텀 룩백: {_best_mp}개월** | **ADX 임계값: {_best_ap}** | **RSI 과열: {_best_rp}**\n\n"
+                        f"In-sample 수익률: {_best_score_wf*100:+.1f}% | "
+                        f"Out-of-sample 검증: {_oos_label}\n\n"
+                        f"랭킹판에 즉시 반영됩니다!"
+                    )
+
+                    # 결과 테이블
+                    st.markdown("##### 📊 상위 5개 조합 (In-sample 기준)")
+                    _all_combos_results = []
+                    for _mp2, _ap2, _rp2 in _itertools_wf.product(_mom_grid, _adx_grid, _rsi_grid):
+                        _sc2 = _wf_etf_score(_mp2, _ap2, _rp2, _in_dates)
+                        if _sc2 > -999.0:
+                            _all_combos_results.append({
+                                "모멘텀(개월)": _mp2, "ADX 임계": _ap2,
+                                "RSI 과열": _rp2, "In-sample 수익(%)": round(_sc2*100, 2)
+                            })
+                    if _all_combos_results:
+                        import pandas as _pd_wf_res
+                        _res_df = _pd_wf_res.DataFrame(_all_combos_results).sort_values(
+                            "In-sample 수익(%)", ascending=False).head(5).reset_index(drop=True)
+                        st.dataframe(_res_df, use_container_width=True, hide_index=True)
+
     # ── 🔄 실시간 시세 강제 갱신 (Kill Switch) ──
     def _force_refresh_etf():
         """전체 데이터 캐시 초기화 — on_click 콜백 (렌더링 前 실행)."""
