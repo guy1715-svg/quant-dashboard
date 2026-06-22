@@ -6534,6 +6534,32 @@ with _tab_d1:
     except Exception:
         pass
 
+    # ── 🔄 실시간 시세 강제 갱신 (Kill Switch) ──
+    def _force_refresh_etf():
+        """전체 데이터 캐시 초기화 — on_click 콜백 (렌더링 前 실행)."""
+        try:
+            st.cache_data.clear()
+            st.session_state['_etf_refresh_ts'] = datetime.now().strftime('%H:%M:%S')
+            st.session_state['_etf_refresh_ok'] = True
+        except Exception as _ce:
+            st.session_state['_etf_refresh_ok'] = False
+            st.session_state['_etf_refresh_err'] = str(_ce)
+
+    _rf_c1, _rf_c2 = st.columns([1.4, 4])
+    with _rf_c1:
+        st.button("🔄 실시간 시세 강제 갱신", key="etf_force_refresh_btn",
+                  type="primary", use_container_width=True,
+                  on_click=_force_refresh_etf,
+                  help="전체 캐시를 비우고 최신 호가를 다시 불러옵니다")
+    with _rf_c2:
+        _last_rf = st.session_state.get('_etf_refresh_ts')
+        if st.session_state.get('_etf_refresh_ok') is False:
+            st.warning(f"⏳ API 호출 지연 중 — {st.session_state.get('_etf_refresh_err','')[:60]}")
+        elif _last_rf:
+            st.caption(f"🟢 마지막 강제 갱신: {_last_rf} · 시세 캐시 TTL 60초")
+        else:
+            st.caption("💡 시세가 멈춘 것 같으면 좌측 버튼으로 강제 갱신하세요 (캐시 TTL 60초)")
+
     _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
 
     # ── ETF 리스트 정의 (국장 / 미장) ──
@@ -6656,7 +6682,7 @@ with _tab_d1:
     # 전략탭 검증은 모듈 상단의 _MASTER_ETF_DB + check_ticker_integrity() 사용
     # 내부 DB가 외부 소스보다 항상 우선 (신뢰성 > 편의성)
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
     def fetch_kr_etf_data():
         results = []
         _mismatch_log = []
@@ -6682,7 +6708,7 @@ with _tab_d1:
                 _lg.warning("ETF 마스터 불일치: %s ('%s' ≠ '%s')", _mc, _mn, _me)
         return results
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
     def fetch_us_etf_data():
         results = []
         for ticker, name in _US_ETF_LIST:
@@ -6708,7 +6734,12 @@ with _tab_d1:
                 st.rerun()
 
         with st.spinner("국장ETF 데이터 로딩 중..."):
-            _kr_data = fetch_kr_etf_data()
+            try:
+                _kr_data = fetch_kr_etf_data()
+            except Exception as _fe:
+                st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
+                st.toast("⏳ API 호출 지연 중", icon="⚠️")
+                _kr_data = []
 
         if not _kr_data:
             st.error("❌ ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
@@ -6827,7 +6858,12 @@ with _tab_d1:
         }
 
         with st.spinner("미장ETF 데이터 로딩 중... (최대 30초)"):
-            _us_data = fetch_us_etf_data()
+            try:
+                _us_data = fetch_us_etf_data()
+            except Exception as _fe:
+                st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
+                st.toast("⏳ API 호출 지연 중", icon="⚠️")
+                _us_data = []
 
         if not _us_data:
             st.error("❌ 미장ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
@@ -6920,8 +6956,13 @@ with _tab_d1:
                 st.rerun()
 
         with st.spinner("국장+미장 ETF 데이터 로딩 중... (최대 60초)"):
-            _kr_data_all = fetch_kr_etf_data()
-            _us_data_all = fetch_us_etf_data()
+            _kr_data_all, _us_data_all = [], []
+            try:
+                _kr_data_all = fetch_kr_etf_data()
+                _us_data_all = fetch_us_etf_data()
+            except Exception as _fe:
+                st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 일부 데이터만 표시될 수 있습니다. [{type(_fe).__name__}]")
+                st.toast("⏳ API 호출 지연 중", icon="⚠️")
 
         _all_rows = []
         for r in (_kr_data_all or []):
@@ -6968,7 +7009,7 @@ with _tab_d1:
         ("140710",  "TIGER 원자력테마",       "KS"),  # 원자력
     ]
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
     def fetch_etf_data():
         import yfinance as yf
         import numpy as np
@@ -7109,7 +7150,12 @@ with _tab_d1:
         return results
 
     with st.spinner("ETF 데이터 로딩 중..."):
-        _etf_data = fetch_etf_data()
+        try:
+            _etf_data = fetch_etf_data()
+        except Exception as _fe:
+            st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
+            st.toast("⏳ API 호출 지연 중", icon="⚠️")
+            _etf_data = []
 
     if _etf_data:
         _df_etf  = pd.DataFrame(_etf_data)
