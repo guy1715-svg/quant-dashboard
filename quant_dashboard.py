@@ -4499,8 +4499,19 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                    ("COIN","Coinbase"),("SHOP","Shopify"),
                                    ("UBER","Uber"),("SNOW","Snowflake")]
 
-                _opt_etf_uni = [t for t, _ in _ETF_UNIVERSE][:_opt_topn]
-                _opt_etf_uni_pairs = _ETF_UNIVERSE[:_opt_topn]
+                _opt_etf_uni_pairs = [
+                    ("VTI","Vanguard 전체주식시장"),("SPY","SPDR S&P500"),
+                    ("QQQ","Invesco 나스닥100"),("DIA","SPDR 다우존스"),
+                    ("IWM","iShares 러셀2000"),("JEPQ","JPMorgan Nasdaq Income"),
+                    ("SCHD","Schwab 배당주"),("TLT","iShares 미국채20년"),
+                    ("IEF","iShares 미국채7-10년"),("SOXX","iShares 반도체"),
+                    ("SMH","VanEck 반도체"),("ARKK","ARK 혁신"),
+                    ("TQQQ","ProShares 나스닥3X"),("SOXL","Direxion 반도체3X"),
+                    ("ITA","iShares 방산항공"),("GLD","SPDR 금"),
+                    ("SLV","iShares 은"),("XLE","Energy Select"),
+                    ("XLI","Industrials Select"),("BOTZ","글로벌 로보틱스AI"),
+                    ("PPA","Invesco 방산"),("EEM","iShares 이머징"),
+                ][:_opt_topn]
 
                 if _opt_market == "KOSPI":
                     _opt_tickers = _opt_kospi[:_opt_topn]
