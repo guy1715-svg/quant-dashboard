@@ -3665,11 +3665,28 @@ padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;
                     import time as _time_ad
                     st.session_state.all_data_time = _time_ad.time()
                 if _load_failed:
-                    _fail_col1, _fail_col2 = st.columns([4, 1])
-                    _fail_col1.warning(f"⚠️ 데이터 로드 실패: {', '.join(_load_failed)}")
+                    _fail_col1, _fail_col2, _fail_col3 = st.columns([3.5, 1, 1])
+                    _fail_col1.warning(
+                        f"⚠️ 데이터 로드 실패: {', '.join(_load_failed)}\n\n"
+                        "상장폐지 또는 잘못된 티커일 수 있습니다. 관심종목에서 제거하거나 재시도하세요."
+                    )
                     if _fail_col2.button("🔄 재시도", key="retry_load_fail", use_container_width=True):
                         st.session_state.all_data_cache = {}
                         st.session_state.all_data_time = 0
+                        st.rerun()
+                    # 실패한 티커를 관심종목에서 일괄 제거
+                    _fail_tickers = [f.split('(')[-1].rstrip(')') for f in _load_failed]
+                    def _remove_failed():
+                        for _ft in _fail_tickers:
+                            try:
+                                remove_ticker(_ft)
+                            except Exception:
+                                pass
+                    if _fail_col3.button("🗑️ 목록 제거", key="remove_failed_tickers",
+                                         use_container_width=True,
+                                         help=f"{', '.join(_fail_tickers)} 관심종목에서 제거"):
+                        _remove_failed()
+                        st.toast(f"🗑️ {', '.join(_fail_tickers)} 제거 완료", icon="✅")
                         st.rerun()
 
             _b1_opts = [_display_name(t, n) for t, n in _b1_tickers if t in all_data]
