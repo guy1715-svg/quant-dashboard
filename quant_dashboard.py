@@ -4454,7 +4454,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             _opt_topn   = st.slider("최적화 대상 종목 수", 10, 50, 20, key="opt_topn",
                                      help="종목이 많을수록 정확하지만 시간이 오래 걸립니다")
         with _opt_col2:
-            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="opt_market")
+            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)", "미국 ETF(VTI+)"], key="opt_market")
         with _opt_col3:
             st.markdown("<br>", unsafe_allow_html=True)
             _run_opt = st.button("🔥 최적화 시작", use_container_width=True,
@@ -4499,12 +4499,17 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                    ("COIN","Coinbase"),("SHOP","Shopify"),
                                    ("UBER","Uber"),("SNOW","Snowflake")]
 
+                _opt_etf_uni = [t for t, _ in _ETF_UNIVERSE][:_opt_topn]
+                _opt_etf_uni_pairs = _ETF_UNIVERSE[:_opt_topn]
+
                 if _opt_market == "KOSPI":
                     _opt_tickers = _opt_kospi[:_opt_topn]
                 elif _opt_market == "KOSDAQ":
                     _opt_tickers = _opt_kosdaq[:_opt_topn]
                 elif _opt_market == "미국(S&P500)":
                     _opt_tickers = _opt_sp500[:_opt_topn]
+                elif _opt_market == "미국 ETF(VTI+)":
+                    _opt_tickers = _opt_etf_uni_pairs
                 else:
                     _half = _opt_topn // 2
                     _opt_tickers = _opt_kospi[:_half] + _opt_kosdaq[:_half]
