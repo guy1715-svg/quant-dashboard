@@ -1139,6 +1139,7 @@ _MASTER_ETF_DB: dict = {
     "360750": "TIGER 미국S&P500",
     "161490": "TIGER 미국나스닥100",
     "299030": "KODEX 미국나스닥100TR",
+    "381170": "TIGER 미국테크TOP10 INDXX",
     # 반도체 / IT
     "091160": "KODEX 반도체",
     "395160": "KODEX AI반도체TOP2+",
@@ -1204,6 +1205,31 @@ def check_ticker_integrity(ticker: str, name: str) -> tuple:
         "종목 정보 재설정 필요 — 진입 금지."
     )
     return False, canonical, _msg
+
+
+def resolve_korean_name(ticker: str, fallback: str = "") -> str:
+    """
+    종목명을 한글 우선으로 해석 (삼성증권 표기 기준 내부 DB 우선).
+    1순위: _MASTER_ETF_DB 한글명
+    2순위: pykrx 한글명 (로컬 환경)
+    3순위: fallback (yfinance 영어명 등)
+    """
+    _code = str(ticker).strip()
+    # 1순위: 내부 마스터 DB (한글, 삼성증권 기준으로 관리)
+    _db_name = _MASTER_ETF_DB.get(_code)
+    if _db_name:
+        return _db_name
+    # 2순위: 한국 6자리 코드는 pykrx 한글명 시도
+    if _code.isdigit() and len(_code) == 6:
+        try:
+            from pykrx import stock as _pk_rn
+            _pk_name = _pk_rn.get_market_ticker_name(_code)
+            if _pk_name and _pk_name.strip():
+                return _pk_name.strip()
+        except Exception:
+            pass
+    # 3순위: fallback (없으면 코드 그대로)
+    return fallback.strip() if fallback and fallback.strip() else _code
 
 
 # ══════════════════════════════════════════
@@ -1963,6 +1989,22 @@ with st.sidebar:
     _sb_lines = [l.strip() for l in _sb_wl.split("\n") if "," in l.strip()]
     _sb_pairs = [l.split(",", 1) for l in _sb_lines if len(l.split(",", 1)) == 2]
 
+    # 표시명 한글 정정: 내부 DB에 한글명이 있으면 영어 저장값 대신 한글 표기
+    _name_fixed = False
+    _sb_fixed_lines = []
+    for _t, _n in _sb_pairs:
+        _t_s = _t.strip(); _n_s = _n.strip()
+        _kr_disp = _MASTER_ETF_DB.get(_t_s)
+        if _kr_disp and _kr_disp != _n_s:
+            _n = _kr_disp; _name_fixed = True
+            _sb_fixed_lines.append(f"{_t_s},{_kr_disp}")
+        else:
+            _sb_fixed_lines.append(f"{_t_s},{_n_s}")
+    # 정정된 이름을 watchlist에 영속화 (1회)
+    if _name_fixed:
+        st.session_state.watchlist_data = "\n".join(_sb_fixed_lines)
+        _sb_pairs = [l.split(",", 1) for l in _sb_fixed_lines]
+
     for _t, _n in _sb_pairs:
         _t = _t.strip(); _n = _n.strip()
         _sc1, _sc2 = st.columns([3, 1])
@@ -2024,17 +2066,25 @@ with st.sidebar:
                 # DB 조회 실패 시 직접 입력 fallback
                 _q_strip = _sb_query.strip()
                 if _q_strip.isdigit() and len(_q_strip) == 6:
-                    # 6자리 코드 직접 입력 → yfinance로 이름 조회
-                    _fb_name = _q_strip
-                    try:
-                        import yfinance as _yf_sb
-                        for _sfx in [".KS", ".KQ"]:
-                            _info_sb = _yf_sb.Ticker(_q_strip + _sfx).info
-                            if _info_sb and _info_sb.get("shortName"):
-                                _fb_name = _info_sb["shortName"].replace(" Ordinary Shares", "").strip()
-                                break
-                    except Exception:
-                        pass
+                    # 6자리 코드 직접 입력 → 한글 우선 해석 (내부 DB → pykrx → yfinance)
+                    _fb_name = ""
+                    # 내부 DB/pykrx에 한글명 있으면 yfinance 호출 생략
+                    _kr_resolved = resolve_korean_name(_q_strip, "")
+                    if _kr_resolved and _kr_resolved != _q_strip:
+                        _fb_name = _kr_resolved
+                    else:
+                        # 최후 폴백: yfinance 영어명
+                        try:
+                            import yfinance as _yf_sb
+                            for _sfx in [".KS", ".KQ"]:
+                                _info_sb = _yf_sb.Ticker(_q_strip + _sfx).info
+                                if _info_sb and _info_sb.get("shortName"):
+                                    _fb_name = _info_sb["shortName"].replace(" Ordinary Shares", "").strip()
+                                    break
+                        except Exception:
+                            pass
+                        if not _fb_name:
+                            _fb_name = _q_strip
                     _sb_sel_code = _q_strip
                     _sb_sel_name = _fb_name
                     st.info(f"✅ 코드 직접 입력: {_fb_name} ({_q_strip})")
