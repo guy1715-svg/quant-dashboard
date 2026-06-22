@@ -32,7 +32,60 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ── Firebase Realtime Database 기반 저장 ──
+# ══════════════════════════════════════════
+# 🔐 접근 제어 (패스워드 게이트)
+# secrets.toml: [auth] password = "YOUR_PASSWORD"
+# ══════════════════════════════════════════
+def _check_auth() -> bool:
+    """세션 기반 인증 확인. 미로그인 시 로그인 폼 렌더링 후 st.stop()."""
+    if st.session_state.get('_auth_ok'):
+        return True
+
+    # secrets에 비밀번호 없으면 인증 생략 (개발/테스트 환경)
+    try:
+        _pw_required = st.secrets.get("auth", {}).get("password", "")
+    except Exception:
+        _pw_required = ""
+
+    if not _pw_required:
+        st.session_state['_auth_ok'] = True
+        return True
+
+    # ── 로그인 화면 ──
+    st.markdown("""
+    <div style='display:flex;justify-content:center;align-items:center;
+    min-height:70vh;flex-direction:column'>
+    <div style='background:#0d1117;border:1px solid #1e293b;border-radius:20px;
+    padding:48px 56px;text-align:center;max-width:420px;width:100%'>
+    <div style='font-size:48px;margin-bottom:12px'>📊</div>
+    <div style='font-size:24px;font-weight:900;color:#f0f4ff;margin-bottom:6px'>
+    퀀트 관제탑</div>
+    <div style='font-size:13px;color:#64748b;margin-bottom:32px'>
+    접근 권한이 필요합니다</div>
+    """, unsafe_allow_html=True)
+
+    _inp_pw = st.text_input("비밀번호", type="password",
+                             placeholder="비밀번호를 입력하세요",
+                             label_visibility="collapsed",
+                             key="_auth_pw_input")
+    _login_btn = st.button("🔓 입장", use_container_width=True,
+                            type="primary", key="_auth_login_btn")
+
+    if _login_btn or (_inp_pw and st.session_state.get('_auth_pw_input')):
+        if _inp_pw == _pw_required:
+            st.session_state['_auth_ok'] = True
+            st.session_state['_auth_time'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+            st.rerun()
+        else:
+            st.error("❌ 비밀번호가 틀렸습니다.")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    st.stop()
+    return False
+
+_check_auth()
+
+
 import os
 import os as _os
 import gspread
@@ -1977,6 +2030,16 @@ def _load_kr_stock_list():
 
 with st.sidebar:
     st.markdown("## ⚙️ 설정")
+
+    # ── 세션 정보 + 로그아웃 ──
+    _auth_time = st.session_state.get('_auth_time', '')
+    if _auth_time:
+        st.caption(f"🔐 로그인: {_auth_time}")
+    if st.button("🚪 로그아웃", key="sidebar_logout", use_container_width=True):
+        st.session_state['_auth_ok'] = False
+        st.session_state.pop('_auth_time', None)
+        st.rerun()
+
     st.markdown("---")
 
     gemini_key = st.text_input("🔑 Gemini API 키", type="password",
@@ -4611,7 +4674,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
     with _sc_col1:
         st.markdown("**📋 스캔 대상**")
-        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)"], key="scanner_market")
+        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)", "미국 ETF(VTI+)"], key="scanner_market")
         scan_mode   = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
         top_n = st.slider("스캔 종목 수", 20, 200, 50, key="scanner_topn")
         st.info("V9.7: S/A/B 등급제 · OR 로직 · ETF 전용 채점 · 레짐 감지")
@@ -4810,35 +4873,50 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── ETF 유니버스 ──────────────────────────────────────────────────────
         _ETF_UNIVERSE = [
             # 지수 ETF (벤치마크)
-            ("VTI",  "Vanguard Total Market"),
-            ("SPY",  "S&P 500 ETF"),
-            ("QQQ",  "Nasdaq 100"),
-            ("IVV",  "iShares S&P 500"),
-            ("VOO",  "Vanguard S&P 500"),
+            ("VTI",  "Vanguard 전체주식시장"),
+            ("SPY",  "SPDR S&P500"),
+            ("QQQ",  "Invesco 나스닥100"),
+            ("IVV",  "iShares S&P500"),
+            ("VOO",  "Vanguard S&P500"),
+            ("DIA",  "SPDR 다우존스"),
+            ("IWM",  "iShares 러셀2000"),
             # 배당 ETF
             ("JEPQ", "JPMorgan Nasdaq Income"),
             ("JEPI", "JPMorgan Premium Income"),
-            ("SCHD", "Schwab Dividend"),
+            ("SCHD", "Schwab 배당주"),
             ("MAIN", "Main Street Capital"),
-            ("DIVO", "Amplify CWP Enh. Div"),
-            ("HDV",  "iShares High Div"),
-            ("VYM",  "Vanguard High Div Yield"),
+            ("DIVO", "Amplify 배당성장"),
+            ("HDV",  "iShares 고배당"),
+            ("VYM",  "Vanguard 고배당수익률"),
             # 채권 ETF
-            ("AGG",  "iShares Core US Bond"),
-            ("TLT",  "iShares 20Y Treasury"),
-            ("BND",  "Vanguard Bond Market"),
+            ("AGG",  "iShares 미국채종합"),
+            ("TLT",  "iShares 미국채20년"),
+            ("BND",  "Vanguard 채권시장"),
+            ("IEF",  "iShares 미국채7-10년"),
             # 섹터 ETF
-            ("XLK",  "Technology SPDR"),
-            ("XLV",  "Healthcare SPDR"),
-            ("XLF",  "Financial SPDR"),
-            ("SOXX", "iShares Semiconductor"),
-            ("ARKK", "ARK Innovation"),
+            ("XLK",  "Technology Select"),
+            ("XLV",  "Healthcare Select"),
+            ("XLF",  "Financial Select"),
+            ("XLE",  "Energy Select"),
+            ("XLI",  "Industrials Select"),
+            ("SOXX", "iShares 반도체"),
+            ("SMH",  "VanEck 반도체"),
+            ("ARKK", "ARK 혁신"),
+            ("BOTZ", "글로벌 로보틱스AI"),
+            # 방산
+            ("ITA",  "iShares 방산항공"),
+            ("PPA",  "Invesco 방산"),
             # 원자재/금
-            ("GLD",  "SPDR Gold"),
-            ("IAU",  "iShares Gold"),
+            ("GLD",  "SPDR 금"),
+            ("IAU",  "iShares 금"),
+            ("SLV",  "iShares 은"),
+            # 레버리지/인버스
+            ("TQQQ", "ProShares 나스닥3X"),
+            ("SOXL", "Direxion 반도체3X"),
             # 해외 ETF
-            ("VEA",  "Vanguard FTSE Dev"),
-            ("VWO",  "Vanguard FTSE EM"),
+            ("VEA",  "Vanguard 선진국"),
+            ("VWO",  "Vanguard 이머징"),
+            ("EEM",  "iShares 이머징"),
         ]
         _ETF_TICKERS_SET = {t for t,_ in _ETF_UNIVERSE}
 
@@ -4899,10 +4977,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         elif market_type == "KOSPI+KOSDAQ":
             _base_list = KOSPI_LIST + [x for x in KOSDAQ_LIST if x not in KOSPI_LIST]
             _base_list += [x for x in extra if x not in _base_list]
+        elif market_type == "미국 ETF(VTI+)":
+            # ETF Universe 전체를 기본 리스트로 — ETF 스코어링 강제 적용
+            _base_list = _ETF_UNIVERSE[:]
         else:
             _base_list = SP500_LIST + [x for x in extra if x not in SP500_LIST]
 
-        if '🏦 ETF' in _scan_mode:
+        if market_type == "미국 ETF(VTI+)" or '🏦 ETF' in _scan_mode:
             scan_list = _ETF_UNIVERSE[:]
         elif '🔀 통합' in _scan_mode:
             scan_list = _base_list + [x for x in _ETF_UNIVERSE if x[0] not in {t for t,_ in _base_list}]
