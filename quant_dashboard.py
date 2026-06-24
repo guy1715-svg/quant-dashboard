@@ -185,6 +185,69 @@ def _fb_ref(path: str):
 
 
 # ══════════════════════════════════════════
+# 3거래일 연속 1위 추적기 (Whipsaw 방지)
+# ══════════════════════════════════════════
+def _get_rotation_day_count(top1_ticker: str) -> dict:
+    """
+    오늘의 1위 ETF 티커를 Firebase에 날짜 단위(1일 1회 Lock)로 누적 기록하고,
+    연속 1위 일차(1~3)를 계산해 반환합니다.
+
+    반환 dict:
+      count     (int)  : 현재 연속 1위 일차 (1 / 2 / 3)
+      ticker    (str)  : 기록된 1위 티커
+      last_date (str)  : 마지막 기록일 (YYYY-MM-DD, KST)
+      is_locked (bool) : True = 오늘 이미 기록 완료 (날짜 Lock 적용 중)
+
+    날짜 Lock 원칙:
+      - last_date == 오늘 이면 Firebase 쓰기 없이 저장값 그대로 반환
+        → 장중 버튼 수십 번 눌러도 count 가 올라가지 않음
+      - last_date 가 오늘이 아니고 ticker 동일 + 5 캘린더일 이내 → count + 1 (최대 3)
+      - ticker 가 바뀌었거나 5일 초과 공백 → count = 1 (강제 리셋)
+    """
+    import datetime as _dt
+    _kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+
+    _ref  = _fb_ref("/rotation_3day_tracker")
+    _data = _ref.get() or {}
+
+    _stored_ticker = str(_data.get("ticker", ""))
+    _stored_count  = int(_data.get("count", 0))
+    _stored_date   = str(_data.get("last_date", ""))
+
+    # ── 날짜 Lock: 오늘 이미 기록됐으면 쓰기 없이 반환 ──
+    if _stored_date == _kst_today:
+        return {
+            "count": _stored_count,
+            "ticker": _stored_ticker,
+            "last_date": _stored_date,
+            "is_locked": True,
+        }
+
+    # ── 연속성 판단 ──
+    _is_consecutive = False
+    if _stored_date and _stored_ticker == top1_ticker:
+        try:
+            _prev_d  = _dt.datetime.strptime(_stored_date, "%Y-%m-%d").date()
+            _today_d = _dt.datetime.strptime(_kst_today,   "%Y-%m-%d").date()
+            _gap     = (_today_d - _prev_d).days
+            # 1~5 캘린더일 허용 (주말 2일 + 공휴일 최대 3일 포함)
+            _is_consecutive = (1 <= _gap <= 5)
+        except Exception:
+            pass
+
+    _new_count = min(_stored_count + 1, 3) if _is_consecutive else 1
+    _new_data  = {"ticker": top1_ticker, "count": _new_count, "last_date": _kst_today}
+    _ref.set(_new_data)
+
+    return {
+        "count": _new_count,
+        "ticker": top1_ticker,
+        "last_date": _kst_today,
+        "is_locked": False,
+    }
+
+
+# ══════════════════════════════════════════
 # KIS API 연동 (한국투자증권)
 # ══════════════════════════════════════════
 import requests as _requests
@@ -8181,6 +8244,69 @@ with _tab_d1:
         # 현재 1위 ETF 정보
         _top1 = _active.iloc[0] if not _active.empty else None
 
+        # ── 🗓️ 3거래일 연속 1위 룰 배지 (Whipsaw 방지) ──
+        if _top1 is not None:
+            try:
+                _day_info = _get_rotation_day_count(str(_top1['종목코드']))
+                _dc = _day_info["count"]
+
+                # 일차별 배지 스타일 결정
+                if _dc >= 3:
+                    _db_bg     = "rgba(52,211,153,0.12)"
+                    _db_border = "rgba(52,211,153,0.5)"
+                    _db_icon   = "🟢"
+                    _db_label  = f"연속 1위: {_dc}일차"
+                    _db_msg    = "✨ 스위칭 조건 충족! 오늘 09:30 매수 집행"
+                    _db_color  = "#34d399"
+                elif _dc == 2:
+                    _db_bg     = "rgba(251,191,36,0.09)"
+                    _db_border = "rgba(251,191,36,0.45)"
+                    _db_icon   = "🟡"
+                    _db_label  = f"연속 1위: {_dc}일차"
+                    _db_msg    = "검증 진행중 / 매수 보류"
+                    _db_color  = "#fbbf24"
+                else:
+                    _db_bg     = "rgba(148,163,184,0.07)"
+                    _db_border = "rgba(148,163,184,0.3)"
+                    _db_icon   = "🟡"
+                    _db_label  = "연속 1위: 1일차"
+                    _db_msg    = "검증 대기중 / 매수 보류"
+                    _db_color  = "#94a3b8"
+
+                # 날짜 Lock 메모 (오늘 이미 기록 완료)
+                _db_lock = " <span style='font-size:10px;color:#475569'>〔오늘 기록 확정〕</span>" if _day_info["is_locked"] else ""
+
+                # 진행 바 (1칸=33%) — 3일차 완성 시각화
+                _bar_filled = "".join(
+                    [f"<div style='flex:1;height:6px;border-radius:3px;background:{_db_color}'></div>"
+                     for _ in range(_dc)]
+                )
+                _bar_empty  = "".join(
+                    [f"<div style='flex:1;height:6px;border-radius:3px;background:#1e293b'></div>"
+                     for _ in range(3 - _dc)]
+                )
+
+                st.markdown(
+                    f"<div style='background:{_db_bg};border:1px solid {_db_border};"
+                    f"border-radius:12px;padding:14px 20px;margin:6px 0 14px 0'>"
+                    f"<div style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
+                    f"<div style='font-size:24px;line-height:1'>{_db_icon}</div>"
+                    f"<div style='flex:1;min-width:200px'>"
+                    f"<div style='font-size:15px;font-weight:800;color:{_db_color}'>"
+                    f"[{_db_label}]{_db_lock} — {_db_msg}</div>"
+                    f"<div style='font-size:12px;color:#64748b;margin-top:3px'>"
+                    f"현재 1위: <b style='color:#e2e8f0'>{_top1['ETF명']} ({_top1['종목코드']})</b> "
+                    f"· 종합점수 {int(_top1['종합점수'])}점 · 기준일 {_day_info['last_date']}</div>"
+                    f"</div>"
+                    f"<div style='display:flex;gap:4px;width:90px;align-self:center'>"
+                    f"{_bar_filled}{_bar_empty}"
+                    f"</div>"
+                    f"</div></div>",
+                    unsafe_allow_html=True
+                )
+            except Exception as _dce:
+                pass  # 배지 렌더 실패는 조용히 무시
+
         # 보유 ETF 선택 — ETF 리스트에서 고르기
         _etf_names = [f"{r['ETF명']} ({r['종목코드']})" for _, r in _ranked.iterrows() if r['상태']=='활성']
         _etf_code_map = {f"{r['ETF명']} ({r['종목코드']})": r for _, r in _ranked.iterrows() if r['상태']=='활성'}
@@ -8416,10 +8542,20 @@ with _tab_d1:
 | 🔴 스위칭 | 4위 이하 진입 OR 점수차 20점 이상 | 장 시작 후 현재 1위로 교체 |
 | ⚫ 손절 | 매수가 대비 -7% 이하 | 즉시 매도, 당일 재진입 금지 |
 
+**🗓️ 3거래일 연속 1위 룰 (Whipsaw 방지)**
+
+| 일차 | 뱃지 | 의미 | 액션 |
+|------|------|------|------|
+| 🟡 1일차 | `[연속 1위: 1일차]` | 오늘 처음 1위 진입 | 매수 보류, 내일 재확인 |
+| 🟡 2일차 | `[연속 1위: 2일차]` | 2거래일 연속 1위 | 매수 보류, 내일 최종 확인 |
+| 🟢 3일차 | `[연속 1위: 3일차]` | ✨ 스위칭 조건 최종 충족 | **09:30 매수 집행** |
+
+> 중간에 단 하루라도 1위 티커가 바뀌면 카운트는 즉시 1일차로 리셋됩니다.
+> 카운트 기준은 **날짜 단위 1일 1회** 고정 — 장중 새로고침 횟수와 무관합니다.
+
 **💡 실전 팁**
 - 스위칭은 **당일 장 시작 후 10분 뒤** 체결 (09:30 이후)
 - 하루에 한 번만 확인 — 매일 09:30 또는 장 마감 후
-- 1위가 매일 바뀌면 스위칭 보류 — **3거래일 연속 1위 ETF**로만 이동
 - 수수료 + 세금 고려 시 스위칭 최소 간격: **2주 이상**
 """)
 
