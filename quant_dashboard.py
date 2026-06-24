@@ -6580,9 +6580,17 @@ with tab_d:
                         st.session_state[_op_key] = [_new_pos if p['ticker'] == _op_ticker else p
                                                       for p in st.session_state[_op_key]]
                         st.success(f"✅ {_op_ticker} 업데이트 완료")
+                        # 수정 시 거래일지에 메모 기록
+                        _op_name = resolve_korean_name(_op_ticker, _op_ticker)
+                        log_trade(_op_ticker, _op_name, "수정", _op_qty, _op_avg, _op_avg,
+                                  0, 0, memo=f"실전운용 포지션 수정 — 손절{_op_stop_pct}% / 1차익절{_op_t1_pct}% / 2차익절{_op_t2_pct}%")
                     else:
                         st.session_state[_op_key].append(_new_pos)
                         st.success(f"✅ {_op_ticker} 등록 완료")
+                        # 신규 등록 시 거래일지에 매수 기록
+                        _op_name = resolve_korean_name(_op_ticker, _op_ticker)
+                        log_trade(_op_ticker, _op_name, "매수", _op_qty, _op_avg, _op_avg,
+                                  0, 0, memo=f"실전운용 포지션 등록 — 손절{_op_stop_pct}% / 1차익절{_op_t1_pct}% / 2차익절{_op_t2_pct}%")
                     _save_positions_to_ls()
                     st.rerun()
 
@@ -6747,7 +6755,16 @@ with tab_d:
                 with _btn_c2:
                     st.button("📝 수정", key=f"op_edit_{_pos_id}", use_container_width=True)
                 with _btn_c3:
-                    def _del_pos(_pid=_pos_id):
+                    def _del_pos(_pid=_pos_id, _ptk=_tk, _pavg=_avg, _pqty=_qty):
+                        # 청산 시 거래일지에 매도 기록
+                        try:
+                            _pname = resolve_korean_name(_ptk, _ptk)
+                            _pcur, _, _ = _get_live_price(_ptk)
+                            _sell_p = _pcur if _pcur else _pavg
+                            log_trade(_ptk, _pname, "매도", _pqty, _sell_p, _sell_p,
+                                      0, 0, memo="실전운용 청산")
+                        except Exception:
+                            pass
                         st.session_state[_op_key] = [p for p in st.session_state[_op_key]
                                                       if p.get('id', p['ticker']) != _pid]
                         _save_positions_to_ls()
