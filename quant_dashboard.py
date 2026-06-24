@@ -33,23 +33,50 @@ st.set_page_config(
 )
 
 # ══════════════════════════════════════════
-# 🔐 접근 제어 (패스워드 게이트)
-# secrets.toml: [auth] password = "YOUR_PASSWORD"
+# 🔐 다중 사용자 인증 (사용자별 독립 데이터)
+#
+# secrets.toml 설정 예시:
+#   [users.guy]
+#   password = "내비밀번호"
+#
+#   [users.friend]
+#   password = "친구비밀번호"
+#
+# ※ 구버전 호환: [auth] password = "..." 도 계속 지원
+#    → 단일 사용자 "default" 로 처리
 # ══════════════════════════════════════════
+
+def _get_user_db() -> dict:
+    """secrets에서 사용자 목록 반환. {username: password}"""
+    try:
+        _users_cfg = dict(st.secrets.get("users", {}))
+        if _users_cfg:
+            return {u: dict(v).get("password", "") for u, v in _users_cfg.items()}
+    except Exception:
+        pass
+    # 구버전 호환: [auth] password
+    try:
+        _pw = st.secrets.get("auth", {}).get("password", "")
+        if _pw:
+            return {"default": _pw}
+    except Exception:
+        pass
+    return {}
+
 def _check_auth() -> bool:
-    """세션 기반 인증 확인. 미로그인 시 로그인 폼 렌더링 후 st.stop()."""
+    """다중 사용자 세션 인증. 미로그인 시 로그인 폼 렌더링 후 st.stop()."""
     if st.session_state.get('_auth_ok'):
         return True
 
-    # secrets에 비밀번호 없으면 인증 생략 (개발/테스트 환경)
-    try:
-        _pw_required = st.secrets.get("auth", {}).get("password", "")
-    except Exception:
-        _pw_required = ""
+    _user_db = _get_user_db()
 
-    if not _pw_required:
+    # secrets에 사용자 없으면 인증 생략 (개발/로컬 환경)
+    if not _user_db:
         st.session_state['_auth_ok'] = True
+        st.session_state['_username'] = 'default'
         return True
+
+    _is_multi = len(_user_db) > 1  # 사용자가 2명 이상이면 ID 입력 필드 표시
 
     # ── 로그인 화면 ──
     st.markdown("""
@@ -64,6 +91,12 @@ def _check_auth() -> bool:
     접근 권한이 필요합니다</div>
     """, unsafe_allow_html=True)
 
+    if _is_multi:
+        _inp_user = st.text_input("사용자 ID", placeholder="아이디를 입력하세요",
+                                   label_visibility="collapsed", key="_auth_user_input")
+    else:
+        _inp_user = list(_user_db.keys())[0]  # 단일 사용자는 자동 선택
+
     _inp_pw = st.text_input("비밀번호", type="password",
                              placeholder="비밀번호를 입력하세요",
                              label_visibility="collapsed",
@@ -71,13 +104,18 @@ def _check_auth() -> bool:
     _login_btn = st.button("🔓 입장", use_container_width=True,
                             type="primary", key="_auth_login_btn")
 
-    if _login_btn or (_inp_pw and st.session_state.get('_auth_pw_input')):
-        if _inp_pw == _pw_required:
-            st.session_state['_auth_ok'] = True
+    if _login_btn:
+        _uid = _inp_user.strip().lower() if _inp_user else ""
+        _expected_pw = _user_db.get(_uid, "")
+        if _uid and _expected_pw and _inp_pw == _expected_pw:
+            st.session_state['_auth_ok']   = True
+            st.session_state['_username']  = _uid
             st.session_state['_auth_time'] = datetime.now().strftime('%Y-%m-%d %H:%M')
             st.rerun()
+        elif not _uid:
+            st.error("❌ 사용자 ID를 입력하세요.")
         else:
-            st.error("❌ 비밀번호가 틀렸습니다.")
+            st.error("❌ ID 또는 비밀번호가 틀렸습니다.")
 
     st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
@@ -125,13 +163,23 @@ class _NullRef:
     def update(self, v):
         st.toast("⚠️ DB 저장 지연: 세션에 임시 보관됩니다.", icon="🚨")
 
-def _fb_ref(path):
-    """Firebase DB 레퍼런스 반환. 앱 미초기화 시 NullRef 반환(AttributeError 방지)"""
+def _current_username() -> str:
+    """현재 로그인된 사용자명 반환 (미로그인/단일사용자 시 'default')"""
+    return st.session_state.get('_username', 'default') or 'default'
+
+def _fb_ref(path: str):
+    """
+    Firebase DB 레퍼런스 반환 — 사용자별 경로 자동 분리.
+    모든 경로는 /users/{username}{path} 로 저장됨.
+    앱 미초기화 시 NullRef 반환(AttributeError 방지).
+    """
     _app = _get_firebase_app()
     if _app is None:
         return _NullRef()
     try:
-        return fb_db.reference(path)
+        _uid  = _current_username()
+        _full = f"/users/{_uid}{path}"
+        return fb_db.reference(_full)
     except Exception:
         return _NullRef()
 
@@ -2169,11 +2217,17 @@ with st.sidebar:
 
     # ── 세션 정보 + 로그아웃 ──
     _auth_time = st.session_state.get('_auth_time', '')
-    if _auth_time:
+    _auth_user = st.session_state.get('_username', '')
+    if _auth_user and _auth_user != 'default':
+        st.caption(f"👤 **{_auth_user}** · {_auth_time}")
+    elif _auth_time:
         st.caption(f"🔐 로그인: {_auth_time}")
     if st.button("🚪 로그아웃", key="sidebar_logout", use_container_width=True):
-        st.session_state['_auth_ok'] = False
-        st.session_state.pop('_auth_time', None)
+        _keys_to_clear = ['_auth_ok', '_auth_time', '_username',
+                          'paper_account', '_paper_account_ts',
+                          'op_positions', 'watchlist_data']
+        for _k in _keys_to_clear:
+            st.session_state.pop(_k, None)
         st.rerun()
 
     st.markdown("---")
