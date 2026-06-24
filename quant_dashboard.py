@@ -247,6 +247,49 @@ def _get_rotation_day_count(top1_ticker: str) -> dict:
     }
 
 
+def _get_pension_scan_streak(today_tickers: list) -> tuple:
+    """
+    연기금 스캐너 결과를 Firebase에 날짜별로 저장하고,
+    각 티커가 연속 몇 일째 리스트에 등장했는지 반환합니다.
+
+    반환:
+      streak_map  (dict) : {ticker: 연속등장일수(int)}
+      is_locked   (bool) : 오늘 이미 기록 완료 여부 (날짜 Lock)
+
+    날짜 Lock 원칙:
+      - 오늘 날짜 데이터가 이미 있으면 Firebase 쓰기 없이 그대로 사용
+      - 최근 5일치만 Firebase에 유지 (자동 정리)
+    """
+    import datetime as _dt
+    _kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+
+    _ref     = _fb_ref("/pension_scan_history")
+    _history = _ref.get() or {}
+
+    _is_locked = _kst_today in _history
+
+    if not _is_locked:
+        _history[_kst_today] = today_tickers
+        # 최근 5일치만 유지
+        _keep = sorted(_history.keys(), reverse=True)[:5]
+        _history = {d: _history[d] for d in _keep}
+        _ref.set(_history)
+
+    # 날짜 내림차순 정렬
+    _sorted_dates = sorted(_history.keys(), reverse=True)
+
+    _streak_map: dict = {}
+    for _tk in today_tickers:
+        _cnt = 0
+        for _d in _sorted_dates:
+            if _tk in (_history.get(_d) or []):
+                _cnt += 1
+            else:
+                break  # 연속성 끊김 → 카운트 종료
+        _streak_map[_tk] = _cnt
+
+    return _streak_map, _is_locked
+
 # ══════════════════════════════════════════
 # KIS API 연동 (한국투자증권)
 # ══════════════════════════════════════════
@@ -5088,29 +5131,78 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                               .sort_values('종합점수', ascending=False)
                               .head(_pg_top_n).reset_index(drop=True))
 
+                    # ── 3일 연속 등장 추적 (Firebase) ──
+                    _today_tk_list = _pg_df['종목코드'].astype(str).tolist()
+                    try:
+                        _streak_map, _streak_locked = _get_pension_scan_streak(_today_tk_list)
+                    except Exception:
+                        _streak_map, _streak_locked = {}, False
+
+                    # 연속등장일 컬럼 추가
+                    _pg_df['연속등장(일)'] = _pg_df['종목코드'].astype(str).map(
+                        lambda _t: _streak_map.get(_t, 1)
+                    )
+
                     def _pg_highlight(row):
-                        _day_col = '연기금연속(일)' if '연기금연속(일)' in row.index else '연속상승(일)'
-                        if row[_day_col] >= 5: return ['background-color:#1a2a0a']*len(row)
-                        elif row[_day_col] >= 3: return ['background-color:#1a1a0a']*len(row)
+                        _s = row.get('연속등장(일)', 0)
+                        if _s >= 3: return ['background-color:#0d2a0d']*len(row)   # 진녹
+                        if _s == 2: return ['background-color:#1a1a06']*len(row)   # 연노
                         return ['']*len(row)
+
+                    # ── 헤더: 3일 연속 종목 알림 ──
+                    _three_day_tickers = _pg_df[_pg_df['연속등장(일)'] >= 3]
+                    if not _three_day_tickers.empty:
+                        _names_str = ", ".join(
+                            f"{r['종목명']}({r['종목코드']})"
+                            for _, r in _three_day_tickers.iterrows()
+                        )
+                        st.success(f"🟢 **3일 연속 등장 → 매수 검토 대상:** {_names_str}")
+                    elif not _pg_df[_pg_df['연속등장(일)'] == 2].empty:
+                        _two_names = ", ".join(
+                            f"{r['종목명']}({r['종목코드']})"
+                            for _, r in _pg_df[_pg_df['연속등장(일)'] == 2].iterrows()
+                        )
+                        st.warning(f"🟡 **2일 연속 등장 → 내일 재확인:** {_two_names}")
+
+                    if _streak_locked:
+                        st.caption("🔒 오늘 스캔 기록 확정 (날짜 Lock — 재스캔해도 연속일 카운트 고정)")
 
                     st.markdown(f"#### {_mode_label} TOP {min(_pg_top_n, len(_pg_results))}")
                     st.caption("종합점수 = 연속일×10 + 순매수강도×2 + 외인쌍끌이 20점 (KRX모드) | "
-                               "연속상승×10 + 거래량비율×5 (프록시모드)")
+                               "연속상승×10 + 거래량비율×5 (프록시모드)  |  "
+                               "🟢배경=3일연속 🟡배경=2일연속")
 
+                    # '연속등장(일)'을 앞쪽에 배치해서 눈에 잘 띄게
+                    _display_cols = ['연속등장(일)'] + [c for c in _pg_df.columns if c != '연속등장(일)']
                     st.dataframe(
-                        _pg_df.style.apply(_pg_highlight, axis=1),
+                        _pg_df[_display_cols].style.apply(_pg_highlight, axis=1),
                         use_container_width=True, hide_index=True
                     )
 
-                    st.markdown("##### 📡 스캐너 연동")
-                    for _, _row in _pg_df.head(5).iterrows():
-                        _btn_label = (f"📊 {_row['종목명']} ({_row['종목코드']}) "
-                                      f"— 연속{_row['연속상승(일)']}일↑ / 거래량비율 {_row['거래량비율']}×")
-                        if st.button(_btn_label, key=f"pg_to_scan_{_row['종목코드']}",
-                                     use_container_width=True):
-                            st.session_state['analysis_ticker'] = _row['종목코드']
-                            st.info(f"✅ {_row['종목명']} → 분석탭에서 확인하세요")
+                    # ── 📡 스캐너 연동 (관심종목 추가 + 분석탭 이동) ──
+                    st.markdown("##### 📡 관심종목 즉시 추가")
+                    st.caption("버튼을 누르면 해당 종목이 관심종목에 추가되고 개별종목 분석탭에 자동 입력됩니다.")
+                    _pg_btn_cols = st.columns(min(len(_pg_df), 3))
+                    for _bi, (_, _row) in enumerate(_pg_df.head(6).iterrows()):
+                        _s = int(_streak_map.get(str(_row['종목코드']), 1))
+                        _s_icon = "🟢" if _s >= 3 else "🟡" if _s == 2 else "⚪"
+                        _btn_label = (f"{_s_icon} {_row['종목명']}\n"
+                                      f"연속{_s}일 · {_row['종목코드']}")
+                        with _pg_btn_cols[_bi % 3]:
+                            if st.button(_btn_label, key=f"pg_wl_{_row['종목코드']}",
+                                         use_container_width=True):
+                                # 관심종목에 추가
+                                _wl_ref = _fb_ref("/watchlist")
+                                _wl_now = _wl_ref.get() or {}
+                                _tc = str(_row['종목코드'])
+                                if _tc not in _wl_now:
+                                    _wl_now[_tc] = {"ticker": _tc, "name": _row['종목명'],
+                                                    "added": "pension_scanner"}
+                                    _wl_ref.set(_wl_now)
+                                # 분석탭 자동 입력
+                                st.session_state['analysis_ticker'] = _tc
+                                st.session_state['snipe_ticker_input'] = _tc
+                                st.success(f"✅ {_row['종목명']} → 관심종목 추가 완료! '개별종목 스나이핑' 탭으로 이동하세요.")
 
             except Exception as _pg_err:
                 st.error(f"연기금 스캔 오류: {_pg_err}")
