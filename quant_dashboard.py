@@ -4756,78 +4756,149 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             try:
                 import pandas as _pd_pg
                 import yfinance as _yf_pg
+                import requests as _req_pg
+                import io as _io_pg
 
                 _pg_prog   = st.progress(0)
                 _pg_status = st.empty()
 
-                st.info("ℹ️ pykrx API 불안정으로 **yfinance 전용 기관매집 신호 스캐너**로 동작합니다.\n"
-                        "정배열 + 연속상승 + 거래량 증가 → 기관/연기금 매집 가능성이 높은 종목 탐지.")
+                # ══ KRX 직접 API로 연기금 실제 데이터 수집 ══
+                # pykrx가 내부적으로 쓰는 KRX 엔드포인트를 직접 호출 (파싱 버그 우회)
+                _KRX_OTP  = "http://data.krx.co.kr/comm/fileDn/GenerateOTP/generate.cmd"
+                _KRX_DOWN = "http://data.krx.co.kr/comm/fileDn/download_csv.cmd"
+                _KRX_HDR  = {
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer":    "http://data.krx.co.kr/",
+                }
 
-                # ── 유니버스: 시장 선택에 따라 하드코딩 주요 종목 ──
-                _KS_UNIVERSE = [
+                def _krx_investor_by_ticker(date_str: str, mkt: str) -> "_pd_pg.DataFrame | None":
+                    """KRX 투자자별 거래실적 (종목별) — 날짜 1일치 전체 종목"""
+                    _mkt_id = "STK" if mkt == "KOSPI" else "KSQ"
+                    try:
+                        _otp_r = _req_pg.post(_KRX_OTP, data={
+                            "bld":    "dbms/MDC/STAT/standard/MDCSTAT02302",
+                            "mktId":  _mkt_id,
+                            "trdDd":  date_str,
+                            "share":  "1",
+                            "money":  "1",
+                            "csvxls_isNo": "false",
+                        }, headers=_KRX_HDR, timeout=15)
+                        _otp = _otp_r.text.strip()
+                        if not _otp:
+                            return None
+                        _csv_r = _req_pg.post(_KRX_DOWN, data={"code": _otp},
+                                              headers=_KRX_HDR, timeout=15)
+                        _csv_r.encoding = "euc-kr"
+                        _df = _pd_pg.read_csv(_io_pg.StringIO(_csv_r.text),
+                                              thousands=",", encoding="utf-8")
+                        return _df
+                    except Exception:
+                        return None
+
+                # ── 유니버스: 내장 주요 종목 리스트 ──
+                _KS_UNI = [
                     ("005930","삼성전자","KOSPI"),("000660","SK하이닉스","KOSPI"),
                     ("005490","POSCO홀딩스","KOSPI"),("005380","현대차","KOSPI"),
                     ("035420","NAVER","KOSPI"),("000270","기아","KOSPI"),
                     ("051910","LG화학","KOSPI"),("006400","삼성SDI","KOSPI"),
-                    ("035720","카카오","KOSPI"),("055550","신한지주","KOSPI"),
-                    ("105560","KB금융","KOSPI"),("086790","하나금융지주","KOSPI"),
-                    ("032830","삼성생명","KOSPI"),("003550","LG","KOSPI"),
-                    ("096770","SK이노베이션","KOSPI"),("017670","SK텔레콤","KOSPI"),
-                    ("030200","KT","KOSPI"),("066570","LG전자","KOSPI"),
-                    ("028260","삼성물산","KOSPI"),("009150","삼성전기","KOSPI"),
-                    ("011200","HMM","KOSPI"),("042700","한미반도체","KOSPI"),
-                    ("012450","한화에어로스페이스","KOSPI"),("329180","HD현대중공업","KOSPI"),
-                    ("009540","HD한국조선해양","KOSPI"),("042660","한화오션","KOSPI"),
-                    ("064350","현대로템","KOSPI"),("047810","한국항공우주","KOSPI"),
-                    ("298040","효성중공업","KOSPI"),("001440","대한전선","KOSPI"),
+                    ("055550","신한지주","KOSPI"),("105560","KB금융","KOSPI"),
+                    ("086790","하나금융지주","KOSPI"),("003550","LG","KOSPI"),
+                    ("017670","SK텔레콤","KOSPI"),("030200","KT","KOSPI"),
+                    ("066570","LG전자","KOSPI"),("009150","삼성전기","KOSPI"),
+                    ("042700","한미반도체","KOSPI"),("012450","한화에어로스페이스","KOSPI"),
+                    ("329180","HD현대중공업","KOSPI"),("009540","HD한국조선해양","KOSPI"),
+                    ("042660","한화오션","KOSPI"),("064350","현대로템","KOSPI"),
+                    ("047810","한국항공우주","KOSPI"),("298040","효성중공업","KOSPI"),
                     ("011070","LG이노텍","KOSPI"),("373220","LG에너지솔루션","KOSPI"),
-                    ("247540","에코프로비엠","KOSPI"),("003670","포스코퓨처엠","KOSPI"),
                     ("010130","고려아연","KOSPI"),("058470","리노공업","KOSPI"),
-                    ("095340","ISC","KOSPI"),("357780","솔브레인","KOSPI"),
-                    ("010950","S-Oil","KOSPI"),("034730","SK","KOSPI"),
-                    ("000100","유한양행","KOSPI"),("068270","셀트리온","KOSPI"),
-                    ("207940","삼성바이오로직스","KOSPI"),("128940","한미약품","KOSPI"),
+                    ("068270","셀트리온","KOSPI"),("207940","삼성바이오로직스","KOSPI"),
+                    ("000100","유한양행","KOSPI"),("128940","한미약품","KOSPI"),
+                    ("272210","한화시스템","KOSPI"),("357780","솔브레인","KOSPI"),
+                    ("095340","ISC","KOSPI"),("001440","대한전선","KOSPI"),
+                    ("034730","SK","KOSPI"),("096770","SK이노베이션","KOSPI"),
                     ("271560","오리온","KOSPI"),("097950","CJ제일제당","KOSPI"),
-                    ("139480","이마트","KOSPI"),("004370","농심","KOSPI"),
-                    ("002790","아모레퍼시픽","KOSPI"),("051900","LG생활건강","KOSPI"),
                 ]
-                _KQ_UNIVERSE = [
-                    ("247540","에코프로비엠","KOSDAQ"),("086520","에코프로","KOSDAQ"),
-                    ("196170","알테오젠","KOSDAQ"),("091990","셀트리온헬스케어","KOSDAQ"),
+                _KQ_UNI = [
+                    ("086520","에코프로","KOSDAQ"),("196170","알테오젠","KOSDAQ"),
                     ("214150","클래시스","KOSDAQ"),("145020","휴젤","KOSDAQ"),
-                    ("112040","위메이드","KOSDAQ"),("293490","카카오게임즈","KOSDAQ"),
-                    ("259960","크래프톤","KOSDAQ"),("036570","엔씨소프트","KOSDAQ"),
+                    ("259960","크래프톤","KOSDAQ"),("293490","카카오게임즈","KOSDAQ"),
                     ("039030","이오테크닉스","KOSDAQ"),("240810","원익IPS","KOSDAQ"),
-                    ("357780","솔브레인","KOSDAQ"),("036830","솔브레인홀딩스","KOSDAQ"),
-                    ("095340","ISC","KOSDAQ"),("058470","리노공업","KOSDAQ"),
-                    ("046890","서울반도체","KOSDAQ"),("033290","코웰패션","KOSDAQ"),
+                    ("036830","솔브레인홀딩스","KOSDAQ"),("046890","서울반도체","KOSDAQ"),
                     ("035900","JYP Ent.","KOSDAQ"),("041510","에스엠","KOSDAQ"),
-                    ("122870","와이지엔터테인먼트","KOSDAQ"),("263750","펄어비스","KOSDAQ"),
-                    ("036810","에프에스티","KOSDAQ"),("007660","이수페타시스","KOSDAQ"),
-                    ("079550","LIG넥스원","KOSDAQ"),("272210","한화시스템","KOSDAQ"),
+                    ("263750","펄어비스","KOSDAQ"),("007660","이수페타시스","KOSDAQ"),
+                    ("079550","LIG넥스원","KOSDAQ"),
                 ]
-
-                _mkt_filter = _pg_market
-                if _mkt_filter == "KOSPI":
-                    _universe = _KS_UNIVERSE
-                elif _mkt_filter == "KOSDAQ":
-                    _universe = _KQ_UNIVERSE
-                else:
-                    _universe = _KS_UNIVERSE + _KQ_UNIVERSE
+                _universe = (_KS_UNI if _pg_market == "KOSPI"
+                             else _KQ_UNI if _pg_market == "KOSDAQ"
+                             else _KS_UNI + _KQ_UNI)
 
                 _pg_prog.progress(0.05)
-                _pg_status.caption(f"유니버스: {len(_universe)}종목 (내장 리스트)")
-
-                _pg_prog.progress(0.15)
                 _pg_status.caption(f"유니버스: {len(_universe)}종목")
 
-                # ② yfinance 배치 다운로드
-                _pg_status.caption("② yfinance 주가 데이터 수집 중 (배치)...")
-                _sym_map = {}
-                for _tk, _nm, _mkt in _universe:
-                    _sym = f"{_tk}.KS" if _mkt == "KOSPI" else f"{_tk}.KQ"
-                    _sym_map[_sym] = (_tk, _nm, _mkt)
+                # ── ① KRX 직접 API로 최근 N일 연기금 순매수 수집 ──
+                _pg_status.caption("① KRX 직접 API — 연기금 순매수 수집 중...")
+                _today_pg = datetime.today()
+                _krx_dates = []
+                for _dd in range(_pg_days * 2 + 5):
+                    _cand = (_today_pg - timedelta(days=_dd)).strftime('%Y%m%d')
+                    _krx_dates.append(_cand)
 
+                # ticker → [daily_pension_net list]
+                _pension_daily: dict = {}   # tk → [n1, n2, ...]
+                _foreigner_daily: dict = {} # tk → total
+                _ticker_name_map: dict = {tk: nm for tk, nm, _ in _universe}
+                _krx_col_names = ['연기금', '연기금등']
+                _for_col_names = ['외국인', '외국인합계']
+                _code_col_names = ['종목코드', '티커', 'ISU_CD', 'ISU_SRT_CD']
+
+                _days_collected = 0
+                for _mkt_pg in (["KOSPI","KOSDAQ"] if _pg_market == "KOSPI+KOSDAQ"
+                                 else [_pg_market]):
+                    for _date_str in _krx_dates:
+                        if _days_collected >= _pg_days:
+                            break
+                        _df_krx = _krx_investor_by_ticker(_date_str, _mkt_pg)
+                        if _df_krx is None or _df_krx.empty:
+                            continue
+
+                        # 컬럼명 정규화
+                        _df_krx.columns = [c.strip() for c in _df_krx.columns]
+                        _code_col = next((c for c in _code_col_names if c in _df_krx.columns), None)
+                        _pen_col  = next((c for c in _krx_col_names  if c in _df_krx.columns), None)
+                        _for_col  = next((c for c in _for_col_names  if c in _df_krx.columns), None)
+
+                        if _code_col is None or _pen_col is None:
+                            continue  # 이 날 데이터 구조가 다름
+
+                        for _, _rw in _df_krx.iterrows():
+                            _tk = str(_rw[_code_col]).strip().zfill(6)
+                            try:
+                                _pv = float(str(_rw[_pen_col]).replace(',','').replace('-','0') or 0)
+                            except Exception:
+                                _pv = 0.0
+                            try:
+                                _fv = float(str(_rw.get(_for_col, 0)).replace(',','').replace('-','0') or 0) if _for_col else 0.0
+                            except Exception:
+                                _fv = 0.0
+                            _pension_daily.setdefault(_tk, []).append(_pv)
+                            _foreigner_daily[_tk] = _foreigner_daily.get(_tk, 0.0) + _fv
+
+                        _days_collected += 1
+
+                _krx_ok = bool(_pension_daily)
+                if _krx_ok:
+                    st.success(f"✅ KRX 연기금 실제 데이터 수집 완료 ({_days_collected}일 · {len(_pension_daily)}종목)")
+                else:
+                    st.warning("⚠️ KRX API 응답 없음 → 기술적 프록시 모드로 전환합니다.")
+
+                _pg_prog.progress(0.4)
+
+                # ── ② yfinance 배치 다운로드 (기술 필터용) ──
+                _pg_status.caption("② yfinance 주가 데이터 배치 수집 중...")
+                _sym_map = {
+                    (f"{tk}.KS" if mkt == "KOSPI" else f"{tk}.KQ"): (tk, nm, mkt)
+                    for tk, nm, mkt in _universe
+                }
                 _all_syms = list(_sym_map.keys())
                 try:
                     _batch = _yf_pg.download(
@@ -4835,113 +4906,122 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         group_by="ticker", progress=False, threads=True, timeout=60
                     )
                 except Exception as _be:
-                    st.error(f"❌ yfinance 배치 다운로드 실패: {_be}")
+                    st.error(f"❌ yfinance 실패: {_be}")
                     st.stop()
 
-                _pg_prog.progress(0.55)
-                _pg_status.caption("③ 기술적 기관매집 신호 분석 중...")
+                _pg_prog.progress(0.65)
+                _pg_status.caption("③ 분석 중...")
 
                 _pg_results = []
                 _fail_counts: dict = {}
+
                 for _i, (_sym, (_tk, _nm, _mkt)) in enumerate(_sym_map.items()):
                     try:
-                        # 배치 데이터에서 종목 추출
-                        if len(_all_syms) == 1:
-                            _df = _batch
-                        else:
-                            _df = _batch.get(_sym) if hasattr(_batch, 'get') else _batch[_sym]
-                        if _df is None or len(_df) < 20:
+                        _df = _batch if len(_all_syms) == 1 else (
+                            _batch.get(_sym) if hasattr(_batch,'get') else _batch[_sym])
+                        if _df is None or len(_df) < 14:
                             continue
                         _cl = _df['Close'].dropna()
                         _vl = _df['Volume'].dropna()
-                        if len(_cl) < 20:
+                        if len(_cl) < 14:
                             continue
 
                         _cur   = float(_cl.iloc[-1])
                         _ma20  = float(_cl.rolling(20).mean().iloc[-1])
-                        _ma60  = float(_cl.rolling(min(len(_cl), 60)).mean().iloc[-1])
+                        _ma60  = float(_cl.rolling(min(len(_cl),60)).mean().iloc[-1])
                         _vol20 = float(_vl.rolling(20).mean().iloc[-1])
                         _vol_r = float(_vl.iloc[-1]) / (_vol20 + 1e-9)
-
-                        # RSI(14)
-                        _d   = _cl.diff()
-                        _g   = _d.clip(lower=0).rolling(14).mean().iloc[-1]
-                        _l   = (-_d).clip(lower=0).rolling(14).mean().iloc[-1]
+                        _dg = _cl.diff(); _g = _dg.clip(lower=0).rolling(14).mean().iloc[-1]
+                        _l  = (-_dg).clip(lower=0).rolling(14).mean().iloc[-1]
                         _rsi = float(100 - 100 / (1 + _g / (_l + 1e-9)))
 
-                        # 연속 상승 마감 일수
+                        # 연속 상승 일수
                         _streak = 0
-                        _diffs  = _cl.diff().dropna().values
-                        for _v in reversed(_diffs):
-                            if _v > 0:
-                                _streak += 1
-                            else:
-                                break
+                        for _v in reversed(_cl.diff().dropna().values):
+                            if _v > 0: _streak += 1
+                            else: break
 
-                        # ── 필터 (탈락 사유 추적) ──
-                        _fail = None
-                        if _streak < _pg_min_streak:
-                            _fail = "streak"
-                        elif _rsi > 75:          # RSI 기준 완화: 70→75
-                            _fail = "rsi"
-                        elif _cur < _ma60 * 0.97:  # MA60 기준 완화: 3% 여유
-                            _fail = "ma60"
+                        if _krx_ok:
+                            # ── KRX 실제 데이터 모드 ──
+                            _daily_vals  = _pension_daily.get(_tk, [])
+                            _pen_streak  = 0
+                            for _v in reversed(_daily_vals):
+                                if _v > 0: _pen_streak += 1
+                                else: break
+                            if _pen_streak < _pg_min_streak:
+                                _fail_counts['연기금연속'] = _fail_counts.get('연기금연속',0)+1
+                                continue
+                            if _rsi > 75:
+                                _fail_counts['rsi'] = _fail_counts.get('rsi',0)+1; continue
+                            if _cur < _ma60 * 0.97:
+                                _fail_counts['ma60'] = _fail_counts.get('ma60',0)+1; continue
 
-                        if _fail:
-                            _fail_counts[_fail] = _fail_counts.get(_fail, 0) + 1
-                            continue
+                            _pen_net   = sum(_daily_vals)
+                            _pen_abs   = sum(abs(v) for v in _daily_vals)
+                            _intensity = (_pen_net / _pen_abs * 100) if _pen_abs > 0 else 0.0
+                            _for_bonus = 20 if _foreigner_daily.get(_tk,0) > 0 else 0
+                            _score = _pen_streak*10 + max(_intensity,0)*2 + _for_bonus
 
-                        # 정배열 여부 (필터 아님 — 표시만)
-                        _aligned = _ma20 > _ma60
-
-                        # 종합점수: 연속상승×10 + 거래량비율×5 + RSI여유분×0.5 + 정배열 보너스
-                        _score = (_streak * 10 + min(_vol_r, 3.0) * 5
-                                  + (75 - _rsi) * 0.5 + (10 if _aligned else 0))
-
-                        _pg_results.append({
-                            '종목코드':      _tk,
-                            '종목명':        _nm,
-                            '시장':          _mkt,
-                            '연속상승(일)':   _streak,
-                            '거래량비율':     round(_vol_r, 2),
-                            '현재가':         f"{int(_cur):,}원",
-                            'RSI':           round(_rsi, 1),
-                            'MA60대비(%)':   round((_cur / _ma60 - 1) * 100, 1),
-                            '정배열':         "✅" if _aligned else "-",
-                            '종합점수':       round(_score, 1),
-                        })
+                            _pg_results.append({
+                                '종목코드':       _tk, '종목명': _nm, '시장': _mkt,
+                                '연기금연속(일)':  _pen_streak,
+                                '순매수강도(%)':   round(_intensity, 2),
+                                '외인쌍끌이':      "✅" if _for_bonus else "-",
+                                '현재가':          f"{int(_cur):,}원",
+                                'RSI':            round(_rsi, 1),
+                                'MA60대비(%)':    round((_cur/_ma60-1)*100,1),
+                                '종합점수':        round(_score, 1),
+                            })
+                        else:
+                            # ── 기술적 프록시 모드 ──
+                            if _streak < _pg_min_streak:
+                                _fail_counts['streak'] = _fail_counts.get('streak',0)+1; continue
+                            if _rsi > 75:
+                                _fail_counts['rsi'] = _fail_counts.get('rsi',0)+1; continue
+                            if _cur < _ma60 * 0.97:
+                                _fail_counts['ma60'] = _fail_counts.get('ma60',0)+1; continue
+                            _aligned = _ma20 > _ma60
+                            _score = (_streak*10 + min(_vol_r,3.0)*5
+                                      + (75-_rsi)*0.5 + (10 if _aligned else 0))
+                            _pg_results.append({
+                                '종목코드':     _tk, '종목명': _nm, '시장': _mkt,
+                                '연속상승(일)':  _streak,
+                                '거래량비율':    round(_vol_r, 2),
+                                '현재가':        f"{int(_cur):,}원",
+                                'RSI':          round(_rsi, 1),
+                                'MA60대비(%)':  round((_cur/_ma60-1)*100,1),
+                                '정배열':        "✅" if _ma20>_ma60 else "-",
+                                '종합점수':      round(_score, 1),
+                            })
 
                     except Exception:
                         pass
 
-                    if _i % 20 == 0:
-                        _pg_prog.progress(min(0.55 + 0.44 * _i / max(len(_sym_map), 1), 0.99))
+                    if _i % 15 == 0:
+                        _pg_prog.progress(min(0.65 + 0.34*_i/max(len(_sym_map),1), 0.99))
 
                 _pg_prog.progress(1.0)
                 _pg_status.caption(f"✅ 스캔 완료 — {len(_pg_results)}종목 탐지")
+                _mode_label = "🏛️ 연기금 실제순매수" if _krx_ok else "📊 기술적 기관매집 프록시"
 
                 if not _pg_results:
-                    _reason = " | ".join(f"{k} 탈락 {v}개" for k, v in _fail_counts.items())
-                    st.info(f"📭 조건을 만족하는 종목이 없습니다.\n"
-                            f"탈락 사유: {_reason or '데이터 없음'}\n"
-                            f"💡 '연속 순매수 최소 일수'를 1로 낮춰보세요.")
+                    _reason = " | ".join(f"{k} {v}개" for k, v in _fail_counts.items())
+                    st.info(f"📭 조건 만족 종목 없음 | 탈락: {_reason or '데이터 없음'}\n"
+                            f"💡 '연속 최소 일수' 슬라이더를 1로 낮춰보세요.")
                 else:
                     _pg_df = (_pd_pg.DataFrame(_pg_results)
                               .sort_values('종합점수', ascending=False)
-                              .head(_pg_top_n)
-                              .reset_index(drop=True))
+                              .head(_pg_top_n).reset_index(drop=True))
 
                     def _pg_highlight(row):
-                        if row['연속상승(일)'] >= 5:
-                            return ['background-color:#1a2a0a'] * len(row)
-                        elif row['연속상승(일)'] >= 3:
-                            return ['background-color:#1a1a0a'] * len(row)
-                        return [''] * len(row)
+                        _day_col = '연기금연속(일)' if '연기금연속(일)' in row.index else '연속상승(일)'
+                        if row[_day_col] >= 5: return ['background-color:#1a2a0a']*len(row)
+                        elif row[_day_col] >= 3: return ['background-color:#1a1a0a']*len(row)
+                        return ['']*len(row)
 
-                    st.markdown(f"#### 🏛️ 기관매집 추정 TOP {min(_pg_top_n, len(_pg_results))} "
-                                f"(연속상승 {_pg_min_streak}일↑ · 정배열 · RSI≤70)")
-                    st.caption("💡 종합점수 = 연속상승×10 + 거래량비율×5 + RSI여유분×0.5 | "
-                               "※ pykrx 투자자 API 불안정으로 기술적 프록시 사용 중")
+                    st.markdown(f"#### {_mode_label} TOP {min(_pg_top_n, len(_pg_results))}")
+                    st.caption("종합점수 = 연속일×10 + 순매수강도×2 + 외인쌍끌이 20점 (KRX모드) | "
+                               "연속상승×10 + 거래량비율×5 (프록시모드)")
 
                     st.dataframe(
                         _pg_df.style.apply(_pg_highlight, axis=1),
