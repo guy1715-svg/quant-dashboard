@@ -574,8 +574,12 @@ def _safe_json(s, default=None):
         return default
 
 def load_account():
-    """가상 계좌 로드 — Firebase 우선"""
-    if 'paper_account' in st.session_state:
+    """가상 계좌 로드 — Firebase 우선 (세션 캐시는 5분 TTL)"""
+    import time as _t_acc
+    _now_acc = _t_acc.time()
+    # 5분 이내 캐시면 바로 반환
+    if ('paper_account' in st.session_state and
+            _now_acc - st.session_state.get('_paper_account_ts', 0) < 300):
         return st.session_state.paper_account
     try:
         data = _fb_ref("/quant_account").get()
@@ -592,20 +596,66 @@ def load_account():
                 'trough':    float(data.get('trough', 10000000)),
             }
             st.session_state.paper_account = acc
+            st.session_state['_paper_account_ts'] = _now_acc
             return acc
     except Exception:
         pass
+    # Firebase 실패 시 기존 세션 데이터라도 반환
+    if 'paper_account' in st.session_state:
+        return st.session_state.paper_account
     default = {'initial':10000000,'cash':10000000,'positions':[],'peak':10000000,'trough':10000000}
     st.session_state.paper_account = default
+    st.session_state['_paper_account_ts'] = _now_acc
     return default
 
 def save_account(acc):
-    """가상 계좌 저장 — Firebase"""
+    """가상 계좌 저장 — Firebase + session_state 이중 저장"""
     st.session_state.paper_account = acc
+    # 직렬화 가능한 형태로 정제 (datetime 등 제거)
     try:
-        _fb_ref("/quant_account").set(acc)
+        import json as _json_sa
+        _clean = _json_sa.loads(_json_sa.dumps(acc, default=str))
+    except Exception:
+        _clean = acc
+    # Firebase 저장
+    _fb_ok = False
+    try:
+        _fb_ref("/quant_account").set(_clean)
+        _fb_ok = True
+        st.session_state['_paper_account_ts'] = 0  # 다음 load_account에서 Firebase 재읽기 강제
     except Exception as _e:
-        st.warning(f"계좌 저장 오류: {_e}")
+        st.session_state['_save_account_err'] = str(_e)
+    # Firebase 미설정/실패 시 경고 표시
+    if not _fb_ok:
+        _err = st.session_state.get('_save_account_err', 'Firebase 미설정')
+        st.warning(f"⚠️ Firebase 저장 실패: {_err} — 새로고침 시 데이터가 사라질 수 있습니다. (Streamlit Secrets → firebase_credentials 확인)")
+
+def save_op_positions(positions: list):
+    """실전 운용 포지션 저장 — Firebase + session_state"""
+    st.session_state['op_positions'] = positions
+    try:
+        import json as _json_op
+        _fb_ref("/op_positions").set({"data": _json_op.dumps(positions, default=str)})
+    except Exception as _e:
+        pass  # Firebase 미설정 시 session_state만 유지
+
+def load_op_positions() -> list:
+    """실전 운용 포지션 로드 — Firebase 우선, 없으면 session_state"""
+    # 이미 세션에 있으면 바로 반환
+    if st.session_state.get('op_positions'):
+        return st.session_state['op_positions']
+    try:
+        import json as _json_op
+        _raw = _fb_ref("/op_positions").get()
+        if _raw and isinstance(_raw, dict) and _raw.get("data"):
+            _loaded = _json_op.loads(_raw["data"])
+            if isinstance(_loaded, list) and _loaded:
+                st.session_state['op_positions'] = _loaded
+                return _loaded
+    except Exception:
+        pass
+    return []
+
 
 # 국내 ETF 과세 구분 — 국내 주식형(비과세) vs 해외/원자재형(15.4% 배당소득세)
 # 코드가 isdigit() == True → KR ETF 판단, 추가로 해외형 여부 판별
@@ -6420,28 +6470,13 @@ with tab_d:
         if _op_key not in st.session_state:
             st.session_state[_op_key] = []
 
-        # ── H2: LocalStorage에서 포지션 복원 (세션 재시작 대비) ──
-        try:
-            from streamlit_js_eval import streamlit_js_eval as _sje
-            _ls_raw = _sje(js_expressions="localStorage.getItem('op_positions')", key="_ls_load_op")
-            if _ls_raw and not st.session_state[_op_key]:
-                import json as _json_ls
-                _loaded = _json_ls.loads(_ls_raw)
-                if isinstance(_loaded, list) and _loaded:
-                    st.session_state[_op_key] = _loaded
-        except Exception:
-            pass  # streamlit-js-eval 미설치 시 무시
+        # ── Firebase에서 포지션 복원 (새로고침/재접속 대비) ──
+        if not st.session_state[_op_key]:
+            st.session_state[_op_key] = load_op_positions()
 
         def _save_positions_to_ls():
-            """LocalStorage에 포지션 동기화 (C1 uuid 포함)."""
-            try:
-                from streamlit_js_eval import streamlit_js_eval as _sje2
-                import json as _json_ls2
-                _data_str = _json_ls2.dumps(st.session_state[_op_key], default=str)
-                _safe = _data_str.replace("'", "\\'")
-                _sje2(js_expressions=f"localStorage.setItem('op_positions', '{_safe}')", key="_ls_save_op")
-            except Exception:
-                pass
+            """Firebase + session_state에 포지션 저장."""
+            save_op_positions(st.session_state[_op_key])
 
         with st.expander("➕ 보유 종목 등록 / 수정", expanded=not bool(st.session_state[_op_key])):
             _op_c1, _op_c2, _op_c3, _op_c4 = st.columns([2, 1.5, 1.5, 1])
@@ -8579,7 +8614,7 @@ with tab_e:
                 _pos_pnl_krw  = (_cur_p_krw - _avg_p_krw) * _pos['qty']
                 _pos_pct      = (_cur_p / _pos['avg_price'] - 1) * 100 if _pos['avg_price'] > 0 else 0
                 _pc           = 'up' if _pos_pnl_krw >= 0 else 'down'
-                _kill_krw     = _avg_p_krw * 0.93
+                _kill_krw     = _avg_p_krw * (1 - _STOP_LOSS_PCT)
                 _kill_alert   = _cur_p_krw <= _kill_krw
 
                 # V8.9.2 동적 손절가 (ATR 기반) + 하드 서킷 -10% 병행
