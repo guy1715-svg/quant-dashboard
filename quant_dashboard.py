@@ -4842,6 +4842,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _pg_status.caption("③ 기술적 기관매집 신호 분석 중...")
 
                 _pg_results = []
+                _fail_counts: dict = {}
                 for _i, (_sym, (_tk, _nm, _mkt)) in enumerate(_sym_map.items()):
                     try:
                         # 배치 데이터에서 종목 추출
@@ -4868,7 +4869,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         _l   = (-_d).clip(lower=0).rolling(14).mean().iloc[-1]
                         _rsi = float(100 - 100 / (1 + _g / (_l + 1e-9)))
 
-                        # 연속 상승 마감 일수 (기관 꾸준한 매집 프록시)
+                        # 연속 상승 마감 일수
                         _streak = 0
                         _diffs  = _cl.diff().dropna().values
                         for _v in reversed(_diffs):
@@ -4877,18 +4878,25 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             else:
                                 break
 
-                        # 필터
+                        # ── 필터 (탈락 사유 추적) ──
+                        _fail = None
                         if _streak < _pg_min_streak:
-                            continue
-                        if _rsi > 70:
-                            continue
-                        if _cur < _ma60:
-                            continue
-                        if _ma20 <= _ma60:
-                            continue  # 역배열 제외
+                            _fail = "streak"
+                        elif _rsi > 75:          # RSI 기준 완화: 70→75
+                            _fail = "rsi"
+                        elif _cur < _ma60 * 0.97:  # MA60 기준 완화: 3% 여유
+                            _fail = "ma60"
 
-                        # 종합점수: 연속상승×10 + 거래량비율×5 + RSI 여유분×0.5
-                        _score = _streak * 10 + min(_vol_r, 3.0) * 5 + (70 - _rsi) * 0.5
+                        if _fail:
+                            _fail_counts[_fail] = _fail_counts.get(_fail, 0) + 1
+                            continue
+
+                        # 정배열 여부 (필터 아님 — 표시만)
+                        _aligned = _ma20 > _ma60
+
+                        # 종합점수: 연속상승×10 + 거래량비율×5 + RSI여유분×0.5 + 정배열 보너스
+                        _score = (_streak * 10 + min(_vol_r, 3.0) * 5
+                                  + (75 - _rsi) * 0.5 + (10 if _aligned else 0))
 
                         _pg_results.append({
                             '종목코드':      _tk,
@@ -4899,7 +4907,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             '현재가':         f"{int(_cur):,}원",
                             'RSI':           round(_rsi, 1),
                             'MA60대비(%)':   round((_cur / _ma60 - 1) * 100, 1),
-                            '정배열':         "✅" if _ma20 > _ma60 else "-",
+                            '정배열':         "✅" if _aligned else "-",
                             '종합점수':       round(_score, 1),
                         })
 
@@ -4913,7 +4921,10 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _pg_status.caption(f"✅ 스캔 완료 — {len(_pg_results)}종목 탐지")
 
                 if not _pg_results:
-                    st.info("📭 조건을 만족하는 종목이 없습니다. 연속일 수를 낮추거나 기간을 늘려보세요.")
+                    _reason = " | ".join(f"{k} 탈락 {v}개" for k, v in _fail_counts.items())
+                    st.info(f"📭 조건을 만족하는 종목이 없습니다.\n"
+                            f"탈락 사유: {_reason or '데이터 없음'}\n"
+                            f"💡 '연속 순매수 최소 일수'를 1로 낮춰보세요.")
                 else:
                     _pg_df = (_pd_pg.DataFrame(_pg_results)
                               .sort_values('종합점수', ascending=False)
