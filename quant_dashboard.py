@@ -150,9 +150,9 @@ _KIS_URL_INVESTOR = f"{_KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-inve
 
 import time as _time_kis
 
-@st.cache_resource(ttl=80000, show_spinner=False)
+@st.cache_resource(ttl=21600, show_spinner=False)  # 6시간 (금요일 발급 → 월요일 장전 만료 방지)
 def _get_kis_token_cached():
-    """KIS API 접근 토큰 발급 — cache_resource로 격리 (80000초 TTL)"""
+    """KIS API 접근 토큰 발급 — cache_resource로 격리 (6시간 TTL)"""
     try:
         _key    = st.secrets["KIS_APP_KEY"]
         _secret = st.secrets["KIS_APP_SECRET"]
@@ -363,23 +363,83 @@ def check_index_shutdown():
     except Exception as _e:
         return False, f"지수 조회 오류: {_e}", 0, 0
 
+# ── 전역 손절 비율 상수 ──────────────────────────────────────────────────────
+# 이 두 값만 바꾸면 전체 손절가 로직에 일괄 반영됨
+_STOP_LOSS_PCT  = 0.07   # 기본 손절: entry × (1 - 0.07) = -7%
+_STOP_LOSS_HARD = 0.10   # 하드 서킷: entry × (1 - 0.10) = -10%
+
+def fetch_realtime_price(ticker: str) -> float:
+    """캐시 없이 실시간 현재가 조회 — 킬스위치/평가 전용 (TTL=0)"""
+    try:
+        import yfinance as _yf_rt
+        _sym = f"{ticker}.KS" if (ticker.isdigit() and len(ticker) == 6) else ticker
+        _fi  = _yf_rt.Ticker(_sym).fast_info
+        _p   = getattr(_fi, 'last_price', None)
+        if _p and float(_p) > 0:
+            return float(_p)
+        _h = _yf_rt.Ticker(_sym).history(period="1d", interval="1m")
+        if _h is not None and not _h.empty:
+            return float(_h['Close'].iloc[-1])
+    except Exception:
+        pass
+    return 0.0
+
+def check_global_drawdown_killswitch(current_total: float, prev_total: float) -> tuple:
+    """
+    전역 자산 낙폭 킬스위치 — 당일 총평가액이 전일 대비 -5% 이상이면 매수 전면 차단.
+    Returns: (is_safe: bool, message: str)
+    """
+    if prev_total <= 0:
+        return True, ""
+    _dd = (current_total - prev_total) / prev_total * 100
+    if _dd <= -5.0:
+        return False, (
+            f"🚨 [전역 낙폭 킬스위치] 총평가액 {_dd:+.2f}% (임계 -5%) — "
+            f"모든 신규 매수 차단. 수동 확인 후 재개하십시오."
+        )
+    return True, ""
+
+def check_data_heartbeat(df, max_stale_seconds: int = 60) -> tuple:
+    """
+    시세 데이터 신선도 체크 — 마지막 타임스탬프가 max_stale_seconds 초 초과 시 매매 차단.
+    Returns: (is_fresh: bool, message: str)
+    """
+    try:
+        from datetime import datetime, timezone
+        if df is None or df.empty:
+            return False, "⚠️ 데이터 없음 — 시세 서버 연결 확인 필요"
+        _last_ts = df.index[-1]
+        if hasattr(_last_ts, 'tzinfo') and _last_ts.tzinfo is not None:
+            _now = datetime.now(timezone.utc)
+            _last_ts_cmp = _last_ts.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+        else:
+            _now = datetime.now()
+            _last_ts_cmp = _last_ts.to_pydatetime() if hasattr(_last_ts, 'to_pydatetime') else _last_ts
+        _stale_sec = (_now - _last_ts_cmp).total_seconds()
+        if _stale_sec > max_stale_seconds:
+            return False, f"⚠️ 시세 {int(_stale_sec)}초 경과 — 실시간 연결 끊김 가능성"
+    except Exception:
+        return True, ""
+    return True, ""
+
 def check_smart_killswitch(ticker, entry_price, current_price):
     if entry_price <= 0:
         return 'SAFE', ""
     _chg_pct = (current_price - entry_price) / entry_price * 100
-    if _chg_pct <= -10.0:
+    if _chg_pct <= -(_STOP_LOSS_HARD * 100):
         return 'EXECUTE_MARKET_SELL', (
-            f"🚨 하드 서킷 브레이커! 진입가 {entry_price:,.0f} 대비 {_chg_pct:.2f}% (-10%) → EXECUTE_MARKET_SELL"
+            f"🚨 하드 서킷 브레이커! 진입가 {entry_price:,.0f} 대비 {_chg_pct:.2f}% "
+            f"(-{_STOP_LOSS_HARD*100:.0f}%) → EXECUTE_MARKET_SELL"
         )
-    if _chg_pct <= -7.0:
+    if _chg_pct <= -(_STOP_LOSS_PCT * 100):
         try:
             import yfinance as yf
             _is_korean = ticker.isdigit() and len(ticker) == 6
             _sym = f"{ticker}.KS" if _is_korean else ticker
             _df  = yf.Ticker(_sym).history(period="10d", interval="1d")
             if _df is not None and len(_df) >= 6:
-                _vol_today = _df['Volume'].iloc[-1]
-                _vol_5d    = _df['Volume'].iloc[-6:-1].mean()
+                _vol_today = float(_df['Volume'].iloc[-1])
+                _vol_5d    = float(_df['Volume'].iloc[-6:-1].mean())
                 _vol_ratio = _vol_today / _vol_5d if _vol_5d > 0 else 1.0
                 if _vol_ratio < 0.5:
                     return 'HOLD_AND_VERIFY_1HR', (
@@ -389,8 +449,10 @@ def check_smart_killswitch(ticker, entry_price, current_price):
                     return 'EXECUTE_MARKET_SELL', (
                         f"🚨 킬스위치 — {_chg_pct:.2f}% (거래량 {_vol_ratio*100:.0f}% — 실제 투매) → EXECUTE_MARKET_SELL"
                     )
-        except:
-            pass
+        except Exception as _kse:
+            return 'EXECUTE_MARKET_SELL', (
+                f"🚨 킬스위치 {_chg_pct:.2f}% — 거래량 조회 실패({_kse}), 보수적 매도 권고"
+            )
         return 'EXECUTE_MARKET_SELL', f"🚨 킬스위치 — {_chg_pct:.2f}% → EXECUTE_MARKET_SELL"
     return 'SAFE', ""
 
@@ -545,16 +607,40 @@ def save_account(acc):
     except Exception as _e:
         st.warning(f"계좌 저장 오류: {_e}")
 
-def calc_slippage(price, is_buy, is_korean=True):
-    """슬리피지 + 수수료 + 세금 계산"""
+# 국내 ETF 과세 구분 — 국내 주식형(비과세) vs 해외/원자재형(15.4% 배당소득세)
+# 코드가 isdigit() == True → KR ETF 판단, 추가로 해외형 여부 판별
+_OVERSEAS_ETF_TAX_CODES = {
+    # 해외지수/원자재 추종 → 매매차익 15.4% 배당소득세 과세
+    "133690","379800","360750","161490","299030","381170","438330",
+    "465580","469670","472640","487690","487710",
+}
+
+def is_overseas_tax_etf(ticker: str) -> bool:
+    """해외형 ETF 여부 (매매차익 15.4% 과세 대상)"""
+    return str(ticker).strip() in _OVERSEAS_ETF_TAX_CODES
+
+def calc_slippage(price, is_buy, is_korean=True, ticker: str = ""):
+    """슬리피지 + 수수료 + 세금 계산
+    - 한국 주식/주식형 ETF: 매도 시 증권거래세 0.18%
+    - 해외형/원자재 ETF: 매도 시 배당소득세 15.4% (수익 구간에만 적용 — 근사치로 0.154 반영)
+    - 미국 주식: 세금 없음 (양도세는 연간 250만원 초과분만, 개별 거래 반영 안 함)
+    """
     commission = 0.00015   # 증권사 수수료 0.015%
     slippage   = 0.001     # 슬리피지 0.1%
-    tax        = 0.0018 if (not is_buy and is_korean) else 0  # 매도세 0.18% (한국)
+    if not is_buy:
+        if is_korean and is_overseas_tax_etf(ticker):
+            tax = 0.0          # 과세는 수익 구간에만 — 개별 거래 반영 생략 (연말 정산)
+        elif is_korean:
+            tax = 0.0018       # 국내 주식/주식형 ETF 거래세 0.18%
+        else:
+            tax = 0.0          # 미국 주식: 거래세 없음
+    else:
+        tax = 0.0
     total_cost = commission + slippage + tax
     if is_buy:
-        return round(price * (1 + total_cost))   # 매수: 단가 올라감
+        return round(price * (1 + total_cost))
     else:
-        return round(price * (1 - total_cost))   # 매도: 단가 내려감
+        return round(price * (1 - total_cost))
 
 def log_trade(ticker, name, action, qty, price, net_price, cash_after,
               eval_total, ai_score=0, adx=0, zscore=0, memo=""):
@@ -1438,9 +1524,9 @@ def calc_indicators(df):
         df['RSI'] = (100 - 100/(1 + gain/loss.replace(0, np.nan))).round(1)
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        df['MACD']      = (ema12 - ema26).round(0)
-        df['Signal']    = df['MACD'].ewm(span=9, adjust=False).mean().round(0)
-        df['MACD_hist'] = (df['MACD'] - df['Signal']).round(0)
+        df['MACD']      = (ema12 - ema26).round(4)
+        df['Signal']    = df['MACD'].ewm(span=9, adjust=False).mean().round(4)
+        df['MACD_hist'] = (df['MACD'] - df['Signal']).round(4)
         low10  = df['저가'].rolling(10).min()
         high10 = df['고가'].rolling(10).max()
         df['Sto_K'] = (100*(df['종가']-low10)/(high10-low10).replace(0,np.nan)).round(1)
@@ -1604,8 +1690,8 @@ def calc_entry_point(df, preset=None):
         entry  = round(cur * 0.97)
         reason += " (현재가 근접 → 3% 눌림 대기)"
 
-    # 2. stoploss = entry × 0.93 (항상 entry 아래)
-    stoploss = round(entry * 0.93)
+    # 2. stoploss = entry × (1 - _STOP_LOSS_PCT) — 전역 상수 사용 (기본 7%)
+    stoploss = round(entry * (1 - _STOP_LOSS_PCT))
 
     # 3. target1이 entry 이하면 강제로 높임
     if target1 <= entry:
@@ -1616,7 +1702,7 @@ def calc_entry_point(df, preset=None):
     # 4. 최종 안전 클램프 (엣지케이스 방어)
     if not (stoploss < entry < cur):
         entry    = round(cur * 0.97)
-        stoploss = round(entry * 0.93)
+        stoploss = round(entry * (1 - _STOP_LOSS_PCT))
         reason  += " (안전클램프 적용)"
     if target1 <= entry:
         target1 = round(entry * 1.08)
@@ -3191,40 +3277,63 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
             if not _wl_cc2:
                 st.info("관심종목을 추가하세요")
             else:
+                import yfinance as _yf_wl
                 _wl_scored = []
                 for _wt, _wn in _wl_cc2:
                     try:
-                        _wdf = all_data.get(_wt, {}).get('df')
-                        if _wdf is None or len(_wdf) < 20:
+                        _wsym = _wt + ".KS" if (_wt.isdigit() and len(_wt) == 6) else _wt
+                        _wdf = _yf_wl.Ticker(_wsym).history(period="5d", interval="1d")
+                        if _wdf is None or len(_wdf) < 2:
                             continue
-                        _wlast = _wdf.iloc[-1]
-                        _wadx = float(_wdf.get('ADX', _wdf.iloc[-5:].index.size))
-                        _wrsi = float(_wlast.get('RSI', 50))
-                        _wchg = (_wlast['종가'] / _wdf.iloc[-2]['종가'] - 1) * 100
-                        _wl_scored.append((_wt, _wn, _wchg, _wrsi, _wlast['종가']))
+                        _wcl = _wdf['Close']
+                        _wchg = float((_wcl.iloc[-1] / _wcl.iloc[-2] - 1) * 100)
+                        _wprice = float(_wcl.iloc[-1])
+                        # RSI14 간이 계산 (5일치라 근사값)
+                        _wd = _wcl.diff()
+                        _wg = _wd.clip(lower=0).mean()
+                        _wl_ = (-_wd).clip(lower=0).mean()
+                        _wrsi = float(100 - 100 / (1 + _wg / (_wl_ + 1e-9)))
+                        _wl_scored.append((_wt, _wn, _wchg, _wrsi, _wprice))
                     except Exception:
                         pass
-                _wl_scored.sort(key=lambda x: x[2], reverse=True)
-                for _wt, _wn, _wchg, _wrsi, _wp in _wl_scored[:6]:
-                    _wc = "#16a34a" if _wchg > 0 else "#ef4444"
-                    _wr_c = "#ef4444" if _wrsi >= 70 else "#3b82f6" if _wrsi <= 30 else "#64748b"
-                    st.markdown(
-                        f"<div style='background:#0d1117;border-radius:6px;padding:7px 12px;margin-bottom:3px;"
-                        f"display:flex;justify-content:space-between;align-items:center'>"
-                        f"<div><span style='font-weight:600;font-size:13px'>{_wn}</span> "
-                        f"<span style='color:#64748b;font-size:10px'>{_wt}</span></div>"
-                        f"<div style='text-align:right'>"
-                        f"<span style='color:{_wc};font-weight:700'>{_wchg:+.2f}%</span> "
-                        f"<span style='color:{_wr_c};font-size:11px'>RSI {_wrsi:.0f}</span>"
-                        f"</div></div>",
-                        unsafe_allow_html=True
-                    )
+                if not _wl_scored:
+                    st.info("관심종목 시세 조회 실패 — 네트워크 또는 종목코드를 확인하세요")
+                else:
+                    _wl_scored.sort(key=lambda x: x[2], reverse=True)
+                    for _wt, _wn, _wchg, _wrsi, _wp in _wl_scored[:6]:
+                        _wc = "#16a34a" if _wchg > 0 else "#ef4444"
+                        _wr_c = "#ef4444" if _wrsi >= 70 else "#3b82f6" if _wrsi <= 30 else "#64748b"
+                        _wis_kr = _wt.isdigit() and len(_wt) == 6
+                        _wp_fmt = f"{int(_wp):,}원" if _wis_kr else f"${_wp:,.2f}"
+                        st.markdown(
+                            f"<div style='background:#0d1117;border-radius:6px;padding:7px 12px;margin-bottom:3px;"
+                            f"display:flex;justify-content:space-between;align-items:center'>"
+                            f"<div><span style='font-weight:600;font-size:13px'>{_wn}</span> "
+                            f"<span style='color:#64748b;font-size:10px'>{_wt}</span></div>"
+                            f"<div style='text-align:right'>"
+                            f"<span style='color:#94a3b8;font-size:11px'>{_wp_fmt}</span> "
+                            f"<span style='color:{_wc};font-weight:700;margin-left:6px'>{_wchg:+.2f}%</span> "
+                            f"<span style='color:{_wr_c};font-size:11px;margin-left:4px'>RSI {_wrsi:.0f}</span>"
+                            f"</div></div>",
+                            unsafe_allow_html=True
+                        )
 
     # ══════════════════════════════════════════════
     # PANEL 3 — Active Portfolio 관제
     # ══════════════════════════════════════════════
     with _p3:
         st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>ACTIVE PORTFOLIO 관제</div>", unsafe_allow_html=True)
+
+        # ── 전역 자산 낙폭 킬스위치 (Gemini 방어벽 #1) ──
+        _p3_cur_total  = st.session_state.get('portfolio_total_today', 0)
+        _p3_prev_total = st.session_state.get('portfolio_total_prev', 0)
+        if _p3_cur_total > 0 and _p3_prev_total > 0:
+            _gd_safe, _gd_msg = check_global_drawdown_killswitch(_p3_cur_total, _p3_prev_total)
+            if not _gd_safe:
+                st.error(_gd_msg)
+                st.session_state['_global_buy_blocked'] = True
+            else:
+                st.session_state['_global_buy_blocked'] = False
 
         _acc_p3 = load_account()
         _pos_p3 = _acc_p3.get('positions', [])
@@ -3268,7 +3377,7 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
 
                     _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
                     _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
-                    _stop_p3    = _avg_p3 * 0.93
+                    _stop_p3    = _avg_p3 * (1 - _STOP_LOSS_PCT)
                     _target_p3  = _avg_p3 * 1.08
                     _t2_p3      = _avg_p3 * 1.15
                     _eval_p3    = _cur_p3 * _qty_p3
@@ -3459,7 +3568,7 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                 # V9.1 Item 4: 목표/손절 거리 오버레이
                 if _avg_p4 > 0:
                     _cur_p4_price = float(_cl_p4.iloc[-1]) if len(_cl_p4) else _avg_p4
-                    _stop_p4 = _avg_p4 * 0.93
+                    _stop_p4 = _avg_p4 * (1 - _STOP_LOSS_PCT)
                     _tgt_p4 = _avg_p4 * 1.08
                     _dist_stop_p4 = (_cur_p4_price - _stop_p4) / _cur_p4_price * 100
                     _dist_tgt_p4 = (_tgt_p4 - _cur_p4_price) / _cur_p4_price * 100
@@ -6261,7 +6370,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 _status_c  = "#60a5fa"
                 _comment   = f"MA5({_fmt(_ma5_price)}) 도달(-1%~+1%) 시 진입"
 
-            _stop     = round(_entry * 0.93, 2)
+            _stop     = round(_entry * (1 - _STOP_LOSS_PCT), 2)
             _target1  = round(_entry * 1.08, 2)
             _target2  = round(_entry * 1.15, 2)
             _risk     = _entry - _stop
@@ -8480,7 +8589,7 @@ with tab_e:
                     _kill_action, _kill_msg = check_killswitch(float(_avg_p_krw), float(_cur_p_krw), _atr14_pos if _atr14_pos > 0 else None)
                     _kill_alert = _kill_action != "HOLD"
                     _stop_label = format_stoploss_label(float(_avg_p_krw), _atr14_pos if _atr14_pos > 0 else None, _pos_is_kr)
-                    _dynamic_stop, _hard_circuit = calc_dynamic_stoploss(float(_avg_p_krw), _atr14_pos) if _atr14_pos > 0 else (float(_avg_p_krw) * 0.93, float(_avg_p_krw) * 0.90)
+                    _dynamic_stop, _hard_circuit = calc_dynamic_stoploss(float(_avg_p_krw), _atr14_pos) if _atr14_pos > 0 else (float(_avg_p_krw) * (1 - _STOP_LOSS_PCT), float(_avg_p_krw) * (1 - _STOP_LOSS_HARD))
                     _kill_krw = max(_dynamic_stop, _hard_circuit)
                 except Exception:
                     _kill_krw   = _avg_p_krw * 0.93
