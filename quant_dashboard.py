@@ -4756,12 +4756,10 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             try:
                 from pykrx import stock as _pykrx_pg
                 import pandas as _pd_pg
-                import numpy as _np_pg
+                import yfinance as _yf_pg
 
                 _today_pg = datetime.today()
                 _end_pg   = _today_pg.strftime('%Y%m%d')
-                # 거래일 확보용: _pg_days × 2 캘린더일 여유
-                _start_pg = (_today_pg - timedelta(days=_pg_days * 2 + 10)).strftime('%Y%m%d')
 
                 _markets_pg = (["KOSPI", "KOSDAQ"] if _pg_market == "KOSPI+KOSDAQ"
                                 else [_pg_market])
@@ -4769,167 +4767,128 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _pg_prog   = st.progress(0)
                 _pg_status = st.empty()
 
-                # ══ V3: 날짜별 시장전체 1회 호출 방식 ══
-                # get_market_net_purchases_of_institutional_investors_by_ticker 사용
-                # → 종목별 루프 없이 하루 1 API 호출로 전 종목 연기금 데이터 확보
-                # 컬럼: 금융투자, 보험, 투신, 사모펀드, 은행, 기타금융기관, 연기금, 기관합계, 기타법인, 개인, 외국인, ...
+                # ══ 기관 매집 신호 스캐너 (pykrx 투자자 API 불안정 → yfinance 기술적 프록시) ══
+                # 연기금 실제 데이터 대신 "기관 매집 패턴"을 기술적으로 탐지:
+                #   ① 정배열 (MA20 > MA60)
+                #   ② 연속 상승 마감 N일 (기관 꾸준한 매집 신호)
+                #   ③ 거래량 비율 ≥ 1.2× (20일 평균 대비 — 대량 매수 존재 암시)
+                #   ④ RSI ≤ 70 (과매수 아님)
 
-                _pg_status.caption("① 거래일 목록 확보 중...")
-                # 유효 거래일 확보: OHLCV로 실제 거래가 있었던 날 추출
-                _ref_ohlcv = None
-                for _mkt0 in _markets_pg:
-                    try:
-                        _ref_ohlcv = _pykrx_pg.get_market_ohlcv_by_date(
-                            _start_pg, _end_pg, "005930"  # 삼성전자 기준
-                        )
-                        if _ref_ohlcv is not None and not _ref_ohlcv.empty:
-                            break
-                    except Exception:
-                        pass
+                st.info("ℹ️ pykrx 투자자 API(KRX 변경으로 일시 불안정) 대신 **기술적 기관매집 신호**로 스캔합니다.\n"
+                        "정배열 + 연속상승 + 거래량 증가 → 기관/연기금 매집 가능성이 높은 종목을 탐지합니다.")
 
-                if _ref_ohlcv is None or _ref_ohlcv.empty:
-                    st.error("❌ 거래일 목록 확보 실패 (삼성전자 OHLCV 조회 불가)")
-                    st.stop()
-
-                _trade_dates = [d.strftime('%Y%m%d') for d in _ref_ohlcv.index[-_pg_days:]]
-                _pg_status.caption(f"거래일 {len(_trade_dates)}일 확보: {_trade_dates[0]} ~ {_trade_dates[-1]}")
-                _pg_prog.progress(0.05)
-
-                # ② 날짜별 시장전체 연기금 순매수 수집
-                # ticker_map: {ticker: [day1_net, day2_net, ...]}
-                _pg_status.caption("② 날짜별 연기금 순매수 수집 중 (시장전체, 1일 1호출)...")
-                _ticker_daily: dict = {}   # ticker → list of daily pension_net values
-                _ticker_name:  dict = {}
-                _ticker_foreigner: dict = {}  # ticker → total foreigner net
-
-                _pension_cols = ['연기금', '연기금등']  # 둘 중 하나
-
-                for _di, _date in enumerate(_trade_dates):
-                    for _mkt in _markets_pg:
-                        try:
-                            _df_day = _pykrx_pg.get_market_net_purchases_of_institutional_investors_by_ticker(
-                                _date, _date, market=_mkt, etf=False, etn=False, elw=False
-                            )
-                            if _df_day is None or _df_day.empty:
-                                continue
-                            # 연기금 컬럼 찾기
-                            _pc = next((c for c in _pension_cols if c in _df_day.columns), None)
-                            if _pc is None:
-                                # 컬럼명 디버그 (첫 번째 날짜에만)
-                                if _di == 0:
-                                    _pg_status.caption(f"⚠️ 연기금 컬럼 없음. 실제 컬럼: {list(_df_day.columns)[:8]}")
-                                continue
-                            _fc = next((c for c in ['외국인','외국인합계'] if c in _df_day.columns), None)
-
-                            for _tk in _df_day.index:
-                                _tk_str = str(_tk)
-                                if _tk_str not in _ticker_daily:
-                                    _ticker_daily[_tk_str] = []
-                                    _ticker_name[_tk_str]  = (_pykrx_pg.get_market_ticker_name(_tk_str)
-                                                               if _tk_str not in _ticker_name else _ticker_name[_tk_str])
-                                    _ticker_foreigner[_tk_str] = 0.0
-                                _ticker_daily[_tk_str].append(float(_df_day.loc[_tk, _pc]))
-                                if _fc:
-                                    _ticker_foreigner[_tk_str] += float(_df_day.loc[_tk, _fc])
-                        except Exception:
-                            pass
-
-                    _pg_prog.progress(0.05 + 0.55 * (_di + 1) / max(len(_trade_dates), 1))
-                    _pg_status.caption(f"날짜 수집: {_di+1}/{len(_trade_dates)}일 완료 | 종목 풀: {len(_ticker_daily)}")
-
-                if not _ticker_daily:
-                    st.error("❌ 연기금 데이터 수집 실패. pykrx 버전 또는 KRX API 오류일 수 있습니다.\n"
-                             "진단 버튼으로 실제 컬럼명을 확인하세요.")
-                    st.stop()
-
-                # ③ 유니버스: 거래량 상위 300 (ohlcv에서)
-                _universe_set: set = set()
+                # ① 유니버스: pykrx ohlcv 거래대금 상위 N종목
+                _pg_status.caption("① 거래대금 상위 종목 유니버스 수집 중...")
+                _universe: list[tuple] = []
                 for _mkt in _markets_pg:
                     try:
                         _ov = _pykrx_pg.get_market_ohlcv_by_ticker(_end_pg, market=_mkt)
-                        if _ov is not None and not _ov.empty:
-                            _vcol = next((c for c in ['거래대금','거래량'] if c in _ov.columns), None)
-                            if _vcol:
-                                _universe_set.update(_ov.nlargest(300, _vcol).index.astype(str).tolist())
-                            else:
-                                _universe_set.update(_ov.index.astype(str).tolist()[:300])
+                        if _ov is None or _ov.empty:
+                            continue
+                        _vcol = next((c for c in ['거래대금', '거래량'] if c in _ov.columns), None)
+                        _n_uni = min(120, len(_ov))
+                        _top_tks = (_ov.nlargest(_n_uni, _vcol).index.tolist()
+                                    if _vcol else _ov.index.tolist()[:_n_uni])
+                        for _tk in _top_tks:
+                            _nm = _pykrx_pg.get_market_ticker_name(_tk)
+                            _universe.append((_tk, _nm, _mkt))
                     except Exception:
                         pass
-                # 유니버스 없으면 수집된 전체 사용
-                if not _universe_set:
-                    _universe_set = set(_ticker_daily.keys())
 
-                _pg_prog.progress(0.65)
-                _pg_status.caption(f"유니버스: {len(_universe_set)}종목")
+                if not _universe:
+                    st.error("❌ 유니버스 구성 실패 (pykrx ohlcv 오류)")
+                    st.stop()
 
-                # ④ 종목별 연속순매수·강도·필터 계산
+                _pg_prog.progress(0.15)
+                _pg_status.caption(f"유니버스: {len(_universe)}종목")
+
+                # ② yfinance 배치 다운로드 (한 번에 전체 처리)
+                _pg_status.caption("② yfinance 주가 데이터 수집 중 (배치)...")
+                _sym_map = {}  # symbol → (ticker, name, market)
+                for _tk, _nm, _mkt in _universe:
+                    _sym = f"{_tk}.KS" if _mkt == "KOSPI" else f"{_tk}.KQ"
+                    _sym_map[_sym] = (_tk, _nm, _mkt)
+
+                _all_syms = list(_sym_map.keys())
+                try:
+                    _batch = _yf_pg.download(
+                        _all_syms, period="6mo", interval="1d",
+                        group_by="ticker", progress=False, threads=True, timeout=60
+                    )
+                except Exception as _be:
+                    st.error(f"❌ yfinance 배치 다운로드 실패: {_be}")
+                    st.stop()
+
+                _pg_prog.progress(0.55)
+                _pg_status.caption("③ 기술적 기관매집 신호 분석 중...")
+
                 _pg_results = []
-                _calc_list = [(tk, vals) for tk, vals in _ticker_daily.items() if tk in _universe_set]
-                _total_calc = len(_calc_list)
-
-                for _ci, (_tk_pg, _daily_vals) in enumerate(_calc_list):
+                for _i, (_sym, (_tk, _nm, _mkt)) in enumerate(_sym_map.items()):
                     try:
-                        # 연속 순매수 일수 (최신부터 역산)
+                        # 배치 데이터에서 종목 추출
+                        if len(_all_syms) == 1:
+                            _df = _batch
+                        else:
+                            _df = _batch.get(_sym) if hasattr(_batch, 'get') else _batch[_sym]
+                        if _df is None or len(_df) < 20:
+                            continue
+                        _cl = _df['Close'].dropna()
+                        _vl = _df['Volume'].dropna()
+                        if len(_cl) < 20:
+                            continue
+
+                        _cur   = float(_cl.iloc[-1])
+                        _ma20  = float(_cl.rolling(20).mean().iloc[-1])
+                        _ma60  = float(_cl.rolling(min(len(_cl), 60)).mean().iloc[-1])
+                        _vol20 = float(_vl.rolling(20).mean().iloc[-1])
+                        _vol_r = float(_vl.iloc[-1]) / (_vol20 + 1e-9)
+
+                        # RSI(14)
+                        _d   = _cl.diff()
+                        _g   = _d.clip(lower=0).rolling(14).mean().iloc[-1]
+                        _l   = (-_d).clip(lower=0).rolling(14).mean().iloc[-1]
+                        _rsi = float(100 - 100 / (1 + _g / (_l + 1e-9)))
+
+                        # 연속 상승 마감 일수 (기관 꾸준한 매집 프록시)
                         _streak = 0
-                        for _v in reversed(_daily_vals):
+                        _diffs  = _cl.diff().dropna().values
+                        for _v in reversed(_diffs):
                             if _v > 0:
                                 _streak += 1
                             else:
                                 break
+
+                        # 필터
                         if _streak < _pg_min_streak:
                             continue
-
-                        _pension_net  = sum(_daily_vals)
-                        _total_abs    = sum(abs(v) for v in _daily_vals)
-                        _intensity    = (_pension_net / _total_abs * 100) if _total_abs > 0 else 0.0
-                        _for_net      = _ticker_foreigner.get(_tk_pg, 0.0)
-                        _for_bonus    = 20 if _for_net > 0 else 0
-
-                        # RSI(14) + MA60 기술적 필터
-                        _mkt_pg = "KOSPI"  # 기본값 (정확한 구분 불필요 — .KS 공통 사용)
-                        _sym_pg = f"{_tk_pg}.KS"
-                        try:
-                            import yfinance as _yf_pg
-                            _pr_df  = _yf_pg.Ticker(_sym_pg).history(period="6mo", interval="1d")
-                            if _pr_df is None or len(_pr_df) < 14:
-                                # .KQ 재시도
-                                _pr_df = _yf_pg.Ticker(f"{_tk_pg}.KQ").history(period="6mo", interval="1d")
-                            if _pr_df is None or len(_pr_df) < 14:
-                                continue
-                            _cl_pg  = _pr_df['Close']
-                            _d_pg   = _cl_pg.diff()
-                            _g_pg   = _d_pg.clip(lower=0).rolling(14).mean().iloc[-1]
-                            _l_pg   = (-_d_pg).clip(lower=0).rolling(14).mean().iloc[-1]
-                            _rsi_pg = float(100 - 100 / (1 + _g_pg / (_l_pg + 1e-9)))
-                            _cur_pg = float(_cl_pg.iloc[-1])
-                            _ma60   = float(_cl_pg.rolling(min(len(_cl_pg), 60)).mean().iloc[-1])
-                        except Exception:
+                        if _rsi > 70:
                             continue
-
-                        if _rsi_pg > 70 or _cur_pg < _ma60:
+                        if _cur < _ma60:
                             continue
+                        if _ma20 <= _ma60:
+                            continue  # 역배열 제외
 
-                        _score_pg = _streak * 10 + max(_intensity, 0) * 2 + _for_bonus
-                        _nm_pg = _ticker_name.get(_tk_pg, _tk_pg)
+                        # 종합점수: 연속상승×10 + 거래량비율×5 + RSI 여유분×0.5
+                        _score = _streak * 10 + min(_vol_r, 3.0) * 5 + (70 - _rsi) * 0.5
 
                         _pg_results.append({
-                            '종목코드':      _tk_pg,
-                            '종목명':        _nm_pg,
-                            '연속순매수(일)': _streak,
-                            '순매수강도(%)':  round(_intensity, 2),
-                            '외인쌍끌이':     "✅" if _for_net > 0 else "-",
-                            '현재가':         f"{int(_cur_pg):,}원" if _cur_pg > 0 else "-",
-                            'RSI':           round(_rsi_pg, 1),
-                            'MA60대비(%)':   round((_cur_pg / _ma60 - 1) * 100, 1) if _ma60 > 0 else 0.0,
-                            '종합점수':       round(_score_pg, 1),
+                            '종목코드':      _tk,
+                            '종목명':        _nm,
+                            '시장':          _mkt,
+                            '연속상승(일)':   _streak,
+                            '거래량비율':     round(_vol_r, 2),
+                            '현재가':         f"{int(_cur):,}원",
+                            'RSI':           round(_rsi, 1),
+                            'MA60대비(%)':   round((_cur / _ma60 - 1) * 100, 1),
+                            '정배열':         "✅" if _ma20 > _ma60 else "-",
+                            '종합점수':       round(_score, 1),
                         })
 
                     except Exception:
                         pass
 
-                    if _ci % 20 == 0:
-                        _pg_prog.progress(min(0.65 + 0.34 * _ci / max(_total_calc, 1), 0.99))
-                        _pg_status.caption(f"기술필터 적용: {_ci}/{_total_calc} | 연기금 포착: {len(_pg_results)}")
+                    if _i % 20 == 0:
+                        _pg_prog.progress(min(0.55 + 0.44 * _i / max(len(_sym_map), 1), 0.99))
 
                 _pg_prog.progress(1.0)
                 _pg_status.caption(f"✅ 스캔 완료 — {len(_pg_results)}종목 탐지")
@@ -4943,16 +4902,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                               .reset_index(drop=True))
 
                     def _pg_highlight(row):
-                        if row['연속순매수(일)'] >= 5:
+                        if row['연속상승(일)'] >= 5:
                             return ['background-color:#1a2a0a'] * len(row)
-                        elif row['연속순매수(일)'] >= 3:
+                        elif row['연속상승(일)'] >= 3:
                             return ['background-color:#1a1a0a'] * len(row)
                         return [''] * len(row)
 
-                    st.markdown(f"#### 🏛️ 연기금 추종 TOP {min(_pg_top_n, len(_pg_results))} "
-                                f"(연속순매수 {_pg_min_streak}일↑ · RSI≤70 · 종가≥MA60)")
-                    st.caption("💡 종합점수 = 연속일×10 + 순매수강도%×2 + 외인쌍끌이 20점 | "
-                               "API: get_market_net_purchases_of_institutional_investors_by_ticker")
+                    st.markdown(f"#### 🏛️ 기관매집 추정 TOP {min(_pg_top_n, len(_pg_results))} "
+                                f"(연속상승 {_pg_min_streak}일↑ · 정배열 · RSI≤70)")
+                    st.caption("💡 종합점수 = 연속상승×10 + 거래량비율×5 + RSI여유분×0.5 | "
+                               "※ pykrx 투자자 API 불안정으로 기술적 프록시 사용 중")
 
                     st.dataframe(
                         _pg_df.style.apply(_pg_highlight, axis=1),
@@ -4962,7 +4921,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                     st.markdown("##### 📡 스캐너 연동")
                     for _, _row in _pg_df.head(5).iterrows():
                         _btn_label = (f"📊 {_row['종목명']} ({_row['종목코드']}) "
-                                      f"— 연속{_row['연속순매수(일)']}일 / 강도 {_row['순매수강도(%)']}%")
+                                      f"— 연속{_row['연속상승(일)']}일↑ / 거래량비율 {_row['거래량비율']}×")
                         if st.button(_btn_label, key=f"pg_to_scan_{_row['종목코드']}",
                                      use_container_width=True):
                             st.session_state['analysis_ticker'] = _row['종목코드']
