@@ -5467,7 +5467,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
     with _sc_col1:
         st.markdown("**📋 스캔 대상**")
-        market_type = st.selectbox("시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)", "미국 ETF(VTI+)"], key="scanner_market")
+        market_type = st.selectbox("시장", [
+            "KOSPI",
+            "KOSDAQ",
+            "KOSPI+KOSDAQ",
+            "미국(S&P500)",
+            "미국(NASDAQ 100)",
+            "미국 ETF(VTI+)",
+            "국내 섹터/테마 ETF",
+            "코스닥(거래대금 상위 300)",
+        ], key="scanner_market")
         scan_mode   = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
         top_n = st.slider("스캔 종목 수", 20, 200, 50, key="scanner_topn")
         st.info("V9.7: S/A/B 등급제 · OR 로직 · ETF 전용 채점 · 레짐 감지")
@@ -5663,6 +5672,101 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             ("BABA","Alibaba"),("JD","JD.com"),("PDD","PDD Holdings"),
             ]
 
+        # ── NASDAQ 100 내장 리스트 ──
+        NASDAQ100_LIST = [
+            ("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),
+            ("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),
+            ("GOOG","Alphabet C"),("TSLA","Tesla"),("AVGO","Broadcom"),
+            ("COST","Costco"),("NFLX","Netflix"),("ASML","ASML"),
+            ("AZN","AstraZeneca"),("AMD","AMD"),("CSCO","Cisco"),
+            ("ADBE","Adobe"),("QCOM","Qualcomm"),("INTU","Intuit"),
+            ("TXN","Texas Instruments"),("AMGN","Amgen"),
+            ("ISRG","Intuitive Surgical"),("HON","Honeywell"),
+            ("BKNG","Booking Holdings"),("VRTX","Vertex"),("REGN","Regeneron"),
+            ("PANW","Palo Alto"),("GILD","Gilead"),("SBUX","Starbucks"),
+            ("MU","Micron"),("LRCX","Lam Research"),("KLAC","KLA Corp"),
+            ("AMAT","Applied Materials"),("ADI","Analog Devices"),
+            ("MRVL","Marvell"),("CDNS","Cadence"),("SNPS","Synopsys"),
+            ("CRWD","CrowdStrike"),("FTNT","Fortinet"),("ABNB","Airbnb"),
+            ("CEG","Constellation Energy"),("CTAS","Cintas"),
+            ("PCAR","Paccar"),("ORLY","O'Reilly Auto"),("FAST","Fastenal"),
+            ("ON","ON Semiconductor"),("MELI","MercadoLibre"),("TTD","Trade Desk"),
+            ("ZS","Zscaler"),("DXCM","Dexcom"),("FANG","Diamondback Energy"),
+            ("KDP","Keurig Dr Pepper"),("MNST","Monster Beverage"),
+            ("PAYX","Paychex"),("ODFL","Old Dominion"),("TEAM","Atlassian"),
+            ("DASH","DoorDash"),("WDAY","Workday"),("ROP","Roper Tech"),
+            ("IDXX","IDEXX"),("GFS","GlobalFoundries"),("ARM","Arm Holdings"),
+            ("MSTR","MicroStrategy"),("HOOD","Robinhood"),("SHOP","Shopify"),
+            ("APP","AppLovin"),("PLTR","Palantir"),("SNOW","Snowflake"),
+            ("UBER","Uber"),("COIN","Coinbase"),("NET","Cloudflare"),
+            ("DDOG","Datadog"),("HUBS","HubSpot"),("ZM","Zoom"),
+            ("DOCU","DocuSign"),("BILL","Bill.com"),("RBLX","Roblox"),
+            ("U","Unity Software"),("SOFI","SoFi"),("AFRM","Affirm"),
+            ("IONQ","IonQ"),("QBTS","D-Wave"),("RGTI","Rigetti"),
+        ]
+
+        # ── 국내 섹터/테마 ETF 내장 리스트 ──
+        KR_SECTOR_ETF_LIST = [
+            # ── 반도체/AI ──
+            ("091160","KODEX 반도체"),("395160","KODEX AI반도체TOP2+"),
+            ("396500","TIGER Fn반도체TOP10"),("457450","KODEX AI테크TOP10"),
+            ("381170","TIGER AI&로봇액티브"),
+            # ── 방산/우주 ──
+            ("463250","TIGER K방산&우주"),("329200","TIGER 방산"),
+            # ── 조선/중공업 ──
+            ("364980","TIGER 조선TOP10"),("453810","KODEX 조선해양"),
+            # ── 에너지/원전 ──
+            ("487240","KODEX AI전력핵심설비"),("455890","KODEX 원자력"),
+            ("140710","TIGER 원자력테마"),("411060","ACE KRX금현물"),
+            # ── 2차전지 ──
+            ("305720","KODEX 2차전지산업"),("371460","TIGER 2차전지테마"),
+            # ── 헬스케어/바이오 ──
+            ("143460","TIGER 헬스케어"),("266410","KODEX 바이오"),
+            ("227550","TIGER 200 헬스케어"),
+            # ── 소비/내수 ──
+            ("266360","KODEX 200생활소비재"),("157490","TIGER 소비재"),
+            # ── 국내 지수형 ──
+            ("069500","KODEX 200"),("102110","TIGER 200"),
+            ("229200","KODEX 코스닥150"),("261220","KODEX 코스닥150레버리지"),
+            # ── 금융 ──
+            ("140550","TIGER 금융"),("102970","KODEX 은행"),
+            # ── 인프라/리츠 ──
+            ("357870","TIGER 리츠부동산인프라"),("329750","KODEX 한국부동산리츠인프라"),
+        ]
+
+        # ── 코스닥 거래대금 상위 300 동적 로드 ──
+        KOSDAQ_TVL300_LIST = []
+        if market_type == "코스닥(거래대금 상위 300)":
+            _tvl_status = st.empty()
+            _tvl_status.caption("🔄 코스닥 거래대금 상위 300 로딩 중...")
+            try:
+                from pykrx import stock as _pk_tvl
+                import datetime as _dt_tvl
+                _tvl_today = datetime.today().strftime('%Y%m%d')
+                _tvl_prev  = (datetime.today() - timedelta(days=5)).strftime('%Y%m%d')
+                # get_market_trading_value_by_ticker: 기간 거래대금 합산 기준 정렬
+                _tvl_df = _pk_tvl.get_market_trading_value_by_ticker(
+                    _tvl_prev, _tvl_today, market="KOSDAQ"
+                )
+                if _tvl_df is not None and not _tvl_df.empty:
+                    # 컬럼명 정규화 (KRX 변경 대비)
+                    _tvl_cols = {c: c.replace(" ","") for c in _tvl_df.columns}
+                    _tvl_df = _tvl_df.rename(columns=_tvl_cols)
+                    _tvl_col = next((c for c in _tvl_df.columns if "거래대금" in c), None)
+                    if _tvl_col:
+                        _tvl_df = _tvl_df.sort_values(_tvl_col, ascending=False)
+                        for _tk in _tvl_df.index[:300]:
+                            _nm = _pk_tvl.get_market_ticker_name(str(_tk)) or str(_tk)
+                            KOSDAQ_TVL300_LIST.append((str(_tk).zfill(6), _nm))
+            except Exception as _tvl_e:
+                pass
+            # pykrx 실패 시 → KOSDAQ 내장 리스트로 폴백
+            if not KOSDAQ_TVL300_LIST:
+                KOSDAQ_TVL300_LIST = KOSDAQ_LIST[:]
+                _tvl_status.warning("⚠️ pykrx 거래대금 조회 실패 → 내장 KOSDAQ 리스트 사용")
+            else:
+                _tvl_status.success(f"✅ 코스닥 거래대금 상위 {len(KOSDAQ_TVL300_LIST)}종목 로드 완료")
+
         # ── ETF 유니버스 ──────────────────────────────────────────────────────
         _ETF_UNIVERSE = [
             # 지수 ETF (벤치마크)
@@ -5771,13 +5875,20 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             _base_list = KOSPI_LIST + [x for x in KOSDAQ_LIST if x not in KOSPI_LIST]
             _base_list += [x for x in extra if x not in _base_list]
         elif market_type == "미국 ETF(VTI+)":
-            # ETF Universe 전체를 기본 리스트로 — ETF 스코어링 강제 적용
             _base_list = _ETF_UNIVERSE[:]
+        elif market_type == "미국(NASDAQ 100)":
+            _base_list = NASDAQ100_LIST[:]
+        elif market_type == "국내 섹터/테마 ETF":
+            _base_list = KR_SECTOR_ETF_LIST[:]
+        elif market_type == "코스닥(거래대금 상위 300)":
+            _base_list = KOSDAQ_TVL300_LIST[:]
         else:
             _base_list = SP500_LIST + [x for x in extra if x not in SP500_LIST]
 
-        if market_type == "미국 ETF(VTI+)" or '🏦 ETF' in _scan_mode:
+        if market_type in ("미국 ETF(VTI+)",):
             scan_list = _ETF_UNIVERSE[:]
+        elif market_type == "국내 섹터/테마 ETF" or '🏦 ETF' in _scan_mode:
+            scan_list = _base_list[:]
         elif '🔀 통합' in _scan_mode:
             scan_list = _base_list + [x for x in _ETF_UNIVERSE if x[0] not in {t for t,_ in _base_list}]
         else:
@@ -5795,7 +5906,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         status = st.empty()
 
         # ── KIS API 모드 (환경변수 KIS_APP_KEY 설정 시) ──────────────────────
-        if KIS_ENABLED and market_type != "미국(S&P500)":
+        if KIS_ENABLED and market_type not in ("미국(S&P500)", "미국(NASDAQ 100)"):
             try:
                 from scanner import run_v89_scan, results_to_df
                 status.markdown("<span style='color:#34d399'>🔥 KIS API 비동기 스캔 중...</span>", unsafe_allow_html=True)
@@ -6129,6 +6240,17 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             unsafe_allow_html=True
         )
 
+        # ── Rate Limit 방어 상수 ──
+        # yfinance는 60초당 ~2,000 req 허용, 100종목 이상 시 미세 슬립으로 Ban 방지
+        import time as _rl_time
+        _IS_US_MARKET    = market_type in ("미국(S&P500)", "미국(NASDAQ 100)", "미국 ETF(VTI+)")
+        _IS_KR_ETF_SCAN  = market_type == "국내 섹터/테마 ETF"
+        _RL_SLEEP_BASE   = 0.08   # 기본 80ms (국내 KIS/pykrx 세션)
+        _RL_SLEEP_US     = 0.15   # 미국 yfinance 직접 호출 시 150ms
+        _RL_BURST_EVERY  = 25     # 25종목마다 추가 슬립
+        _RL_BURST_SLEEP  = 1.5    # 추가 1.5초 (yfinance 버스트 리셋)
+        _rl_err_streak   = 0      # 연속 에러 카운터
+
         _scan_fatal = None
         try:
             for idx, ticker in enumerate(scan_tickers):
@@ -6136,12 +6258,34 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 name = name_map.get(ticker, ticker)
                 status.markdown(f"<span style='font-size:12px;color:#64748b'>V8.9 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
+                # ── Rate Limit 방어 슬립 ──
+                if _IS_US_MARKET or _IS_KR_ETF_SCAN:
+                    _rl_time.sleep(_RL_SLEEP_US)
+                else:
+                    _rl_time.sleep(_RL_SLEEP_BASE)
+                if idx > 0 and idx % _RL_BURST_EVERY == 0:
+                    _rl_time.sleep(_RL_BURST_SLEEP)
+                # 연속 에러 5회 → 3초 강제 휴식 (Ban 직전 쿨다운)
+                if _rl_err_streak >= 5:
+                    _rl_time.sleep(3.0)
+                    _rl_err_streak = 0
+
                 try:
-                    if market_type == "미국(S&P500)":
+                    if market_type in ("미국(S&P500)", "미국(NASDAQ 100)"):
                         import yfinance as yf
                         _yt   = yf.Ticker(ticker)
                         _hist = _yt.history(period="6mo", interval="1d")
-                        if _hist is None or _hist.empty: continue
+                        if _hist is None or _hist.empty:
+                            _rl_err_streak += 1; continue
+                        df = _hist.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(60)
+                        df = df[df['거래량']>0]
+                    elif _IS_KR_ETF_SCAN:
+                        # 국내 ETF는 yfinance .KS 경로로 조회
+                        import yfinance as yf
+                        _yt   = yf.Ticker(f"{ticker}.KS")
+                        _hist = _yt.history(period="6mo", interval="1d")
+                        if _hist is None or _hist.empty:
+                            _rl_err_streak += 1; continue
                         df = _hist.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})[['시가','고가','저가','종가','거래량']].tail(60)
                         df = df[df['거래량']>0]
                     else:
@@ -6183,7 +6327,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         'reasons':   [f"📐ATR {_meta['ATR비율']}%", f"📈5일 {_meta['5일수익률']}%",
                                       f"📉거래량 {_meta['거래량비율']}%", f"CMF {_meta.get('CMF', 0):.3f}"],
                     })
+                    _rl_err_streak = 0  # 성공 시 에러 streak 리셋
                 except Exception as _scan_e:
+                    _rl_err_streak += 1
                     st.session_state.setdefault('_scan_errors', []).append(f"{ticker}: {_scan_e}")
                     continue
         except Exception as _fatal_e:
