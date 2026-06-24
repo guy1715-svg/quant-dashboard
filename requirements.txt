@@ -1,4 +1,4 @@
-pykrx
+pykrx>=1.2.9
 finance-datareader
 pandas
 numpy

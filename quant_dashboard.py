@@ -4799,15 +4799,20 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 except Exception as _e:
                     st.error(f"실패: {_e}")
 
-                st.markdown("**④ `get_market_net_purchases_of_institutional_investors_by_ticker` (KOSPI, 1일):**")
+                st.markdown("**④ `get_market_net_purchases_of_equities_by_ticker` (KOSPI, 최근 5일):**")
                 try:
-                    _dv3 = _pykrx_diag.get_market_net_purchases_of_institutional_investors_by_ticker(
-                        _d_prev, _d_end, market="KOSPI", etf=False, etn=False, elw=False
+                    _dv3 = _pykrx_diag.get_market_net_purchases_of_equities_by_ticker(
+                        _d_prev, _d_end, market="KOSPI"
                     )
                     st.write(f"shape: {_dv3.shape}, 컬럼: {list(_dv3.columns)}")
                     st.dataframe(_dv3.head(5))
                 except Exception as _e:
                     st.error(f"실패: {_e}")
+
+                # 구버전 유령 함수 생존 여부 확인 (diagnostic only)
+                st.markdown("**④-구버전 `get_market_net_purchases_of_institutional_investors_by_ticker` (존재 여부만 확인):**")
+                _ghost_exists = hasattr(_pykrx_diag, "get_market_net_purchases_of_institutional_investors_by_ticker")
+                st.write(f"함수 존재: {_ghost_exists} → {'❌ 유령 함수 (호출 금지)' if not _ghost_exists else '⚠️ 구버전 잔존'}")
 
                 st.markdown("**⑤ `get_market_trading_value_by_investor` (시장 전체):**")
                 try:
@@ -9853,18 +9858,26 @@ with tab_e:
 
         @st.cache_data(ttl=60, show_spinner=False)
         def fetch_investor_data():
-            """외인/기관/개인 투자자 동향 — pykrx"""
+            """외인/기관/개인 투자자 동향 — pykrx (방어적 컬럼 매핑 적용)"""
             try:
                 from pykrx import stock
                 today = datetime.today().strftime('%Y%m%d')
                 start = (datetime.today() - timedelta(days=10)).strftime('%Y%m%d')
-                # 코스피 투자자별 거래대금
                 df = stock.get_market_trading_value_by_date(start, today, "KOSPI")
-                if df.empty:
+                if df is None or df.empty or df.shape[1] == 0:
                     return None
                 df.index = pd.to_datetime(df.index)
+                # 컬럼명 방어적 정규화: 공백·띄어쓰기 무관하게 매핑
+                _col_map = {}
+                for _c in df.columns:
+                    _cn = str(_c).replace(" ", "")
+                    if "기관" in _cn and "합계" in _cn:  _col_map[_c] = "기관합계"
+                    elif "외국인" in _cn or "외인" in _cn: _col_map[_c] = "외국인"
+                    elif "개인" in _cn:                    _col_map[_c] = "개인"
+                if _col_map:
+                    df = df.rename(columns=_col_map)
                 return df.tail(5)
-            except:
+            except Exception:
                 return None
 
         with st.spinner("지수 데이터 로딩 중..."):
