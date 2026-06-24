@@ -4754,57 +4754,76 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
         if _run_pg:
             try:
-                from pykrx import stock as _pykrx_pg
                 import pandas as _pd_pg
                 import yfinance as _yf_pg
-
-                _today_pg = datetime.today()
-                _end_pg   = _today_pg.strftime('%Y%m%d')
-
-                _markets_pg = (["KOSPI", "KOSDAQ"] if _pg_market == "KOSPI+KOSDAQ"
-                                else [_pg_market])
 
                 _pg_prog   = st.progress(0)
                 _pg_status = st.empty()
 
-                # ══ 기관 매집 신호 스캐너 (pykrx 투자자 API 불안정 → yfinance 기술적 프록시) ══
-                # 연기금 실제 데이터 대신 "기관 매집 패턴"을 기술적으로 탐지:
-                #   ① 정배열 (MA20 > MA60)
-                #   ② 연속 상승 마감 N일 (기관 꾸준한 매집 신호)
-                #   ③ 거래량 비율 ≥ 1.2× (20일 평균 대비 — 대량 매수 존재 암시)
-                #   ④ RSI ≤ 70 (과매수 아님)
+                st.info("ℹ️ pykrx API 불안정으로 **yfinance 전용 기관매집 신호 스캐너**로 동작합니다.\n"
+                        "정배열 + 연속상승 + 거래량 증가 → 기관/연기금 매집 가능성이 높은 종목 탐지.")
 
-                st.info("ℹ️ pykrx 투자자 API(KRX 변경으로 일시 불안정) 대신 **기술적 기관매집 신호**로 스캔합니다.\n"
-                        "정배열 + 연속상승 + 거래량 증가 → 기관/연기금 매집 가능성이 높은 종목을 탐지합니다.")
+                # ── 유니버스: 시장 선택에 따라 하드코딩 주요 종목 ──
+                _KS_UNIVERSE = [
+                    ("005930","삼성전자","KOSPI"),("000660","SK하이닉스","KOSPI"),
+                    ("005490","POSCO홀딩스","KOSPI"),("005380","현대차","KOSPI"),
+                    ("035420","NAVER","KOSPI"),("000270","기아","KOSPI"),
+                    ("051910","LG화학","KOSPI"),("006400","삼성SDI","KOSPI"),
+                    ("035720","카카오","KOSPI"),("055550","신한지주","KOSPI"),
+                    ("105560","KB금융","KOSPI"),("086790","하나금융지주","KOSPI"),
+                    ("032830","삼성생명","KOSPI"),("003550","LG","KOSPI"),
+                    ("096770","SK이노베이션","KOSPI"),("017670","SK텔레콤","KOSPI"),
+                    ("030200","KT","KOSPI"),("066570","LG전자","KOSPI"),
+                    ("028260","삼성물산","KOSPI"),("009150","삼성전기","KOSPI"),
+                    ("011200","HMM","KOSPI"),("042700","한미반도체","KOSPI"),
+                    ("012450","한화에어로스페이스","KOSPI"),("329180","HD현대중공업","KOSPI"),
+                    ("009540","HD한국조선해양","KOSPI"),("042660","한화오션","KOSPI"),
+                    ("064350","현대로템","KOSPI"),("047810","한국항공우주","KOSPI"),
+                    ("298040","효성중공업","KOSPI"),("001440","대한전선","KOSPI"),
+                    ("011070","LG이노텍","KOSPI"),("373220","LG에너지솔루션","KOSPI"),
+                    ("247540","에코프로비엠","KOSPI"),("003670","포스코퓨처엠","KOSPI"),
+                    ("010130","고려아연","KOSPI"),("058470","리노공업","KOSPI"),
+                    ("095340","ISC","KOSPI"),("357780","솔브레인","KOSPI"),
+                    ("010950","S-Oil","KOSPI"),("034730","SK","KOSPI"),
+                    ("000100","유한양행","KOSPI"),("068270","셀트리온","KOSPI"),
+                    ("207940","삼성바이오로직스","KOSPI"),("128940","한미약품","KOSPI"),
+                    ("271560","오리온","KOSPI"),("097950","CJ제일제당","KOSPI"),
+                    ("139480","이마트","KOSPI"),("004370","농심","KOSPI"),
+                    ("002790","아모레퍼시픽","KOSPI"),("051900","LG생활건강","KOSPI"),
+                ]
+                _KQ_UNIVERSE = [
+                    ("247540","에코프로비엠","KOSDAQ"),("086520","에코프로","KOSDAQ"),
+                    ("196170","알테오젠","KOSDAQ"),("091990","셀트리온헬스케어","KOSDAQ"),
+                    ("214150","클래시스","KOSDAQ"),("145020","휴젤","KOSDAQ"),
+                    ("112040","위메이드","KOSDAQ"),("293490","카카오게임즈","KOSDAQ"),
+                    ("259960","크래프톤","KOSDAQ"),("036570","엔씨소프트","KOSDAQ"),
+                    ("039030","이오테크닉스","KOSDAQ"),("240810","원익IPS","KOSDAQ"),
+                    ("357780","솔브레인","KOSDAQ"),("036830","솔브레인홀딩스","KOSDAQ"),
+                    ("095340","ISC","KOSDAQ"),("058470","리노공업","KOSDAQ"),
+                    ("046890","서울반도체","KOSDAQ"),("033290","코웰패션","KOSDAQ"),
+                    ("035900","JYP Ent.","KOSDAQ"),("041510","에스엠","KOSDAQ"),
+                    ("122870","와이지엔터테인먼트","KOSDAQ"),("263750","펄어비스","KOSDAQ"),
+                    ("036810","에프에스티","KOSDAQ"),("007660","이수페타시스","KOSDAQ"),
+                    ("079550","LIG넥스원","KOSDAQ"),("272210","한화시스템","KOSDAQ"),
+                ]
 
-                # ① 유니버스: pykrx ohlcv 거래대금 상위 N종목
-                _pg_status.caption("① 거래대금 상위 종목 유니버스 수집 중...")
-                _universe: list[tuple] = []
-                for _mkt in _markets_pg:
-                    try:
-                        _ov = _pykrx_pg.get_market_ohlcv_by_ticker(_end_pg, market=_mkt)
-                        if _ov is None or _ov.empty:
-                            continue
-                        _vcol = next((c for c in ['거래대금', '거래량'] if c in _ov.columns), None)
-                        _n_uni = min(120, len(_ov))
-                        _top_tks = (_ov.nlargest(_n_uni, _vcol).index.tolist()
-                                    if _vcol else _ov.index.tolist()[:_n_uni])
-                        for _tk in _top_tks:
-                            _nm = _pykrx_pg.get_market_ticker_name(_tk)
-                            _universe.append((_tk, _nm, _mkt))
-                    except Exception:
-                        pass
+                _mkt_filter = _pg_market
+                if _mkt_filter == "KOSPI":
+                    _universe = _KS_UNIVERSE
+                elif _mkt_filter == "KOSDAQ":
+                    _universe = _KQ_UNIVERSE
+                else:
+                    _universe = _KS_UNIVERSE + _KQ_UNIVERSE
 
-                if not _universe:
-                    st.error("❌ 유니버스 구성 실패 (pykrx ohlcv 오류)")
-                    st.stop()
+                _pg_prog.progress(0.05)
+                _pg_status.caption(f"유니버스: {len(_universe)}종목 (내장 리스트)")
 
                 _pg_prog.progress(0.15)
                 _pg_status.caption(f"유니버스: {len(_universe)}종목")
 
-                # ② yfinance 배치 다운로드 (한 번에 전체 처리)
+                # ② yfinance 배치 다운로드
                 _pg_status.caption("② yfinance 주가 데이터 수집 중 (배치)...")
-                _sym_map = {}  # symbol → (ticker, name, market)
+                _sym_map = {}
                 for _tk, _nm, _mkt in _universe:
                     _sym = f"{_tk}.KS" if _mkt == "KOSPI" else f"{_tk}.KQ"
                     _sym_map[_sym] = (_tk, _nm, _mkt)
@@ -4927,8 +4946,6 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             st.session_state['analysis_ticker'] = _row['종목코드']
                             st.info(f"✅ {_row['종목명']} → 분석탭에서 확인하세요")
 
-            except ImportError:
-                st.error("❌ pykrx 미설치 — `pip install pykrx` 후 재시도")
             except Exception as _pg_err:
                 st.error(f"연기금 스캔 오류: {_pg_err}")
                 import traceback; st.code(traceback.format_exc())
