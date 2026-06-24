@@ -4661,6 +4661,219 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
 
     # ══════════════════════════════════════════
+    # 🏛️ 연기금 추종 스캐너 (Gemini V2 설계)
+    # ══════════════════════════════════════════
+    with st.expander("🏛️ 연기금 추종 종목 스캐너", expanded=False):
+        st.markdown("""
+**연기금(국민연금 등)이 연속 순매수 중인 종목**을 탐지합니다. (Gemini V2 설계)
+
+| 항목 | 내용 |
+|---|---|
+| 유니버스 | 시가총액 상위 300종목 (전종목 순회 제거) |
+| 연기금 컬럼 | `연기금` → `연기금등` 한정 (기관합계 폴백 폐기) |
+| 종합 점수 | 연속일×10 + **순매수 강도%**×2 + 외인쌍끌이 보너스 20점 |
+| 기술 필터 | RSI≤70 (과매수 회피) + 종가≥MA60 (역배열 늪지대 제외) |
+        """)
+
+        _pg_c1, _pg_c2, _pg_c3 = st.columns([1, 1, 1])
+        with _pg_c1:
+            _pg_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ"],
+                                       key="pg_market")
+        with _pg_c2:
+            _pg_days = st.slider("분석 기간 (거래일)", 3, 20, 10, key="pg_days",
+                                  help="최근 N 거래일의 연기금 순매수 데이터를 분석합니다")
+        with _pg_c3:
+            _pg_min_streak = st.slider("연속 순매수 최소 일수", 1, 5, 2, key="pg_streak",
+                                        help="N일 연속 순매수인 종목만 필터링")
+
+        _pg_top_n = st.slider("결과 표시 종목 수", 5, 50, 20, key="pg_topn")
+        _run_pg = st.button("🏛️ 연기금 추종 스캔 시작", type="primary",
+                             use_container_width=True, key="run_pension_scan")
+
+        if _run_pg:
+            try:
+                from pykrx import stock as _pykrx_pg
+                import numpy as _np_pg
+
+                _today_pg = datetime.today()
+                _start_pg = (_today_pg - timedelta(days=_pg_days * 3)).strftime('%Y%m%d')
+                _end_pg   = _today_pg.strftime('%Y%m%d')
+
+                _markets_pg = (["KOSPI", "KOSDAQ"] if _pg_market == "KOSPI+KOSDAQ"
+                                else [_pg_market])
+
+                st.markdown("**① 시가총액 상위 300종목 유니버스 구성 중...**")
+                _pg_prog   = st.progress(0)
+                _pg_status = st.empty()
+
+                # ── V2: 시총 상위 300종목 유니버스 (거래대금 상위 아님)
+                _scan_tickers_pg = []
+                for _mkt in _markets_pg:
+                    try:
+                        _ov = _pykrx_pg.get_market_ohlcv_by_ticker(_end_pg, market=_mkt)
+                        if _ov is None or _ov.empty:
+                            continue
+                        # 시가총액 컬럼: '시가총액' 또는 '시총'
+                        _cap_col = next((c for c in ['시가총액', '시총'] if c in _ov.columns), None)
+                        if _cap_col:
+                            _top300 = _ov.nlargest(300, _cap_col).index.tolist()
+                        else:
+                            # 컬럼 없을 때 거래대금으로 대체
+                            _cap_col2 = next((c for c in ['거래대금', '거래량'] if c in _ov.columns), None)
+                            _top300 = (_ov.nlargest(300, _cap_col2).index.tolist()
+                                       if _cap_col2 else _ov.index.tolist()[:300])
+                        for _tk in _top300:
+                            _nm = _pykrx_pg.get_market_ticker_name(_tk)
+                            _scan_tickers_pg.append((_tk, _nm, _mkt))
+                    except Exception:
+                        pass
+
+                _pg_prog.progress(0.1)
+                _pg_status.caption(f"유니버스: {len(_scan_tickers_pg)}종목 확보")
+
+                _pg_results = []
+                _analyzed   = 0
+                _total_pg   = len(_scan_tickers_pg)
+
+                for _tk_pg, _nm_pg, _mkt_pg in _scan_tickers_pg:
+                    try:
+                        # 종목별 투자자별 순매수 (거래대금 기준)
+                        _inv_df = _pykrx_pg.get_market_trading_value_by_date(
+                            _start_pg, _end_pg, _tk_pg
+                        )
+                        if _inv_df is None or _inv_df.empty:
+                            _analyzed += 1; continue
+                        _inv_df = _inv_df.tail(_pg_days)
+                        if len(_inv_df) < 2:
+                            _analyzed += 1; continue
+
+                        # ── V2: '연기금등' 컬럼 한정 — 폴백 없음
+                        _pg_col = next((c for c in ['연기금등', '연기금'] if c in _inv_df.columns), None)
+                        if _pg_col is None:
+                            _analyzed += 1; continue
+
+                        _pg_series = _inv_df[_pg_col]
+
+                        # 연속 순매수 일수 (최신부터 역산)
+                        _streak = 0
+                        for _v in reversed(_pg_series.values):
+                            if _v > 0:
+                                _streak += 1
+                            else:
+                                break
+
+                        if _streak < _pg_min_streak:
+                            _analyzed += 1; continue
+
+                        # 연기금 순매수 강도 (%) = 기간 내 연기금 순매수 / 기간 내 총거래대금 × 100
+                        _pension_net = float(_pg_series.sum())
+                        _total_col   = next((c for c in ['전체', '합계'] if c in _inv_df.columns), None)
+                        if _total_col:
+                            _total_tv = float(_inv_df[_total_col].abs().sum())
+                        else:
+                            # 전체 컬럼 없으면 모든 컬럼 절댓값 합산
+                            _total_tv = float(_inv_df.abs().sum().sum())
+                        _intensity = (_pension_net / _total_tv * 100) if _total_tv > 0 else 0.0
+
+                        # 외국인 쌍끌이 보너스 (동기간 외국인 순매수 > 0)
+                        _for_col    = next((c for c in ['외국인합계','외국인'] if c in _inv_df.columns), None)
+                        _foreigner_net = float(_inv_df[_for_col].sum()) if _for_col else 0.0
+                        _foreigner_bonus = 20 if _foreigner_net > 0 else 0
+
+                        # RSI(14) + MA60 기술적 필터
+                        try:
+                            import yfinance as _yf_pg
+                            _sym_pg = f"{_tk_pg}.KS" if _mkt_pg == "KOSPI" else f"{_tk_pg}.KQ"
+                            _pr_df  = _yf_pg.Ticker(_sym_pg).history(period="90d", interval="1d")
+                            if _pr_df is None or len(_pr_df) < 20:
+                                _analyzed += 1; continue
+                            _cl_pg  = _pr_df['Close']
+                            _d_pg   = _cl_pg.diff()
+                            _g_pg   = _d_pg.clip(lower=0).rolling(14).mean().iloc[-1]
+                            _l_pg   = (-_d_pg).clip(lower=0).rolling(14).mean().iloc[-1]
+                            _rsi_pg = float(100 - 100 / (1 + _g_pg / (_l_pg + 1e-9)))
+                            _cur_pg = float(_cl_pg.iloc[-1])
+                            _ma60   = float(_cl_pg.rolling(60).mean().iloc[-1]) if len(_cl_pg) >= 60 else float(_cl_pg.mean())
+                        except Exception:
+                            _analyzed += 1; continue
+
+                        # ── V2 기술적 필터: RSI≤70 AND 종가≥MA60
+                        if _rsi_pg > 70:
+                            _analyzed += 1; continue
+                        if _cur_pg < _ma60:
+                            _analyzed += 1; continue
+
+                        # ── V2 종합점수: 연속일×10 + 순매수강도%×2 + 외인쌍끌이 20점
+                        _score_pg = _streak * 10 + max(_intensity, 0) * 2 + _foreigner_bonus
+
+                        _pg_results.append({
+                            '종목코드':       _tk_pg,
+                            '종목명':         _nm_pg,
+                            '시장':           _mkt_pg,
+                            '연속순매수(일)':  _streak,
+                            '순매수강도(%)':   round(_intensity, 2),
+                            '외인쌍끌이':      "✅" if _foreigner_net > 0 else "-",
+                            '현재가':          f"{int(_cur_pg):,}원" if _cur_pg > 0 else "-",
+                            'RSI':            round(_rsi_pg, 1),
+                            'MA60대비(%)':    round((_cur_pg / _ma60 - 1) * 100, 1) if _ma60 > 0 else 0.0,
+                            '종합점수':        round(_score_pg, 1),
+                        })
+
+                    except Exception:
+                        pass
+
+                    _analyzed += 1
+                    if _analyzed % 10 == 0:
+                        _pg_prog.progress(min(0.1 + 0.89 * _analyzed / max(_total_pg, 1), 0.99))
+                        _pg_status.caption(f"분석 중: {_analyzed}/{_total_pg} | "
+                                           f"연기금 포착: {len(_pg_results)}종목")
+
+                _pg_prog.progress(1.0)
+                _pg_status.caption(f"✅ 스캔 완료 — {len(_pg_results)}종목 탐지")
+
+                if not _pg_results:
+                    st.info("📭 조건을 만족하는 종목이 없습니다. "
+                            "연속일 수를 낮추거나 기간을 늘려보세요. "
+                            "(pykrx '연기금등' 컬럼이 없는 종목은 자동 제외됩니다)")
+                else:
+                    import pandas as _pd_pg
+                    _pg_df = (_pd_pg.DataFrame(_pg_results)
+                              .sort_values('종합점수', ascending=False)
+                              .head(_pg_top_n)
+                              .reset_index(drop=True))
+
+                    def _pg_highlight(row):
+                        if row['연속순매수(일)'] >= 5:
+                            return ['background-color:#1a2a0a'] * len(row)
+                        elif row['연속순매수(일)'] >= 3:
+                            return ['background-color:#1a1a0a'] * len(row)
+                        return [''] * len(row)
+
+                    st.markdown(f"#### 🏛️ 연기금 추종 TOP {min(_pg_top_n, len(_pg_results))} "
+                                f"(연속순매수 {_pg_min_streak}일↑ · RSI≤70 · 종가≥MA60)")
+                    st.caption("💡 종합점수 = 연속일×10 + 순매수강도%×2 + 외인쌍끌이 20점")
+
+                    st.dataframe(
+                        _pg_df.style.apply(_pg_highlight, axis=1),
+                        use_container_width=True, hide_index=True
+                    )
+
+                    st.markdown("##### 📡 스캐너 연동")
+                    for _, _row in _pg_df.head(5).iterrows():
+                        _btn_label = (f"📊 {_row['종목명']} ({_row['종목코드']}) "
+                                      f"— 연속{_row['연속순매수(일)']}일 / 강도 {_row['순매수강도(%)']}%")
+                        if st.button(_btn_label, key=f"pg_to_scan_{_row['종목코드']}",
+                                     use_container_width=True):
+                            st.session_state['analysis_ticker'] = _row['종목코드']
+                            st.info(f"✅ {_row['종목명']} → 분석탭에서 확인하세요")
+
+            except ImportError:
+                st.error("❌ pykrx 미설치 — `pip install pykrx` 후 재시도")
+            except Exception as _pg_err:
+                st.error(f"연기금 스캔 오류: {_pg_err}")
+                import traceback; st.code(traceback.format_exc())
+
+    # ══════════════════════════════════════════
     # 🔥 AI 파라미터 자동 최적화 섹션
     # ══════════════════════════════════════════
     with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward)", expanded=False):
@@ -7394,13 +7607,37 @@ with _tab_d1:
             _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True, rank_history=_kr_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
-            # ── 🎯 개별종목 스나이핑 리스트 (ETF 1위 구성종목 자동 추적) ──
+            # ── 🎯 개별종목 스나이핑 리스트 (ETF 선택 가능) ──
             if _kr_top is not None:
-                _top_code = str(_kr_top['코드'])
-                _top_name = _kr_top['ETF명']
                 st.markdown(f"---")
-                st.markdown(f"### 🔫 개별종목 스나이핑 — `{_top_name}` 구성종목 타점 추적")
-                st.caption(f"ETF 1위({_top_name}) 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5% (더 타이트한 쪽 자동 적용)")
+                st.markdown("### 🔫 개별종목 스나이핑 — 구성종목 타점 추적")
+
+                # 국장 ETF 선택 — _ETF_HOLDINGS_DB 한국 코드 목록 + 랭킹 ETF 포함
+                _kr_db_codes = [k for k in _ETF_HOLDINGS_DB if k.isdigit() and _ETF_HOLDINGS_DB[k]]
+                _kr_snipe_opts = {}
+                for _kc in _kr_db_codes:
+                    _kn = _MASTER_ETF_DB.get(_kc, _kc)
+                    _kr_snipe_opts[f"{_kn} ({_kc})"] = _kc
+                # 랭킹에 있는 ETF도 추가 (DB에 없을 수 있음)
+                for _, _rrow in _ranked.iterrows():
+                    _rc = str(_rrow['코드'])
+                    if _rc.isdigit():
+                        _rn = _rrow['ETF명']
+                        _rlabel = f"{_rn} ({_rc})"
+                        if _rlabel not in _kr_snipe_opts:
+                            _kr_snipe_opts[_rlabel] = _rc
+                _kr_snipe_labels = sorted(_kr_snipe_opts.keys())
+                # 기본 선택: 현재 1위 ETF
+                _default_label = f"{_kr_top['ETF명']} ({_kr_top['코드']})"
+                _default_idx = _kr_snipe_labels.index(_default_label) if _default_label in _kr_snipe_labels else 0
+                _sel_label = st.selectbox("📦 스캔할 ETF 선택 (구성종목 DB 보유 ETF)",
+                                          _kr_snipe_labels, index=_default_idx,
+                                          key="kr_snipe_etf_sel",
+                                          help="구성종목 DB가 있는 ETF만 표시됩니다. 1위 ETF가 기본 선택.")
+                _top_code = _kr_snipe_opts[_sel_label]
+                _top_name = _sel_label.rsplit(" (", 1)[0]
+
+                st.caption(f"{_top_name} 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5% (더 타이트한 쪽 자동 적용)")
 
                 with st.spinner("구성종목 스캔 중..."):
                     _snipe_list = _scan_etf_holdings(_top_code, is_korean=True)
@@ -7819,32 +8056,45 @@ with _tab_d1:
             }
             _sig_label, _sig_bg, _sig_color, _sig_msg = _sig_cfg[_signal]
 
-            # 판단 카드
-            st.markdown(f"""
-<div style='background:{_sig_bg};border:2px solid {_sig_color};border-radius:14px;padding:20px 24px;margin:12px 0'>
-  <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px'>
-    <div>
-      <div style='font-size:22px;font-weight:800;color:{_sig_color}'>{_sig_label}</div>
-      <div style='font-size:13px;color:#94a3b8;margin-top:4px'>{_sig_msg}</div>
-    </div>
-    <div style='text-align:right'>
-      <div style='font-size:12px;color:#64748b'>현재 순위</div>
-      <div style='font-size:28px;font-weight:800;color:{_sig_color}'>{_hold_rank}위</div>
-    </div>
-  </div>
-  <div style='display:flex;gap:24px;margin-top:16px;flex-wrap:wrap'>
-    <div><div style='font-size:11px;color:#64748b'>보유 ETF</div>
-         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_name}</div></div>
-    <div><div style='font-size:11px;color:#64748b'>현재가</div>
-         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_price:,.0f}원</div></div>
-    {"<div><div style='font-size:11px;color:#64748b'>평가손익</div><div style='font-size:14px;font-weight:700;color:" + ("#f43f5e" if _pnl_pct>=0 else "#38bdf8") + f"'>{_pnl_pct:+.2f}% ({_pnl_amt:+,.0f}원)</div></div>" if _buy_price > 0 else ""}
-    <div><div style='font-size:11px;color:#64748b'>보유 점수</div>
-         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_score}점</div></div>
-    <div><div style='font-size:11px;color:#64748b'>1위와 차이</div>
-         <div style='font-size:14px;font-weight:700;color:{"#f87171" if _score_gap>=15 else "#94a3b8"}'>{_score_gap:+d}점</div></div>
-    {"<div><div style='font-size:11px;color:#64748b'>손절 라인</div><div style='font-size:14px;font-weight:700;color:#f87171'>" + f"{_buy_price*0.93:,.0f}원 (-7%)" + "</div></div>" if _buy_price > 0 else ""}
-  </div>
-</div>""", unsafe_allow_html=True)
+            # 판단 카드 — 조건부 HTML을 사전 계산해 f-string 들여쓰기 문제 방지
+            _gap_color  = "#f87171" if _score_gap >= 15 else "#94a3b8"
+            _pnl_html   = ""
+            _stop_html  = ""
+            if _buy_price > 0:
+                _pc = "#f43f5e" if _pnl_pct >= 0 else "#38bdf8"
+                _pnl_html  = (f"<div><div style='font-size:11px;color:#64748b'>평가손익</div>"
+                              f"<div style='font-size:14px;font-weight:700;color:{_pc}'>"
+                              f"{_pnl_pct:+.2f}% ({_pnl_amt:+,.0f}원)</div></div>")
+                _sp        = _buy_price * (1 - _STOP_LOSS_PCT)
+                _stop_html = (f"<div><div style='font-size:11px;color:#64748b'>손절 라인</div>"
+                              f"<div style='font-size:14px;font-weight:700;color:#f87171'>"
+                              f"{_sp:,.0f}원 (-{int(_STOP_LOSS_PCT*100)}%)</div></div>")
+
+            st.markdown(
+                f"<div style='background:{_sig_bg};border:2px solid {_sig_color};"
+                f"border-radius:14px;padding:20px 24px;margin:12px 0'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                f"flex-wrap:wrap;gap:12px'>"
+                f"<div><div style='font-size:22px;font-weight:800;color:{_sig_color}'>{_sig_label}</div>"
+                f"<div style='font-size:13px;color:#94a3b8;margin-top:4px'>{_sig_msg}</div></div>"
+                f"<div style='text-align:right'>"
+                f"<div style='font-size:12px;color:#64748b'>현재 순위</div>"
+                f"<div style='font-size:28px;font-weight:800;color:{_sig_color}'>{_hold_rank}위</div>"
+                f"</div></div>"
+                f"<div style='display:flex;gap:24px;margin-top:16px;flex-wrap:wrap'>"
+                f"<div><div style='font-size:11px;color:#64748b'>보유 ETF</div>"
+                f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_name}</div></div>"
+                f"<div><div style='font-size:11px;color:#64748b'>현재가</div>"
+                f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_price:,.0f}원</div></div>"
+                f"{_pnl_html}"
+                f"<div><div style='font-size:11px;color:#64748b'>보유 점수</div>"
+                f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_hold_score}점</div></div>"
+                f"<div><div style='font-size:11px;color:#64748b'>1위와 차이</div>"
+                f"<div style='font-size:14px;font-weight:700;color:{_gap_color}'>{_score_gap:+d}점</div></div>"
+                f"{_stop_html}"
+                f"</div></div>",
+                unsafe_allow_html=True
+            )
 
             # ── ETF 차트 + 매도 신호 ──
             try:
