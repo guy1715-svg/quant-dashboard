@@ -4706,22 +4706,24 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _pg_prog   = st.progress(0)
                 _pg_status = st.empty()
 
-                # ── V2: 시총 상위 300종목 유니버스 (거래대금 상위 아님)
+                # ── V2: 시총 상위 300종목 유니버스
+                # get_market_cap_by_ticker 가 시가총액 컬럼을 포함
                 _scan_tickers_pg = []
                 for _mkt in _markets_pg:
                     try:
-                        _ov = _pykrx_pg.get_market_ohlcv_by_ticker(_end_pg, market=_mkt)
-                        if _ov is None or _ov.empty:
-                            continue
-                        # 시가총액 컬럼: '시가총액' 또는 '시총'
-                        _cap_col = next((c for c in ['시가총액', '시총'] if c in _ov.columns), None)
-                        if _cap_col:
-                            _top300 = _ov.nlargest(300, _cap_col).index.tolist()
+                        _cap_df = _pykrx_pg.get_market_cap_by_ticker(_end_pg, market=_mkt)
+                        if _cap_df is None or _cap_df.empty:
+                            # 대체: ohlcv 거래대금 상위
+                            _ov = _pykrx_pg.get_market_ohlcv_by_ticker(_end_pg, market=_mkt)
+                            _ov_col = next((c for c in ['거래대금','거래량'] if c in _ov.columns), None)
+                            _top300 = (_ov.nlargest(300, _ov_col).index.tolist()
+                                       if _ov_col is not None else _ov.index.tolist()[:300])
                         else:
-                            # 컬럼 없을 때 거래대금으로 대체
-                            _cap_col2 = next((c for c in ['거래대금', '거래량'] if c in _ov.columns), None)
-                            _top300 = (_ov.nlargest(300, _cap_col2).index.tolist()
-                                       if _cap_col2 else _ov.index.tolist()[:300])
+                            _cap_col = next((c for c in ['시가총액','시총'] if c in _cap_df.columns), None)
+                            if _cap_col:
+                                _top300 = _cap_df.nlargest(300, _cap_col).index.tolist()
+                            else:
+                                _top300 = _cap_df.index.tolist()[:300]
                         for _tk in _top300:
                             _nm = _pykrx_pg.get_market_ticker_name(_tk)
                             _scan_tickers_pg.append((_tk, _nm, _mkt))
@@ -4737,9 +4739,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
                 for _tk_pg, _nm_pg, _mkt_pg in _scan_tickers_pg:
                     try:
-                        # 종목별 투자자별 순매수 (거래대금 기준)
+                        # detail=True 필수 — 없으면 '연기금등' 컬럼이 존재하지 않음
                         _inv_df = _pykrx_pg.get_market_trading_value_by_date(
-                            _start_pg, _end_pg, _tk_pg
+                            _start_pg, _end_pg, _tk_pg, detail=True
                         )
                         if _inv_df is None or _inv_df.empty:
                             _analyzed += 1; continue
@@ -4765,13 +4767,14 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         if _streak < _pg_min_streak:
                             _analyzed += 1; continue
 
-                        # 연기금 순매수 강도 (%) = 기간 내 연기금 순매수 / 기간 내 총거래대금 × 100
+                        # 연기금 순매수 강도 (%) = 연기금 순매수 / 기관합계 절댓값 × 100
+                        # detail=True 모드에서 '전체' 컬럼 없음 → 기관합계+외국인합계+개인 합산
                         _pension_net = float(_pg_series.sum())
-                        _total_col   = next((c for c in ['전체', '합계'] if c in _inv_df.columns), None)
-                        if _total_col:
-                            _total_tv = float(_inv_df[_total_col].abs().sum())
+                        _denom_cols  = ['기관합계', '외국인합계', '개인']
+                        _denom_avail = [c for c in _denom_cols if c in _inv_df.columns]
+                        if _denom_avail:
+                            _total_tv = float(_inv_df[_denom_avail].abs().sum().sum())
                         else:
-                            # 전체 컬럼 없으면 모든 컬럼 절댓값 합산
                             _total_tv = float(_inv_df.abs().sum().sum())
                         _intensity = (_pension_net / _total_tv * 100) if _total_tv > 0 else 0.0
 
@@ -4784,7 +4787,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         try:
                             import yfinance as _yf_pg
                             _sym_pg = f"{_tk_pg}.KS" if _mkt_pg == "KOSPI" else f"{_tk_pg}.KQ"
-                            _pr_df  = _yf_pg.Ticker(_sym_pg).history(period="90d", interval="1d")
+                            _pr_df  = _yf_pg.Ticker(_sym_pg).history(period="6mo", interval="1d")
                             if _pr_df is None or len(_pr_df) < 20:
                                 _analyzed += 1; continue
                             _cl_pg  = _pr_df['Close']
@@ -4793,7 +4796,8 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             _l_pg   = (-_d_pg).clip(lower=0).rolling(14).mean().iloc[-1]
                             _rsi_pg = float(100 - 100 / (1 + _g_pg / (_l_pg + 1e-9)))
                             _cur_pg = float(_cl_pg.iloc[-1])
-                            _ma60   = float(_cl_pg.rolling(60).mean().iloc[-1]) if len(_cl_pg) >= 60 else float(_cl_pg.mean())
+                            _n_ma60 = len(_cl_pg)
+                            _ma60   = float(_cl_pg.rolling(min(_n_ma60, 60)).mean().iloc[-1])
                         except Exception:
                             _analyzed += 1; continue
 
@@ -7619,7 +7623,7 @@ with _tab_d1:
                     _kn = _MASTER_ETF_DB.get(_kc, _kc)
                     _kr_snipe_opts[f"{_kn} ({_kc})"] = _kc
                 # 랭킹에 있는 ETF도 추가 (DB에 없을 수 있음)
-                for _, _rrow in _ranked.iterrows():
+                for _, _rrow in _kr_ranked.iterrows():
                     _rc = str(_rrow['코드'])
                     if _rc.isdigit():
                         _rn = _rrow['ETF명']
