@@ -4690,6 +4690,48 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _run_pg = st.button("🏛️ 연기금 추종 스캔 시작", type="primary",
                              use_container_width=True, key="run_pension_scan")
 
+        # ── 진단 버튼: pykrx 실제 컬럼 확인 ──
+        if st.button("🔍 pykrx 진단 (삼성전자 005930 기준)", key="pg_diag"):
+            try:
+                from pykrx import stock as _pykrx_diag
+                _d_end   = datetime.today().strftime('%Y%m%d')
+                _d_start = (datetime.today() - timedelta(days=30)).strftime('%Y%m%d')
+
+                st.markdown("**① `get_market_cap_by_ticker` 컬럼:**")
+                try:
+                    _dc = _pykrx_diag.get_market_cap_by_ticker(_d_end, market="KOSPI")
+                    st.write(f"행 수: {len(_dc)}, 컬럼: {list(_dc.columns)}")
+                    st.write(_dc.head(3))
+                except Exception as _e:
+                    st.error(f"get_market_cap_by_ticker 실패: {_e}")
+
+                st.markdown("**② `get_market_trading_value_by_date` (detail=False) 컬럼:**")
+                try:
+                    _dv0 = _pykrx_diag.get_market_trading_value_by_date(_d_start, _d_end, "005930", detail=False)
+                    st.write(f"컬럼: {list(_dv0.columns)}")
+                    st.write(_dv0.tail(3))
+                except Exception as _e:
+                    st.error(f"detail=False 실패: {_e}")
+
+                st.markdown("**③ `get_market_trading_value_by_date` (detail=True) 컬럼:**")
+                try:
+                    _dv1 = _pykrx_diag.get_market_trading_value_by_date(_d_start, _d_end, "005930", detail=True)
+                    st.write(f"컬럼: {list(_dv1.columns)}")
+                    st.write(_dv1.tail(3))
+                except Exception as _e:
+                    st.error(f"detail=True 실패: {_e}")
+
+                st.markdown("**④ `get_market_trading_value_by_investor` 컬럼:**")
+                try:
+                    _dv2 = _pykrx_diag.get_market_trading_value_by_investor(_d_start, _d_end, "005930")
+                    st.write(f"컬럼: {list(_dv2.columns) if hasattr(_dv2,'columns') else type(_dv2)}")
+                    st.write(_dv2.tail(3) if hasattr(_dv2,'tail') else _dv2)
+                except Exception as _e:
+                    st.error(f"by_investor 실패: {_e}")
+
+            except Exception as _pg_diag_err:
+                st.error(f"진단 오류: {_pg_diag_err}")
+
         if _run_pg:
             try:
                 from pykrx import stock as _pykrx_pg
