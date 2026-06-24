@@ -4693,44 +4693,64 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── 진단 버튼: pykrx 실제 컬럼 확인 ──
         if st.button("🔍 pykrx 진단 (삼성전자 005930 기준)", key="pg_diag"):
             try:
+                import pykrx as _pykrx_pkg
                 from pykrx import stock as _pykrx_diag
                 _d_end   = datetime.today().strftime('%Y%m%d')
+                _d_prev  = (datetime.today() - timedelta(days=5)).strftime('%Y%m%d')
                 _d_start = (datetime.today() - timedelta(days=30)).strftime('%Y%m%d')
+
+                st.markdown(f"**pykrx 버전: `{getattr(_pykrx_pkg,'__version__','알 수 없음')}`**")
+
+                # 사용 가능한 함수 중 investor 관련
+                _inv_funcs = [f for f in dir(_pykrx_diag) if 'invest' in f.lower() or 'institution' in f.lower() or 'purchases' in f.lower()]
+                st.write("investor 관련 함수:", _inv_funcs)
 
                 st.markdown("**① `get_market_cap_by_ticker` 컬럼:**")
                 try:
                     _dc = _pykrx_diag.get_market_cap_by_ticker(_d_end, market="KOSPI")
                     st.write(f"행 수: {len(_dc)}, 컬럼: {list(_dc.columns)}")
-                    st.write(_dc.head(3))
+                    st.dataframe(_dc.head(3))
                 except Exception as _e:
-                    st.error(f"get_market_cap_by_ticker 실패: {_e}")
+                    st.error(f"실패: {_e}")
 
-                st.markdown("**② `get_market_trading_value_by_date` (detail=False) 컬럼:**")
+                st.markdown("**② `get_market_trading_value_by_date` (삼성전자, detail=False):**")
                 try:
                     _dv0 = _pykrx_diag.get_market_trading_value_by_date(_d_start, _d_end, "005930", detail=False)
-                    st.write(f"컬럼: {list(_dv0.columns)}")
-                    st.write(_dv0.tail(3))
+                    st.write(f"shape: {_dv0.shape}, 컬럼: {list(_dv0.columns)}, index: {list(_dv0.index[-2:])}")
+                    st.dataframe(_dv0.tail(3))
                 except Exception as _e:
-                    st.error(f"detail=False 실패: {_e}")
+                    st.error(f"실패: {_e}")
 
-                st.markdown("**③ `get_market_trading_value_by_date` (detail=True) 컬럼:**")
+                st.markdown("**③ `get_market_trading_value_by_date` (detail=True):**")
                 try:
                     _dv1 = _pykrx_diag.get_market_trading_value_by_date(_d_start, _d_end, "005930", detail=True)
-                    st.write(f"컬럼: {list(_dv1.columns)}")
-                    st.write(_dv1.tail(3))
+                    st.write(f"shape: {_dv1.shape}, 컬럼: {list(_dv1.columns)}")
+                    st.dataframe(_dv1.tail(3))
                 except Exception as _e:
-                    st.error(f"detail=True 실패: {_e}")
+                    st.error(f"실패: {_e}")
 
-                st.markdown("**④ `get_market_trading_value_by_investor` 컬럼:**")
+                st.markdown("**④ `get_market_net_purchases_of_institutional_investors_by_ticker` (KOSPI, 1일):**")
                 try:
-                    _dv2 = _pykrx_diag.get_market_trading_value_by_investor(_d_start, _d_end, "005930")
-                    st.write(f"컬럼: {list(_dv2.columns) if hasattr(_dv2,'columns') else type(_dv2)}")
-                    st.write(_dv2.tail(3) if hasattr(_dv2,'tail') else _dv2)
+                    _dv3 = _pykrx_diag.get_market_net_purchases_of_institutional_investors_by_ticker(
+                        _d_prev, _d_end, market="KOSPI", etf=False, etn=False, elw=False
+                    )
+                    st.write(f"shape: {_dv3.shape}, 컬럼: {list(_dv3.columns)}")
+                    st.dataframe(_dv3.head(5))
                 except Exception as _e:
-                    st.error(f"by_investor 실패: {_e}")
+                    st.error(f"실패: {_e}")
+
+                st.markdown("**⑤ `get_market_trading_value_by_investor` (시장 전체):**")
+                try:
+                    _dv4 = _pykrx_diag.get_market_trading_value_by_investor(_d_start, _d_end, "KOSPI")
+                    st.write(f"shape: {_dv4.shape}, 컬럼: {list(_dv4.columns) if hasattr(_dv4,'columns') else type(_dv4)}")
+                    st.dataframe(_dv4.tail(3) if hasattr(_dv4,'tail') else str(_dv4))
+                except Exception as _e:
+                    st.error(f"실패: {_e}")
 
             except Exception as _pg_diag_err:
+                import traceback
                 st.error(f"진단 오류: {_pg_diag_err}")
+                st.code(traceback.format_exc())
 
         if _run_pg:
             try:
