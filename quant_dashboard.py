@@ -7501,6 +7501,32 @@ with tab_d:
 
             _has_danger = False
 
+            def _get_adx_rsi_pos(tk, is_kr):
+                """포지션 카드용 ADX(14) + RSI(14) 경량 산출."""
+                try:
+                    import numpy as _np_pos
+                    _sfxs = [".KS", ".KQ"] if is_kr else [""]
+                    for _sfx in _sfxs:
+                        _dfp = _yf_op.Ticker(tk + _sfx).history(period="6mo", interval="1d")
+                        if _dfp is None or len(_dfp) < 30:
+                            continue
+                        _clp = _dfp['Close']; _hip = _dfp['High']; _lop = _dfp['Low']
+                        _trp = pd.DataFrame({'hl':_hip-_lop,'hc':(_hip-_clp.shift()).abs(),'lc':(_lop-_clp.shift()).abs()}).max(axis=1)
+                        _atp = _trp.rolling(14).mean()
+                        _pdp = _hip.diff().clip(lower=0); _ndp = (-_lop.diff()).clip(lower=0)
+                        _pip = 100*_pdp.rolling(14).mean()/_atp.replace(0,_np_pos.nan)
+                        _nip = 100*_ndp.rolling(14).mean()/_atp.replace(0,_np_pos.nan)
+                        _dxp = 100*(_pip-_nip).abs()/(_pip+_nip).replace(0,_np_pos.nan)
+                        _adxp = float(_dxp.rolling(14).mean().iloc[-1])
+                        _dvp  = _clp.diff()
+                        _gup  = _dvp.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                        _lup  = (-_dvp.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+                        _rsip = float(100 - 100/(1 + _gup.iloc[-1]/max(_lup.iloc[-1], 1e-9)))
+                        return round(_adxp, 1), round(_rsip, 1)
+                except Exception:
+                    pass
+                return None, None
+
             for _pos in list(st.session_state[_op_key]):  # C1: uuid 기반 — list copy로 안전 순회
                 _pos_id = _pos.get('id', _pos['ticker'])  # 구버전 호환
                 _tk    = _pos['ticker']
@@ -7532,19 +7558,24 @@ with tab_d:
                 _danger  = _cur_p <= _stop_p * 1.03
                 _t2_hit  = _cur_p >= _t2_p
                 _t1_hit  = _cur_p >= _t1_p
-                _trail   = _t2_hit
 
                 if _danger: _has_danger = True
 
-                # 색상 / 상태 레이블
-                if _danger:
-                    _brd = "#ef4444"; _bg = "#1a0505"; _status_label = "🚨 손절 경고"
-                elif _trail:
-                    _brd = "#fbbf24"; _bg = "#1a1200"; _status_label = "🎯 추격 모드"
-                elif _t1_hit:
-                    _brd = "#34d399"; _bg = "#051a10"; _status_label = "✅ 1차 목표 도달"
+                # ADX + RSI 실시간 산출 (4-state 판정용)
+                _adx_pos, _rsi_pos = _get_adx_rsi_pos(_tk, _is_kr)
+                _adx_weak = (_adx_pos is not None and _adx_pos < 25)
+                _rsi_hot  = (_rsi_pos is not None and _rsi_pos >= 78)
+
+                # ── 4-State 상태 레이블 (매매 원칙 5대 원칙 준수) ──
+                # 우선순위: 정리검토 > 일부축소 > 추가매집 검토 > 보유유지
+                if _danger or _adx_weak:
+                    _brd = "#ef4444"; _bg = "#1a0505"; _status_label = "🚨 정리검토"
+                elif _t2_hit:
+                    _brd = "#34d399"; _bg = "#051a10"; _status_label = "📈 추가매집 검토"
+                elif _t1_hit or _rsi_hot:
+                    _brd = "#f97316"; _bg = "#1a0800"; _status_label = "✂️ 일부축소"
                 else:
-                    _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🔵 정상 보유"
+                    _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🛡️ 보유유지"
 
                 _pnl_c   = "#39ff14" if _pnl_pct >= 0 else "#ff003c"
                 _chg_c   = "#39ff14" if _chg_pct >= 0 else "#ff003c"
@@ -7560,11 +7591,14 @@ with tab_d:
                 _price_warn = "" if _price_ok else " ⚠️조회실패"
 
                 # ── 카드 렌더링 ──
-                _danger_anim = "animation:blink 0.8s step-start infinite;" if _danger else ""
+                _danger_anim = "animation:blink 0.8s step-start infinite;" if (_danger or _adx_weak) else ""
                 _trail_badge = (
-                    "<span style='background:#fbbf2430;color:#fbbf24;font-size:10px;"
-                    "padding:2px 8px;border-radius:10px;margin-left:8px'>🎯 TRAILING STOP ON</span>"
-                ) if _trail else ""
+                    "<span style='background:#34d39930;color:#34d399;font-size:10px;"
+                    "padding:2px 8px;border-radius:10px;margin-left:8px'>📈 추가매집 구간 진입</span>"
+                ) if _t2_hit else (
+                    "<span style='background:#f9731630;color:#f97316;font-size:10px;"
+                    "padding:2px 8px;border-radius:10px;margin-left:8px'>✂️ 익절 구간</span>"
+                ) if (_t1_hit or _rsi_hot) else ""
 
                 _total_range = _t2_p - _stop_p
                 _cur_pos_pct = max(0, min(100, (_cur_p - _stop_p) / _total_range * 100)) if _total_range > 0 else 50
@@ -7608,7 +7642,7 @@ with tab_d:
                     f"<div style='background:#1a1200;border:1px solid #fbbf2440;border-radius:8px;padding:8px 10px;text-align:center'>"
                     f"<div style='font-size:9px;color:#fbbf24;font-weight:700;margin-bottom:4px'>🚀 2차 익절 / 추격모드 ({'+' if _pos['t2_pct']>=0 else ''}{_pos['t2_pct']:.1f}%)</div>"
                     f"<div style='font-size:15px;font-weight:900;color:#fbbf24'>{_unit}{_fmt_p(_t2_p)}</div>"
-                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'🎯 추격 활성' if _trail else ('남은거리 ' + str(round(_dist_t2, 2)) + '%')}</div>"
+                    f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{'📈 추가매집 검토' if _t2_hit else ('남은거리 ' + str(round(_dist_t2, 2)) + '%')}</div>"
                     f"</div>"
                     f"</div>"
                     f"<div style='margin-bottom:4px'>"
