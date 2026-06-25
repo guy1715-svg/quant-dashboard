@@ -5248,28 +5248,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 import traceback; st.code(traceback.format_exc())
 
     # ══════════════════════════════════════════
-    # 🔥 AI 파라미터 자동 최적화 섹션
+    # ⚙️ 고급 스캔 설정 (Progressive Disclosure — 기본 닫힘)
     # ══════════════════════════════════════════
-    with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward)", expanded=False):
-        # ETF 유니버스 선택 시 즉시 비활성 안내 (스캔 전 사전 경고)
-        _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
-                         or "미국 ETF" in st.session_state.get("scanner_market", ""))
-        if _etf_mode_now:
-            st.info("ℹ️ **ETF 모드에서는 AI 최적화가 적용되지 않습니다.** "
-                    "ETF는 전용 스코어링(MA200·RSI·거래량)으로만 평가됩니다. "
-                    "개별주(국장 통합/NASDAQ 100) 선택 시 활성화됩니다.")
-        st.markdown("""
-**Walk-Forward Grid Search** — cond5(5일 누적 수익률 하한)와 cond6(거래량 비율 상한)을
-최근 6개월 백테스트로 자동 튜닝합니다.
+    with st.expander("⚙️ 고급 스캔 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
 
-| 설정 | 범위 |
-|---|---|
-| cond5 탐색 | 5% ~ 15% (1% 단위) |
-| cond6 탐색 | 20% ~ 50% (5% 단위) |
-| In-sample 윈도우 | 4개월 |
-| Out-of-sample 검증 | 2개월 |
-| MDD 필터 | 10% 초과 파라미터 자동 제외 |
-        """)
+        # ── 프리셋 버튼 ──────────────────────────────────────────────────
+        st.markdown("##### ⚡ 전략 프리셋")
+        _pr1, _pr2, _pr3, _pr4 = st.columns(4)
 
         _opt_col1, _opt_col2, _opt_col3 = st.columns([2, 1, 1])
         with _opt_col1:
@@ -5484,7 +5469,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         st.session_state['f_bb']    = b
         st.session_state['f_align'] = a
 
-    # ETF 유니버스 선택 시 프리셋 UI 비활성 안내
+    # ── 고급 설정 expander 내부 UI ──────────────────────────────────────
     _preset_etf_lock = ("국내 ETF" in st.session_state.get("scanner_market", "")
                         or "미국 ETF" in st.session_state.get("scanner_market", ""))
     if _preset_etf_lock:
@@ -5503,19 +5488,44 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                    type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
         _apply_preset("custom"); st.rerun()
 
-    # 프리셋 설명
     _preset_desc = {
-        "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발 (많이 빠진 종목의 반등)",
-        "trend":  "📈 추세매매 — 거래량 폭발 + MACD 골든크로스 + 정배열 (상승 추세 탑승)",
-        "bottom": "🎯 바닥확인 — 거래량 폭발 + MACD 골든크로스 + BB 하단 (바닥 전환)",
-        "custom": "⚙️ 직접설정 — 조건을 직접 선택",
+        "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발",
+        "trend":  "📈 추세매매 — MACD 골든크로스 + 정배열 + 거래량",
+        "bottom": "🎯 바닥확인 — RSI + MACD + BB 하단 + 거래량",
+        "custom": "⚙️ 직접설정 — 아래 체크박스로 조건 선택",
     }
     if st.session_state.scan_preset and not _preset_etf_lock:
         st.info(_preset_desc[st.session_state.scan_preset])
 
     st.divider()
+    # ── 필터 체크박스 (직접설정 시 활성) ────────────────────────────────
+    st.markdown("##### 🎯 상세 필터 조건")
+    _preset = st.session_state.scan_preset
+    if 'f_rsi'   not in st.session_state: st.session_state['f_rsi']   = True
+    if 'f_vol'   not in st.session_state: st.session_state['f_vol']   = True
+    if 'f_macd'  not in st.session_state: st.session_state['f_macd']  = False
+    if 'f_bb'    not in st.session_state: st.session_state['f_bb']    = False
+    if 'f_align' not in st.session_state: st.session_state['f_align'] = False
+    _disabled = _preset != "custom" and _preset is not None
+    _fx1, _fx2 = st.columns(2)
+    with _fx1:
+        st.checkbox("RSI 과매도 (≤35)",      disabled=_disabled, key="f_rsi")
+        st.checkbox("거래량 폭발 (≥150%)",   disabled=_disabled, key="f_vol")
+        st.checkbox("MACD 골든크로스",        disabled=_disabled, key="f_macd")
+    with _fx2:
+        st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
+        st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
 
-    # ── 스캔 설정 ──
+    st.divider()
+    # ── AI 파라미터 자동 최적화 ─────────────────────────────────────────
+    st.markdown("##### 🔥 AI 파라미터 자동 최적화 (Walk-Forward)")
+    _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
+                     or "미국 ETF" in st.session_state.get("scanner_market", ""))
+    if _etf_mode_now:
+        st.info("ℹ️ ETF 모드에서는 AI 최적화가 적용되지 않습니다. "
+                "개별주(국장 통합/NASDAQ 100) 선택 시 활성화됩니다.")
+
+    # ── 스캔 설정 — 메인 화면에 3가지만 노출 (Progressive Disclosure) ──
     _SC_OPTS = [
         "🇰🇷 국장 통합 (거래대금 상위 200)",
         "🇺🇸 미장 핵심 (NASDAQ 100)",
@@ -5526,62 +5536,49 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     if st.session_state.get("scanner_market") not in _SC_OPTS:
         st.session_state["scanner_market"] = _SC_OPTS[0]
 
-    _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
-    with _sc_col1:
-        st.markdown("**📋 스캔 대상**")
+    # ─ 메인 조작부: 시장 선택 + 종목 수 + 스캔 버튼만 ─
+    _mc1, _mc2 = st.columns([3, 1])
+    with _mc1:
         market_type = st.selectbox(
-            "시장",
+            "🌏 스캔 대상 시장",
             _SC_OPTS,
             key="scanner_market",
         )
-        scan_mode = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
-        top_n = st.slider("스캔 종목 수", 20, 300, 100, key="scanner_topn")
-        st.info("V9.8: S/A/B 등급제 · 거래대금 상위 동적 풀 · 레짐 감지")
+    with _mc2:
+        top_n = st.slider("종목 수", 20, 300, 100, key="scanner_topn")
 
-    with _sc_col2:
-        st.markdown("**🎯 필터 조건**")
-        _preset = st.session_state.scan_preset
-        # 초기값 (프리셋 미선택 시)
-        if 'f_rsi'   not in st.session_state: st.session_state['f_rsi']   = True
-        if 'f_vol'   not in st.session_state: st.session_state['f_vol']   = True
-        if 'f_macd'  not in st.session_state: st.session_state['f_macd']  = False
-        if 'f_bb'    not in st.session_state: st.session_state['f_bb']    = False
-        if 'f_align' not in st.session_state: st.session_state['f_align'] = False
+    scan_mode = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
 
-        _disabled = _preset != "custom" and _preset is not None
+    # session_state에서 필터값 읽기 (고급 설정 expander가 닫혀있어도 유지됨)
+    use_rsi   = st.session_state.get('f_rsi',   True)
+    use_vol   = st.session_state.get('f_vol',   True)
+    use_macd  = st.session_state.get('f_macd',  False)
+    use_bb    = st.session_state.get('f_bb',    False)
+    use_align = st.session_state.get('f_align', False)
 
-        st.checkbox("RSI 과매도 (≤35)",      disabled=_disabled, key="f_rsi")
-        st.checkbox("거래량 폭발 (≥150%)",   disabled=_disabled, key="f_vol")
-        st.checkbox("MACD 골든크로스",        disabled=_disabled, key="f_macd")
-        st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
-        st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
+    _is_us = "미장" in market_type or "미국 ETF" in market_type
+    # 시장 전환 시 가격 필터 자동 리셋
+    _prev_market = st.session_state.get('_scanner_prev_market', '')
+    if _prev_market != market_type:
+        st.session_state['f_minp'] = 1 if _is_us else 5000
+        st.session_state['f_maxp'] = 100000 if _is_us else 2000000
+        st.session_state['_scanner_prev_market'] = market_type
+    min_price = st.session_state.get('f_minp', 1 if _is_us else 5000)
+    max_price = st.session_state.get('f_maxp', 100000 if _is_us else 2000000)
+    use_gemini_scan = st.session_state.get('f_gemini', False)
 
-        # disabled 여부와 관계없이 session_state에서 직접 읽음 (Streamlit disabled 버그 우회)
-        use_rsi   = st.session_state['f_rsi']
-        use_vol   = st.session_state['f_vol']
-        use_macd  = st.session_state['f_macd']
-        use_bb    = st.session_state['f_bb']
-        use_align = st.session_state['f_align']
-
-    with _sc_col3:
-        st.markdown("**⚙️ 추가 설정**")
-        _is_us = "미장" in market_type or "미국 ETF" in market_type
-        # 시장 전환 시 가격 필터 자동 리셋
-        _prev_market = st.session_state.get('_scanner_prev_market', '')
-        if _prev_market != market_type:
-            st.session_state['f_minp'] = 1 if _is_us else 5000
-            st.session_state['f_maxp'] = 100000 if _is_us else 2000000
-            st.session_state['_scanner_prev_market'] = market_type
-        st.caption("💡 미국 선택 시 달러 기준 자동 적용")
-        min_price = st.number_input(
-            f"최소 주가({'$' if _is_us else '원'})",
-            value=1 if _is_us else 5000,
-            step=1 if _is_us else 1000, key="f_minp")
-        max_price = st.number_input(
-            f"최대 주가({'$' if _is_us else '원'})",
-            value=100000 if _is_us else 2000000,
-            step=100 if _is_us else 10000, key="f_maxp")
-        use_gemini_scan = st.checkbox("Gemini 분석 포함", value=False, key="f_gemini")
+    # 가격 필터 — key 유지용 (label 숨김, 고급 설정 expander 안에서 관리)
+    _hidden_mp = st.number_input(
+        f"최소 주가({'$' if _is_us else '원'})",
+        value=st.session_state.get('f_minp', 1 if _is_us else 5000),
+        step=1 if _is_us else 1000, key="f_minp", label_visibility="collapsed")
+    _hidden_mx = st.number_input(
+        f"최대 주가({'$' if _is_us else '원'})",
+        value=st.session_state.get('f_maxp', 100000 if _is_us else 2000000),
+        step=100 if _is_us else 10000, key="f_maxp", label_visibility="collapsed")
+    min_price = float(_hidden_mp)
+    max_price = float(_hidden_mx)
+    use_gemini_scan = st.session_state.get('f_gemini', False)
 
     # ── 선택 즉시 표시되는 스캔 대상 안내 ──
     _SC_META = {
@@ -6533,12 +6530,48 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _s_c = sum(1 for _x in _p_list if 'S등급' in str(_x.get('등급','')))
         _a_c = sum(1 for _x in _p_list if 'A등급' in str(_x.get('등급','')))
         _b_c = sum(1 for _x in _p_list if 'B등급' in str(_x.get('등급','')))
-        st.success(f"✅ {len(_p_list)}개 발굴! 🥇S등급 {_s_c}개 · 🎯A등급 {_a_c}개 · 🔎B등급 {_b_c}개")
+
+        # ══════════════════════════════════════════════════════
+        # 🎯 액션 브리핑 패널 — 매수 가능 종목 즉각 표시
+        # ══════════════════════════════════════════════════════
+        # '3일 연속 & S/A등급' 교집합 — 스캐너 streak_map 참조
+        _streak_now = st.session_state.get('pension_streak_map', {})
+        _action_cnt = sum(
+            1 for _x in _p_list
+            if _streak_now.get(str(_x['ticker']), 1) >= 3
+            and ('S등급' in str(_x.get('등급','')) or 'A등급' in str(_x.get('등급','')))
+        )
+        _sa_cnt = _s_c + _a_c
+
+        if _action_cnt > 0:
+            _brief_bg    = "rgba(52,211,153,0.10)"
+            _brief_border = "rgba(52,211,153,0.50)"
+            _brief_color  = "#34d399"
+            _brief_icon   = "🔥"
+            _brief_msg    = f"오늘 사격 가능 (🟢 3일연속 & S/A등급): <b style='font-size:22px;color:#34d399'>{_action_cnt}개</b>"
+        else:
+            _brief_bg    = "rgba(148,163,184,0.06)"
+            _brief_border = "rgba(148,163,184,0.25)"
+            _brief_color  = "#64748b"
+            _brief_icon   = "📋"
+            _brief_msg    = f"사격 대기 중 (3일연속 & S/A등급 0개) — S/A합계 {_sa_cnt}개, 내일 재확인"
+
+        st.markdown(
+            f"<div style='background:{_brief_bg};border:2px solid {_brief_border};"
+            f"border-radius:14px;padding:16px 22px;margin:0 0 14px 0'>"
+            f"<div style='font-size:13px;font-weight:800;color:{_brief_color}'>"
+            f"{_brief_icon} {_brief_msg}</div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:6px'>"
+            f"총 발굴: {len(_p_list)}개 &nbsp;|&nbsp; "
+            f"🥇S등급 {_s_c}개 &nbsp;·&nbsp; 🎯A등급 {_a_c}개 &nbsp;·&nbsp; 🔎B등급 {_b_c}개</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
         # 전체 추가 버튼
         _new_items = [i for i in _p_list if i['ticker'] not in _sc_ids]
         if _new_items:
-            if st.button(f"⭐ 전체 {len(_new_items)}개 사이드바 추가", key="bulk_add_btn",
+            if st.button(f"⭐ 전체 {len(_new_items)}개 관심종목 추가", key="bulk_add_btn",
                          use_container_width=True, type="primary"):
                 _added_cnt = sum(1 for _it in _new_items if add_ticker(_it['ticker'], _it['name']))
                 if _added_cnt:
@@ -6549,57 +6582,103 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
         st.divider()
 
-        # ── 콤팩트 스코어 그리드 (C1~C6 한눈에) ──
-        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:8px'>📊 발굴 종목 스코어 카드 — C1~C6 조건 현황</div>", unsafe_allow_html=True)
-        _grid_html = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:16px'>"
-        for _gi, _gitem in enumerate(_p_list[:20]):
-            _gcond = _gitem.get('조건', '')
-            _ggrd  = _gitem.get('등급', '')
-            _gsc   = _gitem.get('score', 0)
-            _gchg  = _gitem.get('등락(%)', 0)
-            _gchg_c = "#ef4444" if _gchg > 0 else "#3b82f6"
-            _gg_c  = "#ffd166" if 'S등급' in _ggrd else "#3b82f6" if 'A등급' in _ggrd else "#10b981" if 'B등급' in _ggrd else "#64748b"
-            # C1~C6 파싱
-            def _cx(cond_str, cx): return "✅" if f"C{cx}✅" in cond_str else "❌"
-            _is_etf_card = _gitem['ticker'] in _ETF_TICKERS_SET if '_ETF_TICKERS_SET' in dir() else False
-            _is_wl_g = _gitem['ticker'] in _sc_ids
-            if _is_etf_card:
-                # ETF 카드: MA200 / RSI / Vol 3축 표시
-                _etf_badge = "<span style='background:#1e3a5f;color:#60a5fa;font-size:9px;padding:1px 6px;border-radius:8px;margin-left:4px'>ETF</span>"
-                _cond_grid = (
-                    f"<div style='font-size:9px;color:#64748b;margin-top:4px'>{_gitem.get('조건','')[:60]}</div>"
-                )
-            else:
-                _etf_badge = ""
-                _c1 = _cx(_gcond,1); _c2 = _cx(_gcond,2); _c3 = _cx(_gcond,3)
-                _c4 = _cx(_gcond,4); _c5 = _cx(_gcond,5); _c6 = _cx(_gcond,6)
-                _cond_grid = (
-                    f"<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:10px;text-align:center'>"
-                    f"<div style='color:#64748b'>C1<br>{_c1}</div>"
-                    f"<div style='color:#64748b'>C2<br>{_c2}</div>"
-                    f"<div style='color:#64748b'>C3<br>{_c3}</div>"
-                    f"<div style='color:#64748b'>C4<br>{_c4}</div>"
-                    f"<div style='color:#64748b'>C5<br>{_c5}</div>"
-                    f"<div style='color:#64748b'>C6<br>{_c6}</div>"
+        # ══════════════════════════════════════════════════════
+        # 📊 핵심 5컬럼 압축 메인 테이블 (Pandas Styler 적용)
+        # ══════════════════════════════════════════════════════
+        _streak_now = st.session_state.get('pension_streak_map', {})
+
+        def _streak_badge(tk):
+            s = _streak_now.get(str(tk), 1)
+            return "🟢 3일연속" if s >= 3 else "🟡 2일연속" if s == 2 else "⚪ 1일"
+
+        _display_rows = []
+        for _x in _p_list:
+            _tk = _x['ticker']
+            _chg = _x.get('등락(%)', 0)
+            _chg_str = f"{'▲' if _chg>0 else '▼'}{abs(_chg):.1f}%"
+            _display_rows.append({
+                '종목명':   f"{_x['name']} ({_tk})",
+                '현재가':   f"{_x.get('현재가',0):,.0f}",
+                '등락률':   _chg_str,
+                '연속등장': _streak_badge(_tk),
+                '등급':     _x.get('등급', ''),
+                # 스타일 판단용 내부 키 (표시 안 됨)
+                '_grade':   _x.get('등급', ''),
+                '_streak':  _streak_now.get(str(_tk), 1),
+                '_chg':     _chg,
+            })
+
+        _disp_df = pd.DataFrame(_display_rows)
+
+        def _row_style(row):
+            g  = row.get('_grade', '')
+            sk = row.get('_streak', 1)
+            # 강조: S등급 or 3일연속 → 연한 형광 녹색
+            if 'S등급' in str(g) or sk >= 3:
+                return ['background-color:rgba(52,211,153,0.10);color:#d1fae5']*len(row)
+            # 축소: B등급 or 1일 → 회색 dim
+            if 'B등급' in str(g) or sk == 1:
+                return ['color:#475569']*len(row)
+            return ['']*len(row)
+
+        _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
+        st.dataframe(
+            _disp_df[_visible_cols + ['_grade', '_streak', '_chg']]
+            .style
+            .apply(_row_style, axis=1)
+            .hide(subset=['_grade', '_streak', '_chg'], axis='columns'),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ══════════════════════════════════════════════════════
+        # 🔎 종목별 상세 스코어 — expander로 은닉
+        # ══════════════════════════════════════════════════════
+        with st.expander("🔎 종목별 상세 스코어 데이터 (C1~C6 · RSI · CMF · ATR)", expanded=False):
+            _grid_html = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:16px'>"
+            for _gi, _gitem in enumerate(_p_list[:20]):
+                _gcond = _gitem.get('조건', '')
+                _ggrd  = _gitem.get('등급', '')
+                _gsc   = _gitem.get('score', 0)
+                _gchg  = _gitem.get('등락(%)', 0)
+                _gchg_c = "#ef4444" if _gchg > 0 else "#3b82f6"
+                _gg_c  = "#ffd166" if 'S등급' in _ggrd else "#3b82f6" if 'A등급' in _ggrd else "#10b981" if 'B등급' in _ggrd else "#64748b"
+                def _cx(cond_str, cx): return "✅" if f"C{cx}✅" in cond_str else "❌"
+                _is_etf_card = _gitem['ticker'] in _ETF_TICKERS_SET if '_ETF_TICKERS_SET' in dir() else False
+                _is_wl_g = _gitem['ticker'] in _sc_ids
+                if _is_etf_card:
+                    _etf_badge = "<span style='background:#1e3a5f;color:#60a5fa;font-size:9px;padding:1px 6px;border-radius:8px;margin-left:4px'>ETF</span>"
+                    _cond_grid = f"<div style='font-size:9px;color:#64748b;margin-top:4px'>{_gitem.get('조건','')[:60]}</div>"
+                else:
+                    _etf_badge = ""
+                    _c1=_cx(_gcond,1);_c2=_cx(_gcond,2);_c3=_cx(_gcond,3)
+                    _c4=_cx(_gcond,4);_c5=_cx(_gcond,5);_c6=_cx(_gcond,6)
+                    _cond_grid = (
+                        f"<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:10px;text-align:center'>"
+                        f"<div style='color:#64748b'>C1<br>{_c1}</div>"
+                        f"<div style='color:#64748b'>C2<br>{_c2}</div>"
+                        f"<div style='color:#64748b'>C3<br>{_c3}</div>"
+                        f"<div style='color:#64748b'>C4<br>{_c4}</div>"
+                        f"<div style='color:#64748b'>C5<br>{_c5}</div>"
+                        f"<div style='color:#64748b'>C6<br>{_c6}</div>"
+                        f"</div>"
+                    )
+                _grid_html += (
+                    f"<div style='background:#0d1117;border:1px solid {_gg_c}30;border-radius:10px;padding:10px 12px'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
+                    f"<span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_gitem['name'][:10]}{_etf_badge}</span>"
+                    f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:1px 8px;border-radius:12px'>{_gsc}점</span>"
                     f"</div>"
+                    f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>{_gitem['ticker']} | "
+                    f"<span style='color:{_gchg_c}'>{'▲' if _gchg>0 else '▼'}{abs(_gchg):.1f}%</span>"
+                    f" | 5일 {_gitem.get('5일수익률',0):+.1f}%</div>"
+                    + _cond_grid +
+                    f"<div style='font-size:10px;color:{_gg_c};margin-top:6px'>{_ggrd}"
+                    + ("&nbsp;<span style='color:#34d399'>★ 관심</span>" if _is_wl_g else "") +
+                    "</div></div>"
                 )
-            _grid_html += (
-                f"<div style='background:#0d1117;border:1px solid {_gg_c}30;border-radius:10px;padding:10px 12px'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
-                f"<span style='font-weight:700;font-size:12px;color:#f0f4ff'>{_gitem['name'][:10]}{_etf_badge}</span>"
-                f"<span style='background:#1e293b;color:#fbbf24;font-size:11px;padding:1px 8px;border-radius:12px'>{_gsc}점</span>"
-                f"</div>"
-                f"<div style='font-size:10px;color:#64748b;margin-bottom:6px'>{_gitem['ticker']} &nbsp;|&nbsp; "
-                f"<span style='color:{_gchg_c}'>{'▲' if _gchg>0 else '▼'}{abs(_gchg):.1f}%</span>"
-                f"&nbsp;|&nbsp; {_gitem.get('5일수익률',0):+.1f}%</div>"
-                + _cond_grid +
-                f"<div style='font-size:10px;color:{_gg_c};margin-top:6px'>{_ggrd}"
-                + ("&nbsp;<span style='color:#34d399'>★ 관심</span>" if _is_wl_g else "") +
-                "</div>"
-                f"</div>"
-            )
-        _grid_html += "</div>"
-        st.markdown(_grid_html, unsafe_allow_html=True)
+            _grid_html += "</div>"
+            st.markdown(_grid_html, unsafe_allow_html=True)
 
         # ── V9.7 사이드 패널 Drawer — 좌: 목록 / 우: 상세 분석 ──
         st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>⚡ 종목 선택 → 우측 패널에서 즉시 분석</div>", unsafe_allow_html=True)
