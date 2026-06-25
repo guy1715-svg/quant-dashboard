@@ -187,10 +187,44 @@ def _fb_ref(path: str):
 # ══════════════════════════════════════════
 # 3거래일 연속 1위 추적기 (Whipsaw 방지)
 # ══════════════════════════════════════════
+import json as _json_tracker
+import os as _os_tracker
+
+_LOCAL_TRACKER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "rotation_3day_tracker.json"
+)
+
+
+def _local_tracker_read() -> dict:
+    """로컬 JSON 백업에서 추적 데이터 읽기. 파일 없거나 파싱 실패 시 {} 반환."""
+    try:
+        with open(_LOCAL_TRACKER_PATH, "r", encoding="utf-8") as _f:
+            return _json_tracker.load(_f)
+    except (FileNotFoundError, _json_tracker.JSONDecodeError, OSError):
+        return {}
+
+
+def _local_tracker_write(data: dict) -> None:
+    """로컬 JSON 백업에 추적 데이터 덮어쓰기. 쓰기 실패는 조용히 무시."""
+    try:
+        with open(_LOCAL_TRACKER_PATH, "w", encoding="utf-8") as _f:
+            _json_tracker.dump(data, _f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _get_rotation_day_count(top1_ticker: str) -> dict:
     """
-    오늘의 1위 ETF 티커를 Firebase에 날짜 단위(1일 1회 Lock)로 누적 기록하고,
-    연속 1위 일차(1~3)를 계산해 반환합니다.
+    오늘의 1위 ETF 티커를 Firebase(1순위) + 로컬 JSON(폴백)에 날짜 단위(1일 1회 Lock)로
+    누적 기록하고, 연속 1위 일차(1~3)를 계산해 반환합니다.
+
+    저장소 우선순위:
+      1) Firebase /rotation_3day_tracker  (설정된 경우)
+      2) rotation_3day_tracker.json       (Firebase 미설정 or 오류 시 자동 폴백)
+
+    쓰기는 양쪽에 항상 동시 수행(듀얼 쓰기) — Firebase 장애 시에도 로컬 JSON이
+    카운트를 보존하므로 휩쏘 방어 로직이 마비되지 않음.
 
     반환 dict:
       count     (int)  : 현재 연속 1위 일차 (1 / 2 / 3)
@@ -199,7 +233,7 @@ def _get_rotation_day_count(top1_ticker: str) -> dict:
       is_locked (bool) : True = 오늘 이미 기록 완료 (날짜 Lock 적용 중)
 
     날짜 Lock 원칙:
-      - last_date == 오늘 이면 Firebase 쓰기 없이 저장값 그대로 반환
+      - last_date == 오늘 이면 쓰기 없이 저장값 그대로 반환
         → 장중 버튼 수십 번 눌러도 count 가 올라가지 않음
       - last_date 가 오늘이 아니고 ticker 동일 + 5 캘린더일 이내 → count + 1 (최대 3)
       - ticker 가 바뀌었거나 5일 초과 공백 → count = 1 (강제 리셋)
@@ -207,8 +241,11 @@ def _get_rotation_day_count(top1_ticker: str) -> dict:
     import datetime as _dt
     _kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).strftime("%Y-%m-%d")
 
-    _ref  = _fb_ref("/rotation_3day_tracker")
-    _data = _ref.get() or {}
+    # ── [하이브리드 READ] Firebase 우선, 실패/비설정 시 로컬 JSON 폴백 ──
+    _ref        = _fb_ref("/rotation_3day_tracker")
+    _fb_data    = _ref.get()          # NullRef.get() → None
+    _use_local  = (_fb_data is None)  # Firebase 미설정 or 네트워크 오류
+    _data       = _fb_data if not _use_local else _local_tracker_read()
 
     _stored_ticker = str(_data.get("ticker", ""))
     _stored_count  = int(_data.get("count", 0))
@@ -237,7 +274,10 @@ def _get_rotation_day_count(top1_ticker: str) -> dict:
 
     _new_count = min(_stored_count + 1, 3) if _is_consecutive else 1
     _new_data  = {"ticker": top1_ticker, "count": _new_count, "last_date": _kst_today}
-    _ref.set(_new_data)
+
+    # ── [듀얼 WRITE] Firebase + 로컬 JSON 동시 저장 ──
+    _ref.set(_new_data)               # NullRef.set() → 조용히 무시
+    _local_tracker_write(_new_data)   # 항상 로컬 JSON에도 덮어씀
 
     return {
         "count": _new_count,
