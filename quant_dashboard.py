@@ -5231,18 +5231,17 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         with _pg_btn_cols[_bi % 3]:
                             if st.button(_btn_label, key=f"pg_wl_{_row['종목코드']}",
                                          use_container_width=True):
-                                # 관심종목에 추가
-                                _wl_ref = _fb_ref("/watchlist")
-                                _wl_now = _wl_ref.get() or {}
-                                _tc = str(_row['종목코드'])
-                                if _tc not in _wl_now:
-                                    _wl_now[_tc] = {"ticker": _tc, "name": _row['종목명'],
-                                                    "added": "pension_scanner"}
-                                    _wl_ref.set(_wl_now)
+                                _tc  = str(_row['종목코드'])
+                                _tnm = str(_row['종목명'])
+                                # 공식 add_ticker() 사용 — session_state + Firebase(/quant_watchlist) 동시 반영
+                                _added = add_ticker(_tc, _tnm)
                                 # 분석탭 자동 입력
                                 st.session_state['analysis_ticker'] = _tc
                                 st.session_state['snipe_ticker_input'] = _tc
-                                st.success(f"✅ {_row['종목명']} → 관심종목 추가 완료! '개별종목 스나이핑' 탭으로 이동하세요.")
+                                if _added:
+                                    st.success(f"✅ {_tnm}({_tc}) → 관심종목 추가 완료!")
+                                else:
+                                    st.info(f"ℹ️ {_tnm}({_tc}) 이미 관심종목에 있습니다.")
 
             except Exception as _pg_err:
                 st.error(f"연기금 스캔 오류: {_pg_err}")
