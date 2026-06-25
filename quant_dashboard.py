@@ -5546,7 +5546,22 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     with _mc2:
         top_n = st.slider("종목 수", 20, 300, 100, key="scanner_topn")
 
-    scan_mode = st.radio("스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode")
+    # ── UI 동기화: 시장 선택에 따라 스캔 모드 자동 고정 ──────────────────
+    _market_forces_etf = ("국내 ETF" in market_type or "미국 ETF" in market_type)
+    _market_forces_stock = ("국장 통합" in market_type or "미장 핵심" in market_type)
+    if _market_forces_etf and st.session_state.get("scan_mode") != "🏦 ETF":
+        st.session_state["scan_mode"] = "🏦 ETF"
+    elif _market_forces_stock and st.session_state.get("scan_mode") == "🏦 ETF":
+        st.session_state["scan_mode"] = "📈 개별주"
+
+    scan_mode = st.radio(
+        "스캔 모드",
+        ["📈 개별주", "🏦 ETF", "🔀 통합"],
+        horizontal=True,
+        key="scan_mode",
+        disabled=(_market_forces_etf or _market_forces_stock),
+        help="시장 선택에 따라 자동 고정됩니다" if (_market_forces_etf or _market_forces_stock) else None,
+    )
 
     # session_state에서 필터값 읽기 (고급 설정 expander가 닫혀있어도 유지됨)
     use_rsi   = st.session_state.get('f_rsi',   True)
@@ -6383,9 +6398,14 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                     _price = float(df['종가'].iloc[-1])
                     if _price < min_price or _price > max_price: continue
 
-                    # 방어 로직 B: ETF 유니버스 선택 시 무조건 ETF 전용 스코어러 사용
-                    # _IS_ETF_UNIVERSE는 scan_btn 블록 최상단 Guardrail에서 결정됨
-                    _is_etf = _IS_ETF_UNIVERSE or (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
+                    # 이중 Guardrail: UI 라디오보다 실제 티커 소속이 우선
+                    # _IS_ETF_UNIVERSE(시장 드롭다운) 또는 ETF_TICKERS_SET 소속일 때만 ETF 엔진 사용
+                    # 개별주 유니버스에서 '🏦 ETF' 라디오를 선택해도 실제 ETF 티커가 아니면 차단
+                    _ticker_is_real_etf = ticker in _ETF_TICKERS_SET
+                    _is_etf = _IS_ETF_UNIVERSE or _ticker_is_real_etf
+                    # 라디오가 ETF인데 실제 ETF 티커가 아닌 경우 → 개별주 엔진으로 강제 전환
+                    if '🏦 ETF' in _scan_mode and not _ticker_is_real_etf and not _IS_ETF_UNIVERSE:
+                        _is_etf = False  # 개별주 엔진으로 분기
                     if _is_etf:
                         _ok, _meta = _etf_scorer(df, ticker)
                     else:
