@@ -5251,6 +5251,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     # 🔥 AI 파라미터 자동 최적화 섹션
     # ══════════════════════════════════════════
     with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward)", expanded=False):
+        # ETF 유니버스 선택 시 즉시 비활성 안내 (스캔 전 사전 경고)
+        _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
+                         or "미국 ETF" in st.session_state.get("scanner_market", ""))
+        if _etf_mode_now:
+            st.info("ℹ️ **ETF 모드에서는 AI 최적화가 적용되지 않습니다.** "
+                    "ETF는 전용 스코어링(MA200·RSI·거래량)으로만 평가됩니다. "
+                    "개별주(국장 통합/NASDAQ 100) 선택 시 활성화됩니다.")
         st.markdown("""
 **Walk-Forward Grid Search** — cond5(5일 누적 수익률 하한)와 cond6(거래량 비율 상한)을
 최근 6개월 백테스트로 자동 튜닝합니다.
@@ -5477,6 +5484,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         st.session_state['f_bb']    = b
         st.session_state['f_align'] = a
 
+    # ETF 유니버스 선택 시 프리셋 UI 비활성 안내
+    _preset_etf_lock = ("국내 ETF" in st.session_state.get("scanner_market", "")
+                        or "미국 ETF" in st.session_state.get("scanner_market", ""))
+    if _preset_etf_lock:
+        st.caption("🔒 ETF 모드: 프리셋은 ETF 스캔에 적용되지 않습니다 (스캔 시 자동 무시)")
+
     if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
                    type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
         _apply_preset("bounce"); st.rerun()
@@ -5497,7 +5510,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         "bottom": "🎯 바닥확인 — 거래량 폭발 + MACD 골든크로스 + BB 하단 (바닥 전환)",
         "custom": "⚙️ 직접설정 — 조건을 직접 선택",
     }
-    if st.session_state.scan_preset:
+    if st.session_state.scan_preset and not _preset_etf_lock:
         st.info(_preset_desc[st.session_state.scan_preset])
 
     st.divider()
@@ -5610,6 +5623,34 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
     if scan_btn:
         st.session_state.passed = []
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🛡️ GUARDRAIL: ETF 모드 — AI 최적화 & 프리셋 자동 무력화
+        # ETF는 _etf_scorer() 고정 로직으로만 채점. opt_best_cond와
+        # 프리셋 필터(f_rsi/f_vol/…)는 _v89_scanner(개별주 전용)에서만
+        # 의미가 있으므로, ETF 유니버스 선택 시 강제 바이패스.
+        # ══════════════════════════════════════════════════════════════════
+        _IS_ETF_UNIVERSE = ("국내 ETF" in market_type or "미국 ETF" in market_type)
+
+        if _IS_ETF_UNIVERSE:
+            # 방어 로직 A: AI 최적화 적용 여부 경고 + 무력화
+            _opt_applied = st.session_state.get("opt_applied", False)
+            _preset_on   = st.session_state.get("scan_preset") not in (None, "custom")
+            if _opt_applied or _preset_on:
+                st.warning(
+                    "⚠️ **ETF 모드 Guardrail 작동** — "
+                    "AI 파라미터 최적화(cond5/cond6) 및 전략 프리셋이 "
+                    "ETF 스캔에서 자동 무시됩니다. "
+                    "ETF는 전용 스코어링(MA200 · RSI 40~65 · 거래량 안정성)으로만 평가됩니다."
+                )
+            # 방어 로직 A: 해당 세션의 opt/프리셋 변수를 로컬 레벨에서 바이패스
+            use_rsi   = False
+            use_vol   = False
+            use_macd  = False
+            use_bb    = False
+            use_align = False
+            # scan_preset을 None으로 덮어써서 프리셋 게이트가 동작 안 하게 함
+            st.session_state['scan_preset'] = None
 
         # 종목 리스트 — scanner_tickers.json 로드
         try:
@@ -6346,7 +6387,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                     _price = float(df['종가'].iloc[-1])
                     if _price < min_price or _price > max_price: continue
 
-                    _is_etf = (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
+                    # 방어 로직 B: ETF 유니버스 선택 시 무조건 ETF 전용 스코어러 사용
+                    # _IS_ETF_UNIVERSE는 scan_btn 블록 최상단 Guardrail에서 결정됨
+                    _is_etf = _IS_ETF_UNIVERSE or (ticker in _ETF_TICKERS_SET) or ('🏦 ETF' in _scan_mode)
                     if _is_etf:
                         _ok, _meta = _etf_scorer(df, ticker)
                     else:
