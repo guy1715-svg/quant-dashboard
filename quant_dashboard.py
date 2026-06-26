@@ -7211,25 +7211,59 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         else:
             _card_col = st.container()
         with _card_col:
+            # ── 5-컬럼 압축 카드 (메인 뷰) ──
+            _rank_score = row.get('종합점수', 0)
+            _adx_val    = row.get('ADX', 0)
+            # 랭킹 기반 4-state 레이블
+            if _adx_val < 25:
+                _rank_state = "🚨 정리검토"
+            elif _i == 0:
+                _rank_state = "📈 추가매집 검토" if _consec_1 >= 3 else "🛡️ 보유유지"
+            elif _i <= 2:
+                _rank_state = "🛡️ 보유유지"
+            elif _i == 3:
+                _rank_state = "✂️ 일부축소"
+            else:
+                _rank_state = "🚨 정리검토"
+
+            _state_c = (
+                "#ef4444" if "정리검토" in _rank_state else
+                "#f97316" if "일부축소" in _rank_state else
+                "#34d399" if "추가매집" in _rank_state else
+                "#64748b"
+            )
             st.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border_color};border-radius:10px;"
-                f"padding:14px 18px;margin-bottom:4px'>"
+                f"padding:12px 18px;margin-bottom:4px'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                f"<div><b style='font-size:15px'>{_rank}{_rank_change_html} {row['ETF명']}</b>"
+                f"<div>"
+                f"<b style='font-size:15px'>{_rank}{_rank_change_html} {row['ETF명']}</b>"
                 f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
-                f"{_info_icon}{_val_badge}{_tag}{_crown_badge}{_dot_bar}</div>"
+                f"{_info_icon}{_val_badge}{_tag}{_crown_badge}{_dot_bar}"
+                f"</div>"
                 f"<span style='color:{_cc};font-family:IBM Plex Mono'>{'▲' if row['등락(%)']>0 else '▼'}{abs(row['등락(%)']):+.2f}%</span>"
                 f"</div>"
-                f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>"
+                f"<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap;align-items:center'>"
                 f"<span style='font-size:12px;color:#94a3b8'>현재가 <b style='color:#f0f4ff'>{_price_str}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>ADX <b style='color:{_ac}'>{row.get('ADX',0)}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>RSI <b style='color:#f0f4ff'>{row.get('RSI',0)}</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>모멘텀 <b style='color:#f0f4ff'>{row.get('모멘텀(%)',0):+.1f}%</b></span>"
-                f"<span style='font-size:12px;color:#94a3b8'>정배열 <b>{row.get('정배열','')}</b></span>"
-                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{row.get('종합점수',0)}점</b></span>"
-                f"</div></div>",
+                f"<span style='font-size:12px;color:#fbbf24'>종합 <b style='font-size:15px'>{_rank_score}점</b></span>"
+                f"<span style='background:{_state_c}20;color:{_state_c};padding:3px 10px;"
+                f"border-radius:12px;font-size:11px;font-weight:700;border:1px solid {_state_c}50'>"
+                f"{_rank_state}</span>"
+                f"</div>"
+                f"</div>",
                 unsafe_allow_html=True
             )
+            # ── 백엔드 퀀트 지표 (Progressive Disclosure) ──
+            with st.expander(f"🔎 {row['ETF명']} 상세 지표", expanded=False):
+                _dc1, _dc2, _dc3 = st.columns(3)
+                _dc1.metric("ADX(14)", f"{row.get('ADX',0)}", help="25 미만 탈락")
+                _dc2.metric("RSI(14)", f"{row.get('RSI',0)}")
+                _dc3.metric("종합점수", f"{row.get('종합점수',0)}점")
+                _dc4, _dc5, _dc6 = st.columns(3)
+                _dc4.metric("MACD", row.get('MACD',''))
+                _dc5.metric("모멘텀(20일)", f"{row.get('모멘텀(%)',0):+.1f}%")
+                _dc6.metric("MA 정배열", row.get('정배열',''))
+                st.caption(f"Z-Score: {row.get('Z-Score',0)} | 거래량%: {row.get('거래량%',0)}")
 
             # ── 명칭 불일치 → st.error + 진입 차단 경고 ──
             if not _validated and _integrity_msg:
@@ -7577,6 +7611,14 @@ with tab_d:
                 else:
                     _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🛡️ 보유유지"
 
+                # 브리핑 패널용 상태 캐시 저장 (tab_d1에서 읽음)
+                st.session_state.setdefault('_live_pos_states', {})[_tk] = _status_label
+                st.session_state.setdefault('_live_pos_summary', {})[_tk] = {
+                    'name': _tk, 'cur': _cur_p, 'pnl': round(_pnl_pct, 2),
+                    'stop': _stop_p, 't1': _t1_p, 't2': _t2_p,
+                    'unit': '원' if _is_kr else '$', 'state': _status_label,
+                }
+
                 _pnl_c   = "#39ff14" if _pnl_pct >= 0 else "#ff003c"
                 _chg_c   = "#39ff14" if _chg_pct >= 0 else "#ff003c"
                 _currency = _pos.get('currency', 'KRW' if _is_kr else 'USD')
@@ -7716,7 +7758,74 @@ with tab_d:
             )
 
 with _tab_d1:
-    st.markdown("### 🔄 ETF 로테이션 종합 랭킹판")
+    st.markdown("### 🔄 ETF 로테이션 전략 관제탑")
+
+    # ══ 긴급 액션 브리핑 패널 ══════════════════════════════════════════════
+    _ps = st.session_state.get('_live_pos_summary', {})
+    _action_cnt = sum(
+        1 for _si in _ps.values()
+        if '정리검토' in _si.get('state', '') or '일부축소' in _si.get('state', '')
+    )
+    if _action_cnt > 0:
+        _brief_bg  = "#2a0505"; _brief_brd = "#ef4444"; _brief_ic = "⚠️"
+        _brief_msg = f"오늘 즉각 조치 필요 종목 <b style='font-size:22px;color:#ef4444'>{_action_cnt}개</b>"
+        _brief_sub = "아래 보유 현황 테이블을 확인하고 정리/축소 행동을 실행하세요."
+    else:
+        _brief_bg  = "#0d1117"; _brief_brd = "#1e293b"; _brief_ic = "✅"
+        _brief_msg = "오늘 조치 필요 종목 <b style='font-size:22px;color:#34d399'>0개</b>"
+        _brief_sub = "모든 보유 종목이 정상 궤도입니다. 추가 진입 기회를 탐색하세요."
+    st.markdown(
+        f"<div style='background:{_brief_bg};border:2px solid {_brief_brd};border-radius:14px;"
+        f"padding:16px 22px;margin-bottom:16px;display:flex;align-items:center;gap:16px'>"
+        f"<div style='font-size:32px'>{_brief_ic}</div>"
+        f"<div><div style='font-size:14px;color:#94a3b8;font-weight:700'>{_brief_msg}</div>"
+        f"<div style='font-size:12px;color:#64748b;margin-top:4px'>{_brief_sub}</div></div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 보유 포지션 5-컬럼 요약 테이블 ─────────────────────────────────────
+    if _ps:
+        _state_order = {"🚨 정리검토": 0, "✂️ 일부축소": 1, "📈 추가매집 검토": 2, "🛡️ 보유유지": 3}
+        _sum_rows = sorted(_ps.values(), key=lambda r: _state_order.get(r['state'], 9))
+        _sum_df = pd.DataFrame([{
+            '종목명': r['name'],
+            '현재가': f"{r['cur']:,.0f}{r['unit']}",
+            '수익률(%)': r['pnl'],
+            '🚦 현재 상태': r['state'],
+            '🎯 기준가': f"손절 {r['stop']:,.0f}{r['unit']} / 목표 {r['t1']:,.0f}{r['unit']}",
+        } for r in _sum_rows])
+
+        def _brief_row_style(row):
+            s = row.get('🚦 현재 상태', '')
+            if '정리검토' in s:
+                return ['background-color:rgba(239,68,68,0.12);color:#fca5a5'] * len(row)
+            if '일부축소' in s:
+                return ['background-color:rgba(249,115,22,0.10);color:#fdba74'] * len(row)
+            if '추가매집' in s:
+                return ['background-color:rgba(52,211,153,0.08);color:#6ee7b7'] * len(row)
+            return ['color:#475569'] * len(row)   # 보유유지: 흐린 회색
+
+        st.dataframe(
+            _sum_df.style.apply(_brief_row_style, axis=1),
+            use_container_width=True, hide_index=True,
+        )
+
+        with st.expander("🔎 개별 종목 상세 지표 및 백엔드 연산", expanded=False):
+            for _srow in _sum_rows:
+                _tk2 = _srow['name']
+                _adx2, _rsi2 = _get_adx_rsi_pos(_tk2, _tk2.isdigit() and len(_tk2) == 6)
+                st.markdown(
+                    f"**{_tk2}** — ADX: `{_adx2 or '?'}` | RSI: `{_rsi2 or '?'}` | "
+                    f"손절가: `{_srow['stop']:,.0f}{_srow['unit']}` | "
+                    f"1차목표: `{_srow['t1']:,.0f}{_srow['unit']}` | "
+                    f"2차목표: `{_srow['t2']:,.0f}{_srow['unit']}`"
+                )
+
+        st.divider()
+
+    # ── ETF 로테이션 종합 랭킹판 ─────────────────────────────────────────
+    st.markdown("#### 📊 ETF 로테이션 종합 랭킹판")
     st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
 
     # ── 전략 체크리스트 ── blank line 없는 단일 HTML 블록
