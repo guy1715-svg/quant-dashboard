@@ -7758,205 +7758,86 @@ with tab_d:
             )
 
 with _tab_d1:
-    st.markdown("### 🔄 ETF 로테이션 전략 관제탑")
-
-    # ══ 긴급 액션 브리핑 패널 ══════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════
+    # [영역 1] 액션 브리핑 — st.columns(3) 메트릭 3개
+    # ══════════════════════════════════════════════════════════════════════
     _ps = st.session_state.get('_live_pos_summary', {})
-    _action_cnt = sum(
-        1 for _si in _ps.values()
-        if '정리검토' in _si.get('state', '') or '일부축소' in _si.get('state', '')
+    _state_order = {"🚨 정리검토": 0, "✂️ 일부축소": 1, "📈 추가매집 검토": 2, "🛡️ 보유유지": 3}
+    _sum_rows = sorted(_ps.values(), key=lambda r: _state_order.get(r['state'], 9))
+
+    _total_pnl_pct = (
+        sum(r['pnl'] for r in _sum_rows) / len(_sum_rows) if _sum_rows else 0.0
     )
-    if _action_cnt > 0:
-        _brief_bg  = "#2a0505"; _brief_brd = "#ef4444"; _brief_ic = "⚠️"
-        _brief_msg = f"오늘 즉각 조치 필요 종목 <b style='font-size:22px;color:#ef4444'>{_action_cnt}개</b>"
-        _brief_sub = "아래 보유 현황 테이블을 확인하고 정리/축소 행동을 실행하세요."
-    else:
-        _brief_bg  = "#0d1117"; _brief_brd = "#1e293b"; _brief_ic = "✅"
-        _brief_msg = "오늘 조치 필요 종목 <b style='font-size:22px;color:#34d399'>0개</b>"
-        _brief_sub = "모든 보유 종목이 정상 궤도입니다. 추가 진입 기회를 탐색하세요."
-    st.markdown(
-        f"<div style='background:{_brief_bg};border:2px solid {_brief_brd};border-radius:14px;"
-        f"padding:16px 22px;margin-bottom:16px;display:flex;align-items:center;gap:16px'>"
-        f"<div style='font-size:32px'>{_brief_ic}</div>"
-        f"<div><div style='font-size:14px;color:#94a3b8;font-weight:700'>{_brief_msg}</div>"
-        f"<div style='font-size:12px;color:#64748b;margin-top:4px'>{_brief_sub}</div></div>"
-        f"</div>",
-        unsafe_allow_html=True,
+    _cnt_clear = sum(1 for r in _sum_rows if '정리검토' in r.get('state', ''))
+    _cnt_trim  = sum(1 for r in _sum_rows if '일부축소' in r.get('state', ''))
+
+    _bc1, _bc2, _bc3 = st.columns(3)
+    _bc1.metric(
+        "총 평균 수익률",
+        f"{_total_pnl_pct:+.2f}%",
+        delta=f"{len(_sum_rows)}종목 보유",
+    )
+    _bc2.metric(
+        "🚨 정리검토",
+        f"{_cnt_clear}종목",
+        delta="즉각 매도 검토" if _cnt_clear else "이상 없음",
+        delta_color="inverse" if _cnt_clear else "off",
+    )
+    _bc3.metric(
+        "✂️ 일부축소",
+        f"{_cnt_trim}종목",
+        delta="절반 익절 검토" if _cnt_trim else "이상 없음",
+        delta_color="inverse" if _cnt_trim else "off",
     )
 
-    # ── 보유 포지션 5-컬럼 요약 테이블 ─────────────────────────────────────
-    if _ps:
-        _state_order = {"🚨 정리검토": 0, "✂️ 일부축소": 1, "📈 추가매집 검토": 2, "🛡️ 보유유지": 3}
-        _sum_rows = sorted(_ps.values(), key=lambda r: _state_order.get(r['state'], 9))
+    # ══════════════════════════════════════════════════════════════════════
+    # [영역 2] 메인 행동 테이블 — 5컬럼 단일 Styler
+    # ══════════════════════════════════════════════════════════════════════
+    if _sum_rows:
         _sum_df = pd.DataFrame([{
-            '종목명': r['name'],
-            '현재가': f"{r['cur']:,.0f}{r['unit']}",
-            '수익률(%)': r['pnl'],
+            '종목명':      r['name'],
+            '현재가':      f"{r['cur']:,.0f}{r['unit']}",
+            '수익률(%)':   r['pnl'],
             '🚦 현재 상태': r['state'],
-            '🎯 기준가': f"손절 {r['stop']:,.0f}{r['unit']} / 목표 {r['t1']:,.0f}{r['unit']}",
+            '🎯 기준가':   f"손절 {r['stop']:,.0f} / 목표 {r['t1']:,.0f}{r['unit']}",
         } for r in _sum_rows])
 
-        def _brief_row_style(row):
+        def _tbl_row_style(row):
             s = row.get('🚦 현재 상태', '')
             if '정리검토' in s:
-                return ['background-color:rgba(239,68,68,0.12);color:#fca5a5'] * len(row)
+                return ['background-color:rgba(239,68,68,0.13);color:#fca5a5'] * len(row)
             if '일부축소' in s:
                 return ['background-color:rgba(249,115,22,0.10);color:#fdba74'] * len(row)
             if '추가매집' in s:
                 return ['background-color:rgba(52,211,153,0.08);color:#6ee7b7'] * len(row)
-            return ['color:#475569'] * len(row)   # 보유유지: 흐린 회색
+            return ['color:#475569'] * len(row)
 
         st.dataframe(
-            _sum_df.style.apply(_brief_row_style, axis=1),
+            _sum_df.style.apply(_tbl_row_style, axis=1),
             use_container_width=True, hide_index=True,
         )
+    else:
+        st.info("⚔️ 실전운용 탭에서 보유 종목을 등록하면 여기에 현황이 표시됩니다.")
 
-        with st.expander("🔎 개별 종목 상세 지표 및 백엔드 연산", expanded=False):
-            for _srow in _sum_rows:
-                _tk2 = _srow['name']
-                _adx2, _rsi2 = _get_adx_rsi_pos(_tk2, _tk2.isdigit() and len(_tk2) == 6)
-                st.markdown(
-                    f"**{_tk2}** — ADX: `{_adx2 or '?'}` | RSI: `{_rsi2 or '?'}` | "
-                    f"손절가: `{_srow['stop']:,.0f}{_srow['unit']}` | "
-                    f"1차목표: `{_srow['t1']:,.0f}{_srow['unit']}` | "
-                    f"2차목표: `{_srow['t2']:,.0f}{_srow['unit']}`"
-                )
+    # ══════════════════════════════════════════════════════════════════════
+    # [영역 3] 퀀트 엔진 백엔드 (평소 닫아둠)
+    # ══════════════════════════════════════════════════════════════════════
+    with st.expander("⚙️ 시스템 백엔드 데이터 및 상세 지표 (평소 닫아둠)", expanded=False):
 
+      # ── 개별 종목 ADX / RSI 원시값 ──
+      if _sum_rows:
+        for _srow in _sum_rows:
+            _tk2 = _srow['name']
+            _adx2, _rsi2 = _get_adx_rsi_pos(_tk2, _tk2.isdigit() and len(_tk2) == 6)
+            st.markdown(
+                f"**{_tk2}** — ADX: `{_adx2 or '?'}` | RSI: `{_rsi2 or '?'}` | "
+                f"손절가: `{_srow['stop']:,.0f}{_srow['unit']}` | "
+                f"1차목표: `{_srow['t1']:,.0f}{_srow['unit']}` | "
+                f"2차목표: `{_srow['t2']:,.0f}{_srow['unit']}`"
+            )
         st.divider()
 
-    # ── ETF 로테이션 종합 랭킹판 ─────────────────────────────────────────
-    st.markdown("#### 📊 ETF 로테이션 종합 랭킹판")
-    st.caption("ADX·RSI·MACD·Z-Score·모멘텀·거래량 6개 지표 종합 점수로 랭킹 산출. ADX 25 미만 탈락.")
-
-    # ── 전략 체크리스트 ── blank line 없는 단일 HTML 블록
-    _step = lambda icon, num, txt: (
-        f"<div style='display:flex;gap:6px;padding:3px 0;font-size:12px'>"
-        f"<span>{icon}</span>"
-        f"<span><span style='color:#f0f4ff;font-weight:700'>{num}단계</span>"
-        f"<span style='color:#94a3b8'> — {txt}</span></span>"
-        f"</div>"
-    )
-    _kr_steps = (
-        _step("🎯","1","랭킹판에서 종합점수 1위 확인 (ADX ≥ 25 필수)") +
-        _step("📱","2","증권사 앱에서 종목코드 검색 후 지정가 주문") +
-        _step("⏰","3","09:30 이후 진입 (09:00~10:30 변동성 금지)") +
-        _step("📋","4","관리 탭에서 페이퍼 트레이딩 기록")
-    )
-    _us_steps = (
-        _step("🎯","1","미장 ETF 1위 티커 확인 (QQQ·SOXX 등)") +
-        _step("💱","2","원화 → 달러 환전 후 해외주식 주문") +
-        _step("⏰","3","미국 정규장 23:30~06:00 또는 프리마켓 활용") +
-        _step("🧾","4","양도세 250만원 초과분 22% 고려")
-    )
-    _warn_step = lambda icon, txt: (
-        f"<div style='display:flex;gap:6px;padding:3px 0;font-size:12px;color:#94a3b8'>"
-        f"<span>{icon}</span><span>{txt}</span></div>"
-    )
-    _warn_items = (
-        _warn_step("🔁", "<span style='color:#fbbf24;font-weight:700'>스위칭</span>은 3거래일 연속 1위 ETF로만 — 매일 1위가 바뀌면 보류") +
-        _warn_step("⏳", "<span style='color:#fbbf24;font-weight:700'>최소 보유 기간 2주</span> — 잦은 스위칭은 수수료 손실 누적") +
-        _warn_step("📅", "<span style='color:#fbbf24;font-weight:700'>FOMC·CPI 이벤트 직전</span> 신규 진입 자제 (홈탭 캘린더 확인)") +
-        _warn_step("🇰🇷", "국장 ETF: 거래세 없음, 매매수수료만 발생") +
-        _warn_step("🇺🇸", "미장 ETF: 환전비용 + 수수료 + 양도세(250만원 초과 22%) 반드시 고려")
-    )
-    def _sig_card(bg, bd, label_c, label, desc, action):
-        return (
-            f"<div style='background:{bg};border:1px solid {bd};border-radius:8px;"
-            f"padding:8px 12px;font-size:11px'>"
-            f"<div style='color:{label_c};font-weight:700;margin-bottom:4px'>{label}</div>"
-            f"<div style='color:#94a3b8;line-height:1.6'>{desc}</div>"
-            f"<div style='color:#64748b;margin-top:4px'>{action}</div>"
-            f"</div>"
-        )
-    _sig_cards = (
-        _sig_card("#0a2a0a","#16a34a40","#16a34a","🟢 홀드","1~2위 유지, 점수차 15점 미만","→ 계속 보유") +
-        _sig_card("#2a1a00","#f59e0b40","#f59e0b","🟡 주의","3위 진입 또는 점수차 15점↑","→ 다음날 재확인") +
-        _sig_card("#2a0a0a","#ef444440","#ef4444","🔴 스위칭","4위 이하 또는 점수차 20점↑","→ 1위 ETF로 즉시 교체") +
-        _sig_card("#1a0a0a","#ef444460","#ef4444","⚫ 손절","매수가 대비 -7% 도달","→ 즉시 전량 매도") +
-        _sig_card("#1a0a0a","#ef444440","#f43f5e","🔴 ADX &lt; 25","추세 소멸 신호","→ 전량 매도 후 관망") +
-        _sig_card("#2a1500","#f9731640","#f97316","🟠 RSI ≥ 78","단기 과열 구간","→ 절반 익절")
-    )
-    st.markdown(
-        "<div style='background:#0d1117;border:1px solid #1e293b;border-radius:14px;padding:18px 22px;margin-bottom:14px'>"
-        "<div style='font-size:12px;font-weight:700;color:#64748b;margin-bottom:14px'>⚡ ETF 로테이션 전략 — 핵심 체크리스트</div>"
-        "<div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px'>"
-        "<div>"
-        "<div style='font-size:11px;font-weight:700;color:#3b82f6;margin-bottom:8px'>🇰🇷 국장 ETF 매수 절차</div>"
-        + _kr_steps +
-        "</div>"
-        "<div>"
-        "<div style='font-size:11px;font-weight:700;color:#a78bfa;margin-bottom:8px'>🇺🇸 미장 ETF 매수 절차</div>"
-        + _us_steps +
-        "</div>"
-        "</div>"
-        "<div style='border-top:1px solid #1e293b;padding-top:14px;margin-bottom:14px'>"
-        "<div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:10px'>🔄 매도/스위칭 신호 기준</div>"
-        "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>"
-        + _sig_cards +
-        "</div>"
-        "</div>"
-        "<div style='border-top:1px solid #1e293b;padding-top:12px'>"
-        "<div style='font-size:11px;font-weight:700;color:#64748b;margin-bottom:8px'>⚠️ 실전 주의사항</div>"
-        + _warn_items +
-        "</div>"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    # ── V9.7 실전 지지선 시각화 모듈 ──
-    try:
-        from datetime import datetime as _dt_sr
-        _sr_market = st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')
-        _sr_list_key = '379800' if '국장' in str(_sr_market) else 'SPY'
-        _sr_df = fetch_ohlcv(_sr_list_key if '국장' in str(_sr_market) else _sr_list_key, 60)
-        if _sr_df is not None and len(_sr_df) >= 20:
-            _sr_cl = _sr_df['Close'] if 'Close' in _sr_df.columns else _sr_df.iloc[:, 3]
-            _sr_hi = _sr_df['High'] if 'High' in _sr_df.columns else _sr_df.iloc[:, 1]
-            _sr_lo = _sr_df['Low']  if 'Low'  in _sr_df.columns else _sr_df.iloc[:, 2]
-            _sr_cur = float(_sr_cl.iloc[-1])
-            # 피벗 포인트 계산
-            _sr_ph = float(_sr_hi.iloc[-2]); _sr_pl = float(_sr_lo.iloc[-2]); _sr_pc = float(_sr_cl.iloc[-2])
-            _sr_pivot = (_sr_ph + _sr_pl + _sr_pc) / 3
-            _sr_s1 = 2 * _sr_pivot - _sr_ph
-            _sr_s2 = _sr_pivot - (_sr_ph - _sr_pl)
-            _sr_r1 = 2 * _sr_pivot - _sr_pl
-            _sr_r2 = _sr_pivot + (_sr_ph - _sr_pl)
-            # 20일 스윙 저점/고점
-            _sr_swing_lo = float(_sr_lo.tail(20).min())
-            _sr_swing_hi = float(_sr_hi.tail(20).max())
-            # 현재가와 각 레벨 거리
-            def _sr_dist(lv): return f"{(lv/_sr_cur-1)*100:+.2f}%"
-            def _sr_fmt(v): return f"{int(v):,}" if _sr_list_key.isdigit() else f"{v:,.2f}"
-            _sr_levels = [
-                ("🏆 스윙 고점", _sr_swing_hi, "#fbbf24"),
-                ("🔴 저항1 (R1)", _sr_r1, "#f87171"),
-                ("⚪ 피벗", _sr_pivot, "#94a3b8"),
-                ("🟡 지지1 (S1)", _sr_s1, "#fbbf24"),
-                ("🟢 스윙 저점", _sr_swing_lo, "#39ff14"),
-                ("🔵 2차지지 (S2)", _sr_s2, "#60a5fa"),
-            ]
-            _sr_name = "KODEX 미국S&P500TR" if _sr_list_key == '379800' else "SPY"
-            _sr_html = (
-                "<div style='background:linear-gradient(135deg,#0d1117,#1a1200);border:1px solid #fbbf2440;"
-                "border-radius:14px;padding:14px 18px;margin-bottom:14px'>"
-                "<div style='font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:10px'>"
-                f"🔑 핵심 지지·저항 레벨 — {_sr_name} (현재가 {_sr_fmt(_sr_cur)})</div>"
-                "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:6px'>"
-            )
-            for _lbl, _lv, _lc in _sr_levels:
-                _is_cur = abs(_lv / _sr_cur - 1) < 0.015
-                _bg = "background:#1a1a00;border:1px solid #fbbf24;" if _is_cur else "background:#0d1117;border:1px solid #1e293b;"
-                _sr_html += (
-                    f"<div style='{_bg}border-radius:8px;padding:8px 10px'>"
-                    f"<div style='font-size:10px;color:#64748b;margin-bottom:2px'>{_lbl}</div>"
-                    f"<div style='font-size:13px;font-weight:700;color:{_lc};font-family:monospace'>{_sr_fmt(_lv)}</div>"
-                    f"<div style='font-size:10px;color:#94a3b8'>{_sr_dist(_lv)}</div>"
-                    f"</div>"
-                )
-            _sr_html += "</div></div>"
-            st.markdown(_sr_html, unsafe_allow_html=True)
-    except Exception:
-        pass
+      # ── ETF 로테이션 종합 랭킹판 및 AI 최적화 ──
 
     # ── 🔥 AI 파라미터 자동 최적화 (Walk-Forward) — ETF 로테이션 ──
     with st.expander("🔥 AI 파라미터 자동 최적화 (Walk-Forward) — ETF 로테이션", expanded=False):
