@@ -3082,10 +3082,16 @@ def _calc_etf_indicators(ticker_sym):
             return None
         _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
 
-        # 가격 이상값 감지: 한국 ETF는 통상 500~500,000원 범위 (지수값 혼입 방지)
+        # 가격 이상값 감지: 통화별 범위 자동 분기 (지수값/오류값 혼입 방지)
+        # .KS/.KQ 접미사 = 한국 ETF(원화) / 접미사 없음 = 미국 ETF(달러)
         _last_price = float(_cl.iloc[-1])
-        if _last_price < 500 or _last_price > 2_000_000:
-            return None
+        _is_kr_sym = ticker_sym.endswith('.KS') or ticker_sym.endswith('.KQ')
+        if _is_kr_sym:
+            if _last_price < 500 or _last_price > 2_000_000:   # 원화: 500원~200만원
+                return None
+        else:
+            if _last_price < 1 or _last_price > 10_000:        # 달러: $1~$10,000
+                return None
 
         _tr   = pd.DataFrame({'hl':_hi-_lo,'hc':(_hi-_cl.shift()).abs(),'lc':(_lo-_cl.shift()).abs()}).max(axis=1)
         _atr  = _tr.rolling(14).mean()
