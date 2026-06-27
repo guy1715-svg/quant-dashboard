@@ -3072,29 +3072,66 @@ def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
     return results
 
 
-def _calc_etf_indicators(ticker_sym):
-    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
+def _batch_download_ohlcv(symbols):
+    """여러 티커를 한 번의 HTTP 요청으로 받아 {symbol: DataFrame} 반환.
+    Rate-limit 회피용 — 56개 개별 호출 대신 1회 batch download."""
+    import yfinance as yf
+    out = {}
+    if not symbols:
+        return out
+    try:
+        _data = yf.download(symbols, period="1y", interval="1d",
+                            group_by='ticker', auto_adjust=True,
+                            threads=True, progress=False)
+    except Exception:
+        return out
+    for _s in symbols:
+        try:
+            if len(symbols) == 1:
+                _sub = _data
+            else:
+                _sub = _data[_s] if _s in _data.columns.get_level_values(0) else None
+            if _sub is not None and not _sub.empty:
+                out[_s] = _sub.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        except Exception:
+            continue
+    return out
+
+
+def _calc_etf_indicators(ticker_sym, prefetch_df=None):
+    """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환.
+    prefetch_df: batch download으로 미리 받은 DataFrame (선택)."""
     import yfinance as yf
     import numpy as np
     import time as _t_etf
     try:
-        # Rate-limit 대응: 빈 응답 시 짧은 백오프로 최대 3회 재시도
-        _df = None
-        for _try in range(3):
-            try:
-                _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
-            except Exception:
-                _df = None
-            if _df is not None and len(_df) >= 60:
-                break
-            _t_etf.sleep(0.4 * (_try + 1))
+        # prefetch_df: batch download으로 미리 받은 DataFrame (rate-limit 회피).
+        # 주어지면 개별 호출을 생략한다.
+        _df = prefetch_df
+        if _df is None:
+            # Rate-limit 대응: 빈 응답 시 짧은 백오프로 최대 3회 재시도
+            for _try in range(3):
+                try:
+                    _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
+                except Exception:
+                    _df = None
+                if _df is not None and len(_df) >= 60:
+                    break
+                _t_etf.sleep(0.4 * (_try + 1))
         if _df is None or len(_df) < 60:
+            return None
+        # ⚠️ Rate-limit 시 yfinance가 OHLC에 NaN 섞인 행을 반환 → NaN이 가격필터를
+        #    통과(NaN<1=False)하고 ADX가 NaN→0이 되는 버그 차단. NaN 행 전부 제거.
+        _df = _df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        if len(_df) < 60:
             return None
         _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
 
         # 가격 이상값 감지: 통화별 범위 자동 분기 (지수값/오류값 혼입 방지)
         # .KS/.KQ 접미사 = 한국 ETF(원화) / 접미사 없음 = 미국 ETF(달러)
         _last_price = float(_cl.iloc[-1])
+        if not np.isfinite(_last_price):   # NaN/inf 가격 → 데이터 불량
+            return None
         _is_kr_sym = ticker_sym.endswith('.KS') or ticker_sym.endswith('.KQ')
         if _is_kr_sym:
             if _last_price < 500 or _last_price > 2_000_000:   # 원화: 500원~200만원
@@ -3110,7 +3147,10 @@ def _calc_etf_indicators(ticker_sym):
         _ndi  = 100*_ndm.rolling(14).mean()/_atr.replace(0,np.nan)
         _dx   = 100*(_pdi-_ndi).abs()/(_pdi+_ndi).replace(0,np.nan)
         _adx_raw = _dx.rolling(14).mean().iloc[-1]
-        _adx  = round(float(np.nan_to_num(float(_adx_raw), nan=0.0)), 1)
+        # ADX가 NaN = 데이터 불량(throttle). 가짜 '탈락'(ADX0) 대신 실패 처리.
+        if not np.isfinite(float(_adx_raw)):
+            return None
+        _adx  = round(float(_adx_raw), 1)
         _adx  = min(100.0, max(0.0, _adx))
 
         _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
@@ -8211,13 +8251,16 @@ with _tab_d1:
     def fetch_kr_etf_data():
         results = []
         _mismatch_log = []
+        # batch download (rate-limit 회피) — 실패 시 개별 호출로 자동 폴백
+        _kr_syms = [f"{t}.KS" for t, _ in _KR_ETF_LIST]
+        _kr_batch = _batch_download_ohlcv(_kr_syms)
         for ticker, name in _KR_ETF_LIST:
             _sym = f"{ticker}.KS"
             # 마스터 DB 검증
             _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
             if not _v_ok:
                 _mismatch_log.append((ticker, name, _v_exp))
-            _ind = _calc_etf_indicators(_sym)
+            _ind = _calc_etf_indicators(_sym, prefetch_df=_kr_batch.get(_sym))
             if _ind:
                 results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
                                 '_expected_name': _v_exp, **_ind})
@@ -8236,9 +8279,12 @@ with _tab_d1:
     @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
     def fetch_us_etf_data():
         results = []
+        # batch download (rate-limit 회피) — 56개 1회 요청, 실패 시 개별 폴백
+        _us_syms = [t for t, _ in _US_ETF_LIST]
+        _us_batch = _batch_download_ohlcv(_us_syms)
         for ticker, name in _US_ETF_LIST:
             _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
-            _ind = _calc_etf_indicators(ticker)
+            _ind = _calc_etf_indicators(ticker, prefetch_df=_us_batch.get(ticker))
             if _ind:
                 results.append({'코드': ticker, 'ETF명': name, '_validated': _v_ok,
                                 '_expected_name': _v_exp, **_ind})
