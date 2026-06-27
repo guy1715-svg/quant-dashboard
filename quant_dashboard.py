@@ -3076,8 +3076,18 @@ def _calc_etf_indicators(ticker_sym):
     """yfinance ticker symbol로 ETF 지표 계산. 실패시 None 반환."""
     import yfinance as yf
     import numpy as np
+    import time as _t_etf
     try:
-        _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
+        # Rate-limit 대응: 빈 응답 시 짧은 백오프로 최대 3회 재시도
+        _df = None
+        for _try in range(3):
+            try:
+                _df = yf.Ticker(ticker_sym).history(period="1y", interval="1d")
+            except Exception:
+                _df = None
+            if _df is not None and len(_df) >= 60:
+                break
+            _t_etf.sleep(0.4 * (_try + 1))
         if _df is None or len(_df) < 60:
             return None
         _cl  = _df['Close']; _hi = _df['High']; _lo = _df['Low']; _vol = _df['Volume']
@@ -7115,10 +7125,14 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
 
         # ── 탈락 종목: 컴팩트 한 줄 표시 ──
         if _is_dead:
+            # '오류'(데이터 조회 실패)와 '탈락'(ADX<25 추세미달) 구분 표시
+            _is_err = (row.get('상태') == '오류')
+            _dead_msg = "⚠️ 데이터 조회 실패 (시세 못 불러옴)" if _is_err else f"ADX {row.get('ADX',0)} 탈락 (추세 약함)"
+            _dead_col = "#f59e0b" if _is_err else "#64748b"
             st.markdown(
-                f"<div style='background:#0d0d0d;border-radius:6px;padding:5px 14px;margin-bottom:2px;opacity:0.45;"
-                f"font-size:12px;color:#64748b'>"
-                f"{_rank} {row['ETF명']} ({row['코드']}) — ADX {row.get('ADX',0)} 탈락"
+                f"<div style='background:#0d0d0d;border-radius:6px;padding:5px 14px;margin-bottom:2px;opacity:0.55;"
+                f"font-size:12px;color:{_dead_col}'>"
+                f"{_rank} {row['ETF명']} ({row['코드']}) — {_dead_msg}"
                 f"</div>",
                 unsafe_allow_html=True
             )
