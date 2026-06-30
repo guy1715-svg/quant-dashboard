@@ -1824,6 +1824,85 @@ def macro_allows_scale_in(krw=None, foreign_net_krw=None):
     flow_ok = _num(foreign_net_krw) and foreign_net_krw > 0
     return bool(krw_ok and flow_ok), {"krw_ok": krw_ok, "flow_ok": flow_ok}
 
+
+def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
+    """5AI Top-Down 레짐 브리핑 — 3줄 자동 생성.
+    krw: 원/달러 환율(float) / foreign_net_krw: 코스피 외국인 순매수액(원, +매수 -매도)
+    top1: 1위 종목 dict 또는 (score, is_aligned) — 절대조건(점수≥70 AND 정배열) 판정용
+    반환: {'lines': [str,str,str], 'verdict': str, 'light': 'green'|'amber'|'red'}
+    절대 예외 없이 반환(결측은 '데이터 확인 필요'로 처리)."""
+    def _num(x):
+        return isinstance(x, (int, float)) and (x == x)
+
+    # ── 1줄: 환율(리스크오프 레짐) ──
+    if _num(krw) and krw > 0:
+        if krw <= 1480:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 안정권에 머물며 리스크 오프 압력이 낮습니다."
+            s1 = 1
+        elif krw <= 1520:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 1,520원 아래에서 진정되며 리스크 오프 레짐이 완화 중입니다."
+            s1 = 1
+        else:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 1,520원을 넘어 리스크 오프(외국인 환차손) 압력이 지속됩니다."
+            s1 = 0
+    else:
+        l1 = "1. 환율 데이터 확인 필요 — 레짐 판정 보류."
+        s1 = -1
+
+    # ── 2줄: 외국인 수급(매크로 게이트) ──
+    if _num(foreign_net_krw):
+        if foreign_net_krw > 0:
+            l2 = "2. 외국인 수급이 순매수로 전환되어 매크로 레짐 게이트가 개방되었습니다."
+            s2 = 1
+        elif foreign_net_krw <= -1_000_000_000_000:
+            l2 = "2. 외국인이 1조원 이상 순매도하며 레짐 게이트가 굳게 닫혀 있습니다."
+            s2 = 0
+        else:
+            l2 = "2. 외국인 순매도가 이어져 매크로 레짐 게이트가 닫혀 있습니다."
+            s2 = 0
+    else:
+        l2 = "2. 외국인 수급 데이터 미수신 — 게이트 상태 미확인(보수적 보류)."
+        s2 = -1
+
+    # ── 3줄: 1위 종목 절대조건(점수≥70 AND 정배열) → 매수 승인 여부 ──
+    _score, _aligned = None, None
+    if isinstance(top1, dict):
+        try:
+            _score = float(top1.get('종합점수', 0))
+        except (TypeError, ValueError):
+            _score = None
+        _aligned = (str(top1.get('정배열', '')) == '✅')
+    elif isinstance(top1, (tuple, list)) and len(top1) >= 2:
+        try:
+            _score = float(top1[0])
+        except (TypeError, ValueError):
+            _score = None
+        _aligned = bool(top1[1])
+
+    if _score is None:
+        l3 = "3. 1위 종목 데이터 확인 필요 — 신규 진입 판정 보류."
+        s3 = -1
+    elif _score >= 70 and _aligned:
+        l3 = f"3. 신규 진입 1위 종목의 절대 조건(점수 {int(_score)}·정배열)이 충족되어 매수를 승인합니다."
+        s3 = 1
+    else:
+        _why = []
+        if _score < 70: _why.append(f"점수 {int(_score)}<70")
+        if not _aligned: _why.append("역배열")
+        l3 = f"3. 1위 종목 절대 조건 미달({' · '.join(_why)}) — 신규 진입 보류."
+        s3 = 0
+
+    # ── 종합 신호등: 셋 다 양호=green / 하나라도 결측=amber / 위험=red ──
+    _pos = [s for s in (s1, s2, s3)]
+    if all(s == 1 for s in _pos):
+        light, verdict = "green", "🟢 오늘은 신규 진입·추가 매집 승인 (3대 조건 충족)"
+    elif any(s == 0 for s in _pos):
+        light, verdict = "red", "🔴 오늘은 신규 진입 보류 (조건 미충족)"
+    else:
+        light, verdict = "amber", "🟡 데이터 일부 미확인 — 신규 진입 신중 검토"
+
+    return {"lines": [l1, l2, l3], "verdict": verdict, "light": light}
+
 def calc_indicators(df):
     """V8.9.2 — indicators.py 위임 (Wilder RSI, CMF20, ATR14)."""
     try:
@@ -3428,6 +3507,39 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
 
     if _blackout_48:
         st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 🤖 5AI Top-Down 레짐 브리핑 패널 (오늘의 AI 코멘트 — 3줄 요약)
+    # ══════════════════════════════════════════════════════════════════════
+    try:
+        _ai_krw  = get_usd_krw()
+        _ai_flow = st.session_state.get('_foreign_net_krw', None)
+        try:
+            _ai_tops = _get_home_etf_top(1)
+            _ai_top1 = _ai_tops[0] if _ai_tops else None
+        except Exception:
+            _ai_top1 = None
+        _brief = generate_ai_briefing(_ai_krw, _ai_flow, _ai_top1)
+        _bl_c  = {"green": "#16a34a", "amber": "#f59e0b", "red": "#ef4444"}[_brief["light"]]
+        _bl_bg = {"green": "#06200f", "amber": "#241a00", "red": "#240606"}[_brief["light"]]
+        _bullets = "".join(
+            f"<li style='margin:5px 0;color:#e2e8f0;line-height:1.55'>{_ln[3:].strip()}</li>"
+            for _ln in _brief["lines"]
+        )
+        st.markdown(
+            f"<div style='background:{_bl_bg};border:2px solid {_bl_c};border-radius:16px;"
+            f"padding:16px 22px;margin:4px 0 8px 0'>"
+            f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
+            f"<span style='font-size:18px'>🤖</span>"
+            f"<span style='font-size:15px;font-weight:900;color:{_bl_c}'>오늘의 5AI 브리핑</span>"
+            f"<span style='margin-left:auto;font-size:13px;font-weight:800;color:{_bl_c}'>{_brief['verdict']}</span>"
+            f"</div>"
+            f"<ul style='margin:0;padding-left:20px;font-size:13.5px'>{_bullets}</ul>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.caption("⚠️ 5AI 브리핑 일시 비활성 (데이터 지연)")
 
     # ══════════════════════════════════════════════════════════════════════
     # 🚦 매크로 레짐 신호등 (최상단 1초 판독) — 환율·유가·외국인수급 게이트
