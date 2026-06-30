@@ -1854,115 +1854,6 @@ def parse_motie_export_text(text):
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# 📺 유튜브 원클릭 매크로 분석기 (V6.1 탑다운)
-# ══════════════════════════════════════════════════════════════════════════
-V61_MACRO_SYSTEM_PROMPT = """너는 경제 방송 스크립트를 받아 '매크로 리스크 및 보유 포지션 영향' 관점으로만 정제하는 V6.1 탑다운 분석가다. 감정·전망성 발언·종목 매수 권유는 배제하고, 사실과 시장 변수만 추출한다.
-
-[출력 규칙]
-- 받은 텍스트가 아무리 길어도 반드시 아래 3개 섹션으로만 출력한다.
-- 각 섹션은 3~5개의 글머리 기호(-)로 간결하게 작성한다.
-- 방송에 언급이 없는 항목은 "언급 없음"으로 표기한다(추측 금지).
-- 마크다운 형식으로 출력한다.
-
-### ① 매크로 레짐 변화
-- 환율(원/달러), 미국 금리·연준, 유가(WTI/중동), 인플레 등 핵심 변수의 방향과 임계점 변동만 기술.
-
-### ② 외인/기관 수급 + 섹터 모멘텀
-- 외국인·기관 수급 전망(순매수/순매도 방향).
-- 반도체(HBM·삼성·하이닉스), 조선, 방산 등 섹터별 모멘텀 강도.
-
-### ③ 보유 종목 리스크/기회
-- KODEX AI반도체TOP2+, KoAct 나스닥 등 보유 종목에 미칠 구체적 리스크 vs 기회.
-- 각 항목 끝에 [리스크] 또는 [기회] 태그를 붙인다.
-
-[금지] "오를 것이다 / 사라" 같은 단정·권유. 오직 변수 변화와 영향 경로만 기술한다."""
-
-
-def _extract_youtube_id(url):
-    """유튜브 URL에서 영상 ID 추출. 다양한 포맷 지원. 실패 시 None."""
-    import re as _re_yt
-    if not url or not isinstance(url, str):
-        return None
-    _patterns = [
-        r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})",
-        r"^([A-Za-z0-9_-]{11})$",   # ID 직접 입력
-    ]
-    for _p in _patterns:
-        _m = _re_yt.search(_p, url.strip())
-        if _m:
-            return _m.group(1)
-    return None
-
-
-def fetch_youtube_transcript(url, langs=("ko", "ko-KR", "en")):
-    """youtube-transcript-api로 자막 추출. 반환: (text, error_msg).
-    성공 시 (str, None) / 실패 시 (None, '사유')."""
-    _vid = _extract_youtube_id(url)
-    if not _vid:
-        return None, "유효한 유튜브 URL이 아닙니다. 링크를 확인해 주세요."
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-    except ImportError:
-        return None, "youtube-transcript-api 미설치 — requirements.txt에 추가가 필요합니다."
-    try:
-        # 한국어 우선, 없으면 영어 폴백
-        try:
-            _tr = YouTubeTranscriptApi.get_transcript(_vid, languages=list(langs))
-        except Exception:
-            # 자동생성 자막 포함 재시도
-            _list = YouTubeTranscriptApi.list_transcripts(_vid)
-            _tr = None
-            for _lang in langs:
-                try:
-                    _tr = _list.find_transcript([_lang]).fetch()
-                    break
-                except Exception:
-                    continue
-            if _tr is None:
-                _tr = _list.find_generated_transcript(list(langs)).fetch()
-        _text = " ".join(seg.get("text", "") for seg in _tr if seg.get("text"))
-        _text = _text.strip()
-        if not _text:
-            return None, "자막을 추출할 수 없는 영상입니다. 다른 링크를 시도해 주세요."
-        return _text, None
-    except Exception:
-        return None, "자막을 추출할 수 없는 영상입니다. 다른 링크를 시도해 주세요."
-
-
-def analyze_macro_with_claude(transcript, model="claude-opus-4-8"):
-    """추출 자막을 Claude API로 V6.1 탑다운 정제. 반환: (markdown, error_msg)."""
-    if not transcript:
-        return None, "분석할 자막 텍스트가 없습니다."
-    try:
-        _api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    except Exception:
-        _api_key = ""
-    if not _api_key:
-        return None, "ANTHROPIC_API_KEY 미설정 — secrets에 키를 등록해 주세요."
-    try:
-        import anthropic
-    except ImportError:
-        return None, "anthropic 라이브러리 미설치 — requirements.txt에 추가가 필요합니다."
-    try:
-        _client = anthropic.Anthropic(api_key=_api_key)
-        # 토큰 과다 방지: 너무 길면 앞부분 위주로 자름(약 12,000자)
-        _payload = transcript[:12000]
-        _msg = _client.messages.create(
-            model=model,
-            max_tokens=1500,
-            system=V61_MACRO_SYSTEM_PROMPT,
-            messages=[{"role": "user",
-                       "content": f"아래 경제 방송 스크립트를 V6.1 탑다운 3개 섹션으로 정제하라:\n\n{_payload}"}],
-        )
-        _out = "".join(getattr(_b, "text", "") for _b in _msg.content).strip()
-        if not _out:
-            return None, "Claude 응답이 비어 있습니다. 잠시 후 다시 시도해 주세요."
-        return _out, None
-    except Exception as _e:
-        return None, f"Claude API 호출 실패: {type(_e).__name__} — 키/네트워크/모델명을 확인해 주세요."
-
-
 @st.cache_data(ttl=600, show_spinner=False)
 def get_foreign_net_kospi():
     """코스피 외국인 순매수액(원) — pykrx 자동 조회. 실패 시 None(→수동 폴백).
@@ -3832,59 +3723,55 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
             _in_yoy   = _mi3.text_input("반도체 전년동월비(%)", key="motie_in_yoy",
                                         placeholder="예: 27.6")
             if st.button("💾 적용", key="motie_apply"):
-                try:
-                    _yoy_v = float(_in_yoy) if _in_yoy.strip() else None
-                except ValueError:
-                    _yoy_v = None
-                st.session_state["_motie_manual"] = {
-                    "total": _in_total.strip() or None,
-                    "semi": _in_semi.strip() or None,
-                    "semi_yoy": _yoy_v,
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                }
-                fetch_motie_exports.clear()
-                st.rerun()
+                import re as _re_mv
+                _errs = []
+
+                # ── 증감률 검증: %·부호 제거 후 숫자여야 함, -100~+1000 범위 ──
+                _yoy_v = None
+                _yoy_raw = _in_yoy.strip().replace("%", "").replace("+", "")
+                if _yoy_raw:
+                    try:
+                        _yoy_v = float(_yoy_raw)
+                        if not (-100.0 <= _yoy_v <= 1000.0):
+                            _errs.append("증감률은 -100 ~ +1000% 범위의 숫자여야 합니다")
+                            _yoy_v = None
+                    except ValueError:
+                        _errs.append("증감률은 % 단위의 숫자여야 합니다 (예: 27.6)")
+
+                # ── 수출액 검증: 숫자가 1개 이상 포함돼야 함, 음수 금지 ──
+                def _valid_amount(_label, _raw):
+                    _raw = _raw.strip()
+                    if not _raw:
+                        return None
+                    if _raw.lstrip().startswith("-"):
+                        _errs.append(f"{_label}은 음수가 될 수 없습니다")
+                        return None
+                    if not _re_mv.search(r"\d", _raw):
+                        _errs.append(f"{_label}에는 숫자가 포함되어야 합니다 (예: 568억달러)")
+                        return None
+                    return _raw
+
+                _total_v = _valid_amount("총 수출액", _in_total)
+                _semi_v  = _valid_amount("반도체 수출액", _in_semi)
+
+                # 최소 1개 항목은 입력돼야 함
+                if not any([_total_v, _semi_v, _yoy_v is not None]) and not _errs:
+                    _errs.append("최소 한 개 이상의 값을 입력해야 합니다")
+
+                if _errs:
+                    st.error("🚨 입력 오류:\n\n- " + "\n- ".join(_errs))
+                else:
+                    st.session_state["_motie_manual"] = {
+                        "total": _total_v,
+                        "semi": _semi_v,
+                        "semi_yoy": _yoy_v,
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                    }
+                    fetch_motie_exports.clear()
+                    st.success("✅ 산자부 수치 적용 완료")
+                    st.rerun()
     except Exception:
         st.caption("⚠️ 산자부 수출 패널 일시 비활성 (데이터 지연)")
-
-    # ══════════════════════════════════════════════════════════════════════
-    # 📺 유튜브 원클릭 매크로 분석기 (자막 자동추출 → Claude V6.1 정제)
-    # ══════════════════════════════════════════════════════════════════════
-    with st.expander("📺 유튜브 매크로 방송 원클릭 분석 (V6.1 탑다운)", expanded=False):
-        _yt_url = st.text_input(
-            "유튜브 URL 입력",
-            key="yt_macro_url",
-            placeholder="https://www.youtube.com/watch?v=... (박시동·이광수 등 방송)",
-        )
-        if st.button("📡 5AI 매크로 정밀 분석 실행", key="yt_macro_run", type="primary",
-                     use_container_width=True):
-            if not _yt_url.strip():
-                st.warning("먼저 유튜브 URL을 입력해 주세요.")
-            else:
-                with st.spinner("① 자막 추출 중..."):
-                    _yt_text, _yt_err = fetch_youtube_transcript(_yt_url)
-                if _yt_err:
-                    st.error(f"❌ {_yt_err}")
-                else:
-                    st.caption(f"✅ 자막 추출 완료 ({len(_yt_text):,}자) — Claude 정제 중...")
-                    with st.spinner("② Claude V6.1 탑다운 분석 중..."):
-                        _yt_md, _yt_aerr = analyze_macro_with_claude(_yt_text)
-                    if _yt_aerr:
-                        st.error(f"❌ {_yt_aerr}")
-                        with st.expander("📄 추출된 원본 자막 보기 (수동 분석용)", expanded=False):
-                            st.text_area("자막 전문", _yt_text, height=200, key="yt_raw_text")
-                    else:
-                        st.session_state['_yt_last_result'] = _yt_md
-        # 마지막 분석 결과 렌더 (재실행에도 유지)
-        if st.session_state.get('_yt_last_result'):
-            st.markdown(
-                "<div style='background:#0d1117;border:1px solid #334155;border-radius:12px;"
-                "padding:14px 20px;margin-top:8px'>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("##### 🤖 5AI 탑다운 매크로 브리핑")
-            st.markdown(st.session_state['_yt_last_result'])
-            st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
@@ -8122,18 +8009,39 @@ with tab_d:
             # ── H1: 현재가 조회 (한국/미국 자동 구분 + 실패 알림) ────────────
             import yfinance as _yf_op
 
+            _LKG_KEY = '_live_price_lkg'   # Last-Known-Good 시세 캐시 {ticker: (cur, prev)}
+            st.session_state.setdefault(_LKG_KEY, {})
+
             def _get_live_price(tk: str):
-                """한국(6자리 숫자)=.KS→.KQ, 미국=suffix 없음. 실패 시 None 반환."""
+                """한국(6자리)=.KS→.KQ, 미국=suffix 없음.
+                반환: (cur, prev, status) — status: 'live'(정상) / 'cache'(직전값) / 'fail'(없음).
+                단 1원 누락·타임아웃에도 멈추지 않고 Last-Known-Good을 우선 반환."""
                 _is_kr_tk = tk.isdigit() and len(tk) == 6
                 _suffixes = [".KS", ".KQ"] if _is_kr_tk else [""]
                 for _sfx in _suffixes:
                     try:
                         _h = _yf_op.Ticker(tk + _sfx).history(period="2d", interval="1d")
-                        if _h is not None and not _h.empty:
-                            return float(_h['Close'].iloc[-1]), (float(_h['Close'].iloc[-2]) if len(_h) >= 2 else float(_h['Close'].iloc[-1])), True
+                        if _h is None or _h.empty or 'Close' not in _h.columns:
+                            continue
+                        _ser = _h['Close'].dropna()
+                        if _ser.empty:
+                            continue
+                        _cur = float(_ser.iloc[-1])
+                        _prev = float(_ser.iloc[-2]) if len(_ser) >= 2 else _cur
+                        # 유효성: 양수·유한수만 채택 (1원 누락/NaN 차단)
+                        if not (_cur == _cur) or _cur <= 0:
+                            continue
+                        if not (_prev == _prev) or _prev <= 0:
+                            _prev = _cur
+                        st.session_state[_LKG_KEY][tk] = (_cur, _prev)   # LKG 갱신
+                        return _cur, _prev, 'live'
                     except Exception:
                         continue
-                return None, None, False  # 조회 실패
+                # 조회 실패 → Last-Known-Good 폴백 (있으면)
+                _cached = st.session_state.get(_LKG_KEY, {}).get(tk)
+                if _cached:
+                    return _cached[0], _cached[1], 'cache'
+                return None, None, 'fail'
 
             _has_danger = False
 
@@ -8166,14 +8074,26 @@ with tab_d:
             for _pos in list(st.session_state[_op_key]):  # C1: uuid 기반 — list copy로 안전 순회
                 _pos_id = _pos.get('id', _pos['ticker'])  # 구버전 호환
                 _tk    = _pos['ticker']
-                _avg   = _pos['avg']
-                _qty   = _pos['qty']
+
+                # ── 잔고 데이터 무결성 검증 (삼성증권 실측 평단/수량) ──
+                # 오타·문자열·0이하 값이 연산(수익률·비중)에 유입되는 것을 원천 차단.
+                try:
+                    _avg = float(_pos['avg'])
+                    _qty = float(_pos['qty'])
+                    assert _avg > 0, "평균단가는 0보다 커야 합니다"
+                    assert _qty > 0, "보유수량은 0보다 커야 합니다"
+                    assert _avg == _avg and _qty == _qty, "NaN 불가"   # NaN 차단
+                except (KeyError, TypeError, ValueError, AssertionError) as _berr:
+                    st.error(f"🚨 {_tk} 잔고 데이터 오류 — 평단/수량 재등록 필요 ({_berr}). 이 종목은 연산에서 제외됩니다.")
+                    continue
                 _is_kr = _tk.isdigit() and len(_tk) == 6
 
-                # H1: 현재가 조회
-                _cur_p, _prev_p, _price_ok = _get_live_price(_tk)
-                if not _price_ok:
-                    st.warning(f"⚠️ {_tk} 현재가 조회 실패 — 평단가로 대체 표시 중. 티커를 확인하세요.")
+                # H1: 현재가 조회 (Last-Known-Good 폴백 내장)
+                _cur_p, _prev_p, _price_st = _get_live_price(_tk)
+                if _price_st == 'cache':
+                    st.caption(f"📡 {_tk} 실시간 조회 지연 — 직전 캐싱 시세(Last Known Good)로 표시 중")
+                elif _price_st == 'fail':
+                    st.warning(f"⚠️ {_tk} 현재가 조회 실패(캐시 없음) — 평단가로 대체 표시 중. 티커를 확인하세요.")
                     _cur_p  = _avg
                     _prev_p = _avg
 
@@ -8241,7 +8161,7 @@ with tab_d:
                     f"font-size:9px;padding:2px 7px;border-radius:8px;border:1px solid {_cur_badge_color}60;"
                     f"margin-left:6px'>{_currency}</span>"
                 )
-                _price_warn = "" if _price_ok else " ⚠️조회실패"
+                _price_warn = {"live": "", "cache": " 📡캐시", "fail": " ⚠️조회실패"}.get(_price_st, "")
 
                 # ── 카드 렌더링 ──
                 _danger_anim = "animation:blink 0.8s step-start infinite;" if (_danger or _adx_weak) else ""
