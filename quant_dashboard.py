@@ -1729,15 +1729,100 @@ def check_profit_recycling(current_krw_usd_rate, target_rate=1450):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_usd_krw():
-    """USD/KRW 환율 — 5분 캐시로 중복 조회 방지"""
+    """USD/KRW 환율 — 5분 캐시. 실패 시 마지막값(없으면 1350) 폴백, 절대 예외 전파 안 함."""
     try:
         import yfinance as _yf_fx
         _h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
-        result = float(_h['Close'].dropna().iloc[-1]) if not _h.empty else 1350.0
-        st.session_state['_last_usd_krw'] = result
-        return result
-    except:
+        if _h is None or _h.empty or 'Close' not in _h.columns:
+            return st.session_state.get('_last_usd_krw', 1350.0)
+        _ser = _h['Close'].dropna()
+        if _ser.empty:
+            return st.session_state.get('_last_usd_krw', 1350.0)
+        _val = float(_ser.iloc[-1])
+        if not (_val == _val) or _val <= 0:        # NaN / 비정상 차단
+            return st.session_state.get('_last_usd_krw', 1350.0)
+        st.session_state['_last_usd_krw'] = _val
+        return _val
+    except (KeyError, IndexError, ValueError, ConnectionError, OSError, Exception):
         return st.session_state.get('_last_usd_krw', 1350.0)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_wti_oil():
+    """WTI 유가($/배럴) — 5분 캐시. 실패 시 마지막값(없으면 None) 폴백, 예외 전파 안 함."""
+    try:
+        import yfinance as _yf_oil
+        _h = _yf_oil.Ticker("CL=F").history(period="5d")
+        if _h is None or _h.empty or 'Close' not in _h.columns:
+            return st.session_state.get('_last_wti', None)
+        _ser = _h['Close'].dropna()
+        if _ser.empty:
+            return st.session_state.get('_last_wti', None)
+        _val = float(_ser.iloc[-1])
+        if not (_val == _val) or _val <= 0:
+            return st.session_state.get('_last_wti', None)
+        st.session_state['_last_wti'] = _val
+        return _val
+    except Exception:
+        return st.session_state.get('_last_wti', None)
+
+
+def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None):
+    """매크로 레짐 게이트 — 환율·유가·외국인수급 종합 신호등.
+    모든 입력 None/NaN 허용(부분판정). 절대 예외 없이 dict 반환.
+    반환: light('green'|'amber'|'red'), verdict, risk(int), krw/oil/flow 상태, reasons[]"""
+    def _num(x):
+        return isinstance(x, (int, float)) and (x == x)   # not None, not NaN
+
+    reasons, risk = [], 0
+
+    krw_state = "unknown"
+    if _num(krw) and krw > 0:
+        if krw >= 1520:
+            risk += 2; krw_state = "danger"; reasons.append(f"환율 {krw:,.0f}원 ≥1,520 (리스크오프)")
+        elif krw >= 1480:
+            risk += 1; krw_state = "warn"; reasons.append(f"환율 {krw:,.0f}원 경계")
+        else:
+            krw_state = "safe"; reasons.append(f"환율 {krw:,.0f}원 안정")
+
+    oil_state = "unknown"
+    if _num(oil) and oil > 0:
+        if oil >= 100:
+            risk += 2; oil_state = "danger"; reasons.append(f"WTI ${oil:.0f} ≥$100 (인플레 압력)")
+        elif oil >= 90:
+            risk += 1; oil_state = "warn"; reasons.append(f"WTI ${oil:.0f} 경계")
+        else:
+            oil_state = "safe"; reasons.append(f"WTI ${oil:.0f} 안정")
+
+    flow_state = "unknown"
+    if _num(foreign_net_krw):
+        if foreign_net_krw <= -1_000_000_000_000:      # -1조 이하 = 패닉셀
+            risk += 2; flow_state = "danger"; reasons.append("외국인 -1조↑ 순매도 (패닉셀)")
+        elif foreign_net_krw < 0:
+            risk += 1; flow_state = "warn"; reasons.append("외국인 순매도 진행")
+        else:
+            flow_state = "safe"; reasons.append("외국인 순매수")
+
+    if risk >= 3:
+        light, verdict = "red", "🔴 리스크오프 — 신규진입 금지 / 방어 우선"
+    elif risk >= 1:
+        light, verdict = "amber", "🟡 경계 — 분할·관망, 추격 금지"
+    else:
+        light, verdict = "green", "🟢 정상 — 전략 정상 가동"
+
+    return {"light": light, "verdict": verdict, "risk": risk,
+            "krw": krw_state, "oil": oil_state, "flow": flow_state, "reasons": reasons}
+
+
+def macro_allows_scale_in(krw=None, foreign_net_krw=None):
+    """추가매집(scale-in) 승격 게이트 — 시나리오 B 전용.
+    환율 1,520 이하 안착 AND 외국인 순매수 전환 둘 다 충족할 때만 True.
+    데이터 결측 시 보수적으로 False(엣지케이스: 좋은 환율이어도 수급 미확인이면 보류)."""
+    def _num(x):
+        return isinstance(x, (int, float)) and (x == x)
+    krw_ok  = _num(krw) and 0 < krw <= 1520
+    flow_ok = _num(foreign_net_krw) and foreign_net_krw > 0
+    return bool(krw_ok and flow_ok), {"krw_ok": krw_ok, "flow_ok": flow_ok}
 
 def calc_indicators(df):
     """V8.9.2 — indicators.py 위임 (Wilder RSI, CMF20, ATR14)."""
@@ -3271,7 +3356,7 @@ with tab_a:
             pass
         try:
             import yfinance as _yf2
-            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX")]:
+            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX"),("WTI유가","CL=F")]:
                 try:
                     _h = _yf2.Ticker(_s).history(period="5d", interval="1d")
                     _h = _h.dropna(subset=['Close'])
@@ -3343,6 +3428,39 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
 
     if _blackout_48:
         st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 🚦 매크로 레짐 신호등 (최상단 1초 판독) — 환율·유가·외국인수급 게이트
+    # ══════════════════════════════════════════════════════════════════════
+    try:
+        _mg_krw  = get_usd_krw()
+        _mg_oil  = get_wti_oil()
+        _mg_flow = st.session_state.get('_foreign_net_krw', None)   # 있으면 사용, 없으면 부분판정
+        _gate    = compute_macro_regime_gate(_mg_krw, _mg_oil, _mg_flow)
+        _light_c = {"green": "#16a34a", "amber": "#f59e0b", "red": "#ef4444"}[_gate["light"]]
+        _light_bg = {"green": "#06200f", "amber": "#241a00", "red": "#240606"}[_gate["light"]]
+
+        def _dot(state):
+            _c = {"safe": "#16a34a", "warn": "#f59e0b", "danger": "#ef4444", "unknown": "#475569"}.get(state, "#475569")
+            return f"<span style='display:inline-block;width:9px;height:9px;border-radius:50%;background:{_c};margin-right:5px'></span>"
+
+        _krw_txt  = f"{_mg_krw:,.0f}원" if isinstance(_mg_krw, (int, float)) else "조회실패"
+        _oil_txt  = f"${_mg_oil:.0f}" if isinstance(_mg_oil, (int, float)) else "조회실패"
+        _flow_txt = ("순매수" if _gate["flow"] == "safe" else "순매도" if _gate["flow"] in ("warn", "danger") else "데이터없음")
+
+        st.markdown(
+            f"<div style='background:{_light_bg};border:2px solid {_light_c};border-radius:14px;"
+            f"padding:12px 20px;margin:6px 0;display:flex;align-items:center;gap:24px;flex-wrap:wrap'>"
+            f"<div style='font-size:15px;font-weight:900;color:{_light_c}'>{_gate['verdict']}</div>"
+            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['krw'])}환율 <b>{_krw_txt}</b></div>"
+            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['oil'])}WTI <b>{_oil_txt}</b></div>"
+            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['flow'])}외국인 <b>{_flow_txt}</b></div>"
+            f"<div style='font-size:11px;color:#64748b'>{' · '.join(_gate['reasons']) if _gate['reasons'] else '데이터 수집 중'}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.caption("⚠️ 매크로 레짐 신호등 일시 비활성 (데이터 지연)")
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
@@ -7662,12 +7780,21 @@ with tab_d:
 
                 # ── 4-State 상태 레이블 (매매 원칙 5대 원칙 준수) ──
                 # 우선순위: 정리검토 > 일부축소 > 추가매집 검토 > 보유유지
+                # 매크로 게이트: 추가매집은 환율≤1,520 + 외인 순매수 둘 다 충족 시에만 승격.
+                #   엣지케이스 — 가격이 +20% 도달(_t2_hit)해도 리스크오프면 '보유유지'로 강등.
+                _macro_ok, _macro_dbg = macro_allows_scale_in(
+                    st.session_state.get('_last_usd_krw', get_usd_krw()),
+                    st.session_state.get('_foreign_net_krw', None),
+                )
                 if _danger or _adx_weak:
                     _brd = "#ef4444"; _bg = "#1a0505"; _status_label = "🚨 정리검토"
-                elif _t2_hit:
+                elif _t2_hit and _macro_ok:
                     _brd = "#34d399"; _bg = "#051a10"; _status_label = "📈 추가매집 검토"
                 elif _t1_hit or _rsi_hot:
                     _brd = "#f97316"; _bg = "#1a0800"; _status_label = "✂️ 일부축소"
+                elif _t2_hit and not _macro_ok:
+                    # 가격 조건은 충족했으나 매크로 미충족 → 추격 보류, 보유유지로 강등
+                    _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🛡️ 보유유지"
                 else:
                     _brd = "#1e3a5f"; _bg = "#0d1117"; _status_label = "🛡️ 보유유지"
 
