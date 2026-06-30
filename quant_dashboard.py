@@ -1825,6 +1825,65 @@ def macro_allows_scale_in(krw=None, foreign_net_krw=None):
     return bool(krw_ok and flow_ok), {"krw_ok": krw_ok, "flow_ok": flow_ok}
 
 
+def parse_motie_export_text(text):
+    """산자부 보도자료/뉴스 텍스트(붙여넣기)에서 수출 수치 정규식 추출.
+    반환: dict(total, semi, semi_yoy) — 추출 실패 항목은 None. 예외 없이 반환."""
+    import re as _re_me
+    out = {"total": None, "semi": None, "semi_yoy": None}
+    if not text or not isinstance(text, str):
+        return out
+    _t = text.replace(",", "").replace(" ", "")
+    try:
+        # 총 수출액: "수출 568억달러", "총수출 5,688천만달러" 등
+        _m = _re_me.search(r"(?:총?수출(?:액|은|이|)?)\D{0,6}([\d.]+)\s*(억달러|억\$|십억달러|조원|억원)", _t)
+        if _m:
+            out["total"] = f"{_m.group(1)}{_m.group(2)}"
+        # 반도체 수출액: "반도체 138억달러"
+        _ms = _re_me.search(r"반도체\D{0,10}?([\d.]+)\s*(억달러|억\$|십억달러)", _t)
+        if _ms:
+            out["semi"] = f"{_ms.group(1)}{_ms.group(2)}"
+        # 반도체 전년동월비 증감률: "반도체...+27.6%", "반도체 수출 27.6% 증가"
+        _my = _re_me.search(r"반도체[^%]{0,40}?([+\-]?\d+\.?\d*)\s*%", _t)
+        if _my:
+            _v = float(_my.group(1))
+            if "감소" in _t[_my.start():_my.end() + 6] and _v > 0:
+                _v = -_v
+            out["semi_yoy"] = _v
+    except Exception:
+        pass
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_motie_exports():
+    """산자부 6월 수출 데이터 — 우선순위 폴백 체인. 절대 예외 전파 안 함.
+    1) 세션 수동입력(_motie_manual)  2) 보도자료/뉴스 크롤링(뼈대)  3) 실패 → None
+    반환: dict(total, semi, semi_yoy, date, source) 또는 None."""
+    # ── 1) 수동 입력 우선 (발표 직후 사용자가 직접 입력) ──
+    _man = st.session_state.get("_motie_manual")
+    if isinstance(_man, dict) and any(_man.get(k) is not None for k in ("total", "semi", "semi_yoy")):
+        return {**{"total": None, "semi": None, "semi_yoy": None, "date": ""}, **_man, "source": "수동입력"}
+
+    # ── 2) 크롤링 시도 (BeautifulSoup 뼈대) ──
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        # 예시 소스: 네이버 뉴스 '산업통상자원부 수출' 검색 최신 기사 본문
+        _url = "https://search.naver.com/search.naver?where=news&query=산업통상자원부+수출+반도체"
+        _resp = requests.get(_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        _resp.raise_for_status()
+        _soup = BeautifulSoup(_resp.text, "html.parser")
+        # 뉴스 요약 텍스트 수집 후 정규식 파싱에 위임
+        _blocks = _soup.select("div.news_dsc") or _soup.find_all("a")
+        _joined = " ".join(b.get_text(" ", strip=True) for b in _blocks[:20])
+        _parsed = parse_motie_export_text(_joined)
+        if any(_parsed.get(k) is not None for k in ("total", "semi", "semi_yoy")):
+            return {**_parsed, "date": "", "source": "뉴스크롤링"}
+        return None   # 수치 미발견 → 안전하게 None (발표 전이거나 셀렉터 변경)
+    except Exception:
+        return None   # 네트워크/파싱 실패 → None (패널은 '대기 중' 출력)
+
+
 def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
     """5AI Top-Down 레짐 브리핑 — 3줄 자동 생성.
     krw: 원/달러 환율(float) / foreign_net_krw: 코스피 외국인 순매수액(원, +매수 -매도)
@@ -3573,6 +3632,54 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
         )
     except Exception:
         st.caption("⚠️ 매크로 레짐 신호등 일시 비활성 (데이터 지연)")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 📦 산자부 수출 동향 패널 (7/1 발표 대비) — st.columns(3) metric
+    # ══════════════════════════════════════════════════════════════════════
+    try:
+        _me = fetch_motie_exports()
+        _me_c1, _me_c2, _me_c3 = st.columns(3)
+        if _me:
+            _yoy = _me.get("semi_yoy")
+            _yoy_str = f"{_yoy:+.1f}%" if isinstance(_yoy, (int, float)) else "—"
+            _me_c1.metric("📦 총 수출액", _me.get("total") or "—")
+            _me_c2.metric("💾 반도체 수출액", _me.get("semi") or "—")
+            _me_c3.metric("📈 반도체 전년동월비", _yoy_str,
+                          delta=("서프라이즈" if isinstance(_yoy, (int, float)) and _yoy >= 20
+                                 else "둔화" if isinstance(_yoy, (int, float)) and _yoy < 0 else None))
+            st.caption(f"출처: {_me.get('source','—')}"
+                       + (f" · 기준 {_me['date']}" if _me.get("date") else "")
+                       + " · 반도체 = 삼성/하이닉스 실적 선행지표")
+        else:
+            _me_c1.metric("📦 총 수출액", "대기 중")
+            _me_c2.metric("💾 반도체 수출액", "대기 중")
+            _me_c3.metric("📈 반도체 전년동월비", "대기 중")
+            st.caption("⏳ 산자부 수출 데이터 업데이트 대기 중 — 7/1 오전 발표 예정")
+
+        # 발표 직후 수동 입력(크롤링 실패/지연 대비)
+        with st.expander("✍️ 산자부 수치 수동 입력 (발표 직후)", expanded=False):
+            _mi1, _mi2, _mi3 = st.columns(3)
+            _in_total = _mi1.text_input("총 수출액", key="motie_in_total",
+                                        placeholder="예: 568억달러")
+            _in_semi  = _mi2.text_input("반도체 수출액", key="motie_in_semi",
+                                        placeholder="예: 138억달러")
+            _in_yoy   = _mi3.text_input("반도체 전년동월비(%)", key="motie_in_yoy",
+                                        placeholder="예: 27.6")
+            if st.button("💾 적용", key="motie_apply"):
+                try:
+                    _yoy_v = float(_in_yoy) if _in_yoy.strip() else None
+                except ValueError:
+                    _yoy_v = None
+                st.session_state["_motie_manual"] = {
+                    "total": _in_total.strip() or None,
+                    "semi": _in_semi.strip() or None,
+                    "semi_yoy": _yoy_v,
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                }
+                fetch_motie_exports.clear()
+                st.rerun()
+    except Exception:
+        st.caption("⚠️ 산자부 수출 패널 일시 비활성 (데이터 지연)")
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
