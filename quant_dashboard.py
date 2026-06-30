@@ -1854,6 +1854,39 @@ def parse_motie_export_text(text):
     return out
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_foreign_net_kospi():
+    """코스피 외국인 순매수액(원) — pykrx 자동 조회. 실패 시 None(→수동 폴백).
+    최근 영업일을 최대 8일 역추적(주말/휴일 대비). 절대 예외 전파 안 함."""
+    try:
+        from pykrx import stock as _pk_fn
+        import datetime as _dt_fn
+        _today = _dt_fn.datetime.utcnow() + _dt_fn.timedelta(hours=9)   # KST
+        for _back in range(0, 8):
+            _d = (_today - _dt_fn.timedelta(days=_back)).strftime("%Y%m%d")
+            try:
+                _df = _pk_fn.get_market_trading_value_by_investor(_d, _d, "KOSPI")
+            except Exception:
+                _df = None
+            if _df is None or _df.empty:
+                continue
+            # 외국인 행 탐색 (버전별 명칭 차이 대응)
+            _idx = None
+            for _key in ("외국인", "외국인합계", "외국인투자자"):
+                if _key in _df.index:
+                    _idx = _key
+                    break
+            if _idx is None:
+                continue
+            _col = "순매수" if "순매수" in _df.columns else _df.columns[-1]
+            _val = float(_df.loc[_idx, _col])
+            if _val == _val:        # NaN 차단
+                return _val
+        return None
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_motie_exports():
     """산자부 6월 수출 데이터 — 우선순위 폴백 체인. 절대 예외 전파 안 함.
@@ -3566,6 +3599,30 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
 
     if _blackout_48:
         st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 🌐 외국인 수급 자동 연동 (pykrx) — 실패 시 수동 입력 폴백
+    # ══════════════════════════════════════════════════════════════════════
+    _fn_auto = get_foreign_net_kospi()
+    if _fn_auto is not None:
+        st.session_state['_foreign_net_krw'] = _fn_auto
+        st.session_state['_foreign_net_src'] = 'auto'
+    else:
+        # 자동 실패 → 기존 수동값 유지, 출처 표시
+        if st.session_state.get('_foreign_net_krw') is not None:
+            st.session_state.setdefault('_foreign_net_src', 'manual')
+        else:
+            st.session_state['_foreign_net_src'] = 'none'
+
+    # 외인수급 수동 폴백 위젯 (자동 실패 시에만 노출)
+    if st.session_state.get('_foreign_net_src') != 'auto':
+        with st.expander("✍️ 외국인 수급 수동 입력 (KRX 자동조회 실패 시)", expanded=False):
+            st.caption("코스피 외국인 순매수액을 '억원' 단위로 입력 (순매도는 음수). 예: 순매도 1.6조 → -16000")
+            _fn_in = st.number_input("외국인 순매수 (억원)", value=0.0, step=100.0, key="foreign_net_manual_in")
+            if st.button("💾 수급값 적용", key="foreign_net_apply"):
+                st.session_state['_foreign_net_krw'] = float(_fn_in) * 100_000_000  # 억원 → 원
+                st.session_state['_foreign_net_src'] = 'manual'
+                st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════
     # 🤖 5AI Top-Down 레짐 브리핑 패널 (오늘의 AI 코멘트 — 3줄 요약)
@@ -9122,6 +9179,9 @@ with _tab_d1:
                 _dc = _day_info["count"]
 
                 # ── 🛡️ 신규 진입 절대 방어 조건 (시장 폭락 순위 왜곡 차단) ──
+                # ⚠️ V6.1 FINAL CUT — 영구 동결(LOCK-IN). 임계값 변경 금지.
+                #    [종합점수≥70 AND 정배열 AND MACD상승 AND 모멘텀>0]
+                #    "폭락장에선 기회를 놓치더라도 잃지 않는 것이 최우선" — 사령관 지시.
                 # 3일 연속 1위라도 아래 3조건 모두 충족해야 매수 신호 점등.
                 _sw_score   = float(_top1.get('종합점수', 0))
                 _sw_aligned = (str(_top1.get('정배열', '')) == '✅')          # 정배열 O
