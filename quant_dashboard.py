@@ -8902,14 +8902,42 @@ with _tab_d1:
                 _day_info = _get_rotation_day_count(str(_top1['종목코드']))
                 _dc = _day_info["count"]
 
+                # ── 🛡️ 신규 진입 절대 방어 조건 (시장 폭락 순위 왜곡 차단) ──
+                # 3일 연속 1위라도 아래 3조건 모두 충족해야 매수 신호 점등.
+                _sw_score   = float(_top1.get('종합점수', 0))
+                _sw_aligned = (str(_top1.get('정배열', '')) == '✅')          # 정배열 O
+                _sw_macd    = str(_top1.get('MACD', ''))
+                _sw_macd_up = ('상승' in _sw_macd) or ('골든크로스' in _sw_macd)  # MACD 상승
+                _sw_mom     = float(_top1.get('모멘텀(%)', 0))
+
+                _cond1_score = _sw_score >= 70                  # [1] 절대 점수 70점 이상
+                _cond2_align = _sw_aligned                      # [2] 정배열 필수
+                _cond3_trend = _sw_macd_up and _sw_mom > 0      # [3] MACD 상승 AND 모멘텀 양수
+                _switch_ok   = _cond1_score and _cond2_align and _cond3_trend
+
+                # 미충족 사유 수집 (경고 메시지용)
+                _sw_fail = []
+                if not _cond1_score: _sw_fail.append(f"종합점수 {int(_sw_score)}점<70")
+                if not _cond2_align: _sw_fail.append("역배열(정배열 X)")
+                if not _sw_macd_up:  _sw_fail.append(f"MACD {_sw_macd or '하락'}")
+                if _sw_mom <= 0:     _sw_fail.append(f"모멘텀 {_sw_mom:+.1f}%≤0")
+
                 # 일차별 배지 스타일 결정
-                if _dc >= 3:
+                if _dc >= 3 and _switch_ok:
                     _db_bg     = "rgba(52,211,153,0.12)"
                     _db_border = "rgba(52,211,153,0.5)"
                     _db_icon   = "🟢"
                     _db_label  = f"연속 1위: {_dc}일차"
                     _db_msg    = "✨ 스위칭 조건 충족! 오늘 09:30 매수 집행"
                     _db_color  = "#34d399"
+                elif _dc >= 3 and not _switch_ok:
+                    # 3일차 도달했으나 방어 조건 미충족 → 매수 기각(Block)
+                    _db_bg     = "rgba(239,68,68,0.10)"
+                    _db_border = "rgba(239,68,68,0.5)"
+                    _db_icon   = "🚫"
+                    _db_label  = f"연속 1위: {_dc}일차 (신호 기각)"
+                    _db_msg    = "⚠️ 시장 전체 폭락으로 인한 순위 왜곡 방지: 신규 매수 보류 — " + " / ".join(_sw_fail)
+                    _db_color  = "#ef4444"
                 elif _dc == 2:
                     _db_bg     = "rgba(251,191,36,0.09)"
                     _db_border = "rgba(251,191,36,0.45)"
