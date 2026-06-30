@@ -1854,6 +1854,115 @@ def parse_motie_export_text(text):
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 📺 유튜브 원클릭 매크로 분석기 (V6.1 탑다운)
+# ══════════════════════════════════════════════════════════════════════════
+V61_MACRO_SYSTEM_PROMPT = """너는 경제 방송 스크립트를 받아 '매크로 리스크 및 보유 포지션 영향' 관점으로만 정제하는 V6.1 탑다운 분석가다. 감정·전망성 발언·종목 매수 권유는 배제하고, 사실과 시장 변수만 추출한다.
+
+[출력 규칙]
+- 받은 텍스트가 아무리 길어도 반드시 아래 3개 섹션으로만 출력한다.
+- 각 섹션은 3~5개의 글머리 기호(-)로 간결하게 작성한다.
+- 방송에 언급이 없는 항목은 "언급 없음"으로 표기한다(추측 금지).
+- 마크다운 형식으로 출력한다.
+
+### ① 매크로 레짐 변화
+- 환율(원/달러), 미국 금리·연준, 유가(WTI/중동), 인플레 등 핵심 변수의 방향과 임계점 변동만 기술.
+
+### ② 외인/기관 수급 + 섹터 모멘텀
+- 외국인·기관 수급 전망(순매수/순매도 방향).
+- 반도체(HBM·삼성·하이닉스), 조선, 방산 등 섹터별 모멘텀 강도.
+
+### ③ 보유 종목 리스크/기회
+- KODEX AI반도체TOP2+, KoAct 나스닥 등 보유 종목에 미칠 구체적 리스크 vs 기회.
+- 각 항목 끝에 [리스크] 또는 [기회] 태그를 붙인다.
+
+[금지] "오를 것이다 / 사라" 같은 단정·권유. 오직 변수 변화와 영향 경로만 기술한다."""
+
+
+def _extract_youtube_id(url):
+    """유튜브 URL에서 영상 ID 추출. 다양한 포맷 지원. 실패 시 None."""
+    import re as _re_yt
+    if not url or not isinstance(url, str):
+        return None
+    _patterns = [
+        r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})",
+        r"^([A-Za-z0-9_-]{11})$",   # ID 직접 입력
+    ]
+    for _p in _patterns:
+        _m = _re_yt.search(_p, url.strip())
+        if _m:
+            return _m.group(1)
+    return None
+
+
+def fetch_youtube_transcript(url, langs=("ko", "ko-KR", "en")):
+    """youtube-transcript-api로 자막 추출. 반환: (text, error_msg).
+    성공 시 (str, None) / 실패 시 (None, '사유')."""
+    _vid = _extract_youtube_id(url)
+    if not _vid:
+        return None, "유효한 유튜브 URL이 아닙니다. 링크를 확인해 주세요."
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        return None, "youtube-transcript-api 미설치 — requirements.txt에 추가가 필요합니다."
+    try:
+        # 한국어 우선, 없으면 영어 폴백
+        try:
+            _tr = YouTubeTranscriptApi.get_transcript(_vid, languages=list(langs))
+        except Exception:
+            # 자동생성 자막 포함 재시도
+            _list = YouTubeTranscriptApi.list_transcripts(_vid)
+            _tr = None
+            for _lang in langs:
+                try:
+                    _tr = _list.find_transcript([_lang]).fetch()
+                    break
+                except Exception:
+                    continue
+            if _tr is None:
+                _tr = _list.find_generated_transcript(list(langs)).fetch()
+        _text = " ".join(seg.get("text", "") for seg in _tr if seg.get("text"))
+        _text = _text.strip()
+        if not _text:
+            return None, "자막을 추출할 수 없는 영상입니다. 다른 링크를 시도해 주세요."
+        return _text, None
+    except Exception:
+        return None, "자막을 추출할 수 없는 영상입니다. 다른 링크를 시도해 주세요."
+
+
+def analyze_macro_with_claude(transcript, model="claude-opus-4-8"):
+    """추출 자막을 Claude API로 V6.1 탑다운 정제. 반환: (markdown, error_msg)."""
+    if not transcript:
+        return None, "분석할 자막 텍스트가 없습니다."
+    try:
+        _api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        _api_key = ""
+    if not _api_key:
+        return None, "ANTHROPIC_API_KEY 미설정 — secrets에 키를 등록해 주세요."
+    try:
+        import anthropic
+    except ImportError:
+        return None, "anthropic 라이브러리 미설치 — requirements.txt에 추가가 필요합니다."
+    try:
+        _client = anthropic.Anthropic(api_key=_api_key)
+        # 토큰 과다 방지: 너무 길면 앞부분 위주로 자름(약 12,000자)
+        _payload = transcript[:12000]
+        _msg = _client.messages.create(
+            model=model,
+            max_tokens=1500,
+            system=V61_MACRO_SYSTEM_PROMPT,
+            messages=[{"role": "user",
+                       "content": f"아래 경제 방송 스크립트를 V6.1 탑다운 3개 섹션으로 정제하라:\n\n{_payload}"}],
+        )
+        _out = "".join(getattr(_b, "text", "") for _b in _msg.content).strip()
+        if not _out:
+            return None, "Claude 응답이 비어 있습니다. 잠시 후 다시 시도해 주세요."
+        return _out, None
+    except Exception as _e:
+        return None, f"Claude API 호출 실패: {type(_e).__name__} — 키/네트워크/모델명을 확인해 주세요."
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_foreign_net_kospi():
     """코스피 외국인 순매수액(원) — pykrx 자동 조회. 실패 시 None(→수동 폴백).
@@ -3737,6 +3846,45 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
                 st.rerun()
     except Exception:
         st.caption("⚠️ 산자부 수출 패널 일시 비활성 (데이터 지연)")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 📺 유튜브 원클릭 매크로 분석기 (자막 자동추출 → Claude V6.1 정제)
+    # ══════════════════════════════════════════════════════════════════════
+    with st.expander("📺 유튜브 매크로 방송 원클릭 분석 (V6.1 탑다운)", expanded=False):
+        _yt_url = st.text_input(
+            "유튜브 URL 입력",
+            key="yt_macro_url",
+            placeholder="https://www.youtube.com/watch?v=... (박시동·이광수 등 방송)",
+        )
+        if st.button("📡 5AI 매크로 정밀 분석 실행", key="yt_macro_run", type="primary",
+                     use_container_width=True):
+            if not _yt_url.strip():
+                st.warning("먼저 유튜브 URL을 입력해 주세요.")
+            else:
+                with st.spinner("① 자막 추출 중..."):
+                    _yt_text, _yt_err = fetch_youtube_transcript(_yt_url)
+                if _yt_err:
+                    st.error(f"❌ {_yt_err}")
+                else:
+                    st.caption(f"✅ 자막 추출 완료 ({len(_yt_text):,}자) — Claude 정제 중...")
+                    with st.spinner("② Claude V6.1 탑다운 분석 중..."):
+                        _yt_md, _yt_aerr = analyze_macro_with_claude(_yt_text)
+                    if _yt_aerr:
+                        st.error(f"❌ {_yt_aerr}")
+                        with st.expander("📄 추출된 원본 자막 보기 (수동 분석용)", expanded=False):
+                            st.text_area("자막 전문", _yt_text, height=200, key="yt_raw_text")
+                    else:
+                        st.session_state['_yt_last_result'] = _yt_md
+        # 마지막 분석 결과 렌더 (재실행에도 유지)
+        if st.session_state.get('_yt_last_result'):
+            st.markdown(
+                "<div style='background:#0d1117;border:1px solid #334155;border-radius:12px;"
+                "padding:14px 20px;margin-top:8px'>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("##### 🤖 5AI 탑다운 매크로 브리핑")
+            st.markdown(st.session_state['_yt_last_result'])
+            st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
