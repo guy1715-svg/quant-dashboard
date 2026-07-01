@@ -1854,6 +1854,106 @@ def parse_motie_export_text(text):
     return out
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_short_selling_pressure(ticker):
+    """개별 종목 하방 압력 지표 — pykrx 공매도/대차잔고. 절대 예외 전파 안 함.
+    반환: dict(short_ratio, borrow_trend, net, ok) 또는 결측 시 ok=False.
+      short_ratio  : 최근 3일 평균 공매도 거래대금 비중(%)
+      borrow_trend : 대차잔고 증감 추세('증가'/'감소'/'중립'/None)
+      net          : 최근 기간 외국인+기관 합산 순매수액(원, +매수 -매도) 또는 None
+    한국 6자리 종목만 대상. 미국은 ok=False 반환."""
+    _fail = {"short_ratio": None, "borrow_trend": None, "net": None, "ok": False}
+    if not (isinstance(ticker, str) and ticker.isdigit() and len(ticker) == 6):
+        return _fail
+    try:
+        from pykrx import stock as _pk_ss
+        import datetime as _dt_ss
+        _today = _dt_ss.datetime.utcnow() + _dt_ss.timedelta(hours=9)   # KST
+        _end   = _today.strftime("%Y%m%d")
+        _start = (_today - _dt_ss.timedelta(days=12)).strftime("%Y%m%d")
+
+        # ── 공매도 거래 비중(%) — 최근 3영업일 평균 ──
+        _short_ratio = None
+        try:
+            _sdf = _pk_ss.get_shorting_volume_by_date(_start, _end, ticker)
+            if _sdf is not None and not _sdf.empty:
+                # 비중 컬럼 탐색 (버전별 명칭 대응): '비중' 또는 공매도/거래량 직접 계산
+                _rcol = next((c for c in _sdf.columns if "비중" in str(c)), None)
+                if _rcol is not None:
+                    _vals = _sdf[_rcol].dropna().tail(3)
+                    if len(_vals) > 0:
+                        _short_ratio = round(float(_vals.mean()), 2)
+                else:
+                    _scol = next((c for c in _sdf.columns if "공매도" in str(c)), None)
+                    _vcol = next((c for c in _sdf.columns if "거래량" in str(c) and "공매도" not in str(c)), None)
+                    if _scol is not None and _vcol is not None:
+                        _tail = _sdf.tail(3)
+                        _tot = float(_tail[_vcol].sum())
+                        if _tot > 0:
+                            _short_ratio = round(float(_tail[_scol].sum()) / _tot * 100, 2)
+        except Exception:
+            _short_ratio = None
+
+        # ── 대차잔고 증감 추세 ──
+        _borrow_trend = None
+        try:
+            _bdf = _pk_ss.get_shorting_balance_by_date(_start, _end, ticker)
+            if _bdf is not None and not _bdf.empty:
+                _bcol = next((c for c in _bdf.columns if "잔고" in str(c) and ("수량" in str(c) or "주" in str(c))), None)
+                if _bcol is None:
+                    _bcol = next((c for c in _bdf.columns if "잔고" in str(c)), None)
+                if _bcol is not None:
+                    _bvals = _bdf[_bcol].dropna()
+                    if len(_bvals) >= 2:
+                        _delta = float(_bvals.iloc[-1]) - float(_bvals.iloc[0])
+                        _base  = abs(float(_bvals.iloc[0])) or 1.0
+                        _pct   = _delta / _base
+                        _borrow_trend = "증가" if _pct > 0.05 else "감소" if _pct < -0.05 else "중립"
+        except Exception:
+            _borrow_trend = None
+
+        # ── 외국인 + 기관 합산 순매수(원) — 하방 Kill Switch 판정용 ──
+        _net = None
+        try:
+            _ndf = _pk_ss.get_market_trading_value_by_investor(_start, _end, ticker)
+            if _ndf is not None and not _ndf.empty:
+                _ncol = "순매수" if "순매수" in _ndf.columns else _ndf.columns[-1]
+                _sum = 0.0
+                _found = False
+                for _key in ("외국인", "외국인합계", "기관합계", "기관계", "기관"):
+                    if _key in _ndf.index:
+                        _v = float(_ndf.loc[_key, _ncol])
+                        if _v == _v:
+                            _sum += _v
+                            _found = True
+                _net = _sum if _found else None
+        except Exception:
+            _net = None
+
+        _ok = (_short_ratio is not None) or (_borrow_trend is not None) or (_net is not None)
+        return {"short_ratio": _short_ratio, "borrow_trend": _borrow_trend, "net": _net, "ok": _ok}
+    except Exception:
+        return _fail
+
+
+def evaluate_downside_pressure(short_ratio, foreign_inst_net):
+    """하방 압력 Kill Switch 판정.
+    [공매도 비중 > 10% AND 외국인/기관 순매도] → 진입 기각(위험).
+    반환: (is_blocked: bool, level: str, reason: str)
+      level: 'safe'|'watch'|'danger'."""
+    def _num(x):
+        return isinstance(x, (int, float)) and (x == x)
+    _short_hi = _num(short_ratio) and short_ratio > 10.0
+    _net_sell = _num(foreign_inst_net) and foreign_inst_net < 0
+    if _short_hi and _net_sell:
+        return True, "danger", f"공매도 {short_ratio:.1f}% + 수급 순매도 → 하방 압력 위험"
+    if _short_hi:
+        return False, "watch", f"공매도 비중 {short_ratio:.1f}% 과다(단, 수급 방어 중)"
+    if _num(short_ratio):
+        return False, "safe", f"공매도 {short_ratio:.1f}% 정상"
+    return False, "safe", "공매도 데이터 없음"
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_foreign_net_kospi():
     """코스피 외국인 순매수액(원) — pykrx 자동 조회. 실패 시 None(→수동 폴백).
@@ -8841,6 +8941,42 @@ with _tab_d1:
             _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True, rank_history=_kr_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
+            # ── 🔻 하방 압력 스캐너 (공매도 비중 · 대차잔고 · 순매도) ──────────
+            with st.expander("🔻 하방 압력 스캐너 (공매도/대차잔고 — 숏 타겟 회피)", expanded=False):
+                st.caption("상위 활성 ETF의 최근 3일 공매도 비중·대차잔고·수급을 추적. "
+                           "공매도>10% AND 순매도 = 🔴 하방 위험 (진입 기각 대상)")
+                _ds_rows = []
+                for _, _dr in _kr_ranked[_kr_ranked['상태'] == '활성'].head(12).iterrows():
+                    _dcode = str(_dr['종목코드']) if '종목코드' in _dr else str(_dr.get('코드', ''))
+                    _ssd = get_short_selling_pressure(_dcode)
+                    _blk, _lvl, _rsn = evaluate_downside_pressure(_ssd.get('short_ratio'), _ssd.get('net'))
+                    _risk_lbl = {"danger": "🔴 위험", "watch": "🟡 주의", "safe": "🟢 안전"}.get(_lvl, "⚪ N/A")
+                    _ds_rows.append({
+                        '종목명': _dr['ETF명'],
+                        '종합점수': int(_dr.get('종합점수', 0)),
+                        '공매도 비중(%)': _ssd.get('short_ratio') if _ssd.get('short_ratio') is not None else '—',
+                        '대차잔고': _ssd.get('borrow_trend') or '—',
+                        '하방 위험도': _risk_lbl,
+                        '_lvl': _lvl,
+                    })
+                if _ds_rows:
+                    _ds_df = pd.DataFrame(_ds_rows)
+
+                    def _ds_style(row):
+                        if row.get('_lvl') == 'danger':
+                            return ['background-color:rgba(239,68,68,0.14);color:#fca5a5'] * len(row)
+                        if row.get('_lvl') == 'watch':
+                            return ['background-color:rgba(251,191,36,0.10);color:#fde68a'] * len(row)
+                        return [''] * len(row)
+
+                    st.dataframe(
+                        _ds_df.style.apply(_ds_style, axis=1),
+                        use_container_width=True, hide_index=True,
+                        column_config={"_lvl": None},   # 내부 판정 키 숨김
+                    )
+                else:
+                    st.info("공매도 데이터를 불러오지 못했습니다 (KRX 지연 또는 비영업일).")
+
             # ── 🎯 개별종목 스나이핑 리스트 (ETF 선택 가능) ──
             if _kr_top is not None:
                 st.markdown(f"---")
@@ -9260,14 +9396,22 @@ with _tab_d1:
                 _cond1_score = _sw_score >= 70                  # [1] 절대 점수 70점 이상
                 _cond2_align = _sw_aligned                      # [2] 정배열 필수
                 _cond3_trend = _sw_macd_up and _sw_mom > 0      # [3] MACD 상승 AND 모멘텀 양수
-                _switch_ok   = _cond1_score and _cond2_align and _cond3_trend
+
+                # [4] 하방 압력 Kill Switch — 공매도 비중>10% AND 외인/기관 순매도 → 강제 기각
+                _ss = get_short_selling_pressure(str(_top1['종목코드']))
+                _ds_blocked, _ds_level, _ds_reason = evaluate_downside_pressure(
+                    _ss.get("short_ratio"), _ss.get("net"))
+                _cond4_downside = not _ds_blocked               # 하방 위험 아니어야 통과
+
+                _switch_ok = _cond1_score and _cond2_align and _cond3_trend and _cond4_downside
 
                 # 미충족 사유 수집 (경고 메시지용)
                 _sw_fail = []
-                if not _cond1_score: _sw_fail.append(f"종합점수 {int(_sw_score)}점<70")
-                if not _cond2_align: _sw_fail.append("역배열(정배열 X)")
-                if not _sw_macd_up:  _sw_fail.append(f"MACD {_sw_macd or '하락'}")
-                if _sw_mom <= 0:     _sw_fail.append(f"모멘텀 {_sw_mom:+.1f}%≤0")
+                if not _cond1_score:   _sw_fail.append(f"종합점수 {int(_sw_score)}점<70")
+                if not _cond2_align:   _sw_fail.append("역배열(정배열 X)")
+                if not _sw_macd_up:    _sw_fail.append(f"MACD {_sw_macd or '하락'}")
+                if _sw_mom <= 0:       _sw_fail.append(f"모멘텀 {_sw_mom:+.1f}%≤0")
+                if not _cond4_downside: _sw_fail.append(f"🔴 하방 압력 위험({_ds_reason})")
 
                 # 일차별 배지 스타일 결정
                 if _dc >= 3 and _switch_ok:
