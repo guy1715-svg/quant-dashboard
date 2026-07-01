@@ -5628,10 +5628,62 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         _days_collected += 1
 
                 _krx_ok = bool(_pension_daily)
+
+                # ── ①-b KRX raw 실패 시 pykrx 폴백 (실제 연기금 데이터 재시도) ──
+                if not _krx_ok:
+                    _pg_status.caption("①-b pykrx 폴백 — 연기금 순매수 재수집 중...")
+                    try:
+                        from pykrx import stock as _pk_pg
+                        _pk_days = 0
+                        for _mkt_pg2 in (["KOSPI","KOSDAQ"] if _pg_market == "KOSPI+KOSDAQ" else [_pg_market]):
+                            for _date_str in _krx_dates:
+                                if _pk_days >= _pg_days:
+                                    break
+                                try:
+                                    _npdf = _pk_pg.get_market_net_purchases_of_equities(
+                                        _date_str, _date_str, _mkt_pg2, "연기금")
+                                except Exception:
+                                    _npdf = None
+                                if _npdf is None or _npdf.empty:
+                                    continue
+                                _ncol = next((c for c in _npdf.columns if "순매수" in str(c) and "대금" in str(c)), None)
+                                if _ncol is None:
+                                    _ncol = next((c for c in _npdf.columns if "순매수" in str(c)), None)
+                                if _ncol is None:
+                                    continue
+                                # 외국인 순매수(같은 날, 보너스 판정용)
+                                try:
+                                    _fdf = _pk_pg.get_market_net_purchases_of_equities(
+                                        _date_str, _date_str, _mkt_pg2, "외국인")
+                                    _fcol = next((c for c in _fdf.columns if "순매수" in str(c) and "대금" in str(c)), None)
+                                except Exception:
+                                    _fdf, _fcol = None, None
+                                for _tk_idx in _npdf.index:
+                                    _tk6 = str(_tk_idx).strip().zfill(6)
+                                    try:
+                                        _pv = float(_npdf.loc[_tk_idx, _ncol])
+                                    except Exception:
+                                        _pv = 0.0
+                                    if _pv == _pv:
+                                        _pension_daily.setdefault(_tk6, []).append(_pv)
+                                    if _fdf is not None and _fcol is not None and _tk_idx in _fdf.index:
+                                        try:
+                                            _foreigner_daily[_tk6] = _foreigner_daily.get(_tk6, 0.0) + float(_fdf.loc[_tk_idx, _fcol])
+                                        except Exception:
+                                            pass
+                                _pk_days += 1
+                        # pykrx는 최신→과거 역순 수집 → 날짜 오름차순 정렬(연속일 계산 정확성)
+                        for _tk6 in _pension_daily:
+                            _pension_daily[_tk6].reverse()
+                        _krx_ok = bool(_pension_daily)
+                    except ImportError:
+                        pass
+
                 if _krx_ok:
-                    st.success(f"✅ KRX 연기금 실제 데이터 수집 완료 ({_days_collected}일 · {len(_pension_daily)}종목)")
+                    st.success(f"✅ 연기금 실제 데이터 수집 완료 ({len(_pension_daily)}종목)")
                 else:
-                    st.warning("⚠️ KRX API 응답 없음 → 기술적 프록시 모드로 전환합니다.")
+                    st.warning("⚠️ KRX·pykrx 모두 응답 없음 → 기술적 프록시 모드로 전환합니다. "
+                               "(실제 연기금 데이터가 아닌 기술적 근사치이니 참고용으로만 활용하세요)")
 
                 _pg_prog.progress(0.4)
 
@@ -5822,10 +5874,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                 # 분석탭 자동 입력
                                 st.session_state['analysis_ticker'] = _tc
                                 st.session_state['snipe_ticker_input'] = _tc
+                                # 사이드바는 스크립트 상단에서 이미 렌더됨 → rerun으로 갱신 반영
                                 if _added:
-                                    st.success(f"✅ {_tnm}({_tc}) → 관심종목 추가 완료!")
+                                    st.toast(f"✅ {_tnm}({_tc}) 관심종목 추가 완료!", icon="✅")
                                 else:
-                                    st.info(f"ℹ️ {_tnm}({_tc}) 이미 관심종목에 있습니다.")
+                                    st.toast(f"ℹ️ {_tnm}({_tc}) 이미 관심종목에 있습니다.", icon="ℹ️")
+                                st.rerun()
 
             except Exception as _pg_err:
                 st.error(f"연기금 스캔 오류: {_pg_err}")
