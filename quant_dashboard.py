@@ -12022,11 +12022,43 @@ with tab_e:
         # ─── 이중 엔진 현황판 ────────────────────────────────
         st.markdown("#### ⚡ 이중 엔진 현황 — 공격(국장) vs 방어(미장)")
         _acc_h = load_account()
-        _tv_h  = calc_portfolio_value(_acc_h)
-        _pnl_h = _tv_h - _acc_h['initial']
-        _pnl_pct_h = (_pnl_h / _acc_h['initial'] * 100) if _acc_h['initial'] > 0 else 0
+
+        # 계좌를 국장(KR)/미장(US)로 분리 평가 (국장 카드가 미장까지 합산하던 버그 수정)
+        def _value_positions(_positions, _fx):
+            """포지션 리스트의 (현재평가액, 원가) — 모두 KRW. cur는 fetch_ohlcv 최신가."""
+            _val, _cost = 0.0, 0.0
+            for _p in _positions:
+                try:
+                    _pdf = fetch_ohlcv(_p['ticker'], 5)
+                    _cp = float(_pdf['종가'].iloc[-1]) if (_pdf is not None and not _pdf.empty) else float('nan')
+                    if not (_cp == _cp) or _cp <= 0:
+                        _cp = _p['avg_price']
+                except Exception:
+                    _cp = _p['avg_price']
+                _val  += _cp * _p['qty'] * _fx
+                _cost += _p['avg_price'] * _p['qty'] * _fx
+            return _val, _cost
+
+        _usd_krw_h = get_usd_krw()
+        _kr_pos = [p for p in _acc_h.get('positions', []) if is_korean_ticker(p['ticker'])]
+        _us_pos = [p for p in _acc_h.get('positions', []) if not is_korean_ticker(p['ticker'])]
+        _kr_val, _kr_cost = _value_positions(_kr_pos, 1.0)
+        _us_val, _us_cost = _value_positions(_us_pos, _usd_krw_h)
+        _cash_h = _acc_h.get('cash', 0)
+
+        # 국장(공격) = 현금(KRW) + 국내 종목 평가 / 손익은 국내 종목 기준
+        _tv_h      = _cash_h + _kr_val            # 국장 엔진 평가(현금 포함)
+        _pnl_h     = _kr_val - _kr_cost           # 국내 종목 손익
+        _kr_initial = _acc_h['initial'] - _us_cost  # 미장 투입분 제외한 국장 초기자본
+        _kr_initial = _kr_initial if _kr_initial > 0 else _acc_h['initial']
+        _pnl_pct_h = (_pnl_h / _kr_initial * 100) if _kr_initial > 0 else 0
+        # 미장(방어) 실제 평가/손익
+        _us_pnl     = _us_val - _us_cost
+        _us_pnl_pct = (_us_pnl / _us_cost * 100) if _us_cost > 0 else 0
+
         _lm_h = not st.session_state.get('ui_dark', True)
         _profit_c  = ("#166534" if _lm_h else "#39ff14") if _pnl_h >= 0 else ("#991B1B" if _lm_h else "#ff003c")
+        _us_profit_c = ("#166534" if _lm_h else "#39ff14") if _us_pnl >= 0 else ("#991B1B" if _lm_h else "#ff003c")
 
         _eng_l, _eng_r = st.columns(2)
 
@@ -12037,9 +12069,9 @@ with tab_e:
             "<div style='font-size:12px;font-weight:700;color:#3b82f6;margin-bottom:10px'>"
             "🇰🇷 공격 엔진 — 국장 (삼성증권)</div>"
             "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px'>"
-            f"<div><div style='font-size:10px;color:#64748b'>초기자본</div>"
-            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_acc_h['initial']/1e6:.1f}M</div></div>"
-            f"<div><div style='font-size:10px;color:#64748b'>현재 평가</div>"
+            f"<div><div style='font-size:10px;color:#64748b'>초기자본(현금+국내)</div>"
+            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_kr_initial/1e6:.1f}M</div></div>"
+            f"<div><div style='font-size:10px;color:#64748b'>현재 평가(현금+국내)</div>"
             f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_tv_h/1e6:.1f}M</div></div>"
             f"<div><div style='font-size:10px;color:#64748b'>총 손익</div>"
             f"<div style='font-size:16px;font-weight:800;color:{_profit_c}'>{_pnl_h:+,.0f}원</div></div>"
@@ -12078,7 +12110,15 @@ with tab_e:
             "<div><div style='font-size:10px;color:#64748b'>전략</div>"
             "<div style='font-size:11px;color:#f0f4ff'>Buy the Dip ≤1,400원</div></div>"
             "</div>"
-            "<div style='margin-top:12px;padding-top:10px;border-top:1px solid #1e293b'>"
+            + (
+                "<div style='margin-top:10px;padding-top:8px;border-top:1px solid #1e293b'>"
+                "<div style='font-size:10px;color:#64748b;margin-bottom:2px'>미장 실제 보유 평가 / 손익</div>"
+                f"<div style='font-size:13px;font-weight:700;color:#f0f4ff'>{_us_val/1e6:.2f}M "
+                f"<span style='color:{_us_profit_c}'>({_us_pnl:+,.0f}원 · {_us_pnl_pct:+.2f}%)</span></div>"
+                "</div>"
+                if _us_pos else ""
+            )
+            + "<div style='margin-top:12px;padding-top:10px;border-top:1px solid #1e293b'>"
             "<div style='font-size:10px;color:#64748b;margin-bottom:4px'>수익 순환 규칙</div>"
             "<div style='font-size:11px;color:#94a3b8'>익절 수익 30% 달러 파킹 → 환율 ≤1,450 시 매수</div>"
             "</div>"
