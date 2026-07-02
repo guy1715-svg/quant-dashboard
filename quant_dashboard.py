@@ -4185,6 +4185,12 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
             try:
                 _df_cc2 = all_data.get(_t_cc, {}).get('df')
                 if _df_cc2 is None:
+                    # 홈에서 all_data 캐시가 비어있으면 즉석 로드 (시그널 피드 빈칸 방지)
+                    _raw_cc = fetch_ohlcv(_t_cc, 80)
+                    if _raw_cc is not None and len(_raw_cc) >= 20:
+                        _df_cc2 = calc_indicators(_raw_cc)
+                        st.session_state.all_data_cache[_t_cc] = {'name': _n_cc, 'df': _df_cc2}
+                if _df_cc2 is None or len(_df_cc2) < 2:
                     continue
                 _sig_cc = get_signal(_df_cc2)
                 _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
@@ -4264,12 +4270,12 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
                 except Exception:
                     _sc_pool = []
                 if _sc_pool:
-                    st.markdown(f"""
-<div style='background:linear-gradient(135deg,#0f172a,#1e1b4b);border:1px solid #4f46e5;
-border-radius:10px;padding:12px 14px;margin-bottom:8px'>
-  <div style='font-size:11px;font-weight:700;color:#818cf8;margin-bottom:8px'>
-    {_offhours_label} · 내일 공략 AI 시나리오
-  </div>""", unsafe_allow_html=True)
+                    st.markdown(
+                        "<div style='background:linear-gradient(135deg,#0f172a,#1e1b4b);"
+                        "border:1px solid #4f46e5;border-radius:10px;padding:10px 14px;margin-bottom:8px;"
+                        "font-size:11px;font-weight:700;color:#818cf8'>"
+                        f"{_offhours_label} · 내일 공략 AI 시나리오</div>",
+                        unsafe_allow_html=True)
                     for _sci, _scr in enumerate(_sc_pool[:3]):
                         _sc_adx = _scr.get('ADX', 0)
                         _sc_mom = _scr.get('모멘텀(%)', 0)
@@ -4289,7 +4295,6 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
     <div style='font-size:10px;color:#64748b'>RSI {_sc_rsi} · ADX {_sc_adx}</div>
   </div>
 </div>""", unsafe_allow_html=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
                 else:
                     st.info("점수 60 이상 ETF 없음 (장 외 시간이거나 데이터 로딩 중)")
             else:
@@ -10814,7 +10819,6 @@ with tab_e:
 
                 if st.session_state.get(_edit_key, False):
                     with st.container():
-                        st.markdown(f"<div style='background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:12px;margin:6px 0'>", unsafe_allow_html=True)
                         _e1, _e2, _e3, _e4 = st.columns([2, 2, 2, 1])
                         _new_name = _e1.text_input("종목명", value=_pos['name'], key=f"en_{_edit_key}")
                         _new_qty  = _e2.number_input("수량 (주)", value=int(_pos['qty']), min_value=1, key=f"eq_{_edit_key}")
@@ -10823,7 +10827,6 @@ with tab_e:
                             min_value=0.01, format="%.4f" if not is_korean_ticker(_pos['ticker']) else "%.0f",
                             key=f"ea_{_edit_key}"
                         )
-                        _e4.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
                         if _e4.button("💾 저장", key=f"save_{_edit_key}", use_container_width=True):
                             if not _new_name.strip():
                                 st.error("❌ 종목명을 입력하세요.")
@@ -10837,7 +10840,6 @@ with tab_e:
                                 st.session_state[_edit_key] = False
                                 st.success(f"✅ {_new_name} 포지션 업데이트 완료")
                                 st.rerun()
-                        st.markdown("</div>", unsafe_allow_html=True)
 
         st.divider()
 
@@ -11175,15 +11177,18 @@ with tab_e:
                     st.warning("⚠️ 모든 거래기록을 삭제합니다. 정말 삭제하시겠습니까?")
                     _dc1, _dc2 = st.columns(2)
                     if _dc1.button("✅ 확인 삭제", key="confirm_del_yes", use_container_width=True):
+                        _del_ok = False
                         try:
                             _fb_ref("/quant_trades").delete()
                             st.session_state.pop('local_trade_log', None)
                             st.session_state.pop('_trade_log_err', None)
                             st.session_state['_confirm_del_all'] = False
-                            st.success("✅ 전체 거래기록 삭제 완료")
-                            st.rerun()
+                            _del_ok = True
                         except Exception as _de:
                             st.error(f"❌ Firebase 삭제 실패: {_de}\n로그인 상태 또는 Firebase 권한을 확인하세요.")
+                        if _del_ok:   # st.rerun()은 try 밖에서 (예외로 삼켜지지 않도록)
+                            st.success("✅ 전체 거래기록 삭제 완료")
+                            st.rerun()
                     if _dc2.button("❌ 취소", key="confirm_del_no", use_container_width=True):
                         st.session_state['_confirm_del_all'] = False
                         st.rerun()
@@ -11324,7 +11329,7 @@ with tab_e:
             indices = {
                 "코스피": "^KS11",
                 "코스닥": "^KQ11",
-                "코스피200선물": "KSF24.KS",
+                "코스피200(KODEX)": "069500.KS",  # 만료된 KSF24 선물 대신 KODEX200 ETF 대용
                 "S&P500": "^GSPC",
                 "나스닥": "^IXIC",
                 "달러/원": "KRW=X",
@@ -11376,7 +11381,7 @@ with tab_e:
         st.markdown("#### 📈 주요 지수")
         if idx_data:
             # 1행: 국내
-            domestic = ["코스피","코스닥","코스피200선물"]
+            domestic = ["코스피","코스닥","코스피200(KODEX)"]
             # 라이트/다크 모드 색상 분기 헬퍼
             _lm = not st.session_state.get('ui_dark', True)
             _c_up   = "#991B1B" if _lm else "#ff4d6d"
@@ -11830,7 +11835,7 @@ with tab_e:
 
                 with _kis_col2:
                     st.markdown("**📡 관심종목 실시간 현재가**")
-                    for _t, _n in TICKERS[:5]:  # 상위 5개만
+                    for _t, _n in get_watchlist_tickers()[:5]:  # 실제 관심종목 상위 5개
                         if is_korean_ticker(_t):
                             _price_data = kis_get_price(_t)
                             if _price_data:
@@ -11953,17 +11958,18 @@ with tab_e:
             _is_kr = ticker.isdigit() and len(ticker) == 6
             st.markdown("<hr style='margin:4px 0; border-color:#0f1726'>", unsafe_allow_html=True)
 
-        # 요약 통계
+        # 요약 통계 — 상단 표와 동일하게 실제 관심종목 기준으로 집계
         if all_data:
             st.markdown("### 📊 요약 통계")
             c1, c2, c3, c4 = st.columns(4)
-            buy_cnt  = sum(1 for t,_ in TICKERS if t in all_data and
+            _wl_stat = get_watchlist_tickers()
+            buy_cnt  = sum(1 for t,_ in _wl_stat if t in all_data and
                            any(s[1]=='buy' for s in get_signal(all_data[t]['df'])))
-            sell_cnt = sum(1 for t,_ in TICKERS if t in all_data and
+            sell_cnt = sum(1 for t,_ in _wl_stat if t in all_data and
                            any(s[1]=='sell' for s in get_signal(all_data[t]['df'])))
-            oversold = sum(1 for t,_ in TICKERS if t in all_data and
+            oversold = sum(1 for t,_ in _wl_stat if t in all_data and
                            all_data[t]['df'].iloc[-1]['RSI'] <= 35)
-            overbought = sum(1 for t,_ in TICKERS if t in all_data and
+            overbought = sum(1 for t,_ in _wl_stat if t in all_data and
                              all_data[t]['df'].iloc[-1]['RSI'] >= 65)
 
             c1.markdown(f"<div class='metric-card'><div class='label'>매수신호</div><div class='value up'>{buy_cnt}종목</div></div>", unsafe_allow_html=True)
