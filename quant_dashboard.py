@@ -123,18 +123,15 @@ def _check_auth() -> bool:
 
     _is_multi = len(_user_db) > 1  # 사용자가 2명 이상이면 ID 입력 필드 표시
 
-    # ── 로그인 화면 ──
-    st.markdown("""
-    <div style='display:flex;justify-content:center;align-items:center;
-    min-height:70vh;flex-direction:column'>
-    <div style='background:#0d1117;border:1px solid #1e293b;border-radius:20px;
-    padding:48px 56px;text-align:center;max-width:420px;width:100%'>
-    <div style='font-size:48px;margin-bottom:12px'>📊</div>
-    <div style='font-size:24px;font-weight:900;color:#f0f4ff;margin-bottom:6px'>
-    퀀트 관제탑</div>
-    <div style='font-size:13px;color:#64748b;margin-bottom:32px'>
-    접근 권한이 필요합니다</div>
-    """, unsafe_allow_html=True)
+    # ── 로그인 화면 (단일 라인 HTML — 들여쓰기 시 마크다운이 코드블록 처리함) ──
+    st.markdown(
+        "<div style='text-align:center;margin:40px 0 8px'>"
+        "<div style='font-size:48px;margin-bottom:12px'>📊</div>"
+        "<div style='font-size:24px;font-weight:900;color:#f0f4ff;margin-bottom:6px'>퀀트 관제탑</div>"
+        "<div style='font-size:13px;color:#64748b;margin-bottom:20px'>접근 권한이 필요합니다</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     if _is_multi:
         _inp_user = st.text_input("사용자 ID", placeholder="아이디를 입력하세요",
@@ -167,7 +164,6 @@ def _check_auth() -> bool:
         else:
             st.error("❌ ID 또는 비밀번호가 틀렸습니다.")
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
     return False
 
@@ -1084,12 +1080,12 @@ def calc_portfolio_value(acc):
         _fx = 1.0 if _is_kr else _usd_krw
         try:
             df = fetch_ohlcv(pos['ticker'], 5)
-            if df is not None and not df.empty:
-                cur_price = df['종가'].iloc[-1]
-                total += cur_price * pos['qty'] * _fx
-            else:
-                total += pos['avg_price'] * pos['qty'] * _fx
-        except:
+            cur_price = float(df['종가'].iloc[-1]) if (df is not None and not df.empty) else float('nan')
+            # NaN/0/음수 가격이면 평단가로 대체 (총액 NaN 오염 방지)
+            if not (cur_price == cur_price) or cur_price <= 0:
+                cur_price = pos['avg_price']
+            total += cur_price * pos['qty'] * _fx
+        except Exception:
             total += pos['avg_price'] * pos['qty'] * _fx
     return total
 
@@ -1641,7 +1637,7 @@ _MASTER_ETF_DB: dict = {
     "161510": "TIGER 배당성장",
     # 헬스케어
     "143460": "TIGER 헬스케어",
-    "143850": "TIGER 200 헬스케어",
+    "143850": "TIGER 미국S&P500선물",
     # 미국 ETF
     "SPY":  "SPDR S&P500",
     "QQQ":  "Invesco 나스닥100",
@@ -3125,16 +3121,17 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.markdown("""
-    <div style='font-size:11px; color:#64748b; line-height:1.8'>
-    📌 <b>보완 규칙 적용 중</b><br>
-    • R:R 2.0 미만 기각<br>
-    • 손절 -7% 킬스위치<br>
-    • 09:00~09:30 진입 금지<br>
-    • 물타기 절대 금지<br>
-    • 현금 20% 유지
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px; color:#64748b; line-height:1.8'>"
+        "📌 <b>보완 규칙 적용 중</b><br>"
+        "• R:R 2.0 미만 기각<br>"
+        "• 손절 -7% 킬스위치<br>"
+        "• 09:00~09:30 진입 금지<br>"
+        "• 물타기 절대 금지<br>"
+        "• 현금 20% 유지"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 # ── 종목 파싱 — session_state 우선 ──
 def is_korean_ticker(ticker):
@@ -3510,13 +3507,13 @@ _ETF_HOLDINGS_DB = {
     # TIGER 나스닥100
     "133690": [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
     # TIGER K방산&우주
-    "463250": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션"),("267250","HD현대중공업"),("009540","HD한국조선해양"),("000720","현대건설"),("082740","HSD엔진"),("272210","한화시스템")],
+    "463250": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션"),("267250","HD현대"),("009540","HD한국조선해양"),("000720","현대건설"),("082740","HSD엔진"),("272210","한화시스템")],
     # KODEX AI전력핵심설비
-    "487240": [("012450","한화에어로스페이스"),("267250","HD현대중공업"),("042660","한화오션"),("082740","HSD엔진"),("298040","효성중공업"),("009560","현대중공업지주"),("001440","대한전선"),("272210","한화시스템"),("214430","아모텍"),("093240","이구산업")],
-    "098560": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("012450","한화에어로스페이스"),("329180","HD현대중공업"),("267250","HD현대重공업"),("009540","HD한국조선해양")],
+    "487240": [("012450","한화에어로스페이스"),("267250","HD현대"),("042660","한화오션"),("082740","HSD엔진"),("298040","효성중공업"),("009560","현대중공업지주"),("001440","대한전선"),("272210","한화시스템"),("214430","아모텍"),("093240","이구산업")],
+    "098560": [("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("012450","한화에어로스페이스"),("329180","HD현대중공업"),("267250","HD현대"),("009540","HD한국조선해양")],
     "139220": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("096770","SK이노베이션"),("011070","LG이노텍"),("003670","포스코퓨처엠")],
     "305720": [("006400","삼성SDI"),("051910","LG화학"),("247540","에코프로비엠"),("373220","LG에너지솔루션"),("003670","포스코퓨처엠"),("096770","SK이노베이션"),("011070","LG이노텍")],
-    "012450": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("000720","현대건설"),("267250","HD현대중공업"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션")],
+    "012450": [("012450","한화에어로스페이스"),("329180","HD현대중공업"),("000720","현대건설"),("267250","HD현대"),("047810","한국항공우주"),("064350","현대로템"),("042660","한화오션")],
     # 미장 ETF
     "SPY":  [("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("BRK.B","Berkshire"),("LLY","Eli Lilly"),("AVGO","Broadcom"),("JPM","JPMorgan")],
     "QQQ":  [("MSFT","Microsoft"),("AAPL","Apple"),("NVDA","NVIDIA"),("AMZN","Amazon"),("META","Meta"),("GOOGL","Alphabet A"),("TSLA","Tesla"),("AVGO","Broadcom"),("GOOG","Alphabet C"),("COST","Costco")],
@@ -3709,7 +3706,9 @@ def _calc_etf_indicators(ticker_sym, prefetch_df=None):
 
         _delta = _cl.diff(); _gain = _delta.clip(lower=0).rolling(14).mean()
         _loss  = (-_delta.clip(upper=0)).rolling(14).mean()
-        _rsi   = round((100 - 100/(1+_gain/_loss.replace(0,np.nan))).iloc[-1], 1)
+        # 순수 상승장(_loss=0)이면 RSI=100 (NaN 방지: 1e-9 하한)
+        _rsi_raw = (100 - 100/(1 + _gain.iloc[-1] / max(float(_loss.iloc[-1]), 1e-9)))
+        _rsi = round(float(_rsi_raw), 1) if _rsi_raw == _rsi_raw else 50.0
 
         _ema12 = _cl.ewm(span=12).mean(); _ema26 = _cl.ewm(span=26).mean()
         _macd  = _ema12 - _ema26; _signal = _macd.ewm(span=9).mean()
@@ -3901,21 +3900,30 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
     # ══════════════════════════════════════════════════════════════════════
     # 🌐 외국인 수급 자동 연동 (pykrx) — 실패 시 수동 입력 폴백
     # ══════════════════════════════════════════════════════════════════════
-    _fn_auto = get_foreign_net_kospi()
-    if _fn_auto is not None:
-        st.session_state['_foreign_net_krw'] = _fn_auto
-        st.session_state['_foreign_net_src'] = 'auto'
-    else:
-        # pykrx 실패 → KIS 대형주 합산 추정 시도
-        _fn_kis, _fn_hit = get_foreign_net_kospi_kis_estimate()
-        if _fn_kis is not None:
-            st.session_state['_foreign_net_krw'] = _fn_kis
-            st.session_state['_foreign_net_src'] = 'kis_est'
-            st.session_state['_foreign_net_hit'] = _fn_hit
-        elif st.session_state.get('_foreign_net_krw') is not None:
-            st.session_state.setdefault('_foreign_net_src', 'manual')
+    # 수동 입력이 있으면 자동/추정으로 덮어쓰지 않음 (사용자 우선). Firebase 복원 포함.
+    if st.session_state.get('_foreign_net_src') != 'manual':
+        try:
+            _fn_saved = _fb_ref("/foreign_net_manual").get()
+        except Exception:
+            _fn_saved = None
+        if isinstance(_fn_saved, dict) and _fn_saved.get('krw') is not None:
+            st.session_state['_foreign_net_krw'] = float(_fn_saved['krw'])
+            st.session_state['_foreign_net_src'] = 'manual'
+
+    if st.session_state.get('_foreign_net_src') != 'manual':
+        _fn_auto = get_foreign_net_kospi()
+        if _fn_auto is not None:
+            st.session_state['_foreign_net_krw'] = _fn_auto
+            st.session_state['_foreign_net_src'] = 'auto'
         else:
-            st.session_state['_foreign_net_src'] = 'none'
+            # pykrx 실패 → KIS 대형주 합산 추정 시도
+            _fn_kis, _fn_hit = get_foreign_net_kospi_kis_estimate()
+            if _fn_kis is not None:
+                st.session_state['_foreign_net_krw'] = _fn_kis
+                st.session_state['_foreign_net_src'] = 'kis_est'
+                st.session_state['_foreign_net_hit'] = _fn_hit
+            elif st.session_state.get('_foreign_net_krw') is None:
+                st.session_state['_foreign_net_src'] = 'none'
 
     # KIS 추정 출처 안내
     if st.session_state.get('_foreign_net_src') == 'kis_est':
@@ -3930,9 +3938,24 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
             st.caption("코스피 외국인 순매수액을 '억원' 단위로 입력 (순매도는 음수). 예: 순매도 1.6조 → -16000\n"
                        "출처: 네이버 금융 → 투자자별 매매동향 → 코스피 외국인")
             _fn_in = st.number_input("외국인 순매수 (억원)", value=0.0, step=100.0, key="foreign_net_manual_in")
-            if st.button("💾 수급값 적용", key="foreign_net_apply"):
-                st.session_state['_foreign_net_krw'] = float(_fn_in) * 100_000_000  # 억원 → 원
+            _fnb1, _fnb2 = st.columns(2)
+            if _fnb1.button("💾 수급값 적용", key="foreign_net_apply", use_container_width=True):
+                _krw_val = float(_fn_in) * 100_000_000  # 억원 → 원
+                st.session_state['_foreign_net_krw'] = _krw_val
                 st.session_state['_foreign_net_src'] = 'manual'
+                try:
+                    _fb_ref("/foreign_net_manual").set({'krw': _krw_val,
+                        'date': datetime.now().strftime("%Y-%m-%d %H:%M")})
+                except Exception:
+                    pass
+                st.rerun()
+            if _fnb2.button("🔄 자동으로 되돌리기", key="foreign_net_auto", use_container_width=True):
+                st.session_state.pop('_foreign_net_src', None)
+                st.session_state.pop('_foreign_net_krw', None)
+                try:
+                    _fb_ref("/foreign_net_manual").delete()
+                except Exception:
+                    pass
                 st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════
@@ -5795,7 +5818,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
                 # ── ① KRX 직접 API로 최근 N일 연기금 순매수 수집 ──
                 _pg_status.caption("① KRX 직접 API — 연기금 순매수 수집 중...")
-                _today_pg = datetime.today()
+                _today_pg = datetime.utcnow() + timedelta(hours=9)   # KST (서버 UTC 대비)
                 _krx_dates = []
                 for _dd in range(_pg_days * 2 + 5):
                     _cand = (_today_pg - timedelta(days=_dd)).strftime('%Y%m%d')
@@ -5828,21 +5851,29 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                         if _code_col is None or _pen_col is None:
                             continue  # 이 날 데이터 구조가 다름
 
+                        def _parse_num_signed(_x):
+                            """콤마 제거 후 부호 보존 파싱. 빈칸/'-'만 있으면 0. (음수 부호 파괴 금지)"""
+                            _s = str(_x).replace(',', '').strip()
+                            if _s in ('', '-', 'nan', 'None'):
+                                return 0.0
+                            try:
+                                return float(_s)
+                            except (ValueError, TypeError):
+                                return 0.0
+
                         for _, _rw in _df_krx.iterrows():
                             _tk = str(_rw[_code_col]).strip().zfill(6)
-                            try:
-                                _pv = float(str(_rw[_pen_col]).replace(',','').replace('-','0') or 0)
-                            except Exception:
-                                _pv = 0.0
-                            try:
-                                _fv = float(str(_rw.get(_for_col, 0)).replace(',','').replace('-','0') or 0) if _for_col else 0.0
-                            except Exception:
-                                _fv = 0.0
+                            _pv = _parse_num_signed(_rw[_pen_col])
+                            _fv = _parse_num_signed(_rw.get(_for_col, 0)) if _for_col else 0.0
                             _pension_daily.setdefault(_tk, []).append(_pv)
                             _foreigner_daily[_tk] = _foreigner_daily.get(_tk, 0.0) + _fv
 
                         _days_collected += 1
 
+                # KRX raw는 today→past(내림차순) 수집 → 오름차순으로 뒤집어야
+                # 연속일 계산(reversed 최신부터)이 정확 (pykrx 티어와 동일 기준)
+                for _tk6 in _pension_daily:
+                    _pension_daily[_tk6].reverse()
                 _krx_ok = bool(_pension_daily)
 
                 # ── ①-b KRX raw 실패 시 pykrx 폴백 (실제 연기금 데이터 재시도) ──
@@ -6556,11 +6587,11 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             # 추가 종목
             ("145020","휴젤"),("066970","엘앤에프"),("373220","LG에너지솔루션"),
             ("278280","천보"),("207940","삼성바이오로직스"),("000660","SK하이닉스"),
-            ("018290","레이"),("039980","리켐"),("950130","코오롱티슈진"),
+            ("018290","레이"),("039980","리켐"),("950160","코오롱티슈진"),
             ("054540","삼양옵틱스"),("084370","유진테크"),("115390","락앤락"),
             ("058610","에스씨엔지니어링"),("078340","컴투스"),("060310","3S"),
             ("089790","제이씨케미칼"),("043370","피에이치에이"),("094840","슈프리마"),
-            ("053980","에이스테크"),("060250","NHN KCP"),("041960","블리자드"),
+            ("053980","에이스테크"),("060250","NHN KCP"),("041960","코미팜"),
             ("108860","셀바스AI"),("950200","파나시아"),("192820","코스맥스"),
             ("131970","두산테스나"),("054080","큐렉소"),("096530","씨젠"),
             ("145720","덴티움"),("253450","스튜디오드래곤"),("950160","코오롱티슈진"),
@@ -6665,17 +6696,17 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         KR_SECTOR_ETF_LIST = [
             ("091160","KODEX 반도체"),("395160","KODEX AI반도체TOP2+"),
             ("396500","TIGER Fn반도체TOP10"),("457450","KODEX AI테크TOP10"),
-            ("381170","TIGER AI&로봇액티브"),
+            ("381170","TIGER 미국테크TOP10 INDXX"),
             ("463250","TIGER K방산&우주"),("329200","TIGER 방산"),
             ("364980","TIGER 조선TOP10"),("453810","KODEX 조선해양"),
             ("487240","KODEX AI전력핵심설비"),("455890","KODEX 원자력"),
             ("140710","TIGER 원자력테마"),("411060","ACE KRX금현물"),
             ("305720","KODEX 2차전지산업"),("371460","TIGER 2차전지테마"),
             ("143460","TIGER 헬스케어"),("266410","KODEX 바이오"),
-            ("227550","TIGER 200 헬스케어"),
+            ("227550","TIGER 200 산업재"),
             ("266360","KODEX 200생활소비재"),("157490","TIGER 소비재"),
             ("069500","KODEX 200"),("102110","TIGER 200"),
-            ("229200","KODEX 코스닥150"),("261220","KODEX 코스닥150레버리지"),
+            ("229200","KODEX 코스닥150"),("261220","KODEX WTI유선물(H)"),
             ("140550","TIGER 금융"),("102970","KODEX 은행"),
             ("357870","TIGER 리츠부동산인프라"),("329750","KODEX 한국부동산리츠인프라"),
         ]
@@ -7472,13 +7503,14 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             return ['']*len(row)
 
         _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
+        # helper 컬럼(_grade/_streak/_chg)은 스타일 판정용으로 유지하되,
+        # column_order로 표시에서 제외 (Styler.hide는 st.dataframe에서 무시됨)
         st.dataframe(
             _disp_df[_visible_cols + ['_grade', '_streak', '_chg']]
-            .style
-            .apply(_row_style, axis=1)
-            .hide(subset=['_grade', '_streak', '_chg'], axis='columns'),
+            .style.apply(_row_style, axis=1),
             use_container_width=True,
             hide_index=True,
+            column_order=_visible_cols,
         )
 
         # ══════════════════════════════════════════════════════
@@ -8986,7 +9018,7 @@ with _tab_d1:
         ("161510", "TIGER 배당성장"),
         # ── 헬스케어 / 바이오 ──
         ("143460", "TIGER 헬스케어"),
-        ("143850", "TIGER 200 헬스케어"),
+        ("143850", "TIGER 미국S&P500선물"),
     ]
     _KR_ETF_LIST = [(c, n) for c, n in _KR_ETF_LIST if c.isdigit() and len(c) == 6]
 
@@ -9150,7 +9182,7 @@ with _tab_d1:
                 "금/원자재":   ["411060","132030"],
                 "채권":        ["308620"],
                 "배당":        ["266160","161510"],
-                "헬스케어":    ["143460","143850"],
+                "헬스케어":    ["143460"],
             }
 
             if _kr_cat != "전체":
