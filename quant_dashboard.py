@@ -2499,7 +2499,9 @@ def calc_entry_point(df, preset=None):
         target2 = round(target1 * 1.07)
 
     risk   = entry - stoploss
-    reward = target1 - entry
+    # R:R은 '최종 목표(target2)' 기준 — 손절 7% 대비 목표 ~14%면 2.0 달성.
+    # (1차 목표만 쓰면 R:R이 구조적으로 ~1.1로 고정돼 '진입 불가'만 나옴)
+    reward = target2 - entry
     rr     = round(reward / risk, 2) if risk > 0 else 0
     # cur == 0 방어 (ZeroDivision)
     gap_pct = round((entry - cur) / cur * 100, 1) if cur > 0 else 0.0
@@ -4359,8 +4361,16 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                 _wl_scored = []
                 for _wt, _wn in _wl_cc2:
                     try:
-                        _wsym = _wt + ".KS" if (_wt.isdigit() and len(_wt) == 6) else _wt
-                        _wdf = _yf_wl.Ticker(_wsym).history(period="5d", interval="1d")
+                        # 한국 6자리: .KS(코스피) → 실패 시 .KQ(코스닥) 폴백
+                        if _wt.isdigit() and len(_wt) == 6:
+                            _wdf = None
+                            for _sfx in ('.KS', '.KQ'):
+                                _tmp = _yf_wl.Ticker(_wt + _sfx).history(period="5d", interval="1d")
+                                if _tmp is not None and len(_tmp) >= 2:
+                                    _wdf = _tmp
+                                    break
+                        else:
+                            _wdf = _yf_wl.Ticker(_wt).history(period="5d", interval="1d")
                         if _wdf is None or len(_wdf) < 2:
                             continue
                         _wcl = _wdf['Close']
@@ -4485,9 +4495,12 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                     if _ts_key not in st.session_state:
                         st.session_state[_ts_key] = False
                     _ts_active = st.session_state[_ts_key]
-                    # 평균가 돌파 시 자동 트레일링 스탑 제안
-                    if _pnl_pct_p3 >= 0 and not _ts_active:
+                    # 평균가 돌파 시 자동 트레일링 스탑 '최초 1회'만 제안
+                    # (사용자가 수동으로 끄면 다시 강제 ON 하지 않음)
+                    _ts_sug_key = f"{_ts_key}_suggested"
+                    if _pnl_pct_p3 > 0 and not st.session_state.get(_ts_sug_key):
                         st.session_state[_ts_key] = True
+                        st.session_state[_ts_sug_key] = True
                         _ts_active = True
 
                     # 카드 렌더링 — V9.1: 퀵 액션 바 상단 배치
@@ -4540,7 +4553,7 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
     </div>
     <div style='text-align:right'>
       <div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div>
-      <div style='font-size:12px;color:{_pnl_color}'>{"+{:,.0f}".format(_pnl_abs_p3) if _pnl_abs_p3>=0 else "{:,.0f}".format(_pnl_abs_p3)}원</div>
+      <div style='font-size:12px;color:{_pnl_color}'>{"+" if _pnl_abs_p3>=0 else "-"}{_fmt_p3(abs(_pnl_abs_p3))}</div>
     </div>
   </div>
   <div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'>
@@ -5100,15 +5113,14 @@ padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;
                     "신호 강화 또는 지지선 근접 시 재진입 검토하세요."
                 ]
 
-            # ── 분석 기록 자동 저장 (종목 변경 또는 프리셋 변경 시) ──
-            _log_key = f"{sel_ticker}_{st.session_state.analysis_preset}_{_ep['rr']}"
-            if st.session_state.get('_last_analysis_key') != _log_key:
-                st.session_state['_last_analysis_key'] = _log_key
+            # ── 분석 기록 저장 (사용자가 명시적으로 누를 때만 — 자동 남발 방지) ──
+            if st.button("💾 이 분석 기록에 저장", key=f"save_log_{sel_ticker}", use_container_width=True):
                 save_analysis_log(
                     sel_ticker, sel_name, _vd_label, _ep['rr'],
                     _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
-                    preset=st.session_state.analysis_preset, score=0, source="분석탭"
+                    preset=st.session_state.analysis_preset, score=_buy_cnt, source="분석탭"
                 )
+                st.toast(f"✅ {sel_name} 분석 기록 저장됨", icon="💾")
 
             _vd_check = "✅" if _vd_icon == "🟢" else "⚠️" if _vd_icon == "🟡" else "❌"
             st.markdown(f"""
@@ -5317,13 +5329,15 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
 
             # ── 수동 조정 ──
             with st.expander("✏️ 수동 조정", expanded=False):
-                _unit  = get_currency(sel_ticker)
-                _step  = 100 if is_korean_ticker(sel_ticker) else 1
+                _unit   = get_currency(sel_ticker)
+                _is_kr_m = is_korean_ticker(sel_ticker)
+                _step   = 100.0 if _is_kr_m else 0.01     # US는 센트 단위
+                # 종목별 key → 종목 전환 시 이전 값이 남지 않고 새 타점이 반영됨
                 lc1, lc2, lc3, lc4 = st.columns(4)
-                entry_price   = lc1.number_input(f"매수가 ({_unit})", value=int(entry_price) if entry_price else 0, step=_step)
-                stop_price    = lc2.number_input(f"손절가 ({_unit})", value=int(stop_price)  if stop_price  else 0, step=_step)
-                target1_price = lc3.number_input(f"1차 목표 ({_unit})", value=int(target1_price) if target1_price else 0, step=_step)
-                target2_price = lc4.number_input(f"2차 목표 ({_unit})", value=int(target2_price) if target2_price else 0, step=_step)
+                entry_price   = lc1.number_input(f"매수가 ({_unit})",   value=float(entry_price or 0),   step=_step, key=f"madj_entry_{sel_ticker}")
+                stop_price    = lc2.number_input(f"손절가 ({_unit})",   value=float(stop_price or 0),    step=_step, key=f"madj_stop_{sel_ticker}")
+                target1_price = lc3.number_input(f"1차 목표 ({_unit})", value=float(target1_price or 0), step=_step, key=f"madj_t1_{sel_ticker}")
+                target2_price = lc4.number_input(f"2차 목표 ({_unit})", value=float(target2_price or 0), step=_step, key=f"madj_t2_{sel_ticker}")
 
             # ══════════════════════════════════════════
             # 4. PERFORMANCE PROJECTION CARD
@@ -5470,26 +5484,24 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                 if ticker not in all_data:
                     continue
                 with st.expander(f"📊 {name} ({ticker}) 분석", expanded=False):
-                    btn = st.button(f"{name} 분석", key=f"btn_{ticker}")
-                    if btn:
+                    _ai_cache_key = f"_ai_result_{ticker}"
+                    if st.button(f"{name} 분석", key=f"btn_{ticker}"):
                         prompt = build_prompt(all_data[ticker]['df'], name, ticker)
                         with st.spinner(f'{name} 분석 중...'):
                             try:
                                 res = _gemini_safe_call(_b2_model, _B2_SYSTEM + '\n\n' + prompt)
-                                _ai_txt = res.text
-                                st.markdown(f"<div class='gemini-box'>{_ai_txt}</div>",
-                                            unsafe_allow_html=True)
-                                # 결과 텍스트 복사/다운로드
-                                st.download_button(
-                                    "📋 분석 결과 저장",
-                                    data=_ai_txt,
-                                    file_name=f"AI분석_{name}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                                    mime="text/plain",
-                                    key=f"dl_ai_{ticker}",
-                                    use_container_width=True,
-                                )
+                                st.session_state[_ai_cache_key] = res.text   # 결과 캐싱(rerun 유지)
                             except Exception as e:
                                 st.error(f"오류: {e}")
+                    # 캐시된 결과 렌더 (다운로드 버튼 클릭=rerun 에도 유지)
+                    _ai_txt = st.session_state.get(_ai_cache_key)
+                    if _ai_txt:
+                        st.markdown(f"<div class='gemini-box'>{_ai_txt}</div>", unsafe_allow_html=True)
+                        st.download_button(
+                            "📋 분석 결과 저장", data=_ai_txt,
+                            file_name=f"AI분석_{name}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                            mime="text/plain", key=f"dl_ai_{ticker}", use_container_width=True,
+                        )
 
 
     # ══════════════════════════════════════════
@@ -11041,14 +11053,17 @@ with tab_e:
         if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
                      type="primary", disabled=(not _cash_ok or _entry_blocked)):
             _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
-            _cost  = _net_b * _buy_qty
-            _acc['cash'] -= _cost
+            _buy_fx = 1.0 if is_korean_ticker(_bt) else _usd_krw   # 미국주식은 원화로 환산 차감
+            _cost  = _net_b * _buy_qty          # native 통화(원 or $)
+            _acc['cash'] -= _cost * _buy_fx     # 현금은 항상 KRW
+            # 평단가는 native 통화로 저장 (US는 센트 보존 → 정수 round 금지)
+            _avg_ndigits = 0 if is_korean_ticker(_bt) else 2
             _pos_exist = get_position(_acc, _bt)
             if _pos_exist:
                 _old_v = _pos_exist['avg_price'] * _pos_exist['qty']
                 _new_v = _net_b * _buy_qty
                 _pos_exist['qty']      += _buy_qty
-                _pos_exist['avg_price'] = round((_old_v + _new_v) / _pos_exist['qty'])
+                _pos_exist['avg_price'] = round((_old_v + _new_v) / _pos_exist['qty'], _avg_ndigits)
             else:
                 _acc['positions'].append({
                     'ticker': _bt, 'name': _bn,
