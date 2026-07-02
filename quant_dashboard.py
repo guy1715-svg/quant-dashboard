@@ -63,8 +63,40 @@ def _get_user_db() -> dict:
         pass
     return {}
 
+_AUTH_TOKEN_DAYS = 14   # 자동 로그인 유지 기간
+
+def _make_auth_token(uid: str, pw: str) -> str:
+    """uid.expiry.sig 형태 서명 토큰 — 비밀번호를 키로 HMAC 서명(위조 불가)."""
+    import hmac, hashlib, base64, time
+    _exp = int(time.time()) + _AUTH_TOKEN_DAYS * 86400
+    _msg = f"{uid}.{_exp}"
+    _sig = hmac.new(pw.encode(), _msg.encode(), hashlib.sha256).hexdigest()[:32]
+    _raw = f"{_msg}.{_sig}"
+    return base64.urlsafe_b64encode(_raw.encode()).decode()
+
+def _verify_auth_token(token: str, user_db: dict):
+    """토큰 검증 → 유효 시 uid 반환, 아니면 None. 만료/위조/사용자변경 시 무효."""
+    import hmac, hashlib, base64, time
+    try:
+        _raw = base64.urlsafe_b64decode(token.encode()).decode()
+        _uid, _exp, _sig = _raw.rsplit(".", 2)
+        if int(_exp) < int(time.time()):
+            return None                       # 만료
+        _pw = user_db.get(_uid, "")
+        if not _pw:
+            return None                       # 사용자 없음
+        _expect = hmac.new(_pw.encode(), f"{_uid}.{_exp}".encode(),
+                           hashlib.sha256).hexdigest()[:32]
+        if hmac.compare_digest(_sig, _expect):
+            return _uid
+    except Exception:
+        pass
+    return None
+
+
 def _check_auth() -> bool:
-    """다중 사용자 세션 인증. 미로그인 시 로그인 폼 렌더링 후 st.stop()."""
+    """다중 사용자 세션 인증. 미로그인 시 로그인 폼 렌더링 후 st.stop().
+    새로고침 유지: URL 쿼리파라미터의 서명 토큰으로 자동 로그인."""
     if st.session_state.get('_auth_ok'):
         return True
 
@@ -75,6 +107,19 @@ def _check_auth() -> bool:
         st.session_state['_auth_ok'] = True
         st.session_state['_username'] = 'default'
         return True
+
+    # ── 자동 로그인: URL 토큰 검증 (새로고침 유지) ──
+    try:
+        _tok = st.query_params.get("t", "")
+    except Exception:
+        _tok = ""
+    if _tok:
+        _uid_ok = _verify_auth_token(_tok, _user_db)
+        if _uid_ok:
+            st.session_state['_auth_ok']   = True
+            st.session_state['_username']  = _uid_ok
+            st.session_state['_auth_time'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+            return True
 
     _is_multi = len(_user_db) > 1  # 사용자가 2명 이상이면 ID 입력 필드 표시
 
@@ -111,6 +156,11 @@ def _check_auth() -> bool:
             st.session_state['_auth_ok']   = True
             st.session_state['_username']  = _uid
             st.session_state['_auth_time'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+            # 새로고침 유지용 서명 토큰을 URL에 저장 (14일)
+            try:
+                st.query_params["t"] = _make_auth_token(_uid, _expected_pw)
+            except Exception:
+                pass
             st.rerun()
         elif not _uid:
             st.error("❌ 사용자 ID를 입력하세요.")
@@ -2871,6 +2921,11 @@ with st.sidebar:
                           'op_positions', 'watchlist_data']
         for _k in _keys_to_clear:
             st.session_state.pop(_k, None)
+        # 자동 로그인 토큰 제거 (로그아웃 확실히 유지)
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         st.rerun()
 
     st.markdown("---")
