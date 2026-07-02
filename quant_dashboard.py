@@ -1896,6 +1896,23 @@ def parse_motie_export_text(text):
     return out
 
 
+def save_motie_manual(data: dict):
+    """산자부 수동 입력값을 Firebase에 영구 저장(세션 소실 대비). 예외 무시."""
+    try:
+        _fb_ref("/motie_manual").set(data)
+    except Exception:
+        pass
+
+
+def load_motie_manual() -> dict:
+    """Firebase에서 산자부 수동 입력값 복원. 없으면 {}."""
+    try:
+        _d = _fb_ref("/motie_manual").get()
+        return _d if isinstance(_d, dict) else {}
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_short_selling_pressure(ticker):
     """개별 종목 하방 압력 지표 — pykrx 공매도/대차잔고. 절대 예외 전파 안 함.
@@ -2034,8 +2051,12 @@ def fetch_motie_exports():
     """산자부 6월 수출 데이터 — 우선순위 폴백 체인. 절대 예외 전파 안 함.
     1) 세션 수동입력(_motie_manual)  2) 보도자료/뉴스 크롤링(뼈대)  3) 실패 → None
     반환: dict(total, semi, semi_yoy, date, source) 또는 None."""
-    # ── 1) 수동 입력 우선 (발표 직후 사용자가 직접 입력) ──
+    # ── 1) 수동 입력 우선 (세션 → 없으면 Firebase 복원) ──
     _man = st.session_state.get("_motie_manual")
+    if not (isinstance(_man, dict) and any(_man.get(k) is not None for k in ("total", "semi", "semi_yoy"))):
+        _man = load_motie_manual()   # 세션 소실 시 Firebase에서 복원
+        if isinstance(_man, dict) and any(_man.get(k) is not None for k in ("total", "semi", "semi_yoy")):
+            st.session_state["_motie_manual"] = _man
     if isinstance(_man, dict) and any(_man.get(k) is not None for k in ("total", "semi", "semi_yoy")):
         return {**{"total": None, "semi": None, "semi_yoy": None, "date": ""}, **_man, "source": "수동입력"}
 
@@ -3903,14 +3924,16 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
                 if _errs:
                     st.error("🚨 입력 오류:\n\n- " + "\n- ".join(_errs))
                 else:
-                    st.session_state["_motie_manual"] = {
+                    _motie_payload = {
                         "total": _total_v,
                         "semi": _semi_v,
                         "semi_yoy": _yoy_v,
                         "date": datetime.now().strftime("%Y-%m-%d"),
                     }
+                    st.session_state["_motie_manual"] = _motie_payload
+                    save_motie_manual(_motie_payload)   # Firebase 영구 저장(재접속 유지)
                     fetch_motie_exports.clear()
-                    st.success("✅ 산자부 수치 적용 완료")
+                    st.success("✅ 산자부 수치 적용 완료 (영구 저장됨)")
                     st.rerun()
     except Exception:
         st.caption("⚠️ 산자부 수출 패널 일시 비활성 (데이터 지연)")
