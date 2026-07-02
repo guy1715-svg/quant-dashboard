@@ -5522,26 +5522,29 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                 _hsrc = _hr.get('출처', '')
                 _hpre = _hr.get('프리셋', '')
                 _hsc  = _hr.get('점수', 0)
-                st.markdown(f"""
-<div style='background:{_hvb};border:1px solid {_hvc}30;border-radius:10px;
-padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center'>
-  <div>
-    <span style='font-weight:700;font-size:13px;color:#f0f4ff'>{_hr.get("종목명","?")}</span>
-    <span style='color:#64748b;font-size:11px;margin-left:6px'>{_hr.get("종목코드","")}</span>
-    <span style='background:#1e293b;color:#64748b;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px'>{_hsrc} · {_hpre}</span>
-    <div style='font-size:11px;color:#64748b;margin-top:3px'>
-      {_hr.get("날짜","")} {_hr.get("시간","")[:5]}
-      {'&nbsp;·&nbsp;진입 <b style="color:#fbbf24">' + f"{_hentry:,.0f}" + '</b>' if _hentry > 0 else ''}
-      {'&nbsp;·&nbsp;손절 <b style="color:#f43f5e">' + f"{_hstop:,.0f}" + '</b>' if _hstop > 0 else ''}
-      {'&nbsp;·&nbsp;목표 <b style="color:#34d399">' + f"{_ht1:,.0f}" + '</b>' if _ht1 > 0 else ''}
-      {'&nbsp;·&nbsp;점수 <b style="color:#fbbf24">' + str(_hsc) + '</b>' if _hsc > 0 else ''}
-    </div>
-  </div>
-  <div style='text-align:right'>
-    <div style='font-size:13px;font-weight:800;color:{_hvc}'>{_hv}</div>
-    <div style='font-size:12px;color:#64748b'>R:R <b style="color:{_hvc}">{_hrr}</b></div>
-  </div>
-</div>""", unsafe_allow_html=True)
+                # 상세(진입/손절/목표/점수) 조합 — 값 있는 것만
+                _det = f'{_hr.get("날짜","")} {_hr.get("시간","")[:5]}'
+                if _hentry > 0: _det += f'&nbsp;·&nbsp;진입 <b style="color:#fbbf24">{_hentry:,.0f}</b>'
+                if _hstop  > 0: _det += f'&nbsp;·&nbsp;손절 <b style="color:#f43f5e">{_hstop:,.0f}</b>'
+                if _ht1    > 0: _det += f'&nbsp;·&nbsp;목표 <b style="color:#34d399">{_ht1:,.0f}</b>'
+                if _hsc    > 0: _det += f'&nbsp;·&nbsp;점수 <b style="color:#fbbf24">{_hsc}</b>'
+                # ⚠️ 단일 라인 HTML — 줄바꿈/들여쓰기 시 st.markdown이 </div>를 텍스트로 출력함
+                _card = (
+                    f"<div style='background:{_hvb};border:1px solid {_hvc}30;border-radius:10px;"
+                    f"padding:10px 14px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center'>"
+                    f"<div>"
+                    f"<span style='font-weight:700;font-size:13px;color:#f0f4ff'>{_hr.get('종목명','?')}</span>"
+                    f"<span style='color:#64748b;font-size:11px;margin-left:6px'>{_hr.get('종목코드','')}</span>"
+                    f"<span style='background:#1e293b;color:#64748b;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px'>{_hsrc} · {_hpre}</span>"
+                    f"<div style='font-size:11px;color:#64748b;margin-top:3px'>{_det}</div>"
+                    f"</div>"
+                    f"<div style='text-align:right'>"
+                    f"<div style='font-size:13px;font-weight:800;color:{_hvc}'>{_hv}</div>"
+                    f"<div style='font-size:12px;color:#64748b'>R:R <b style=\"color:{_hvc}\">{_hrr}</b></div>"
+                    f"</div>"
+                    f"</div>"
+                )
+                st.markdown(_card, unsafe_allow_html=True)
 
     # ══════════════════════════════════════════
     # 탭 4: 추천 스캐너
