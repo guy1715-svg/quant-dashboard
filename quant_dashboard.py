@@ -484,6 +484,48 @@ def kis_get_investor(ticker):
         pass
     return None
 
+def kis_get_org_net_daily(ticker, days=10):
+    """종목별 일별 '기관 순매수 수량' 리스트 — KIS FHKST01010900(외인기관 추정).
+    반환: (org_list_oldest_first, foreign_total) 또는 (None, 0).
+    org_list: 최근 days일의 기관 순매수(오래된→최신 순). 연기금은 기관에 포함됨."""
+    try:
+        _token = kis_get_token()
+        if not _token:
+            return None, 0
+        _key    = st.secrets["KIS_APP_KEY"]
+        _secret = st.secrets["KIS_APP_SECRET"]
+        _res = _requests.get(_KIS_URL_INVESTOR, headers={
+            "authorization": f"Bearer {_token}",
+            "appkey":        _key,
+            "appsecret":     _secret,
+            "tr_id":         "FHKST01010900",
+        }, params={
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd":         ticker,
+        }, timeout=5)
+        _out = _res.json().get("output", [])
+        if not (_out and isinstance(_out, list)):
+            return None, 0
+        _org, _for_tot = [], 0.0
+        for _row in _out[:days]:          # 최신 → 과거 순
+            if not isinstance(_row, dict):
+                continue
+            try:
+                _org.append(float(str(_row.get("orgn_ntby_qty", 0)).replace(",", "") or 0))
+            except (TypeError, ValueError):
+                _org.append(0.0)
+            try:
+                _for_tot += float(str(_row.get("frgn_ntby_qty", 0)).replace(",", "") or 0)
+            except (TypeError, ValueError):
+                pass
+        if not _org:
+            return None, 0
+        _org.reverse()                    # 오래된 → 최신 (연속일 계산용)
+        return _org, _for_tot
+    except Exception:
+        return None, 0
+
+
 def kis_available():
     """KIS API 사용 가능 여부 확인"""
     try:
@@ -5679,11 +5721,30 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                     except ImportError:
                         pass
 
-                if _krx_ok:
+                # ── ①-c KRX·pykrx 모두 실패 시 KIS '기관 순매수' 폴백 ──
+                # 연기금 ⊂ 기관. KIS는 순수 연기금 분리를 못 하므로 기관 전체 순매수로 대체.
+                _kis_mode = False
+                if not _krx_ok and kis_available():
+                    _pg_status.caption("①-c KIS 폴백 — 기관 순매수 수집 중...")
+                    _kis_hit = 0
+                    for _utk, _unm, _umkt in _universe:
+                        _org_list, _for_tot = kis_get_org_net_daily(str(_utk), _pg_days)
+                        if _org_list:
+                            _pension_daily[str(_utk).zfill(6)] = _org_list
+                            _foreigner_daily[str(_utk).zfill(6)] = _for_tot
+                            _kis_hit += 1
+                    if _kis_hit > 0:
+                        _krx_ok = True
+                        _kis_mode = True
+
+                if _krx_ok and _kis_mode:
+                    st.success(f"✅ KIS 기관 순매수 데이터 수집 완료 ({len(_pension_daily)}종목) "
+                               "— ※ 순수 연기금이 아닌 '기관 전체'(연기금 포함) 기준입니다.")
+                elif _krx_ok:
                     st.success(f"✅ 연기금 실제 데이터 수집 완료 ({len(_pension_daily)}종목)")
                 else:
-                    st.warning("⚠️ KRX·pykrx 모두 응답 없음 → 기술적 프록시 모드로 전환합니다. "
-                               "(실제 연기금 데이터가 아닌 기술적 근사치이니 참고용으로만 활용하세요)")
+                    st.warning("⚠️ KRX·pykrx·KIS 모두 응답 없음 → 기술적 프록시 모드로 전환합니다. "
+                               "(실제 수급 데이터가 아닌 기술적 근사치이니 참고용으로만 활용하세요)")
 
                 _pg_prog.progress(0.4)
 
@@ -5796,7 +5857,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
                 _pg_prog.progress(1.0)
                 _pg_status.caption(f"✅ 스캔 완료 — {len(_pg_results)}종목 탐지")
-                _mode_label = "🏛️ 연기금 실제순매수" if _krx_ok else "📊 기술적 기관매집 프록시"
+                _mode_label = ("🏦 KIS 기관 순매수(연기금 포함)" if _kis_mode
+                               else "🏛️ 연기금 실제순매수" if _krx_ok
+                               else "📊 기술적 기관매집 프록시")
 
                 if not _pg_results:
                     _reason = " | ".join(f"{k} {v}개" for k, v in _fail_counts.items())
@@ -9993,8 +10056,25 @@ with _tab_d1:
             _win_months = sum(1 for r in _m_rets if r > 0)
             _win_rate   = round(_win_months / len(_m_rets) * 100, 1) if _m_rets.size > 0 else 0
 
+            # ── 이번 달(진행 중) 추천 종목 — 최근 3개월 완료분 모멘텀 기준 ──
+            _next_pick = None
+            try:
+                _recent = _dates[-3:]
+                _ns = {}
+                for t in _all_tickers:
+                    _rd = dict(zip(_monthly[t]['returns'].index, _monthly[t]['returns']))
+                    _ns[t] = sum(_rd.get(d, 0) for d in _recent)
+                if _ns:
+                    _nb = max(_ns, key=_ns.get)
+                    _next_month = (_dates[-1].to_pydatetime().replace(day=1)
+                                   + timedelta(days=32)).strftime('%Y-%m') if _dates else ''
+                    _next_pick = {'month': _next_month, 'name': _monthly[_nb]['name']}
+            except Exception:
+                _next_pick = None
+
             return {
                 'dates':        _dates[3:],
+                'next_pick':    _next_pick,
                 'portfolio':    [round((v-1)*100, 2) for v in _portfolio[1:]],
                 'portfolio_raw':[round((v-1)*100, 2) for v in _portfolio_raw[1:]],
                 'benchmark':    [round((v-1)*100, 2) for v in _bench[1:]],
@@ -10115,7 +10195,19 @@ with _tab_d1:
                         '전략 누적(%)': f"{_p:+.2f}%",
                         '코스피 누적(%)': f"{_b:+.2f}%",
                     })
+                # 이번 달(진행 중) 추천 — 월봉 미완성이라 누적 수익률은 '진행중'
+                _np = _bt.get('next_pick')
+                if _np and _np.get('name'):
+                    _hist_rows.append({
+                        '월': f"{_np.get('month','')} (진행중)",
+                        '선택 ETF': f"🎯 {_np['name']}",
+                        '전략 누적(%)': "집계중",
+                        '코스피 누적(%)': "집계중",
+                    })
                 st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+                if _np and _np.get('name'):
+                    st.caption(f"🎯 이번 달({_np.get('month','')}) 추천: **{_np['name']}** — "
+                               "월봉이 끝나야 수익률이 확정되므로 누적은 '집계중'으로 표시됩니다.")
 
             if st.button("🔄 백테스팅 재실행", key="bt_rerun"):
                 run_etf_backtest.clear()
