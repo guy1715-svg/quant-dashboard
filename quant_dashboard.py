@@ -2906,6 +2906,71 @@ def _load_kr_stock_list():
 # ══════════════════════════════════════════
 
 with st.sidebar:
+    # ══════════════════════════════════════════════════════════════════
+    # 📌 STICKY 관제 상태 패널 — 모든 탭에서 항상 표시 (사이드바 최상단 고정)
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        _sbv = run_v891_system_check()
+        _sb_black = not _sbv.get('can_enter', True)
+        _sb_krw   = get_usd_krw()
+        _sb_oil   = get_wti_oil()
+        _sb_flow  = st.session_state.get('_foreign_net_krw', None)
+        _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow)
+        if _sb_black:
+            _sbt, _sbc, _sbi = "진입 금지", "#ef4444", "🚫"
+        elif _sb_gate["light"] == "red":
+            _sbt, _sbc, _sbi = "진입 금지", "#ef4444", "🔴"
+        elif _sb_gate["light"] == "amber":
+            _sbt, _sbc, _sbi = "관망", "#f59e0b", "🟡"
+        else:
+            _sbt, _sbc, _sbi = "진입 가능", "#16a34a", "🟢"
+        st.markdown(
+            f"<div style='background:{_sbc}20;border:2px solid {_sbc};border-radius:12px;"
+            f"padding:10px 12px;margin-bottom:8px;text-align:center'>"
+            f"<div style='font-size:26px;line-height:1'>{_sbi}</div>"
+            f"<div style='font-size:17px;font-weight:900;color:{_sbc};margin-top:2px'>{_sbt}</div>"
+            f"</div>", unsafe_allow_html=True)
+        if _sb_black:
+            _al = _sbv.get('alerts', ['이벤트 48시간 이내'])
+            st.error("🚨 " + (_al[0] if _al else "매크로 블랙아웃"))
+        # 핵심 수치 2개 (환율 / 외국인 수급)
+        _skc1, _skc2 = st.columns(2)
+        _skc1.metric("환율", f"{_sb_krw:,.0f}" if isinstance(_sb_krw,(int,float)) else "—",
+                     delta=("경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=1450 else None),
+                     delta_color="inverse")
+        if isinstance(_sb_flow,(int,float)):
+            _skc2.metric("외인", f"{_sb_flow/1e8:+,.0f}억",
+                         delta=("매수" if _sb_flow>0 else "매도"),
+                         delta_color=("normal" if _sb_flow>0 else "inverse"))
+        else:
+            _skc2.metric("외인", "—")
+        # 외국인 수급 수동 입력 (사이드바 고정)
+        with st.expander("✍️ 외인 수급 수동입력", expanded=False):
+            _sbfn = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
+                                    value=0.0, step=100.0, key="sb_fn_in")
+            _sbb1, _sbb2 = st.columns(2)
+            if _sbb1.button("적용", key="sb_fn_apply", use_container_width=True):
+                _v = float(_sbfn) * 100_000_000
+                st.session_state['_foreign_net_krw'] = _v
+                st.session_state['_foreign_net_src'] = 'manual'
+                try:
+                    _fb_ref("/foreign_net_manual").set(
+                        {'krw': _v, 'date': datetime.now().strftime("%Y-%m-%d %H:%M")})
+                except Exception:
+                    pass
+                st.rerun()
+            if _sbb2.button("자동복귀", key="sb_fn_auto", use_container_width=True):
+                st.session_state.pop('_foreign_net_src', None)
+                st.session_state.pop('_foreign_net_krw', None)
+                try:
+                    _fb_ref("/foreign_net_manual").delete()
+                except Exception:
+                    pass
+                st.rerun()
+    except Exception:
+        st.caption("⚠️ 상태 패널 일시 비활성 (데이터 지연)")
+
+    st.markdown("---")
     st.markdown("## ⚙️ 설정")
 
     # ── 세션 정보 + 로그아웃 ──
@@ -3874,6 +3939,20 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
 }
 .card-stop-warn {animation:redBlink 1.2s ease-in-out infinite;}
 .card-profit-high {animation:greenGlow 2s ease-in-out infinite;}
+
+/* 2차 다이어트: 여백 확보 + 지표 폰트 대형화 */
+div[data-testid="stMetric"] {
+  background:#0d1117; border:1px solid #1e293b; border-radius:12px;
+  padding:10px 14px;
+}
+div[data-testid="stMetricValue"] { font-size:1.55rem; font-weight:800; }
+div[data-testid="stMetricLabel"] { font-size:0.78rem; color:#94a3b8; }
+/* 사이드바 Sticky 상태 패널 — 스크롤해도 상단 고정 */
+section[data-testid="stSidebar"] > div:first-child { padding-top:8px; }
+/* 긴급 경고(st.error) 강조 — 큰 폰트·굵게 */
+div[data-testid="stAlert"] { font-size:0.95rem; font-weight:700; border-radius:10px; }
+/* 블록 간 간격 살짝 넓혀 가독성 확보 */
+div[data-testid="stVerticalBlock"] { gap:0.55rem; }
 </style>""", unsafe_allow_html=True)
 
     # ── 상단 상태 바 ──
@@ -3954,38 +4033,10 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
             elif st.session_state.get('_foreign_net_krw') is None:
                 st.session_state['_foreign_net_src'] = 'none'
 
-    # KIS 추정 출처 안내
+    # KIS 추정 출처 안내 (수동 입력창은 사이드바 Sticky 패널로 이동됨)
     if st.session_state.get('_foreign_net_src') == 'kis_est':
-        _fn_v = st.session_state.get('_foreign_net_krw', 0)
-        _dir = "순매수" if _fn_v > 0 else "순매도"
         st.caption(f"🏦 외국인 수급: KIS 대형주 {st.session_state.get('_foreign_net_hit',0)}종목 합산 추정 "
-                   f"→ **{_dir}** (방향 신뢰·규모 근사). 정확값은 아래 수동 입력으로 덮어쓸 수 있습니다.")
-
-    # 외인수급 수동 폴백 위젯 (자동(정밀) 성공 시에만 숨김)
-    if st.session_state.get('_foreign_net_src') not in ('auto',):
-        with st.expander("✍️ 외국인 수급 수동 입력 (정확값 덮어쓰기)", expanded=False):
-            st.caption("코스피 외국인 순매수액을 '억원' 단위로 입력 (순매도는 음수). 예: 순매도 1.6조 → -16000\n"
-                       "출처: 네이버 금융 → 투자자별 매매동향 → 코스피 외국인")
-            _fn_in = st.number_input("외국인 순매수 (억원)", value=0.0, step=100.0, key="foreign_net_manual_in")
-            _fnb1, _fnb2 = st.columns(2)
-            if _fnb1.button("💾 수급값 적용", key="foreign_net_apply", use_container_width=True):
-                _krw_val = float(_fn_in) * 100_000_000  # 억원 → 원
-                st.session_state['_foreign_net_krw'] = _krw_val
-                st.session_state['_foreign_net_src'] = 'manual'
-                try:
-                    _fb_ref("/foreign_net_manual").set({'krw': _krw_val,
-                        'date': datetime.now().strftime("%Y-%m-%d %H:%M")})
-                except Exception:
-                    pass
-                st.rerun()
-            if _fnb2.button("🔄 자동으로 되돌리기", key="foreign_net_auto", use_container_width=True):
-                st.session_state.pop('_foreign_net_src', None)
-                st.session_state.pop('_foreign_net_krw', None)
-                try:
-                    _fb_ref("/foreign_net_manual").delete()
-                except Exception:
-                    pass
-                st.rerun()
+                   f"(방향 신뢰·규모 근사) — 정확값은 사이드바 '외인 수급 수동입력'에서 덮어쓰기")
 
     # ══════════════════════════════════════════════════════════════════════
     # 🤖 5AI Top-Down 레짐 브리핑 패널 (오늘의 AI 코멘트 — 3줄 요약)
