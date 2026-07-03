@@ -7618,15 +7618,82 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             return ['']*len(row)
 
         _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
-        # helper 컬럼(_grade/_streak/_chg)은 스타일 판정용으로 유지하되,
-        # column_order로 표시에서 제외 (Styler.hide는 st.dataframe에서 무시됨)
-        st.dataframe(
-            _disp_df[_visible_cols + ['_grade', '_streak', '_chg']]
-            .style.apply(_row_style, axis=1),
-            use_container_width=True,
-            hide_index=True,
-            column_order=_visible_cols,
-        )
+        # ── 좌: 종목 테이블 / 우: 선택 종목 상세 카드 + 퀵 매매 ──
+        _scan_black = not run_v891_system_check().get('can_enter', True)
+        _tbl_col, _det_col = st.columns([1.6, 1])
+        with _tbl_col:
+            st.dataframe(
+                _disp_df[_visible_cols + ['_grade', '_streak', '_chg']]
+                .style.apply(_row_style, axis=1),
+                use_container_width=True, hide_index=True, column_order=_visible_cols,
+            )
+        with _det_col:
+            _det_opts = {f"{_x['name']} ({_x['ticker']})": _x for _x in _p_list}
+            _det_lbl = st.selectbox("🎯 상세 볼 종목", list(_det_opts.keys()), key="scan_detail_sel")
+            _sx = _det_opts.get(_det_lbl, {})
+            _sx_tk = _sx.get('ticker', '')
+            _sx_kr = is_korean_ticker(_sx_tk) if _sx_tk else True
+            _u = '원' if _sx_kr else '$'
+            _cur = float(_sx.get('현재가', 0) or 0)
+            # 블랙아웃 오버레이 (신규 진입 실수 방지)
+            if _scan_black:
+                st.markdown(
+                    "<div style='background:#2a0505;border:2px solid #ef4444;border-radius:10px;"
+                    "padding:10px 14px;margin-bottom:8px;text-align:center;font-weight:900;"
+                    "color:#ef4444;font-size:14px'>🚫 시장 셧다운 — 신규 진입 불가</div>",
+                    unsafe_allow_html=True)
+            # 상세 지표 카드 (핵심만)
+            _d1, _d2 = st.columns(2)
+            _d1.metric("현재가", f"{_cur:,.0f}{_u}", delta=f"{_sx.get('등락(%)',0):+.1f}%",
+                       delta_color=("normal" if _sx.get('등락(%)',0) >= 0 else "inverse"))
+            _d2.metric("종합점수", f"{_sx.get('점수', _sx.get('score',0))}점", delta=_sx.get('등급',''))
+            _d3, _d4 = st.columns(2)
+            _d3.metric("RSI", f"{_sx.get('RSI','-')}")
+            _d4.metric("거래량비율", f"{_sx.get('거래량비율','-')}%")
+            _d5, _d6 = st.columns(2)
+            _d5.metric("수급(CMF)", f"{_sx.get('CMF','-')}")
+            _d6.metric("5일수익률", f"{_sx.get('5일수익률','-')}%")
+            # 손절/목표 (간이: -7% / +10%)
+            _stop_v = _cur * 0.93; _tgt_v = _cur * 1.10
+            st.caption(f"🛑 손절 {_stop_v:,.0f}{_u} (-7%)  ·  🎯 목표 {_tgt_v:,.0f}{_u} (+10%)")
+            # 퀵 매매
+            _qty_s = st.number_input("수량(주)", min_value=1, value=10, step=1, key="scan_quick_qty")
+            _qb1, _qb2 = st.columns(2)
+            if _qb1.button("🟢 가상 매수", key="scan_quick_buy", use_container_width=True,
+                           type="primary", disabled=(_scan_black or _cur <= 0)):
+                _acc_q = load_account()
+                _fx_q = 1.0 if _sx_kr else get_usd_krw()
+                _net_q = calc_slippage(_cur, True, _sx_kr)
+                _acc_q['cash'] -= _net_q * _qty_s * _fx_q
+                _pex = get_position(_acc_q, _sx_tk)
+                _nd = 0 if _sx_kr else 2
+                if _pex:
+                    _ov = _pex['avg_price'] * _pex['qty']; _nv = _net_q * _qty_s
+                    _pex['qty'] += _qty_s
+                    _pex['avg_price'] = round((_ov + _nv) / _pex['qty'], _nd)
+                else:
+                    _acc_q['positions'].append({'ticker': _sx_tk, 'name': _sx.get('name', _sx_tk),
+                        'qty': _qty_s, 'avg_price': _net_q, 'entry_date': str(pd.Timestamp.now())[:10]})
+                save_account(_acc_q)
+                st.toast(f"✅ {_sx.get('name','')} {_qty_s}주 가상 매수", icon="🟢")
+                st.rerun()
+            if _qb2.button("🔴 가상 매도", key="scan_quick_sell", use_container_width=True,
+                           disabled=(_cur <= 0)):
+                _acc_q = load_account()
+                _pex = get_position(_acc_q, _sx_tk)
+                if not _pex:
+                    st.toast("보유 포지션이 없습니다.", icon="⚠️")
+                else:
+                    _fx_q = 1.0 if _sx_kr else get_usd_krw()
+                    _net_q = calc_slippage(_cur, False, _sx_kr)
+                    _sell_q = min(_qty_s, _pex['qty'])
+                    _acc_q['cash'] += _net_q * _sell_q * _fx_q
+                    _pex['qty'] -= _sell_q
+                    if _pex['qty'] <= 0:
+                        _acc_q['positions'] = [p for p in _acc_q['positions'] if p['ticker'] != _sx_tk]
+                    save_account(_acc_q)
+                    st.toast(f"✅ {_sx.get('name','')} {_sell_q}주 가상 매도", icon="🔴")
+                    st.rerun()
 
         # ══════════════════════════════════════════════════════
         # 🔎 종목별 상세 스코어 — expander로 은닉
