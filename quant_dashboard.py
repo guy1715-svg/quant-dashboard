@@ -7621,16 +7621,35 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── 좌: 종목 테이블 / 우: 선택 종목 상세 카드 + 퀵 매매 ──
         _scan_black = not run_v891_system_check().get('can_enter', True)
         _tbl_col, _det_col = st.columns([1.6, 1])
+        _sel_idx = None
         with _tbl_col:
-            st.dataframe(
-                _disp_df[_visible_cols + ['_grade', '_streak', '_chg']]
-                .style.apply(_row_style, axis=1),
-                use_container_width=True, hide_index=True, column_order=_visible_cols,
-            )
+            _styled = _disp_df[_visible_cols + ['_grade', '_streak', '_chg']].style.apply(_row_style, axis=1)
+            # on_select 지원 버전이면 행 클릭, 아니면 selectbox 폴백
+            try:
+                _evt = st.dataframe(
+                    _styled, use_container_width=True, hide_index=True,
+                    column_order=_visible_cols, key="scan_result_tbl",
+                    on_select="rerun", selection_mode="single-row",
+                )
+                _rows = getattr(getattr(_evt, "selection", None), "rows", None) or \
+                        (_evt.get("selection", {}).get("rows", []) if isinstance(_evt, dict) else [])
+                if _rows:
+                    _sel_idx = _rows[0]
+                _click_ok = True
+            except TypeError:
+                st.dataframe(_styled, use_container_width=True, hide_index=True, column_order=_visible_cols)
+                _click_ok = False
         with _det_col:
             _det_opts = {f"{_x['name']} ({_x['ticker']})": _x for _x in _p_list}
-            _det_lbl = st.selectbox("🎯 상세 볼 종목", list(_det_opts.keys()), key="scan_detail_sel")
-            _sx = _det_opts.get(_det_lbl, {})
+            if _click_ok:
+                st.caption("👈 좌측 테이블에서 종목을 **클릭**하면 상세가 갱신됩니다.")
+                if _sel_idx is not None and 0 <= _sel_idx < len(_p_list):
+                    _sx = _p_list[_sel_idx]
+                else:
+                    _sx = _p_list[0]   # 미선택 시 1위 종목
+            else:
+                _det_lbl = st.selectbox("🎯 상세 볼 종목", list(_det_opts.keys()), key="scan_detail_sel")
+                _sx = _det_opts.get(_det_lbl, {})
             _sx_tk = _sx.get('ticker', '')
             _sx_kr = is_korean_ticker(_sx_tk) if _sx_tk else True
             _u = '원' if _sx_kr else '$'
@@ -7653,9 +7672,29 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             _d5, _d6 = st.columns(2)
             _d5.metric("수급(CMF)", f"{_sx.get('CMF','-')}")
             _d6.metric("5일수익률", f"{_sx.get('5일수익률','-')}%")
-            # 손절/목표 (간이: -7% / +10%)
-            _stop_v = _cur * 0.93; _tgt_v = _cur * 1.10
-            st.caption(f"🛑 손절 {_stop_v:,.0f}{_u} (-7%)  ·  🎯 목표 {_tgt_v:,.0f}{_u} (+10%)")
+            # ── 5AI 정밀 타점 (지지/저항 기반 calc_entry_point) ──
+            _ep_sx = None
+            try:
+                _sdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
+                if _sdf is None and _sx_tk:
+                    _raw_sx = fetch_ohlcv(_sx_tk, 80)
+                    if _raw_sx is not None and len(_raw_sx) >= 20:
+                        _sdf = calc_indicators(_raw_sx)
+                        st.session_state.setdefault('all_data_cache', {})[_sx_tk] = {'name': _sx.get('name',''), 'df': _sdf}
+                if _sdf is not None:
+                    _ep_sx = calc_entry_point(_sdf, st.session_state.get('analysis_preset'))
+            except Exception:
+                _ep_sx = None
+            if _ep_sx and _ep_sx.get('entry'):
+                _e1, _e2, _e3 = st.columns(3)
+                _e1.metric("진입", f"{_ep_sx['entry']:,.0f}{_u}")
+                _e2.metric("손절", f"{_ep_sx['stoploss']:,.0f}{_u}",
+                           delta=f"{(_ep_sx['stoploss']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="inverse")
+                _e3.metric("목표", f"{_ep_sx['target1']:,.0f}{_u}",
+                           delta=f"{(_ep_sx['target1']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="normal")
+                st.caption(f"🎯 R:R **1:{_ep_sx.get('rr',0)}** · {_ep_sx.get('reason','지지/저항 기반')}")
+            else:
+                st.caption("🎯 정밀 타점 계산 불가 (데이터 부족) — 종목을 다시 선택하세요.")
             # 퀵 매매
             _qty_s = st.number_input("수량(주)", min_value=1, value=10, step=1, key="scan_quick_qty")
             _qb1, _qb2 = st.columns(2)
