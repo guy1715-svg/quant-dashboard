@@ -618,7 +618,7 @@ def check_macro_blackout():
             _ev_dt = datetime.strptime(_ev_date, "%Y-%m-%d")
             _diff  = abs((_now - _ev_dt).total_seconds() / 3600)
             if _diff <= 48:
-                return True, f"🚫 매크로 블랙아웃 — {_ev_name}({_ev_date}) {_diff:.0f}시간 이내 (OBSERVE_ONLY)"
+                return True, f"{_ev_name} {_diff:.0f}시간 이내"
         except:
             pass
     return False, ""
@@ -2932,7 +2932,7 @@ with st.sidebar:
             f"</div>", unsafe_allow_html=True)
         if _sb_black:
             _al = _sbv.get('alerts', ['이벤트 48시간 이내'])
-            st.error("🚨 " + (_al[0] if _al else "매크로 블랙아웃"))
+            st.error(f"🚨 매크로 블랙아웃: {_al[0] if _al else '이벤트 임박'}")
         # 핵심 수치 2개 (환율 / 외국인 수급)
         _skc1, _skc2 = st.columns(2)
         _skc1.metric("환율", f"{_sb_krw:,.0f}" if isinstance(_sb_krw,(int,float)) else "—",
@@ -3503,7 +3503,7 @@ _h1.markdown("""
     <span style='font-size:28px; font-weight:800; font-family:"IBM Plex Mono",monospace;
                  background:linear-gradient(90deg,#4da6ff,#a78bfa); -webkit-background-clip:text;
                  -webkit-text-fill-color:transparent'>퀀트 관제탑</span>
-    <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V8.9</span>
+    <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V9.1</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3940,13 +3940,12 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
 .card-stop-warn {animation:redBlink 1.2s ease-in-out infinite;}
 .card-profit-high {animation:greenGlow 2s ease-in-out infinite;}
 
-/* 2차 다이어트: 여백 확보 + 지표 폰트 대형화 */
+/* 2차 다이어트: 여백 확보 + 지표 폰트 대형화 (배경은 테마 CSS에 위임 — 라이트 모드 깨짐 방지) */
 div[data-testid="stMetric"] {
-  background:#0d1117; border:1px solid #1e293b; border-radius:12px;
-  padding:10px 14px;
+  border:1px solid rgba(128,128,128,0.25); border-radius:12px; padding:10px 14px;
 }
 div[data-testid="stMetricValue"] { font-size:1.55rem; font-weight:800; }
-div[data-testid="stMetricLabel"] { font-size:0.78rem; color:#94a3b8; }
+div[data-testid="stMetricLabel"] { font-size:0.78rem; }
 /* 사이드바 Sticky 상태 패널 — 스크롤해도 상단 고정 */
 section[data-testid="stSidebar"] > div:first-child { padding-top:8px; }
 /* 긴급 경고(st.error) 강조 — 큰 폰트·굵게 */
@@ -3975,35 +3974,11 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
                 f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
                 unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # 🟢🟡🔴 전략 방향 STATUS BAR (최상단 1초 판독) — 진입가능/관망/진입금지
-    # ══════════════════════════════════════════════════════════════════════
-    try:
-        _sbar_krw = get_usd_krw()
-        _sbar_oil = get_wti_oil()
-        _sbar_flow = st.session_state.get('_foreign_net_krw', None)
-        _sbar_gate = compute_macro_regime_gate(_sbar_krw, _sbar_oil, _sbar_flow)
-        if _blackout_48:
-            _sb_txt, _sb_c, _sb_ico = "진입 금지 — 매크로 블랙아웃", "#ef4444", "🚫"
-        elif _sbar_gate["light"] == "red":
-            _sb_txt, _sb_c, _sb_ico = "진입 금지 — 리스크오프 레짐", "#ef4444", "🔴"
-        elif _sbar_gate["light"] == "amber":
-            _sb_txt, _sb_c, _sb_ico = "관망 — 분할·신중 대응", "#f59e0b", "🟡"
-        else:
-            _sb_txt, _sb_c, _sb_ico = "진입 가능 — 정상 궤도", "#16a34a", "🟢"
-        st.markdown(
-            f"<div style='background:{_sb_c}18;border:2px solid {_sb_c};border-radius:12px;"
-            f"padding:10px 20px;margin:2px 0 8px 0;display:flex;align-items:center;gap:14px'>"
-            f"<span style='font-size:26px'>{_sb_ico}</span>"
-            f"<span style='font-size:20px;font-weight:900;color:{_sb_c};letter-spacing:-0.5px'>{_sb_txt}</span>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    except Exception:
-        pass
-
+    # (전략 방향 STATUS BAR + 블랙아웃 경고는 사이드바 Sticky 패널로 이전 —
+    #  본문 공간 확보. 블랙아웃 시에만 간결한 1줄 경고를 본문 최상단에 표시.)
     if _blackout_48:
-        st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
+        _al0 = (_v891_home.get('alerts') or ['이벤트 임박'])[0]
+        st.error(f"🚨 매크로 블랙아웃: {_al0} — 신규 진입 불가")
 
     # ══════════════════════════════════════════════════════════════════════
     # 🌐 외국인 수급 자동 연동 (pykrx) — 실패 시 수동 입력 폴백
@@ -4050,24 +4025,12 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
         except Exception:
             _ai_top1 = None
         _brief = generate_ai_briefing(_ai_krw, _ai_flow, _ai_top1)
-        _bl_c  = {"green": "#16a34a", "amber": "#f59e0b", "red": "#ef4444"}[_brief["light"]]
-        _bl_bg = {"green": "#06200f", "amber": "#241a00", "red": "#240606"}[_brief["light"]]
-        _bullets = "".join(
-            f"<li style='margin:5px 0;color:#e2e8f0;line-height:1.55'>{_ln[3:].strip()}</li>"
-            for _ln in _brief["lines"]
-        )
-        st.markdown(
-            f"<div style='background:{_bl_bg};border:2px solid {_bl_c};border-radius:16px;"
-            f"padding:16px 22px;margin:4px 0 8px 0'>"
-            f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
-            f"<span style='font-size:18px'>🤖</span>"
-            f"<span style='font-size:15px;font-weight:900;color:{_bl_c}'>오늘의 5AI 브리핑</span>"
-            f"<span style='margin-left:auto;font-size:13px;font-weight:800;color:{_bl_c}'>{_brief['verdict']}</span>"
-            f"</div>"
-            f"<ul style='margin:0;padding-left:20px;font-size:13.5px'>{_bullets}</ul>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        # 테마(라이트/다크) 자동 대응 — 네이티브 컴포넌트 사용(강제 다크배경 제거)
+        _render_fn = {"green": st.success, "amber": st.warning, "red": st.error}.get(
+            _brief["light"], st.info)
+        _brief_md = (f"**🤖 오늘의 5AI 브리핑 — {_brief['verdict']}**\n\n"
+                     + "\n".join(f"- {_ln[3:].strip()}" for _ln in _brief["lines"]))
+        _render_fn(_brief_md)
     except Exception:
         st.caption("⚠️ 5AI 브리핑 일시 비활성 (데이터 지연)")
 
