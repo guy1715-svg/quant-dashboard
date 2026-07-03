@@ -3896,6 +3896,33 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
                 f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
                 unsafe_allow_html=True)
 
+    # ══════════════════════════════════════════════════════════════════════
+    # 🟢🟡🔴 전략 방향 STATUS BAR (최상단 1초 판독) — 진입가능/관망/진입금지
+    # ══════════════════════════════════════════════════════════════════════
+    try:
+        _sbar_krw = get_usd_krw()
+        _sbar_oil = get_wti_oil()
+        _sbar_flow = st.session_state.get('_foreign_net_krw', None)
+        _sbar_gate = compute_macro_regime_gate(_sbar_krw, _sbar_oil, _sbar_flow)
+        if _blackout_48:
+            _sb_txt, _sb_c, _sb_ico = "진입 금지 — 매크로 블랙아웃", "#ef4444", "🚫"
+        elif _sbar_gate["light"] == "red":
+            _sb_txt, _sb_c, _sb_ico = "진입 금지 — 리스크오프 레짐", "#ef4444", "🔴"
+        elif _sbar_gate["light"] == "amber":
+            _sb_txt, _sb_c, _sb_ico = "관망 — 분할·신중 대응", "#f59e0b", "🟡"
+        else:
+            _sb_txt, _sb_c, _sb_ico = "진입 가능 — 정상 궤도", "#16a34a", "🟢"
+        st.markdown(
+            f"<div style='background:{_sb_c}18;border:2px solid {_sb_c};border-radius:12px;"
+            f"padding:10px 20px;margin:2px 0 8px 0;display:flex;align-items:center;gap:14px'>"
+            f"<span style='font-size:26px'>{_sb_ico}</span>"
+            f"<span style='font-size:20px;font-weight:900;color:{_sb_c};letter-spacing:-0.5px'>{_sb_txt}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
+
     if _blackout_48:
         st.error(f"🚨 매크로 블랙아웃 — {' / '.join(_v891_home.get('alerts',['이벤트 48시간 이내']))}")
 
@@ -3994,63 +4021,64 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
         st.caption("⚠️ 5AI 브리핑 일시 비활성 (데이터 지연)")
 
     # ══════════════════════════════════════════════════════════════════════
-    # 🚦 매크로 레짐 신호등 (최상단 1초 판독) — 환율·유가·외국인수급 게이트
+    # 📇 매크로 핵심 지표 카드 행 — 환율·유가·외국인수급·반도체수출 (대형 폰트)
     # ══════════════════════════════════════════════════════════════════════
-    try:
-        _mg_krw  = get_usd_krw()
-        _mg_oil  = get_wti_oil()
-        _mg_flow = st.session_state.get('_foreign_net_krw', None)   # 있으면 사용, 없으면 부분판정
-        _gate    = compute_macro_regime_gate(_mg_krw, _mg_oil, _mg_flow)
-        _light_c = {"green": "#16a34a", "amber": "#f59e0b", "red": "#ef4444"}[_gate["light"]]
-        _light_bg = {"green": "#06200f", "amber": "#241a00", "red": "#240606"}[_gate["light"]]
+    _me = fetch_motie_exports()
+    _card_krw  = get_usd_krw()
+    _card_oil  = get_wti_oil()
+    _card_flow = st.session_state.get('_foreign_net_krw', None)
+    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
 
-        def _dot(state):
-            _c = {"safe": "#16a34a", "warn": "#f59e0b", "danger": "#ef4444", "unknown": "#475569"}.get(state, "#475569")
-            return f"<span style='display:inline-block;width:9px;height:9px;border-radius:50%;background:{_c};margin-right:5px'></span>"
+    # 환율 — 1,450/1,500 임계 대비 색상
+    if isinstance(_card_krw, (int, float)):
+        _krw_delta = ("🚨 1,500 돌파" if _card_krw >= 1500 else
+                      "⚠️ 경계" if _card_krw >= 1450 else "안정")
+        _mc1.metric("💱 원/달러 환율", f"{_card_krw:,.0f}원",
+                    delta=_krw_delta,
+                    delta_color=("inverse" if _card_krw >= 1450 else "off"))
+    else:
+        _mc1.metric("💱 원/달러 환율", "조회실패")
 
-        _krw_txt  = f"{_mg_krw:,.0f}원" if isinstance(_mg_krw, (int, float)) else "조회실패"
-        _oil_txt  = f"${_mg_oil:.0f}" if isinstance(_mg_oil, (int, float)) else "조회실패"
-        _flow_txt = ("순매수" if _gate["flow"] == "safe" else "순매도" if _gate["flow"] in ("warn", "danger") else "데이터없음")
+    # WTI 유가 — $90/$100 임계
+    if isinstance(_card_oil, (int, float)):
+        _oil_delta = ("🚨 $100 돌파" if _card_oil >= 100 else
+                      "⚠️ 경계" if _card_oil >= 90 else "안정")
+        _mc2.metric("🛢️ WTI 유가", f"${_card_oil:.1f}",
+                    delta=_oil_delta,
+                    delta_color=("inverse" if _card_oil >= 90 else "off"))
+    else:
+        _mc2.metric("🛢️ WTI 유가", "조회실패")
 
-        st.markdown(
-            f"<div style='background:{_light_bg};border:2px solid {_light_c};border-radius:14px;"
-            f"padding:12px 20px;margin:6px 0;display:flex;align-items:center;gap:24px;flex-wrap:wrap'>"
-            f"<div style='font-size:15px;font-weight:900;color:{_light_c}'>{_gate['verdict']}</div>"
-            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['krw'])}환율 <b>{_krw_txt}</b></div>"
-            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['oil'])}WTI <b>{_oil_txt}</b></div>"
-            f"<div style='font-size:13px;color:#cbd5e1'>{_dot(_gate['flow'])}외국인 <b>{_flow_txt}</b></div>"
-            f"<div style='font-size:11px;color:#64748b'>{' · '.join(_gate['reasons']) if _gate['reasons'] else '데이터 수집 중'}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    except Exception:
-        st.caption("⚠️ 매크로 레짐 신호등 일시 비활성 (데이터 지연)")
+    # 외국인 수급 — 순매수/순매도 색상
+    if isinstance(_card_flow, (int, float)):
+        _flow_ok = _card_flow > 0
+        _mc3.metric("🌍 외국인 수급", f"{_card_flow/1e8:+,.0f}억",
+                    delta=("순매수 (게이트 개방)" if _flow_ok else "순매도 (게이트 폐쇄)"),
+                    delta_color=("normal" if _flow_ok else "inverse"))
+    else:
+        _mc3.metric("🌍 외국인 수급", "데이터 없음")
 
-    # ══════════════════════════════════════════════════════════════════════
-    # 📦 산자부 수출 동향 패널 (7/1 발표 대비) — st.columns(3) metric
-    # ══════════════════════════════════════════════════════════════════════
-    try:
-        _me = fetch_motie_exports()
-        _me_c1, _me_c2, _me_c3 = st.columns(3)
-        if _me:
-            _yoy = _me.get("semi_yoy")
-            _yoy_str = f"{_yoy:+.1f}%" if isinstance(_yoy, (int, float)) else "—"
-            _me_c1.metric("📦 총 수출액", _me.get("total") or "—")
-            _me_c2.metric("💾 반도체 수출액", _me.get("semi") or "—")
-            _me_c3.metric("📈 반도체 전년동월비", _yoy_str,
-                          delta=("서프라이즈" if isinstance(_yoy, (int, float)) and _yoy >= 20
-                                 else "둔화" if isinstance(_yoy, (int, float)) and _yoy < 0 else None))
+    # 반도체 수출 전년동월비
+    _yoy = _me.get("semi_yoy") if _me else None
+    if isinstance(_yoy, (int, float)):
+        _mc4.metric("💾 반도체 수출 YoY", f"{_yoy:+.1f}%",
+                    delta=("서프라이즈" if _yoy >= 20 else "둔화" if _yoy < 0 else "보통"),
+                    delta_color=("normal" if _yoy >= 0 else "inverse"))
+    else:
+        _mc4.metric("💾 반도체 수출 YoY", "대기 중")
+
+    # 산자부 총/반도체 수출액 + 수동 입력 — 접기(평소 숨김)
+    with st.expander("📦 산자부 수출 상세 · 수동 입력", expanded=False):
+        if _me and (_me.get("total") or _me.get("semi")):
+            _md1, _md2 = st.columns(2)
+            _md1.metric("총 수출액", _me.get("total") or "—")
+            _md2.metric("반도체 수출액", _me.get("semi") or "—")
             st.caption(f"출처: {_me.get('source','—')}"
                        + (f" · 기준 {_me['date']}" if _me.get("date") else "")
                        + " · 반도체 = 삼성/하이닉스 실적 선행지표")
         else:
-            _me_c1.metric("📦 총 수출액", "대기 중")
-            _me_c2.metric("💾 반도체 수출액", "대기 중")
-            _me_c3.metric("📈 반도체 전년동월비", "대기 중")
-            st.caption("⏳ 산자부 수출 데이터 업데이트 대기 중 — 7/1 오전 발표 예정")
-
-        # 발표 직후 수동 입력(크롤링 실패/지연 대비)
-        with st.expander("✍️ 산자부 수치 수동 입력 (발표 직후)", expanded=False):
+            st.caption("⏳ 산자부 수출 데이터 대기 중 — 발표 후 아래에 직접 입력하세요.")
+        if True:
             _mi1, _mi2, _mi3 = st.columns(3)
             _in_total = _mi1.text_input("총 수출액", key="motie_in_total",
                                         placeholder="예: 568억달러")
@@ -4108,8 +4136,6 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
                     fetch_motie_exports.clear()
                     st.success("✅ 산자부 수치 적용 완료 (영구 저장됨)")
                     st.rerun()
-    except Exception:
-        st.caption("⚠️ 산자부 수출 패널 일시 비활성 (데이터 지연)")
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
