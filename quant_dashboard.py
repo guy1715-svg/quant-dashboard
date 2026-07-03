@@ -6401,12 +6401,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                      or "미국 ETF" in st.session_state.get("scanner_market", ""))
     if _etf_mode_now:
         st.info("ℹ️ ETF 모드에서는 AI 최적화가 적용되지 않습니다. "
-                "개별주(국장 통합/NASDAQ 100) 선택 시 활성화됩니다.")
+                "개별주(국장 통합/미장 핵심) 선택 시 활성화됩니다.")
 
     # ── 스캔 설정 — 메인 화면에 3가지만 노출 (Progressive Disclosure) ──
     _SC_OPTS = [
         "🇰🇷 국장 통합 (거래대금 상위 200)",
-        "🇺🇸 미장 핵심 (NASDAQ 100)",
+        "🇺🇸 미장 핵심 (S&P500+나스닥)",
         "🏦 국내 ETF (핵심 테마)",
         "🌐 미국 ETF (글로벌 섹터)",
     ]
@@ -6481,10 +6481,10 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             "eta": "5~8분",
             "color": "#1e40af",
         },
-        "🇺🇸 미장 핵심 (NASDAQ 100)": {
-            "cnt": "70종목 (NASDAQ 100 핵심 구성종목)",
+        "🇺🇸 미장 핵심 (S&P500+나스닥)": {
+            "cnt": "S&P500 + 나스닥100 병합 (~180종목, 섹터 다양)",
             "src": "yfinance 직접 조회",
-            "eta": "3~5분",
+            "eta": "5~9분",
             "color": "#065f46",
         },
         "🏦 국내 ETF (핵심 테마)": {
@@ -6700,13 +6700,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             ("PAYX","Paychex"),("ODFL","Old Dominion"),("TEAM","Atlassian"),
             ("DASH","DoorDash"),("WDAY","Workday"),("ROP","Roper Tech"),
             ("IDXX","IDEXX"),("GFS","GlobalFoundries"),("ARM","Arm Holdings"),
-            ("MSTR","MicroStrategy"),("HOOD","Robinhood"),("SHOP","Shopify"),
+            ("SHOP","Shopify"),
             ("APP","AppLovin"),("PLTR","Palantir"),("SNOW","Snowflake"),
             ("UBER","Uber"),("COIN","Coinbase"),("NET","Cloudflare"),
-            ("DDOG","Datadog"),("HUBS","HubSpot"),("ZM","Zoom"),
-            ("DOCU","DocuSign"),("BILL","Bill.com"),("RBLX","Roblox"),
-            ("U","Unity Software"),("SOFI","SoFi"),("AFRM","Affirm"),
-            ("IONQ","IonQ"),("QBTS","D-Wave"),("RGTI","Rigetti"),
+            ("DDOG","Datadog"),("HUBS","HubSpot"),("RBLX","Roblox"),
+            # 제거: ZM·DOCU·BILL·U·SOFI·AFRM·MSTR·HOOD·IONQ·QBTS·RGTI
+            #  (양자컴퓨팅 마이크로캡·비(非)나스닥100 하이프주 — 투기성 과다)
         ]
 
         # ── 국내 ETF 핵심 테마 리스트 ──
@@ -6869,8 +6868,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── 4개 옵션 → 스캔 리스트 매핑 ──
         if "국장 통합" in market_type:
             scan_list = KR_TVL200_LIST[:]
-        elif "NASDAQ 100" in market_type:
-            scan_list = NASDAQ100_LIST[:]
+        elif "미장 핵심" in market_type:
+            # S&P500 + 나스닥100 병합·중복제거 → 섹터 다양성 확보(산업/에너지/헬스케어/금융 포함)
+            _us_seen = set(); scan_list = []
+            for _ut, _un in (SP500_LIST + NASDAQ100_LIST):
+                if _ut not in _us_seen:
+                    _us_seen.add(_ut); scan_list.append((_ut, _un))
         elif "국내 ETF" in market_type:
             scan_list = KR_SECTOR_ETF_LIST[:]
         else:  # 미국 ETF (글로벌 섹터)
@@ -6968,34 +6971,40 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             "한전","발전","전력","가스",
         ]
 
-        def _hard_filter(ticker, name, yf_info):
-            """ETF/SPAC/우선주/저변동성 섹터 즉시 차단. True=통과."""
+        def _hard_filter(ticker, name, yf_info, is_us=False):
+            """ETF/SPAC/우선주/저변동성 섹터 즉시 차단. True=통과.
+            is_us=True면 한국시장 전용 섹터/이름 차단(통신·유통·금융·지주 등)은
+            건너뜀 — 미국은 GOOGL/AMZN/META 등이 핵심 타깃이라 섹터 차단 부적절."""
             _name_up = name.upper()
-            # 필터1: 종목명 ETF/SPAC 키워드
-            for kw in _ETF_KEYWORDS:
+            # 필터1: 종목명 ETF/SPAC 키워드 (양 시장 공통)
+            _etf_kw_us = ("ETF","SPAC","ETN","TRUST","FUND")  # 미장은 영문 키워드만
+            _kw_list = _etf_kw_us if is_us else _ETF_KEYWORDS
+            for kw in _kw_list:
                 if kw.upper() in _name_up:
                     return False, f"ETF/SPAC: {kw}"
-            # 필터1-B: 종목명 섹터 키워드 (yfinance 누락 보완)
-            for kw in _BLOCKED_NAME_KEYWORDS:
-                if kw.upper() in _name_up:
-                    return False, f"종목명 섹터차단: {kw}"
-            # 필터2: 한국 우선주 코드 패턴 (5번째 자리 = 5)
-            if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
-                return False, "우선주 코드 패턴"
-            # 필터3: quoteType ETF
+            if not is_us:
+                # 필터1-B: 종목명 섹터 키워드 (한국 전용)
+                for kw in _BLOCKED_NAME_KEYWORDS:
+                    if kw.upper() in _name_up:
+                        return False, f"종목명 섹터차단: {kw}"
+                # 필터2: 한국 우선주 코드 패턴 (5번째 자리 = 5)
+                if ticker.isdigit() and len(ticker) == 6 and ticker[4] == "5":
+                    return False, "우선주 코드 패턴"
+            # 필터3: quoteType ETF (양 시장 공통)
             qt = str(yf_info.get("quoteType","") or "").upper()
             if qt in ("ETF","MUTUALFUND","FUTURE","INDEX"):
                 return False, f"quoteType={qt}"
-            # 필터4: 시총 0/None
+            # 필터4: 시총 0/None (yfinance .info 누락 잦음 → 미장은 통과시킴)
             mktcap = yf_info.get("marketCap", None)
-            if mktcap is None or mktcap == 0:
+            if not is_us and (mktcap is None or mktcap == 0):
                 return False, "시총 0/None"
-            # 필터5: 금지 섹터 (yfinance sector/industry)
-            combined = (str(yf_info.get("sector","") or "") + " " +
-                        str(yf_info.get("industry","") or ""))
-            for blk in _BLOCKED_SECTORS:
-                if blk.lower() in combined.lower():
-                    return False, f"금지섹터: {blk}"
+            # 필터5: 금지 섹터 — 한국 전용 (미장은 섹터 차단 안 함)
+            if not is_us:
+                combined = (str(yf_info.get("sector","") or "") + " " +
+                            str(yf_info.get("industry","") or ""))
+                for blk in _BLOCKED_SECTORS:
+                    if blk.lower() in combined.lower():
+                        return False, f"금지섹터: {blk}"
             return True, ""
 
         def _v89_scanner(df, ticker):
@@ -7032,7 +7041,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             cmf20 = float((mfm * v).rolling(20).sum().iloc[-1] / v.rolling(20).sum().iloc[-1]) if v.rolling(20).sum().iloc[-1] > 0 else 0.0
 
             # yfinance 시총·재무 조회
-            mktcap_b = None; op_income = None; rev_g = None
+            mktcap_b = None; _mktcap_usd = None; op_income = None; rev_g = None
             _is_kr   = is_korean_ticker(ticker)
             _yf_info = {}
             try:
@@ -7043,7 +7052,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             _yf_info = _tmp; break
                     except Exception:
                         continue
-                mktcap_b  = _yf_info.get('marketCap', 0) / 1e8 if _yf_info.get('marketCap') else None
+                _mc_raw   = _yf_info.get('marketCap', 0)
+                mktcap_b  = _mc_raw / 1e8 if _mc_raw else None   # 한국: 억원 단위
+                _mktcap_usd = float(_mc_raw) if _mc_raw else None  # 미국: USD 원값
                 op_income = _yf_info.get('operatingIncome', None)
                 rev_g     = _yf_info.get('revenueGrowth', None)
             except Exception:
@@ -7055,12 +7066,17 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 return False, {'조건': f'블랙리스트: {ticker}', '점수': 0, '등급': 'Filtered'}
 
             # ── 하드 필터: ETF/SPAC/섹터 즉시 차단 ──
-            _hf_ok, _hf_reason = _hard_filter(ticker, name, _yf_info)
+            _hf_ok, _hf_reason = _hard_filter(ticker, name, _yf_info, is_us=(not _is_kr))
             if not _hf_ok:
                 return False, {'조건': f'하드필터: {_hf_reason}', '점수': 0, '등급': 'Filtered'}
 
             # ── 하드 필터: C1 시총 / C2 ATR ──
-            c1_pass = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True
+            if _is_kr:
+                # 한국: 5,000억 ~ 3조원 (중형~대형)
+                c1_pass = (5000 <= mktcap_b <= 30000) if mktcap_b is not None else True
+            else:
+                # 미국: USD 기준 — 초소형만 배제(≥$2B), 상한 없음(메가캡도 통과)
+                c1_pass = (_mktcap_usd >= 2e9) if _mktcap_usd is not None else True
             c2_pass = (atr14 / cur) >= 0.035 if cur > 0 else False
             hard_pass = c1_pass and c2_pass
 
@@ -7073,10 +7089,13 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 '010950','011780','009150','000810','033780','329180','012450','247540',
                 '373220','003670','091990','316140','267250','042700','000100','402340',
             }
-            _is_large_cap = (
-                (mktcap_b is not None and mktcap_b >= 10_000)
-                or (ticker in _KOSPI200)
-            )
+            if _is_kr:
+                _is_large_cap = (
+                    (mktcap_b is not None and mktcap_b >= 10_000)   # 1조원↑
+                    or (ticker in _KOSPI200)
+                )
+            else:
+                _is_large_cap = (_mktcap_usd is not None and _mktcap_usd >= 5e10)  # $50B↑
 
 
             # ── 갭/이격 계산 (과열 방지용) ──
@@ -7195,10 +7214,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             }
             return passed, meta
 
-        # ── 시장 레짐 감지 (KOSPI MA5 vs MA20) ─────────────────────────────────
+        # ── 시장 레짐 감지 — 스캔 시장에 맞는 지수 사용 ───────────────────────
+        # 미장 스캔이면 나스닥(^IXIC), 그 외(국장)는 코스피(^KS11)
+        _reg_idx = "^IXIC" if ("미장" in market_type) else "^KS11"
         try:
             import yfinance as _yf_reg
-            _reg_df = _yf_reg.Ticker("^KS11").history(period="2mo", interval="1d")
+            _reg_df = _yf_reg.Ticker(_reg_idx).history(period="2mo", interval="1d")
             if _reg_df is not None and len(_reg_df) >= 20:
                 _reg_c = _reg_df['Close']
                 _reg_ma5  = float(_reg_c.tail(5).mean())
