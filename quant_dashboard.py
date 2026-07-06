@@ -2250,6 +2250,42 @@ def fetch_motie_exports():
         return None   # 네트워크/파싱 실패 → None (패널은 '대기 중' 출력)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def detect_market_regime_for_strategy():
+    """코스피 지수로 시장 레짐 판정 → 추천 스캔 전략 매핑. 절대 예외 없이 dict 반환.
+    반환: {regime, preset, label, reason}
+      regime: 'crash'(폭락/셧다운) | 'bull'(대세상승) | 'range'(박스권)
+      preset: 'bottom' | 'trend' | 'bounce'  (스캐너 프리셋 키)"""
+    try:
+        import yfinance as _yf_rg
+        _df = _yf_rg.Ticker("^KS11").history(period="3mo", interval="1d")
+        if _df is None or len(_df) < 20:
+            raise ValueError("data")
+        _cl = _df['Close'].dropna()
+        _cur = float(_cl.iloc[-1])
+        _ma20 = float(_cl.tail(20).mean())
+        _ma5  = float(_cl.tail(5).mean())
+        _chg1 = (_cur / float(_cl.iloc[-2]) - 1) * 100 if len(_cl) >= 2 else 0.0
+        _disp = (_cur / _ma20 - 1) * 100 if _ma20 > 0 else 0.0   # 20일선 이격도(%)
+        # 폭락장: 20일선 -3% 이상 하회 OR 당일 -2.5% 이상 급락
+        if _disp <= -3.0 or _chg1 <= -2.5:
+            return {"regime": "crash", "preset": "bottom",
+                    "label": "지수 셧다운/폭락장",
+                    "reason": f"코스피 20일선 {_disp:+.1f}% 이격 (하락 압력)"}
+        # 대세 상승장: 20일선 위 + 5일선>20일선(정배열 초입)
+        if _disp >= 1.0 and _ma5 > _ma20:
+            return {"regime": "bull", "preset": "trend",
+                    "label": "대세 상승장",
+                    "reason": f"코스피 20일선 상단({_disp:+.1f}%) · 정배열"}
+        # 그 외: 박스권/단기조정
+        return {"regime": "range", "preset": "bounce",
+                "label": "박스권 횡보/단기조정",
+                "reason": f"코스피 20일선 근처({_disp:+.1f}%)"}
+    except Exception:
+        return {"regime": "range", "preset": "bounce",
+                "label": "판정 보류(데이터 지연)", "reason": "지수 조회 실패 → 기본값"}
+
+
 def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
     """5AI Top-Down 레짐 브리핑 — 3줄 자동 생성.
     krw: 원/달러 환율(float) / foreign_net_krw: 코스피 외국인 순매수액(원, +매수 -매도)
@@ -6308,9 +6344,8 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     st.divider()
 
     with st.expander("⚙️ 스캐너 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
-        # ── 프리셋 버튼 ──
+        # ── 프리셋: 시장 레짐 기반 자동 추천 라디오 ──
         st.markdown("#### ⚡ 전략 프리셋")
-        _pr1, _pr2, _pr3, _pr4 = st.columns(4)
 
         if 'scan_preset' not in st.session_state:
             st.session_state.scan_preset = None
@@ -6342,18 +6377,36 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         if _preset_etf_lock:
             st.caption("🔒 ETF 모드: 프리셋은 ETF 스캔에 적용되지 않습니다 (스캔 시 자동 무시)")
 
-        if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
-                       type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
-            _apply_preset("bounce"); st.rerun()
-        if _pr2.button("📈 추세매매", key="preset_trend", use_container_width=True,
-                       type="primary" if st.session_state.scan_preset=="trend" else "secondary"):
-            _apply_preset("trend"); st.rerun()
-        if _pr3.button("🎯 바닥확인", key="preset_bottom", use_container_width=True,
-                       type="primary" if st.session_state.scan_preset=="bottom" else "secondary"):
-            _apply_preset("bottom"); st.rerun()
-        if _pr4.button("⚙️ 직접설정", key="preset_custom", use_container_width=True,
-                       type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
-            _apply_preset("custom"); st.rerun()
+        # ── 5AI 레짐 판정 → 추천 전략 ──
+        _rg = detect_market_regime_for_strategy()
+        _rec_preset = _rg["preset"]   # 'bottom' | 'trend' | 'bounce'
+        _rec_extra = " (실매수 금지 · 관망/정찰용)" if _rg["regime"] == "crash" else ""
+
+        # 프리셋 키 ↔ 라디오 라벨 매핑 (추천엔 ✨추천 배지)
+        _preset_keys = ["bounce", "trend", "bottom", "custom"]
+        _base_lbl = {"bounce": "📉 반등매매", "trend": "📈 추세매매",
+                     "bottom": "🎯 바닥확인", "custom": "⚙️ 직접설정"}
+        _radio_opts = [f"{_base_lbl[k]}{'  (✨ 추천)' if k == _rec_preset else ''}" for k in _preset_keys]
+        _lbl_to_key = {opt: k for opt, k in zip(_radio_opts, _preset_keys)}
+
+        # 추천 알림 메시지
+        st.info(f"**5AI 판정: 현재 [{_rg['label']}] 장세입니다.** "
+                f"→ **[{_base_lbl[_rec_preset]}]** 전략을 권장합니다{_rec_extra}.  "
+                f"\n\n📊 {_rg['reason']}", icon="🧭")
+
+        # 기본 index: 기존 선택값 있으면 유지, 없으면 추천 전략
+        _cur_preset = st.session_state.get('scan_preset')
+        _default_key = _cur_preset if _cur_preset in _preset_keys else _rec_preset
+        _default_idx = _preset_keys.index(_default_key)
+
+        _sel_opt = st.radio("전략 선택", _radio_opts, index=_default_idx,
+                            key="scan_preset_radio", horizontal=True,
+                            label_visibility="collapsed")
+        _sel_key = _lbl_to_key[_sel_opt]
+        # 선택이 바뀌면 프리셋 적용
+        if _sel_key != st.session_state.get('scan_preset'):
+            _apply_preset(_sel_key)
+            st.rerun()
 
         _preset_desc = {
             "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발",
@@ -6362,7 +6415,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             "custom": "⚙️ 직접설정 — 아래 체크박스로 조건 선택",
         }
         if st.session_state.scan_preset and not _preset_etf_lock:
-            st.info(_preset_desc[st.session_state.scan_preset])
+            st.caption(_preset_desc[st.session_state.scan_preset])
 
         st.divider()
         # ── 필터 체크박스 (직접설정 시 활성) ────────────────────────────────
