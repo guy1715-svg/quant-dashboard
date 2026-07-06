@@ -1024,9 +1024,15 @@ def _load_trade_log_firebase():
     return []
 
 def save_analysis_log(ticker, name, verdict, rr, entry, stop, target1, target2, preset="", score=0, source="분석탭"):
-    """분석 기록을 Firebase에 저장"""
+    """분석 기록을 Firebase에 저장 (중복 방지: 같은 종목·분·판정은 1회만)."""
     from datetime import datetime as _dt
     now = _dt.now()
+    # ── 중복 방지: 종목코드 + 분(minute) + 판정 + 출처 동일하면 스킵 ──
+    _dedup_key = f"{ticker}_{now.strftime('%Y%m%d_%H%M')}_{verdict}_{source}"
+    _seen = st.session_state.setdefault('_analysis_saved_keys', set())
+    if _dedup_key in _seen:
+        return   # 직전 저장과 동일 → 스킵 (rerun 중복 방지)
+    _seen.add(_dedup_key)
     _row = {
         '날짜':   now.strftime('%Y-%m-%d'),
         '시간':   now.strftime('%H:%M:%S'),
@@ -7862,11 +7868,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                             f"</div>",
                             unsafe_allow_html=True
                         )
-                        save_analysis_log(_stk, _snm, _vd_ov, _ep_ov['rr'],
-                                          _ep_ov['entry'], _ep_ov['stoploss'],
-                                          _ep_ov['target1'], _ep_ov['target2'],
-                                          preset=st.session_state.get('scan_preset',''),
-                                          score=_ssc, source="스캐너드로어")
+                        # (분석 기록 저장은 조회만으로 실행하지 않음 — 무한 중복 방지.
+                        #  저장은 명시적 액션 시에만: 아래 '📌 이 종목 기록 저장' 버튼)
+                        if st.button("📌 이 종목 기록 저장", key=f"ov_save_{_stk}",
+                                     use_container_width=True):
+                            save_analysis_log(_stk, _snm, _vd_ov, _ep_ov['rr'],
+                                              _ep_ov['entry'], _ep_ov['stoploss'],
+                                              _ep_ov['target1'], _ep_ov['target2'],
+                                              preset=st.session_state.get('scan_preset',''),
+                                              score=_ssc, source="스캐너드로어")
+                            st.toast(f"✅ {_snm} 분석 기록 저장", icon="📌")
 
                         # 차트 토글
                         _chart_key_ov = f"ov_chart_{_stk}"
