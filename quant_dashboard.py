@@ -2012,6 +2012,50 @@ def load_motie_manual() -> dict:
         return {}
 
 
+def render_motie_manual_widget(key_prefix="sb_motie"):
+    """산자부 수출 수치 수동 입력 위젯 (사이드바용, 세로 배치 + 검증)."""
+    import re as _re_mv
+    _in_total = st.text_input("총 수출액", key=f"{key_prefix}_total", placeholder="예: 568억달러")
+    _in_semi  = st.text_input("반도체 수출액", key=f"{key_prefix}_semi", placeholder="예: 138억달러")
+    _in_yoy   = st.text_input("반도체 전년동월비(%)", key=f"{key_prefix}_yoy", placeholder="예: 27.6")
+    if st.button("💾 산자부 수치 적용", key=f"{key_prefix}_apply", use_container_width=True):
+        _errs = []
+        _yoy_v = None
+        _yoy_raw = _in_yoy.strip().replace("%", "").replace("+", "")
+        if _yoy_raw:
+            try:
+                _yoy_v = float(_yoy_raw)
+                if not (-100.0 <= _yoy_v <= 1000.0):
+                    _errs.append("증감률은 -100 ~ +1000% 범위여야 합니다"); _yoy_v = None
+            except ValueError:
+                _errs.append("증감률은 % 단위 숫자여야 합니다 (예: 27.6)")
+
+        def _valid_amount(_label, _raw):
+            _raw = _raw.strip()
+            if not _raw:
+                return None
+            if _raw.lstrip().startswith("-"):
+                _errs.append(f"{_label}은 음수 불가"); return None
+            if not _re_mv.search(r"\d", _raw):
+                _errs.append(f"{_label}에 숫자 필요 (예: 568억달러)"); return None
+            return _raw
+
+        _total_v = _valid_amount("총 수출액", _in_total)
+        _semi_v  = _valid_amount("반도체 수출액", _in_semi)
+        if not any([_total_v, _semi_v, _yoy_v is not None]) and not _errs:
+            _errs.append("최소 한 개 이상 입력하세요")
+        if _errs:
+            st.error("🚨 " + " / ".join(_errs))
+        else:
+            _payload = {"total": _total_v, "semi": _semi_v, "semi_yoy": _yoy_v,
+                        "date": datetime.now().strftime("%Y-%m-%d")}
+            st.session_state["_motie_manual"] = _payload
+            save_motie_manual(_payload)
+            fetch_motie_exports.clear()
+            st.success("✅ 산자부 수치 적용 완료")
+            st.rerun()
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_short_selling_pressure(ticker):
     """개별 종목 하방 압력 지표 — pykrx 공매도/대차잔고. 절대 예외 전파 안 함.
@@ -2967,6 +3011,9 @@ with st.sidebar:
                 except Exception:
                     pass
                 st.rerun()
+        # 산자부 수출 수치 수동 입력 (사이드바 고정)
+        with st.expander("📦 산자부 수출 수동입력", expanded=False):
+            render_motie_manual_widget()
     except Exception:
         st.caption("⚠️ 상태 패널 일시 비활성 (데이터 지연)")
 
@@ -3937,8 +3984,9 @@ border-radius:8px;padding:8px 16px;display:flex;justify-content:space-between;al
   0%,100%{box-shadow:0 0 12px 3px #16a34a;}
   50%{box-shadow:0 0 20px 6px #22c55e;}
 }
-.card-stop-warn {animation:redBlink 1.2s ease-in-out infinite;}
-.card-profit-high {animation:greenGlow 2s ease-in-out infinite;}
+/* 깜빡임 제거 → 정적 글로우로 강조 (눈 피로 방지) */
+.card-stop-warn {box-shadow:0 0 12px 2px rgba(239,68,68,0.6);}
+.card-profit-high {box-shadow:0 0 12px 2px rgba(34,197,94,0.5);}
 
 /* 2차 다이어트: 여백 확보 + 지표 폰트 대형화 (배경은 테마 CSS에 위임 — 라이트 모드 깨짐 방지) */
 div[data-testid="stMetric"] {
@@ -3954,9 +4002,17 @@ div[data-testid="stAlert"] { font-size:0.95rem; font-weight:700; border-radius:1
 div[data-testid="stVerticalBlock"] { gap:0.55rem; }
 </style>""", unsafe_allow_html=True)
 
-    # ── 상단 상태 바 ──
-    _sb_cols = st.columns([3, 1, 1, 1, 1])
-    _sb_cols[0].markdown("## 🎯 V9.1 Quant Command Center")
+    # ── 상단 상태 바 (지수 배지와 세로 중앙 정렬) ──
+    try:
+        _sb_cols = st.columns([3, 1, 1, 1, 1], vertical_alignment="center")
+    except TypeError:
+        _sb_cols = st.columns([3, 1, 1, 1, 1])   # 구버전 폴백
+    # H2(##) 대신 여백 없는 인라인 타이틀 → 배지와 같은 수평선 정렬
+    _sb_cols[0].markdown(
+        "<div style='font-size:23px;font-weight:900;color:#f0f4ff;line-height:1.2;margin:0'>"
+        "🎯 V9.1 <span style='background:linear-gradient(90deg,#4da6ff,#a78bfa);"
+        "-webkit-background-clip:text;-webkit-text-fill-color:transparent'>Quant Command Center</span></div>",
+        unsafe_allow_html=True)
     _market_badge = (
         "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>● 장중</span>"
         if _is_market_open else
@@ -3974,11 +4030,8 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
                 f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
                 unsafe_allow_html=True)
 
-    # (전략 방향 STATUS BAR + 블랙아웃 경고는 사이드바 Sticky 패널로 이전 —
-    #  본문 공간 확보. 블랙아웃 시에만 간결한 1줄 경고를 본문 최상단에 표시.)
-    if _blackout_48:
-        _al0 = (_v891_home.get('alerts') or ['이벤트 임박'])[0]
-        st.error(f"🚨 매크로 블랙아웃: {_al0} — 신규 진입 불가")
+    # (전략 방향 · 블랙아웃 경고 · 수동 입력은 모두 사이드바 Sticky 패널로 이전 —
+    #  본문은 데이터 모니터링에만 집중. 여기서는 아무것도 렌더링하지 않음.)
 
     # ══════════════════════════════════════════════════════════════════════
     # 🌐 외국인 수급 자동 연동 (pykrx) — 실패 시 수동 입력 폴백
@@ -4081,80 +4134,13 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
     else:
         _mc4.metric("💾 반도체 수출 YoY", "대기 중")
 
-    # 산자부 총/반도체 수출액 + 수동 입력 — 접기(평소 숨김)
-    with st.expander("📦 산자부 수출 상세 · 수동 입력", expanded=False):
-        if _me and (_me.get("total") or _me.get("semi")):
-            _md1, _md2 = st.columns(2)
-            _md1.metric("총 수출액", _me.get("total") or "—")
-            _md2.metric("반도체 수출액", _me.get("semi") or "—")
-            st.caption(f"출처: {_me.get('source','—')}"
-                       + (f" · 기준 {_me['date']}" if _me.get("date") else "")
-                       + " · 반도체 = 삼성/하이닉스 실적 선행지표")
-        else:
-            st.caption("⏳ 산자부 수출 데이터 대기 중 — 발표 후 아래에 직접 입력하세요.")
-        if True:
-            _mi1, _mi2, _mi3 = st.columns(3)
-            _in_total = _mi1.text_input("총 수출액", key="motie_in_total",
-                                        placeholder="예: 568억달러")
-            _in_semi  = _mi2.text_input("반도체 수출액", key="motie_in_semi",
-                                        placeholder="예: 138억달러")
-            _in_yoy   = _mi3.text_input("반도체 전년동월비(%)", key="motie_in_yoy",
-                                        placeholder="예: 27.6")
-            if st.button("💾 적용", key="motie_apply"):
-                import re as _re_mv
-                _errs = []
-
-                # ── 증감률 검증: %·부호 제거 후 숫자여야 함, -100~+1000 범위 ──
-                _yoy_v = None
-                _yoy_raw = _in_yoy.strip().replace("%", "").replace("+", "")
-                if _yoy_raw:
-                    try:
-                        _yoy_v = float(_yoy_raw)
-                        if not (-100.0 <= _yoy_v <= 1000.0):
-                            _errs.append("증감률은 -100 ~ +1000% 범위의 숫자여야 합니다")
-                            _yoy_v = None
-                    except ValueError:
-                        _errs.append("증감률은 % 단위의 숫자여야 합니다 (예: 27.6)")
-
-                # ── 수출액 검증: 숫자가 1개 이상 포함돼야 함, 음수 금지 ──
-                def _valid_amount(_label, _raw):
-                    _raw = _raw.strip()
-                    if not _raw:
-                        return None
-                    if _raw.lstrip().startswith("-"):
-                        _errs.append(f"{_label}은 음수가 될 수 없습니다")
-                        return None
-                    if not _re_mv.search(r"\d", _raw):
-                        _errs.append(f"{_label}에는 숫자가 포함되어야 합니다 (예: 568억달러)")
-                        return None
-                    return _raw
-
-                _total_v = _valid_amount("총 수출액", _in_total)
-                _semi_v  = _valid_amount("반도체 수출액", _in_semi)
-
-                # 최소 1개 항목은 입력돼야 함
-                if not any([_total_v, _semi_v, _yoy_v is not None]) and not _errs:
-                    _errs.append("최소 한 개 이상의 값을 입력해야 합니다")
-
-                if _errs:
-                    st.error("🚨 입력 오류:\n\n- " + "\n- ".join(_errs))
-                else:
-                    _motie_payload = {
-                        "total": _total_v,
-                        "semi": _semi_v,
-                        "semi_yoy": _yoy_v,
-                        "date": datetime.now().strftime("%Y-%m-%d"),
-                    }
-                    st.session_state["_motie_manual"] = _motie_payload
-                    save_motie_manual(_motie_payload)   # Firebase 영구 저장(재접속 유지)
-                    fetch_motie_exports.clear()
-                    st.success("✅ 산자부 수치 적용 완료 (영구 저장됨)")
-                    st.rerun()
+    # (산자부 총/반도체 상세 + 수동 입력은 사이드바로 이동 — 본문은 카드만 표시)
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
     # ── 4-Panel Layout ──
-    _p1, _p2, _p3, _p4 = st.columns([1, 1.6, 1.4, 1.4])
+    # 관제(_p3) : 차트(_p4) = 약 4 : 6 — 차트가 가로로 더 넓게
+    _p1, _p2, _p3, _p4 = st.columns([1, 1.5, 1.2, 2.0])
 
     # ══════════════════════════════════════════════
     # PANEL 1 — Account Summary + Live Signal Stream
@@ -4480,167 +4466,129 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
 </div>""", unsafe_allow_html=True)
         else:
             for _pos_p3i in _pos_p3:
-                try:
-                    _tk_p3 = _pos_p3i['ticker']
-                    _nm_p3 = _pos_p3i.get('name', _tk_p3)
-                    _qty_p3 = _pos_p3i.get('qty', 0)
-                    _avg_p3 = float(_pos_p3i.get('avg_price', 0))
-                    _is_kr_p3 = is_korean_ticker(_tk_p3)
+                with st.container(border=True):
+                    try:
+                        _tk_p3 = _pos_p3i['ticker']
+                        _nm_p3 = _pos_p3i.get('name', _tk_p3)
+                        _qty_p3 = _pos_p3i.get('qty', 0)
+                        _avg_p3 = float(_pos_p3i.get('avg_price', 0))
+                        _is_kr_p3 = is_korean_ticker(_tk_p3)
 
-                    # 현재가 조회
-                    _cur_p3 = _avg_p3  # fallback
-                    if _tk_p3 in all_data:
-                        _df_p3_raw = all_data[_tk_p3]['df']
-                        _v = _df_p3_raw['종가'].iloc[-1]
-                        if _v and not pd.isna(_v):
-                            _cur_p3 = float(_v)
-                    else:
-                        try:
-                            import yfinance as _yf_p3
-                            _sym_p3 = f"{_tk_p3}.KS" if _is_kr_p3 else _tk_p3
-                            _h_p3 = _yf_p3.Ticker(_sym_p3).history(period="5d")
-                            if isinstance(_h_p3.columns, pd.MultiIndex):
-                                _h_p3.columns = _h_p3.columns.get_level_values(0)
-                            if not _h_p3.empty:
-                                _v3 = _h_p3['Close'].dropna().iloc[-1]
-                                if _v3 and not pd.isna(_v3):
-                                    _cur_p3 = float(_v3)
-                        except Exception:
-                            pass
+                        # 현재가 조회
+                        _cur_p3 = _avg_p3  # fallback
+                        if _tk_p3 in all_data:
+                            _df_p3_raw = all_data[_tk_p3]['df']
+                            _v = _df_p3_raw['종가'].iloc[-1]
+                            if _v and not pd.isna(_v):
+                                _cur_p3 = float(_v)
+                        else:
+                            try:
+                                import yfinance as _yf_p3
+                                _sym_p3 = f"{_tk_p3}.KS" if _is_kr_p3 else _tk_p3
+                                _h_p3 = _yf_p3.Ticker(_sym_p3).history(period="5d")
+                                if isinstance(_h_p3.columns, pd.MultiIndex):
+                                    _h_p3.columns = _h_p3.columns.get_level_values(0)
+                                if not _h_p3.empty:
+                                    _v3 = _h_p3['Close'].dropna().iloc[-1]
+                                    if _v3 and not pd.isna(_v3):
+                                        _cur_p3 = float(_v3)
+                            except Exception:
+                                pass
 
-                    _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
-                    _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
-                    _stop_p3    = _avg_p3 * (1 - _STOP_LOSS_PCT)
-                    _target_p3  = _avg_p3 * 1.08
-                    _t2_p3      = _avg_p3 * 1.15
-                    _eval_p3    = _cur_p3 * _qty_p3
-                    _sym_p3str  = "원" if _is_kr_p3 else "$"
-                    _fmt_p3     = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
+                        _pnl_pct_p3 = (_cur_p3 / _avg_p3 - 1) * 100 if _avg_p3 > 0 else 0
+                        _pnl_abs_p3 = (_cur_p3 - _avg_p3) * _qty_p3
+                        _stop_p3    = _avg_p3 * (1 - _STOP_LOSS_PCT)
+                        _target_p3  = _avg_p3 * 1.08
+                        _t2_p3      = _avg_p3 * 1.15
+                        _eval_p3    = _cur_p3 * _qty_p3
+                        _sym_p3str  = "원" if _is_kr_p3 else "$"
+                        _fmt_p3     = lambda v: f"{int(v):,}{_sym_p3str}" if _is_kr_p3 else f"{_sym_p3str}{v:,.2f}"
 
-                    # 손절/목표 사이 진행률 바 (0%=손절, 100%=1차목표)
-                    _range_p3   = _target_p3 - _stop_p3
-                    _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
-                    _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
-                    _target_hit = _cur_p3 >= _target_p3
-                    # 라이트/다크 모드에 따라 색상 분기
-                    _is_light = not st.session_state.get('ui_dark', True)
-                    if _is_light:
-                        # 라이트: 포레스트 그린 / 크림슨 레드 (형광 대신 차분한 톤)
-                        _pnl_color = "#166534" if _pnl_pct_p3 >= 0 else ("#991B1B" if _stop_warn else "#B91C1C")
-                    else:
-                        # 다크: 형광 그린/레드
-                        _pnl_color = "#39ff14" if _pnl_pct_p3 >= 0 else ("#ff003c" if _stop_warn else "#ef4444")
-                    if _is_light:
-                        _card_border_p3 = "#991B1B" if _stop_warn else ("#166534" if _target_hit else "#CBD5E1")
-                    else:
-                        _card_border_p3 = "#ff003c" if _stop_warn else ("#39ff14" if _target_hit else "#1e3a5f")
+                        # 손절/목표 사이 진행률 바 (0%=손절, 100%=1차목표)
+                        _range_p3   = _target_p3 - _stop_p3
+                        _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
+                        _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
+                        _target_hit = _cur_p3 >= _target_p3
+                        # 라이트/다크 모드에 따라 색상 분기
+                        _is_light = not st.session_state.get('ui_dark', True)
+                        if _is_light:
+                            # 라이트: 포레스트 그린 / 크림슨 레드 (형광 대신 차분한 톤)
+                            _pnl_color = "#166534" if _pnl_pct_p3 >= 0 else ("#991B1B" if _stop_warn else "#B91C1C")
+                        else:
+                            # 다크: 형광 그린/레드
+                            _pnl_color = "#39ff14" if _pnl_pct_p3 >= 0 else ("#ff003c" if _stop_warn else "#ef4444")
+                        if _is_light:
+                            _card_border_p3 = "#991B1B" if _stop_warn else ("#166534" if _target_hit else "#CBD5E1")
+                        else:
+                            _card_border_p3 = "#ff003c" if _stop_warn else ("#39ff14" if _target_hit else "#1e3a5f")
 
-                    # 트레일링 스탑 상태
-                    _ts_key = f"trailing_stop_{_tk_p3}"
-                    if _ts_key not in st.session_state:
-                        st.session_state[_ts_key] = False
-                    _ts_active = st.session_state[_ts_key]
-                    # 평균가 돌파 시 자동 트레일링 스탑 '최초 1회'만 제안
-                    # (사용자가 수동으로 끄면 다시 강제 ON 하지 않음)
-                    _ts_sug_key = f"{_ts_key}_suggested"
-                    if _pnl_pct_p3 > 0 and not st.session_state.get(_ts_sug_key):
-                        st.session_state[_ts_key] = True
-                        st.session_state[_ts_sug_key] = True
-                        _ts_active = True
+                        # 트레일링 스탑 상태
+                        _ts_key = f"trailing_stop_{_tk_p3}"
+                        if _ts_key not in st.session_state:
+                            st.session_state[_ts_key] = False
+                        _ts_active = st.session_state[_ts_key]
+                        # 평균가 돌파 시 자동 트레일링 스탑 '최초 1회'만 제안
+                        # (사용자가 수동으로 끄면 다시 강제 ON 하지 않음)
+                        _ts_sug_key = f"{_ts_key}_suggested"
+                        if _pnl_pct_p3 > 0 and not st.session_state.get(_ts_sug_key):
+                            st.session_state[_ts_key] = True
+                            st.session_state[_ts_sug_key] = True
+                            _ts_active = True
 
-                    # 카드 렌더링 — V9.1: 퀵 액션 바 상단 배치
-                    _ts_badge = "<span style='background:#7c3aed;color:#fff;font-size:9px;padding:1px 6px;border-radius:10px'>🔒 트레일링스탑</span>" if _ts_active else ""
+                        # 카드 렌더링 — V9.1: 퀵 액션 바 상단 배치
+                        _ts_badge = "<span style='background:#7c3aed;color:#fff;font-size:9px;padding:1px 6px;border-radius:10px'>🔒 트레일링스탑</span>" if _ts_active else ""
 
-                    # ── 퀵 액션 바 (카드 위쪽) ──
-                    _qa1, _qa2, _qa3 = st.columns(3)
-                    with _qa1:
-                        if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
-                            _half_qty = max(1, _qty_p3 // 2)
-                            _net_sell = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
-                            _acc_p3_act = load_account()
-                            _pos_idx = next((i for i, p in enumerate(_acc_p3_act['positions']) if p['ticker'] == _tk_p3), None)
-                            if _pos_idx is not None:
-                                _acc_p3_act['positions'][_pos_idx]['qty'] -= _half_qty
-                                if _acc_p3_act['positions'][_pos_idx]['qty'] <= 0:
-                                    _acc_p3_act['positions'].pop(_pos_idx)
-                                _acc_p3_act['cash'] += _net_sell * _half_qty
-                                save_account(_acc_p3_act)
-                                log_trade(_tk_p3, _nm_p3, 'SELL', _half_qty, _cur_p3, _net_sell,
-                                          _acc_p3_act['cash'], _acc_p3_act['cash'], memo="홈탭 절반매도")
-                                st.success(f"✅ {_half_qty}주 절반 매도 완료")
+                        # ── 퀵 액션 바 (카드 위쪽) ──
+                        _qa1, _qa2, _qa3 = st.columns(3)
+                        with _qa1:
+                            if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
+                                _half_qty = max(1, _qty_p3 // 2)
+                                _net_sell = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                                _acc_p3_act = load_account()
+                                _pos_idx = next((i for i, p in enumerate(_acc_p3_act['positions']) if p['ticker'] == _tk_p3), None)
+                                if _pos_idx is not None:
+                                    _acc_p3_act['positions'][_pos_idx]['qty'] -= _half_qty
+                                    if _acc_p3_act['positions'][_pos_idx]['qty'] <= 0:
+                                        _acc_p3_act['positions'].pop(_pos_idx)
+                                    _acc_p3_act['cash'] += _net_sell * _half_qty
+                                    save_account(_acc_p3_act)
+                                    log_trade(_tk_p3, _nm_p3, 'SELL', _half_qty, _cur_p3, _net_sell,
+                                              _acc_p3_act['cash'], _acc_p3_act['cash'], memo="홈탭 절반매도")
+                                    st.success(f"✅ {_half_qty}주 절반 매도 완료")
+                                    st.rerun()
+                        with _qa2:
+                            if st.button(f"🚨 전량 매도", key=f"full_sell_{_tk_p3}", use_container_width=True,
+                                         type="primary" if _stop_warn else "secondary"):
+                                _net_sell2 = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
+                                _acc_p3_act2 = load_account()
+                                _acc_p3_act2['positions'] = [p for p in _acc_p3_act2['positions'] if p['ticker'] != _tk_p3]
+                                _acc_p3_act2['cash'] += _net_sell2 * _qty_p3
+                                save_account(_acc_p3_act2)
+                                log_trade(_tk_p3, _nm_p3, 'SELL', _qty_p3, _cur_p3, _net_sell2,
+                                          _acc_p3_act2['cash'], _acc_p3_act2['cash'], memo="홈탭 전량매도")
+                                st.success(f"✅ {_qty_p3}주 전량 매도 완료")
                                 st.rerun()
-                    with _qa2:
-                        if st.button(f"🚨 전량 매도", key=f"full_sell_{_tk_p3}", use_container_width=True,
-                                     type="primary" if _stop_warn else "secondary"):
-                            _net_sell2 = calc_slippage(_cur_p3, is_buy=False, is_korean=_is_kr_p3)
-                            _acc_p3_act2 = load_account()
-                            _acc_p3_act2['positions'] = [p for p in _acc_p3_act2['positions'] if p['ticker'] != _tk_p3]
-                            _acc_p3_act2['cash'] += _net_sell2 * _qty_p3
-                            save_account(_acc_p3_act2)
-                            log_trade(_tk_p3, _nm_p3, 'SELL', _qty_p3, _cur_p3, _net_sell2,
-                                      _acc_p3_act2['cash'], _acc_p3_act2['cash'], memo="홈탭 전량매도")
-                            st.success(f"✅ {_qty_p3}주 전량 매도 완료")
-                            st.rerun()
-                    with _qa3:
-                        _ts_label = "🔒 트레일링ON" if _ts_active else "🔓 트레일링OFF"
-                        if st.button(_ts_label, key=f"ts_toggle_{_tk_p3}", use_container_width=True):
-                            st.session_state[_ts_key] = not _ts_active
-                            st.rerun()
+                        with _qa3:
+                            _ts_label = "🔒 트레일링ON" if _ts_active else "🔓 트레일링OFF"
+                            if st.button(_ts_label, key=f"ts_toggle_{_tk_p3}", use_container_width=True):
+                                st.session_state[_ts_key] = not _ts_active
+                                st.rerun()
 
-                    # ── V9.1 Item 1: 카드 글로우 클래스 ──
-                    _glow_class = "card-profit-high" if _pnl_pct_p3 >= 10 else ("card-stop-warn" if _stop_warn else "")
-                    st.markdown(f"""
-<div class='{_glow_class}' style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'>
-  <div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'>
-    <div>
-      <div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div>
-      <div style='color:#64748b;font-size:11px;margin-top:2px'>{_tk_p3} · {_qty_p3:,}주 · 평균 {_fmt_p3(_avg_p3)} · 평가 {_fmt_p3(_eval_p3)}</div>
-    </div>
-    <div style='text-align:right'>
-      <div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div>
-      <div style='font-size:12px;color:{_pnl_color}'>{"+" if _pnl_abs_p3>=0 else "-"}{_fmt_p3(abs(_pnl_abs_p3))}</div>
-    </div>
-  </div>
-  <div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'>
-    <div style='background:#111827;border-radius:8px;padding:8px;text-align:center'>
-      <div style='font-size:10px;color:#64748b'>현재가</div>
-      <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div>
-    </div>
-    <div style='background:#1a0a0a;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#ef4444" if _stop_warn else "#3f1515"}'>
-      <div style='font-size:10px;color:#ef4444'>🛑 손절 -7%</div>
-      <div style='font-size:14px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div>
-    </div>
-    <div style='background:#0a1a0d;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#16a34a" if _target_hit else "#14532d"}'>
-      <div style='font-size:10px;color:#16a34a'>🎯 1차 +8%</div>
-      <div style='font-size:14px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div>
-    </div>
-  </div>
-  <div style='background:#111827;border-radius:6px;padding:4px 8px;margin-bottom:8px'>
-    <div style='display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-bottom:3px'>
-      <span>손절 {_fmt_p3(_stop_p3)}</span><span>현재 {_fmt_p3(_cur_p3)}</span><span>목표 {_fmt_p3(_target_p3)}</span>
-    </div>
-    <div style='background:#1e293b;border-radius:4px;height:6px;overflow:hidden'>
-      <div style='background:{"#ef4444" if _prog_p3<25 else "#f97316" if _prog_p3<60 else "#16a34a"};height:100%;width:{_prog_p3:.0f}%;border-radius:4px;transition:width 0.3s'></div>
-    </div>
-  </div>
-  <div style='display:flex;justify-content:space-between;font-size:11px;color:#64748b'>
-    <span>R:R <b style='color:#f0f4ff'>1:{(_target_p3-_avg_p3)/max(_avg_p3-_stop_p3,1):.1f}</b></span>
-    <span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span>
-    <span>{"⚠️ 손절 근접!" if _stop_warn else "✅ 목표 달성!" if _target_hit else ""}</span>
-  </div>
-</div>""", unsafe_allow_html=True)
+                        # ── V9.1 Item 1: 카드 글로우 클래스 ──
+                        _glow_class = "card-profit-high" if _pnl_pct_p3 >= 10 else ("card-stop-warn" if _stop_warn else "")
+                        st.markdown(f"""<div class='{_glow_class}' style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'><div><div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div><div style='color:#64748b;font-size:11px;margin-top:2px'>{_tk_p3} · {_qty_p3:,}주 · 평균 {_fmt_p3(_avg_p3)} · 평가 {_fmt_p3(_eval_p3)}</div></div><div style='text-align:right'><div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div><div style='font-size:12px;color:{_pnl_color}'>{"+" if _pnl_abs_p3>=0 else "-"}{_fmt_p3(abs(_pnl_abs_p3))}</div></div></div><div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'><div style='background:#111827;border-radius:8px;padding:8px;text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div></div><div style='background:#1a0a0a;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#ef4444" if _stop_warn else "#3f1515"}'><div style='font-size:10px;color:#ef4444'>🛑 손절 -7%</div><div style='font-size:14px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div></div><div style='background:#0a1a0d;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#16a34a" if _target_hit else "#14532d"}'><div style='font-size:10px;color:#16a34a'>🎯 1차 +8%</div><div style='font-size:14px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div></div></div><div style='background:#111827;border-radius:6px;padding:4px 8px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-bottom:3px'><span>손절 {_fmt_p3(_stop_p3)}</span><span>현재 {_fmt_p3(_cur_p3)}</span><span>목표 {_fmt_p3(_target_p3)}</span></div><div style='background:#1e293b;border-radius:4px;height:6px;overflow:hidden'><div style='background:{"#ef4444" if _prog_p3<25 else "#f97316" if _prog_p3<60 else "#16a34a"};height:100%;width:{_prog_p3:.0f}%;border-radius:4px;transition:width 0.3s'></div></div></div><div style='display:flex;justify-content:space-between;font-size:11px;color:#64748b'><span>R:R <b style='color:#f0f4ff'>1:{(_target_p3-_avg_p3)/max(_avg_p3-_stop_p3,1):.1f}</b></span><span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span><span>{"⚠️ 손절 근접!" if _stop_warn else "✅ 목표 달성!" if _target_hit else ""}</span></div></div>""", unsafe_allow_html=True)
 
 
-                except Exception as _ep3:
-                    _ename = _pos_p3i.get('name', _pos_p3i.get('ticker', '?'))
-                    st.markdown(
-                        f"<div style='background:#1a0a0a;border:1px solid #3f1515;border-radius:8px;"
-                        f"padding:10px 14px;margin-bottom:6px;font-size:12px'>"
-                        f"<b>{_ename}</b> — 현재가 조회 실패 (장외시간 또는 네트워크)<br>"
-                        f"<span style='color:#64748b'>평균가 기준: {float(_pos_p3i.get('avg_price',0)):,.0f} · {_pos_p3i.get('qty',0)}주</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                    except Exception as _ep3:
+                        _ename = _pos_p3i.get('name', _pos_p3i.get('ticker', '?'))
+                        st.markdown(
+                            f"<div style='background:#1a0a0a;border:1px solid #3f1515;border-radius:8px;"
+                            f"padding:10px 14px;margin-bottom:6px;font-size:12px'>"
+                            f"<b>{_ename}</b> — 현재가 조회 실패 (장외시간 또는 네트워크)<br>"
+                            f"<span style='color:#64748b'>평균가 기준: {float(_pos_p3i.get('avg_price',0)):,.0f} · {_pos_p3i.get('qty',0)}주</span>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
 
     # ══════════════════════════════════════════════
     # PANEL 4 — Performance & Chart
@@ -5633,12 +5581,12 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
     # ══════════════════════════════════════════
 
 with tab_c:
-    st.markdown("### 📡 V8.9.6 단기 스윙 스캐너")
+    st.markdown("### 📡 V9.1 단기 스윙 스캐너")
 
     # ── 📖 실전 매뉴얼 (기본 닫힘) ──────────────────────────────────────
-    with st.expander("📖 V8.9.6 스캐너 실전 매뉴얼 (필독)", expanded=False):
+    with st.expander("📖 V9.1 스캐너 실전 매뉴얼 (필독)", expanded=False):
         st.markdown("""
-### 🦅 [V8.9.6 스나이퍼 스캐너 운용 수칙]
+### 🦅 [V9.1 스나이퍼 스캐너 운용 수칙]
 
 **STEP 1. 타격 전장(Universe) 선택**
 - 🇰🇷 **국장 통합:** 당일 거래대금 상위 200개 주도주 (메인 타깃)
@@ -6359,89 +6307,90 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
     st.divider()
 
-    # ── 프리셋 버튼 ──
-    st.markdown("#### ⚡ 전략 프리셋")
-    _pr1, _pr2, _pr3, _pr4 = st.columns(4)
+    with st.expander("⚙️ 스캐너 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
+        # ── 프리셋 버튼 ──
+        st.markdown("#### ⚡ 전략 프리셋")
+        _pr1, _pr2, _pr3, _pr4 = st.columns(4)
 
-    if 'scan_preset' not in st.session_state:
-        st.session_state.scan_preset = None
+        if 'scan_preset' not in st.session_state:
+            st.session_state.scan_preset = None
 
-    def _apply_preset(name):
-        """프리셋 선택 시 체크박스 session_state 동시 업데이트"""
-        st.session_state.scan_preset = name
-        _map = {
-            # (rsi, vol, macd, bb, align)
-            "bounce": (True,  True,  False, False, False),
-            "trend":  (False, True,  True,  False, True),
-            "bottom": (True,  True,  True,  True,  False),
-            "custom": (st.session_state.get('f_rsi', True),
-                       st.session_state.get('f_vol', True),
-                       st.session_state.get('f_macd', False),
-                       st.session_state.get('f_bb', False),
-                       st.session_state.get('f_align', False)),
+        def _apply_preset(name):
+            """프리셋 선택 시 체크박스 session_state 동시 업데이트"""
+            st.session_state.scan_preset = name
+            _map = {
+                # (rsi, vol, macd, bb, align)
+                "bounce": (True,  True,  False, False, False),
+                "trend":  (False, True,  True,  False, True),
+                "bottom": (True,  True,  True,  True,  False),
+                "custom": (st.session_state.get('f_rsi', True),
+                           st.session_state.get('f_vol', True),
+                           st.session_state.get('f_macd', False),
+                           st.session_state.get('f_bb', False),
+                           st.session_state.get('f_align', False)),
+            }
+            r, v, m, b, a = _map[name]
+            st.session_state['f_rsi']   = r
+            st.session_state['f_vol']   = v
+            st.session_state['f_macd']  = m
+            st.session_state['f_bb']    = b
+            st.session_state['f_align'] = a
+
+        # ── 고급 설정 expander 내부 UI ──────────────────────────────────────
+        _preset_etf_lock = ("국내 ETF" in st.session_state.get("scanner_market", "")
+                            or "미국 ETF" in st.session_state.get("scanner_market", ""))
+        if _preset_etf_lock:
+            st.caption("🔒 ETF 모드: 프리셋은 ETF 스캔에 적용되지 않습니다 (스캔 시 자동 무시)")
+
+        if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
+                       type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
+            _apply_preset("bounce"); st.rerun()
+        if _pr2.button("📈 추세매매", key="preset_trend", use_container_width=True,
+                       type="primary" if st.session_state.scan_preset=="trend" else "secondary"):
+            _apply_preset("trend"); st.rerun()
+        if _pr3.button("🎯 바닥확인", key="preset_bottom", use_container_width=True,
+                       type="primary" if st.session_state.scan_preset=="bottom" else "secondary"):
+            _apply_preset("bottom"); st.rerun()
+        if _pr4.button("⚙️ 직접설정", key="preset_custom", use_container_width=True,
+                       type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
+            _apply_preset("custom"); st.rerun()
+
+        _preset_desc = {
+            "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발",
+            "trend":  "📈 추세매매 — MACD 골든크로스 + 정배열 + 거래량",
+            "bottom": "🎯 바닥확인 — RSI + MACD + BB 하단 + 거래량",
+            "custom": "⚙️ 직접설정 — 아래 체크박스로 조건 선택",
         }
-        r, v, m, b, a = _map[name]
-        st.session_state['f_rsi']   = r
-        st.session_state['f_vol']   = v
-        st.session_state['f_macd']  = m
-        st.session_state['f_bb']    = b
-        st.session_state['f_align'] = a
+        if st.session_state.scan_preset and not _preset_etf_lock:
+            st.info(_preset_desc[st.session_state.scan_preset])
 
-    # ── 고급 설정 expander 내부 UI ──────────────────────────────────────
-    _preset_etf_lock = ("국내 ETF" in st.session_state.get("scanner_market", "")
-                        or "미국 ETF" in st.session_state.get("scanner_market", ""))
-    if _preset_etf_lock:
-        st.caption("🔒 ETF 모드: 프리셋은 ETF 스캔에 적용되지 않습니다 (스캔 시 자동 무시)")
+        st.divider()
+        # ── 필터 체크박스 (직접설정 시 활성) ────────────────────────────────
+        st.markdown("##### 🎯 상세 필터 조건")
+        _preset = st.session_state.scan_preset
+        if 'f_rsi'   not in st.session_state: st.session_state['f_rsi']   = True
+        if 'f_vol'   not in st.session_state: st.session_state['f_vol']   = True
+        if 'f_macd'  not in st.session_state: st.session_state['f_macd']  = False
+        if 'f_bb'    not in st.session_state: st.session_state['f_bb']    = False
+        if 'f_align' not in st.session_state: st.session_state['f_align'] = False
+        _disabled = _preset != "custom" and _preset is not None
+        _fx1, _fx2 = st.columns(2)
+        with _fx1:
+            st.checkbox("RSI 과매도 (≤35)",      disabled=_disabled, key="f_rsi")
+            st.checkbox("거래량 폭발 (≥150%)",   disabled=_disabled, key="f_vol")
+            st.checkbox("MACD 골든크로스",        disabled=_disabled, key="f_macd")
+        with _fx2:
+            st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
+            st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
 
-    if _pr1.button("📉 반등매매", key="preset_bounce", use_container_width=True,
-                   type="primary" if st.session_state.scan_preset=="bounce" else "secondary"):
-        _apply_preset("bounce"); st.rerun()
-    if _pr2.button("📈 추세매매", key="preset_trend", use_container_width=True,
-                   type="primary" if st.session_state.scan_preset=="trend" else "secondary"):
-        _apply_preset("trend"); st.rerun()
-    if _pr3.button("🎯 바닥확인", key="preset_bottom", use_container_width=True,
-                   type="primary" if st.session_state.scan_preset=="bottom" else "secondary"):
-        _apply_preset("bottom"); st.rerun()
-    if _pr4.button("⚙️ 직접설정", key="preset_custom", use_container_width=True,
-                   type="primary" if st.session_state.scan_preset=="custom" else "secondary"):
-        _apply_preset("custom"); st.rerun()
-
-    _preset_desc = {
-        "bounce": "📉 반등매매 — RSI 과매도 + 거래량 폭발",
-        "trend":  "📈 추세매매 — MACD 골든크로스 + 정배열 + 거래량",
-        "bottom": "🎯 바닥확인 — RSI + MACD + BB 하단 + 거래량",
-        "custom": "⚙️ 직접설정 — 아래 체크박스로 조건 선택",
-    }
-    if st.session_state.scan_preset and not _preset_etf_lock:
-        st.info(_preset_desc[st.session_state.scan_preset])
-
-    st.divider()
-    # ── 필터 체크박스 (직접설정 시 활성) ────────────────────────────────
-    st.markdown("##### 🎯 상세 필터 조건")
-    _preset = st.session_state.scan_preset
-    if 'f_rsi'   not in st.session_state: st.session_state['f_rsi']   = True
-    if 'f_vol'   not in st.session_state: st.session_state['f_vol']   = True
-    if 'f_macd'  not in st.session_state: st.session_state['f_macd']  = False
-    if 'f_bb'    not in st.session_state: st.session_state['f_bb']    = False
-    if 'f_align' not in st.session_state: st.session_state['f_align'] = False
-    _disabled = _preset != "custom" and _preset is not None
-    _fx1, _fx2 = st.columns(2)
-    with _fx1:
-        st.checkbox("RSI 과매도 (≤35)",      disabled=_disabled, key="f_rsi")
-        st.checkbox("거래량 폭발 (≥150%)",   disabled=_disabled, key="f_vol")
-        st.checkbox("MACD 골든크로스",        disabled=_disabled, key="f_macd")
-    with _fx2:
-        st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
-        st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
-
-    st.divider()
-    # ── AI 파라미터 자동 최적화 ─────────────────────────────────────────
-    st.markdown("##### 🔥 AI 파라미터 자동 최적화 (Walk-Forward)")
-    _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
-                     or "미국 ETF" in st.session_state.get("scanner_market", ""))
-    if _etf_mode_now:
-        st.info("ℹ️ ETF 모드에서는 AI 최적화가 적용되지 않습니다. "
-                "개별주(국장 통합/미장 핵심) 선택 시 활성화됩니다.")
+        st.divider()
+        # ── AI 파라미터 자동 최적화 ─────────────────────────────────────────
+        st.markdown("##### 🔥 AI 파라미터 자동 최적화 (Walk-Forward)")
+        _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
+                         or "미국 ETF" in st.session_state.get("scanner_market", ""))
+        if _etf_mode_now:
+            st.info("ℹ️ ETF 모드에서는 AI 최적화가 적용되지 않습니다. "
+                    "개별주(국장 통합/미장 핵심) 선택 시 활성화됩니다.")
 
     # ── 스캔 설정 — 메인 화면에 3가지만 노출 (Progressive Disclosure) ──
     _SC_OPTS = [
@@ -7299,7 +7248,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             for idx, ticker in enumerate(scan_tickers):
                 prog.progress((idx+1)/len(scan_tickers))
                 name = name_map.get(ticker, ticker)
-                status.markdown(f"<span style='font-size:12px;color:#64748b'>V8.9 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
+                status.markdown(f"<span style='font-size:12px;color:#64748b'>V9.1 스캔 중: {name} ({idx+1}/{len(scan_tickers)})</span>", unsafe_allow_html=True)
 
                 # ── Rate Limit 방어 슬립 ──
                 if _IS_US_MARKET or _IS_KR_ETF_SCAN:
@@ -7583,7 +7532,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
         # ── 좌: 종목 테이블 / 우: 선택 종목 상세 카드 + 퀵 매매 ──
         _scan_black = not run_v891_system_check().get('can_enter', True)
-        _tbl_col, _det_col = st.columns([1.6, 1])
+        _tbl_col, _det_col = st.columns([4, 6])   # 좌 테이블 : 우 상세+차트 = 4:6
         _sel_idx = None
         with _tbl_col:
             _styled = _disp_df[_visible_cols + ['_grade', '_streak', '_chg']].style.apply(_row_style, axis=1)
@@ -7696,6 +7645,31 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                     save_account(_acc_q)
                     st.toast(f"✅ {_sx.get('name','')} {_sell_q}주 가상 매도", icon="🔴")
                     st.rerun()
+
+            # ── 선택 종목 미니 차트 (한 세트로 우측에 묶임) ──
+            try:
+                _cdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
+                if _cdf is None and _sx_tk:
+                    _rawc = fetch_ohlcv(_sx_tk, 60)
+                    if _rawc is not None and len(_rawc) >= 5:
+                        _cdf = calc_indicators(_rawc)
+                if _cdf is not None and len(_cdf) >= 5:
+                    import plotly.graph_objects as _go_s
+                    _cl_s = _cdf['종가'].tail(40)
+                    _figs = _go_s.Figure(_go_s.Scatter(
+                        y=_cl_s.values, mode='lines', line=dict(color='#4da6ff', width=1.6),
+                        fill='tozeroy', fillcolor='rgba(77,166,255,0.08)'))
+                    # 손절/목표 라인 (타점 있으면)
+                    if _ep_sx and _ep_sx.get('entry'):
+                        _figs.add_hline(y=_ep_sx['stoploss'], line=dict(color='#ef4444', dash='dot', width=1))
+                        _figs.add_hline(y=_ep_sx['target1'], line=dict(color='#16a34a', dash='dot', width=1))
+                    _figs.update_layout(height=190, margin=dict(l=0, r=0, t=6, b=0),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        xaxis=dict(visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=9)))
+                    st.caption(f"📈 {_sx.get('name','')} 최근 40일 (점선=손절/목표)")
+                    st.plotly_chart(_figs, use_container_width=True, key=f"scan_mini_chart_{_sx_tk}")
+            except Exception:
+                pass
 
         # ══════════════════════════════════════════════════════
         # 🔎 종목별 상세 스코어 — expander로 은닉
@@ -8725,8 +8699,8 @@ with tab_d:
                 )
                 _price_warn = {"live": "", "cache": " 📡캐시", "fail": " ⚠️조회실패"}.get(_price_st, "")
 
-                # ── 카드 렌더링 ──
-                _danger_anim = "animation:blink 0.8s step-start infinite;" if (_danger or _adx_weak) else ""
+                # ── 카드 렌더링 ── (깜빡임 제거 → 정적 붉은 글로우로 강조)
+                _danger_anim = "box-shadow:0 0 12px 2px rgba(239,68,68,0.55);" if (_danger or _adx_weak) else ""
                 _trail_badge = (
                     "<span style='background:#34d39930;color:#34d399;font-size:10px;"
                     "padding:2px 8px;border-radius:10px;margin-left:8px'>📈 추가매집 구간 진입</span>"
@@ -8829,7 +8803,7 @@ with tab_d:
             # ── 핵심 원칙 고정 배너 ───────────────────────────────────────────
             _danger_html = (
                 "<div style='background:#1a0505;border:2px solid #ef4444;border-radius:10px;"
-                "padding:12px 18px;margin-top:8px;animation:blink 1s step-start infinite'>"
+                "padding:12px 18px;margin-top:8px;box-shadow:0 0 12px 2px rgba(239,68,68,0.5)'>"
                 "<span style='color:#ef4444;font-size:14px;font-weight:900'>🚨 손절가 도달 종목 감지 — 즉각 매도 실행</span>"
                 "</div>"
             ) if _has_danger else ""
@@ -10795,7 +10769,7 @@ with tab_e:
 
     with _sub_e2:
         st.markdown("### 📝 페이퍼 트레이딩 (모의투자)")
-        st.caption("실제 자금 없이 V8.9 전략을 검증합니다. 슬리피지·수수료·세금 자동 반영.")
+        st.caption("실제 자금 없이 V9.1 전략을 검증합니다. 슬리피지·수수료·세금 자동 반영.")
 
         _acc       = load_account()
         _total_val = calc_portfolio_value(_acc)
@@ -11210,7 +11184,7 @@ with tab_e:
             if _is_etf:
                 st.info("ℹ️ ETF 로테이션은 매크로 이벤트 차단 제외 — 진입 가능합니다.")
             else:
-                st.warning("⚠️ V8.9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+                st.warning("⚠️ V9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
 
         # ETF는 블랙아웃 차단 무시, 개별주만 차단
         _entry_blocked = _blocked and not _is_etf
@@ -11218,7 +11192,7 @@ with tab_e:
         if not _cash_ok:
             st.error(f"❌ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
         if _entry_blocked:
-            st.error("❌ V8.9.1 매크로 블랙아웃 — 개별주 신규 진입 차단 중")
+            st.error("❌ V9.1 매크로 블랙아웃 — 개별주 신규 진입 차단 중")
         if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
                      type="primary", disabled=(not _cash_ok or _entry_blocked)):
             _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
@@ -12431,4 +12405,4 @@ with tab_e:
     # ══════════════════════════════════════════
 
 st.markdown("---")
-st.markdown("<div style='text-align:center;font-size:11px;color:rgba(255,255,255,0.1);font-family:IBM Plex Mono'>퀀트 관제탑 V8.9 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;font-size:11px;color:rgba(255,255,255,0.1);font-family:IBM Plex Mono'>퀀트 관제탑 V9.1 | 투자 자문 아님 — 모든 손익의 책임은 본인에게 있습니다</div>", unsafe_allow_html=True)
