@@ -4180,9 +4180,9 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
 
     st.markdown("<hr style='margin:6px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
 
-    # ── 4-Panel Layout ──
-    # 관제(_p3) : 차트(_p4) = 약 4 : 6 — 차트가 가로로 더 넓게
-    _p1, _p2, _p3, _p4 = st.columns([1, 1.5, 1.2, 2.0])
+    # ── 2행 레이아웃 (압착 방지) ──
+    # 1행: 계좌 요약 + 통합 랭킹 / 2행: 포트폴리오 관제 + 차트
+    _p1, _p2 = st.columns([1, 1.6])
 
     # ══════════════════════════════════════════════
     # PANEL 1 — Account Summary + Live Signal Stream
@@ -4478,6 +4478,12 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                             f"</div></div>",
                             unsafe_allow_html=True
                         )
+
+    # ══════════════════════════════════════════════
+    # 2행 — PANEL 3(관제) + PANEL 4(차트) : 40% / 60%
+    # ══════════════════════════════════════════════
+    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+    _p3, _p4 = st.columns([4, 6])
 
     # ══════════════════════════════════════════════
     # PANEL 3 — Active Portfolio 관제
