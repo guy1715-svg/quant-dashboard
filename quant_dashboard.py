@@ -623,7 +623,7 @@ def check_macro_blackout():
             pass
     return False, ""
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def get_index_quotes():
     """★ 지수/매크로 단일 소스(Single Source of Truth).
     코스피·코스닥 = FinanceDataReader(KRX 정확), 나스닥·환율·유가·VIX = yfinance.
@@ -4081,6 +4081,18 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
                 f"<div style='font-size:11px;color:#64748b'>{_nm_sb}</div>"
                 f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
                 unsafe_allow_html=True)
+
+    # ── 지수 새로고침 (Streamlit은 상호작용 없으면 자동 갱신 안 됨 → 수동 갱신) ──
+    _rf1, _rf2 = st.columns([1, 6])
+    if _rf1.button("🔄 지수 갱신", key="refresh_index", use_container_width=True):
+        get_index_quotes.clear()          # 단일 소스 캐시 비움 → 헤더·사이드바 동시 갱신
+        try:
+            check_index_shutdown.clear()
+        except Exception:
+            pass
+        st.rerun()
+    _rf2.caption(f"🕒 지수 갱신: {(datetime.utcnow()+timedelta(hours=9)).strftime('%H:%M:%S')} KST "
+                 f"· 자동 캐시 120초 (실시간 반영하려면 🔄)")
 
     # (전략 방향 · 블랙아웃 경고 · 수동 입력은 모두 사이드바 Sticky 패널로 이전 —
     #  본문은 데이터 모니터링에만 집중. 여기서는 아무것도 렌더링하지 않음.)
