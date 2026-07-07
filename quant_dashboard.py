@@ -624,17 +624,49 @@ def check_macro_blackout():
     return False, ""
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_index_quotes():
+    """★ 지수/매크로 단일 소스(Single Source of Truth).
+    코스피·코스닥 = FinanceDataReader(KRX 정확), 나스닥·환율·유가·VIX = yfinance.
+    반환: {name: {'현재': float, '등락': float(%)}}. 모든 화면(헤더·경고·브리핑)이 이걸 참조."""
+    _r = {}
+    try:
+        import FinanceDataReader as _fdr
+        _end = datetime.now().strftime('%Y-%m-%d')
+        _start = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        for _n, _s in [("코스피", "KS11"), ("코스닥", "KQ11")]:
+            try:
+                _h = _fdr.DataReader(_s, _start, _end).dropna(subset=['Close'])
+                if len(_h) >= 2:
+                    _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                    if _c > 0 and _p > 0:
+                        _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    try:
+        import yfinance as _yf2
+        for _n, _s in [("나스닥", "^IXIC"), ("달러/원", "KRW=X"), ("VIX", "^VIX"), ("WTI유가", "CL=F")]:
+            try:
+                _h = _yf2.Ticker(_s).history(period="5d", interval="1d").dropna(subset=['Close'])
+                if len(_h) >= 2:
+                    _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                    if _c > 0 and _p > 0:
+                        _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _r
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def check_index_shutdown():
     try:
-        import yfinance as yf
-        _results = {}
-        for _name, _sym in [("코스피","^KS11"), ("코스닥","^KQ11")]:
-            _h = yf.Ticker(_sym).history(period="2d", interval="1d")
-            if len(_h) >= 2:
-                _chg = (_h['Close'].iloc[-1] / _h['Close'].iloc[-2] - 1) * 100
-                _results[_name] = round(_chg, 2)
-        _kospi_chg  = _results.get("코스피", 0)
-        _kosdaq_chg = _results.get("코스닥", 0)
+        # 단일 소스(get_index_quotes)에서 코스피/코스닥 등락 참조 (헤더와 값 일치)
+        _q = get_index_quotes()
+        _kospi_chg  = round(_q.get("코스피", {}).get("등락", 0), 2)
+        _kosdaq_chg = round(_q.get("코스닥", {}).get("등락", 0), 2)
         if _kospi_chg <= -2.0 or _kosdaq_chg <= -2.0:
             _reason = (
                 f"🚨 지수 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
@@ -3968,41 +4000,9 @@ with tab_a:
     # ──────────────────────────────────────────────────────────────────────
     # V9.0 4-Panel Command Center
     # ──────────────────────────────────────────────────────────────────────
-    @st.cache_data(ttl=300, show_spinner=False)
     def _get_market():
-        _r = {}
-        try:
-            import FinanceDataReader as _fdr
-            from datetime import datetime as _dt_fdr, timedelta as _td_fdr
-            _end = _dt_fdr.now().strftime('%Y-%m-%d')
-            _start = (_dt_fdr.now() - _td_fdr(days=7)).strftime('%Y-%m-%d')
-            for _n, _s in [("코스피","KS11"),("코스닥","KQ11")]:
-                try:
-                    _h = _fdr.DataReader(_s, _start, _end)
-                    _h = _h.dropna(subset=['Close'])
-                    if len(_h) >= 2:
-                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
-                        if _c > 0 and _p > 0:
-                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
-                except Exception:
-                    pass
-        except ImportError:
-            pass
-        try:
-            import yfinance as _yf2
-            for _n, _s in [("나스닥","^IXIC"),("달러/원","KRW=X"),("VIX","^VIX"),("WTI유가","CL=F")]:
-                try:
-                    _h = _yf2.Ticker(_s).history(period="5d", interval="1d")
-                    _h = _h.dropna(subset=['Close'])
-                    if len(_h) >= 2:
-                        _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
-                        if _c > 0 and _p > 0:
-                            _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return _r
+        # 단일 소스(get_index_quotes)로 통합 — 헤더/사이드바/브리핑 지수값 완전 일치
+        return get_index_quotes()
 
     from datetime import datetime as _dt_cc
     _kst_h = (_dt_cc.utcnow().hour + 9) % 24
