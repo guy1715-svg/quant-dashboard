@@ -5575,7 +5575,11 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
     with _sub_b3:
         st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:12px'>📋 분석 기록 — 최근 50건</div>", unsafe_allow_html=True)
 
-        _col_hist_r, _col_hist_del = st.columns([5, 1])
+        _col_hist_f, _col_hist_del = st.columns([5, 1])
+        # 출처 필터 (분석탭 / 스캐너 / 스캐너드로어 구분해서 보기)
+        _src_filter = _col_hist_f.radio(
+            "출처 필터", ["전체", "분석탭", "스캐너드로어"],
+            horizontal=True, key="analysis_src_filter", label_visibility="collapsed")
         if _col_hist_del.button("🗑️ 기록 초기화", key="clear_analysis_log", use_container_width=True):
             try:
                 _fb_ref("/quant_analysis").delete()
@@ -5583,9 +5587,13 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
                 pass
             st.session_state.pop('local_analysis_log', None)
             st.session_state.pop('_last_analysis_key', None)
+            st.session_state.pop('_analysis_saved_keys', None)   # dedup 집합도 리셋
             st.rerun()
 
-        _hist_rows = load_analysis_log(50)
+        _hist_rows = load_analysis_log(200)
+        if _src_filter != "전체":
+            _hist_rows = [r for r in _hist_rows if r.get('출처', '') == _src_filter]
+        _hist_rows = _hist_rows[:50]
         if not _hist_rows:
             st.info("아직 분석 기록이 없습니다. 종목을 선택하면 자동으로 저장됩니다.")
         else:
@@ -7449,16 +7457,8 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         else:
             passed = sorted(passed, key=lambda x: x.get('점수', 0), reverse=True)
         st.session_state.passed = passed
-        # 스캔 결과 → 분석 기록 일괄 저장
-        _scan_preset_name = st.session_state.get('scan_preset', '')
-        for _sp in passed[:10]:
-            save_analysis_log(
-                _sp['ticker'], _sp['name'],
-                _sp.get('등급', '스캔발굴'), 0,
-                0, 0, 0, 0,
-                preset=_scan_preset_name or 'yfinance',
-                score=_sp.get('점수', 0), source="스캐너"
-            )
+        # (스캔 결과 자동 저장 폐지 — 스캔할 때마다 상위 10종목이 분석기록에 쌓여
+        #  '검색 안 한 기록'이 생기던 문제. 기록은 사용자가 명시적으로 저장할 때만.)
         _errs = st.session_state.pop('_scan_errors', [])
         if _errs:
             with st.expander(f"⚠️ 스캔 중 오류 {len(_errs)}건 (데이터 없음 / API 오류)", expanded=False):
