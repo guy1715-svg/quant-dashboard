@@ -1032,20 +1032,30 @@ def save_analysis_log(ticker, name, verdict, rr, entry, stop, target1, target2, 
     _seen = st.session_state.setdefault('_analysis_saved_keys', set())
     if _dedup_key in _seen:
         return   # 직전 저장과 동일 → 스킵 (rerun 중복 방지)
+    if len(_seen) > 500:          # 세션 무한 증가 방지 — 오래된 키 비움
+        _seen.clear()
     _seen.add(_dedup_key)
+
+    def _f(x):                    # None/NaN 안전 float
+        try:
+            v = float(x)
+            return v if v == v else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     _row = {
         '날짜':   now.strftime('%Y-%m-%d'),
         '시간':   now.strftime('%H:%M:%S'),
         '종목코드': ticker,
         '종목명':   name,
         '판정':     verdict,
-        'R:R':      float(rr),
-        '진입가':   float(entry) if entry else 0,
-        '손절가':   float(stop) if stop else 0,
-        '목표1':    float(target1) if target1 else 0,
-        '목표2':    float(target2) if target2 else 0,
+        'R:R':      _f(rr),
+        '진입가':   _f(entry),
+        '손절가':   _f(stop),
+        '목표1':    _f(target1),
+        '목표2':    _f(target2),
         '프리셋':   preset,
-        '점수':     int(score),
+        '점수':     int(_f(score)),
         '출처':     source,
     }
     try:
@@ -6394,12 +6404,11 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _rec_preset = _rg["preset"]   # 'bottom' | 'trend' | 'bounce'
         _rec_extra = " (실매수 금지 · 관망/정찰용)" if _rg["regime"] == "crash" else ""
 
-        # 프리셋 키 ↔ 라디오 라벨 매핑 (추천엔 ✨추천 배지)
+        # 프리셋 키 (라디오 값은 '키'로 안정화 — 배지는 captions로 분리해 라벨 불일치 방지)
         _preset_keys = ["bounce", "trend", "bottom", "custom"]
         _base_lbl = {"bounce": "📉 반등매매", "trend": "📈 추세매매",
                      "bottom": "🎯 바닥확인", "custom": "⚙️ 직접설정"}
-        _radio_opts = [f"{_base_lbl[k]}{'  (✨ 추천)' if k == _rec_preset else ''}" for k in _preset_keys]
-        _lbl_to_key = {opt: k for opt, k in zip(_radio_opts, _preset_keys)}
+        _caps = ["✨ 추천" if k == _rec_preset else " " for k in _preset_keys]
 
         # 추천 알림 메시지
         st.info(f"**5AI 판정: 현재 [{_rg['label']}] 장세입니다.** "
@@ -6411,10 +6420,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         _default_key = _cur_preset if _cur_preset in _preset_keys else _rec_preset
         _default_idx = _preset_keys.index(_default_key)
 
-        _sel_opt = st.radio("전략 선택", _radio_opts, index=_default_idx,
-                            key="scan_preset_radio", horizontal=True,
-                            label_visibility="collapsed")
-        _sel_key = _lbl_to_key[_sel_opt]
+        try:
+            _sel_key = st.radio("전략 선택", _preset_keys, index=_default_idx,
+                                format_func=lambda k: _base_lbl.get(k, k),
+                                captions=_caps, key="scan_preset_radio",
+                                horizontal=True, label_visibility="collapsed")
+        except TypeError:   # 구버전(captions 미지원) 폴백
+            _sel_key = st.radio("전략 선택", _preset_keys, index=_default_idx,
+                                format_func=lambda k: _base_lbl.get(k, k),
+                                key="scan_preset_radio", horizontal=True,
+                                label_visibility="collapsed")
         # 선택이 바뀌면 프리셋 적용
         if _sel_key != st.session_state.get('scan_preset'):
             _apply_preset(_sel_key)
@@ -7602,6 +7617,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         with _tbl_col:
             _styled = _disp_df[_visible_cols + ['_grade', '_streak', '_chg']].style.apply(_row_style, axis=1)
             # on_select 지원 버전이면 행 클릭, 아니면 selectbox 폴백
+            _click_ok = False   # 사전 초기화 (TypeError 외 예외에도 NameError 방지)
             try:
                 _evt = st.dataframe(
                     _styled, use_container_width=True, hide_index=True,
@@ -7613,7 +7629,8 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 if _rows:
                     _sel_idx = _rows[0]
                 _click_ok = True
-            except TypeError:
+            except Exception:
+                # on_select 미지원(TypeError) 또는 기타 예외 → 정적 테이블 + selectbox 폴백
                 st.dataframe(_styled, use_container_width=True, hide_index=True, column_order=_visible_cols)
                 _click_ok = False
         with _det_col:
@@ -7930,7 +7947,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         # ── 종목 선택 → Gemini 정밀분석 ──
         st.markdown("#### 🤖 Gemini 정밀분석 (선택)")
         _sel_names = [f"{item['name']} ({item['ticker']}) | {item['score']}점" for item in _p_list]
-        _sel_scan  = st.selectbox("Gemini 분석할 종목", _sel_names, key="scan_detail_sel")
+        _sel_scan  = st.selectbox("Gemini 분석할 종목", _sel_names, key="gemini_scan_sel")
         _sel_scan_idx = _sel_names.index(_sel_scan)
         _sel_scan_item = _p_list[_sel_scan_idx]
 
@@ -8784,7 +8801,6 @@ with tab_d:
 
                 _cur_left_brd = "#34d399" if _currency == 'USD' else "#64748b"
                 st.markdown(
-                    f"<style>@keyframes blink{{50%{{opacity:0}}}}</style>"
                     f"<div style='background:{_bg};border:2px solid {_brd};"
                     f"border-left:4px solid {_cur_left_brd};border-radius:14px;"
                     f"padding:16px 20px;margin-bottom:12px;{_danger_anim}'>"
