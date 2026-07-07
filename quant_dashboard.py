@@ -4903,12 +4903,14 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                 for _kw2, _c2 in _ev_type_color2.items():
                     if _kw2 in _ev2['name']:
                         _tc2 = _c2; break
-                _bb2 = " 🚨블랙아웃" if _blackout2 else ""
+                _bb2 = ("<span style='background:#ef4444;color:#fff;font-size:10px;font-weight:800;"
+                        "padding:1px 7px;border-radius:8px;margin-left:6px'>🚨 블랙아웃</span>") if _blackout2 else ""
+                _row_bg = "background:rgba(239,68,68,0.10);" if _blackout2 else ""
                 st.markdown(
-                    f"<div style='font-size:11px;padding:3px 0;border-bottom:1px solid #1e2a3a'>"
+                    f"<div style='font-size:11px;padding:4px 6px;border-bottom:1px solid #1e2a3a;{_row_bg}border-radius:6px'>"
                     f"<span style='color:#64748b;font-family:monospace'>{_day_str2}</span> "
-                    f"<span style='color:{_tc2}'>{_ev2['name']}</span>"
-                    f"<span style='color:#ef4444;font-size:10px'>{_bb2}</span>"
+                    f"<span style='color:{_tc2};font-weight:{'800' if _blackout2 else '400'}'>{_ev2['name']}</span>"
+                    f"{_bb2}"
                     f"</div>",
                     unsafe_allow_html=True
                 )
@@ -8319,7 +8321,11 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         )
 
         if show_add_btn:
-            _card_col, _btn_col = st.columns([9, 1])
+            # 버튼 컬럼 폭 확대(10%→약 18%) + 세로 중앙 정렬 (버튼 찢어짐/덜컹 방지)
+            try:
+                _card_col, _btn_col = st.columns([5, 1], vertical_alignment="center")
+            except TypeError:
+                _card_col, _btn_col = st.columns([5, 1])
         else:
             _card_col = st.container()
         with _card_col:
@@ -10293,8 +10299,11 @@ with _tab_d1:
                 unsafe_allow_html=True
             )
 
-            # 관심종목 추가 버튼
-            _eb1, _eb2 = st.columns([1, 4])
+            # 관심종목 추가 버튼 (버튼 폭 확대 + 세로 중앙 정렬)
+            try:
+                _eb1, _eb2 = st.columns([1.4, 4], vertical_alignment="center")
+            except TypeError:
+                _eb1, _eb2 = st.columns([1.4, 4])
             if _already:
                 _eb1.markdown("<div style='color:#34d399;font-size:12px;padding:4px 0'>✅ 추가됨</div>", unsafe_allow_html=True)
             else:
@@ -10723,7 +10732,10 @@ with tab_e:
             for _idx, (_tk, _nm) in enumerate(_pairs):
                 _is_kr = _tk.isdigit()
                 _flag = "🇰🇷" if _is_kr else "🇺🇸"
-                _tag_col, _del_col = st.columns([5, 1])
+                try:
+                    _tag_col, _del_col = st.columns([5, 1], vertical_alignment="center")
+                except TypeError:
+                    _tag_col, _del_col = st.columns([5, 1])
                 _tag_col.markdown(
                     f"<div style='background:#1e293b;border:1px solid #334155;border-radius:20px;"
                     f"padding:5px 14px;font-size:12px;display:inline-flex;align-items:center;gap:6px'>"
@@ -12290,6 +12302,9 @@ with tab_e:
         _us_pnl_pct = (_us_pnl / _us_cost * 100) if _us_cost > 0 else 0
 
         _lm_h = not st.session_state.get('ui_dark', True)
+        _pan_bg = "#ffffff" if _lm_h else "#0d1117"
+        _pan_tx = "#0f172a" if _lm_h else "#f0f4ff"
+        _pan_bd = "#e2e8f0" if _lm_h else "#1e293b"
         _profit_c  = ("#166534" if _lm_h else "#39ff14") if _pnl_h >= 0 else ("#991B1B" if _lm_h else "#ff003c")
         _us_profit_c = ("#166534" if _lm_h else "#39ff14") if _us_pnl >= 0 else ("#991B1B" if _lm_h else "#ff003c")
 
@@ -12297,15 +12312,15 @@ with tab_e:
 
         # 국장 공격 엔진
         _eng_l.markdown(
-            "<div style='background:#0d1117;border:2px solid #3b82f620;border-radius:14px;"
+            f"<div style='background:{_pan_bg};border:2px solid {_pan_bd};border-radius:14px;"
             "padding:16px 20px;height:100%'>"
             "<div style='font-size:12px;font-weight:700;color:#3b82f6;margin-bottom:10px'>"
             "🇰🇷 공격 엔진 — 국장 (삼성증권)</div>"
             "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px'>"
             f"<div><div style='font-size:10px;color:#64748b'>초기자본(현금+국내)</div>"
-            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_kr_initial/1e6:.1f}M</div></div>"
+            f"<div style='font-size:14px;font-weight:700;color:{_pan_tx}'>{_kr_initial/1e6:.1f}M</div></div>"
             f"<div><div style='font-size:10px;color:#64748b'>현재 평가(현금+국내)</div>"
-            f"<div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_tv_h/1e6:.1f}M</div></div>"
+            f"<div style='font-size:14px;font-weight:700;color:{_pan_tx}'>{_tv_h/1e6:.1f}M</div></div>"
             f"<div><div style='font-size:10px;color:#64748b'>총 손익</div>"
             f"<div style='font-size:16px;font-weight:800;color:{_profit_c}'>{_pnl_h:+,.0f}원</div></div>"
             f"<div><div style='font-size:10px;color:#64748b'>수익률</div>"
@@ -12329,7 +12344,7 @@ with tab_e:
         _daily_krw = st.session_state.get('daily_div_krw', 5000)
         _monthly_div = _daily_krw * 30
         _eng_r.markdown(
-            "<div style='background:#0d1117;border:2px solid #fbbf2420;border-radius:14px;"
+            f"<div style='background:{_pan_bg};border:2px solid {_pan_bd};border-radius:14px;"
             "padding:16px 20px;height:100%'>"
             "<div style='font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:10px'>"
             "🇺🇸 방어 엔진 — 미장 배당 (토스)</div>"
@@ -12339,14 +12354,14 @@ with tab_e:
             f"<div><div style='font-size:10px;color:#64748b'>월 예상 배당</div>"
             f"<div style='font-size:14px;font-weight:700;color:#39ff14'>{_monthly_div:,}원</div></div>"
             "<div><div style='font-size:10px;color:#64748b'>핵심 종목</div>"
-            "<div style='font-size:11px;color:#f0f4ff'>JEPQ · SCHD · MAIN</div></div>"
+            f"<div style='font-size:11px;color:{_pan_tx}'>JEPQ · SCHD · MAIN</div></div>"
             "<div><div style='font-size:10px;color:#64748b'>전략</div>"
-            "<div style='font-size:11px;color:#f0f4ff'>Buy the Dip ≤1,400원</div></div>"
+            f"<div style='font-size:11px;color:{_pan_tx}'>Buy the Dip ≤1,400원</div></div>"
             "</div>"
             + (
                 "<div style='margin-top:10px;padding-top:8px;border-top:1px solid #1e293b'>"
                 "<div style='font-size:10px;color:#64748b;margin-bottom:2px'>미장 실제 보유 평가 / 손익</div>"
-                f"<div style='font-size:13px;font-weight:700;color:#f0f4ff'>{_us_val/1e6:.2f}M "
+                f"<div style='font-size:13px;font-weight:700;color:{_pan_tx}'>{_us_val/1e6:.2f}M "
                 f"<span style='color:{_us_profit_c}'>({_us_pnl:+,.0f}원 · {_us_pnl_pct:+.2f}%)</span></div>"
                 "</div>"
                 if _us_pos else ""
