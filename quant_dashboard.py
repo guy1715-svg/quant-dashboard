@@ -9307,7 +9307,31 @@ with _tab_d1:
         else:
             st.caption("💡 시세가 멈춘 것 같으면 좌측 버튼으로 강제 갱신하세요 (캐시 TTL 60초)")
 
-    _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF", "🌐 전체 통합"], horizontal=True, key="etf_market_sel")
+    # ── 투트랙(국장/미장) 라디오 — '전체 통합' 제거(15차 UI 다이어트) ──
+    # 🔥 현재 우위 뱃지: 직전 렌더에서 저장한 국장/미장 1위 종합점수를 비교해
+    #    더 높은 시장 옵션에만 표시. format_func로 '표시'만 바꾸므로 위젯 저장값은
+    #    항상 안정("🇰🇷 국장 ETF"/"🇺🇸 미장 ETF") → 옵션 변화로 인한 선택 리셋 없음.
+    _kr_sc = st.session_state.get('_kr_top_score')
+    _us_sc = st.session_state.get('_us_top_score')
+    def _fmt_etf_market(_opt):
+        if _kr_sc is None or _us_sc is None:
+            return _opt
+        if _opt == "🇰🇷 국장 ETF" and _kr_sc > _us_sc:
+            return f"{_opt}  (🔥 현재 우위 {int(_kr_sc)}점)"
+        if _opt == "🇺🇸 미장 ETF" and _us_sc > _kr_sc:
+            return f"{_opt}  (🔥 현재 우위 {int(_us_sc)}점)"
+        return _opt
+    _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF"],
+                           format_func=_fmt_etf_market, horizontal=True, key="etf_market_sel")
+
+    # ── 탭 전환 시 데이터 클렌징(State Reset) ──
+    # 국장↔미장 전환 즉시 순위 히스토리/통합 잔상을 비워, 이전 시장 데이터가
+    # 하단 관제판에 섞이지 않도록 락(Lock). fetch_etf_data는 etf_list를 캐시키로
+    # 쓰므로 시세 자체는 시장별로 분리되지만, 순위 히스토리는 명시적으로 초기화.
+    if st.session_state.get('_etf_market_prev') != _etf_market:
+        for _stale_k in ('_rh_kr', '_rh_us', '_rh_all'):
+            st.session_state.pop(_stale_k, None)
+        st.session_state['_etf_market_prev'] = _etf_market
 
     # ── ETF 리스트 정의 (국장 / 미장) ──
     # ⚠️ 매핑 정확성 최우선 — KRX 공식 종목코드 기준 (2024년 검증)
@@ -9529,6 +9553,7 @@ with _tab_d1:
             if _kr_top is not None:
                 _kr_m3.metric("1위 ETF", _kr_top['ETF명'])
                 _kr_m4.metric("1위 점수", f"{int(_kr_top['종합점수'])}점")
+                st.session_state['_kr_top_score'] = float(_kr_top['종합점수'])  # 🔥 우위 뱃지용
 
             if not _kr_active.empty:
                 with st.expander("📊 TOP10 히트맵 보기", expanded=False):
@@ -9697,6 +9722,7 @@ with _tab_d1:
             if _us_top is not None:
                 _us_m3.metric("1위 ETF", f"{_us_top['ETF명']} ({_us_top['코드']})")
                 _us_m4.metric("1위 점수", f"{int(_us_top['종합점수'])}점")
+                st.session_state['_us_top_score'] = float(_us_top['종합점수'])  # 🔥 우위 뱃지용
 
             if not _us_active.empty:
                 with st.expander("📊 TOP10 히트맵 보기", expanded=False):
@@ -9756,7 +9782,7 @@ with _tab_d1:
                             unsafe_allow_html=True
                         )
 
-    else:  # 🌐 전체 통합
+    else:  # 🌐 전체 통합 (15차 UI 다이어트로 라디오에서 제거 — 도달 불가 레거시)
         st.markdown("### 🌐 국장+미장 ETF 통합 랭킹판")
         st.caption("국장ETF(원화) + 미장ETF(USD) 전체 통합 랭킹. 동일한 스코어링 엔진 적용.")
 
