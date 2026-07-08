@@ -2876,7 +2876,9 @@ def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
     else:
         light, verdict = "amber", "🟡 데이터 일부 미확인 — 신규 진입 신중 검토"
 
-    return {"lines": [l1, l2, l3], "verdict": verdict, "light": light}
+    return {"lines": [l1, l2, l3], "verdict": verdict, "light": light,
+            "states": {"krw": s1, "flow": s2, "score": s3},
+            "score_val": _score}
 
 def calc_indicators(df):
     """V8.9.2 — indicators.py 위임 (Wilder RSI, CMF20, ATR14)."""
@@ -3637,8 +3639,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    gemini_key = st.text_input("🔑 Gemini API 키", type="password",
-                                help="aistudio.google.com에서 발급")
+    # (🔑 Gemini 키·모델·강제 새로고침은 하단 '🛠️ 시스템 백엔드' Expander로 이동)
 
     # (📋 관심 종목 헤더는 아래 Expander 제목으로 대체 — 사이드바 슬림화)
 
@@ -3817,32 +3818,32 @@ with st.sidebar:
         n = len(_sb_pairs)
         st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
 
-    # (분석 기간 슬라이더 삭제 — 글로벌 변수 충돌 방지. 지표 계산은 로직별 로컬 값 사용)
+    # ── 🛠️ 시스템 백엔드 및 API 설정 (평소 숨김 — Gemini 키·모델·강제 새로고침 격리) ──
+    with st.expander("🛠️ 시스템 백엔드 및 API 설정", expanded=False):
+        gemini_key = st.text_input("🔑 Gemini API 키", type="password",
+                                    help="aistudio.google.com에서 발급")
+        model_name = st.selectbox("Gemini 모델", [
+            "models/gemini-2.5-flash",
+            "models/gemini-2.5-pro",
+            "models/gemini-2.0-flash",
+        ], help="Flash: 빠름·하루 500회 무료 / Pro: 정밀분석·하루 25회 무료")
+        st.caption(f"마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}")
+        if st.button("🔄 강제 새로고침", use_container_width=True):
+            st.cache_data.clear()
+            st.success("캐시 초기화 완료!")
+            import time; time.sleep(0.5)
+            st.rerun()
 
-    model_name = st.selectbox("Gemini 모델", [
-        "models/gemini-2.5-flash",
-        "models/gemini-2.5-pro",
-        "models/gemini-2.0-flash",
-    ], help="Flash: 빠름·하루 500회 무료 / Pro: 정밀분석·하루 25회 무료")
-
-    st.markdown(f"<div style='font-size:10px; color:#64748b; text-align:center'>마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}</div>", unsafe_allow_html=True)
-    refresh = st.button("🔄 강제 새로고침", use_container_width=True)
-    if refresh:
-        st.cache_data.clear()
-        st.success("캐시 초기화 완료!")
-        import time; time.sleep(0.5)
-        st.rerun()
-
-    st.markdown("---")
+    # 📌 보안 규칙 — 세로 줄글 → 가로 캡슐 배지 한 줄 (시각 부피 50%↓)
     st.markdown(
-        "<div style='font-size:11px; color:#64748b; line-height:1.8'>"
-        "📌 <b>보완 규칙 적용 중</b><br>"
-        "• R:R 2.0 미만 기각<br>"
-        "• 손절 -7% 킬스위치<br>"
-        "• 09:00~09:30 진입 금지<br>"
-        "• 물타기 절대 금지<br>"
-        "• 현금 20% 유지"
-        "</div>",
+        "<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:6px'>"
+        + "".join(
+            f"<span style='background:rgba(100,116,139,0.15);color:#94a3b8;"
+            f"font-size:9px;padding:2px 7px;border-radius:10px;"
+            f"border:1px solid rgba(100,116,139,0.3)'>{_r}</span>"
+            for _r in ["R:R≥2.0", "손절 -7%", "09:00~09:30 금지", "물타기 금지", "현금 20%"]
+        )
+        + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -4576,8 +4577,10 @@ div[data-testid="stMetricLabel"] { font-size:0.78rem; }
 section[data-testid="stSidebar"] > div:first-child { padding-top:8px; }
 /* 긴급 경고(st.error) 강조 — 큰 폰트·굵게 */
 div[data-testid="stAlert"] { font-size:0.95rem; font-weight:700; border-radius:10px; }
-/* 블록 간 간격 살짝 넓혀 가독성 확보 */
-div[data-testid="stVerticalBlock"] { gap:0.55rem; }
+/* V9.2 콤팩트: 블록 간 간격·메트릭 패딩 조여 세로 부피 축소 */
+div[data-testid="stVerticalBlock"] { gap:0.38rem; }
+div[data-testid="stMetric"] { padding:7px 12px; }
+div[data-testid="stExpander"] { margin-bottom:0.3rem; }
 </style>""", unsafe_allow_html=True)
 
     # ── 상단 상태 바 (지수 배지와 세로 중앙 정렬) ──
@@ -4638,24 +4641,51 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
         except Exception:
             _ai_top1 = None
         _brief = generate_ai_briefing(_ai_krw, _ai_flow, _ai_top1)
-        # 테마(라이트/다크) 자동 대응 — 네이티브 컴포넌트 사용(강제 다크배경 제거)
-        _render_fn = {"green": st.success, "amber": st.warning, "red": st.error}.get(
-            _brief["light"], st.info)
-        _brief_md = (f"**🤖 오늘의 5AI 브리핑 — {_brief['verdict']}**\n\n"
-                     + "\n".join(f"- {_ln[3:].strip()}" for _ln in _brief["lines"]))
-        _render_fn(_brief_md)
+        _st = _brief.get("states", {})
+        # 변동성(VIX) · 레짐(종합 신호등) 배지 상태 산출
+        _vix = _mkt_home.get("VIX", {}).get("현재") if isinstance(_mkt_home, dict) else None
+        _vix_s = (1 if _vix < 20 else 0) if isinstance(_vix, (int, float)) else -1
+        _regime_s = {"green": 1, "red": 0, "amber": -1}.get(_brief["light"], -1)
+
+        def _pill(_label, _s, _extra=""):
+            _icon, _txt, _c = {
+                1:  ("🟢", "PASS", "#16a34a"),
+                0:  ("🔴", "WAIT", "#ef4444"),
+                -1: ("⚪", "N/A",  "#64748b"),
+            }.get(_s, ("⚪", "N/A", "#64748b"))
+            return (f"<div style='background:{_c}14;border:1px solid {_c}55;border-radius:10px;"
+                    f"padding:6px 4px;text-align:center'>"
+                    f"<div style='font-size:10px;color:#94a3b8'>{_label}</div>"
+                    f"<div style='font-size:13px;font-weight:800;color:{_c}'>{_icon} {_txt}</div>"
+                    f"<div style='font-size:9px;color:#64748b'>{_extra}</div></div>")
+
+        _sv = _brief.get("score_val")
+        _bcols = st.columns(5)
+        _bcols[0].markdown(_pill("환율", _st.get("krw", -1),
+                                 f"{_ai_krw:,.0f}" if isinstance(_ai_krw,(int,float)) else "—"), unsafe_allow_html=True)
+        _bcols[1].markdown(_pill("외인수급", _st.get("flow", -1), "미사용"), unsafe_allow_html=True)
+        _bcols[2].markdown(_pill("스코어", _st.get("score", -1),
+                                 f"{int(_sv)}점" if isinstance(_sv,(int,float)) else "—"), unsafe_allow_html=True)
+        _bcols[3].markdown(_pill("변동성", _vix_s,
+                                 f"VIX {_vix:.0f}" if isinstance(_vix,(int,float)) else "—"), unsafe_allow_html=True)
+        _bcols[4].markdown(_pill("레짐", _regime_s, _brief["light"].upper()), unsafe_allow_html=True)
+
+        # 상세 줄글 설명은 Expander로 격리 (평소 접힘)
+        with st.expander(f"🔎 5AI 분석 상세 가이드 및 기각 사유 보기 — {_brief['verdict']}", expanded=False):
+            for _ln in _brief["lines"]:
+                st.markdown(f"- {_ln[3:].strip() if _ln[:2].strip().rstrip('.').isdigit() else _ln}")
     except Exception:
         st.caption("⚠️ 5AI 브리핑 일시 비활성 (데이터 지연)")
 
 
     # ── 1행: 계좌 요약(전체폭) / 2행: 포트폴리오 관제 + 차트 ──
     #    (중복 매크로 카드행 · 홈 통합 랭킹 패널 제거 → 스캐너 탭으로 역할 분리)
-    _p1 = st.container()
+    _left, _right = st.columns([2, 3], gap="medium")  # V9.2 좌우 2단 관제
 
     # ══════════════════════════════════════════════
     # PANEL 1 — Account Summary + Live Signal Stream
     # ══════════════════════════════════════════════
-    with _p1:
+    with _left:
         _acc_cc = load_account()
         _pos_list_cc = _acc_cc.get('positions', [])
         _total_eval = _acc_cc['cash']
@@ -4738,53 +4768,54 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
     # ══════════════════════════════════════════════
     # 2행 — PANEL 3(관제) + PANEL 4(차트) : 40% / 60%
     # ══════════════════════════════════════════════
-    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
-    # ⚡ LIVE SIGNAL STREAM — 계좌 카드에서 분리해 전체폭 독립 컨테이너
-    with st.expander("⚡ LIVE SIGNAL STREAM (관심종목 실시간 신호)", expanded=True):
-        # Live Signal Stream
+    with _left:  # 계좌 아래 LIVE SIGNAL을 좌측 열에 append
+        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+        # ⚡ LIVE SIGNAL STREAM — 계좌 카드에서 분리해 전체폭 독립 컨테이너
+        with st.expander("⚡ LIVE SIGNAL STREAM (관심종목 실시간 신호)", expanded=True):
+            # Live Signal Stream
 
-        # 신호 피드 조합: 관심종목 신호 + 최근 거래
-        _signal_feed = []
-        _tickers_cc = get_watchlist_tickers()
-        for _t_cc, _n_cc in _tickers_cc[:5]:
-            try:
-                _df_cc2 = all_data.get(_t_cc, {}).get('df')
-                if _df_cc2 is None:
-                    # 홈에서 all_data 캐시가 비어있으면 즉석 로드 (시그널 피드 빈칸 방지)
-                    _raw_cc = fetch_ohlcv(_t_cc, 80)
-                    if _raw_cc is not None and len(_raw_cc) >= 20:
-                        _df_cc2 = calc_indicators(_raw_cc)
-                        st.session_state.all_data_cache[_t_cc] = {'name': _n_cc, 'df': _df_cc2}
-                if _df_cc2 is None or len(_df_cc2) < 2:
-                    continue
-                _sig_cc = get_signal(_df_cc2)
-                _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
-                _chg_c2 = "#16a34a" if _chg_cc > 0 else "#ef4444"
-                for _s, _stype in _sig_cc[:1]:
-                    _signal_feed.append((_n_cc, _s, _chg_cc, _chg_c2))
-            except Exception:
-                pass
+            # 신호 피드 조합: 관심종목 신호 + 최근 거래
+            _signal_feed = []
+            _tickers_cc = get_watchlist_tickers()
+            for _t_cc, _n_cc in _tickers_cc[:5]:
+                try:
+                    _df_cc2 = all_data.get(_t_cc, {}).get('df')
+                    if _df_cc2 is None:
+                        # 홈에서 all_data 캐시가 비어있으면 즉석 로드 (시그널 피드 빈칸 방지)
+                        _raw_cc = fetch_ohlcv(_t_cc, 80)
+                        if _raw_cc is not None and len(_raw_cc) >= 20:
+                            _df_cc2 = calc_indicators(_raw_cc)
+                            st.session_state.all_data_cache[_t_cc] = {'name': _n_cc, 'df': _df_cc2}
+                    if _df_cc2 is None or len(_df_cc2) < 2:
+                        continue
+                    _sig_cc = get_signal(_df_cc2)
+                    _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
+                    _chg_c2 = "#16a34a" if _chg_cc > 0 else "#ef4444"
+                    for _s, _stype in _sig_cc[:1]:
+                        _signal_feed.append((_n_cc, _s, _chg_cc, _chg_c2))
+                except Exception:
+                    pass
 
-        if _signal_feed:
-            for _sn, _ss, _sc, _scc in _signal_feed:
-                st.markdown(
-                    f"<div style='background:#0d1117;border-left:2px solid {_scc};border-radius:4px;"
-                    f"padding:5px 10px;margin-bottom:3px;font-size:11px'>"
-                    f"<span style='color:#f0f4ff;font-weight:600'>{_sn}</span> "
-                    f"<span style='color:#64748b'>{_ss}</span> "
-                    f"<span style='color:{_scc};float:right'>{_sc:+.1f}%</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.markdown("<div style='color:#374151;font-size:11px;padding:6px'>관심종목 신호 없음</div>", unsafe_allow_html=True)
+            if _signal_feed:
+                for _sn, _ss, _sc, _scc in _signal_feed:
+                    st.markdown(
+                        f"<div style='background:#0d1117;border-left:2px solid {_scc};border-radius:4px;"
+                        f"padding:5px 10px;margin-bottom:3px;font-size:11px'>"
+                        f"<span style='color:#f0f4ff;font-weight:600'>{_sn}</span> "
+                        f"<span style='color:#64748b'>{_ss}</span> "
+                        f"<span style='color:{_scc};float:right'>{_sc:+.1f}%</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.markdown("<div style='color:#374151;font-size:11px;padding:6px'>관심종목 신호 없음</div>", unsafe_allow_html=True)
 
-    _p3, _p4 = st.columns([4, 6])
+    # (V9.2: PANEL 3·4는 우측 열 _right에 세로 스택)
 
     # ══════════════════════════════════════════════
     # PANEL 3 — Active Portfolio 관제
     # ══════════════════════════════════════════════
-    with _p3:
+    with _right:
         st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>ACTIVE PORTFOLIO 관제</div>", unsafe_allow_html=True)
 
         # ── 전역 자산 낙폭 킬스위치 (Gemini 방어벽 #1) ──
@@ -4942,7 +4973,7 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
     # ══════════════════════════════════════════════
     # PANEL 4 — Performance & Chart
     # ══════════════════════════════════════════════
-    with _p4:
+    with _right:
         st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>PERFORMANCE & CHART</div>", unsafe_allow_html=True)
 
         _acc_p4 = load_account()
