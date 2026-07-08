@@ -4150,7 +4150,7 @@ _h1.markdown("""
     <span style='font-size:28px; font-weight:800; font-family:"IBM Plex Mono",monospace;
                  background:linear-gradient(90deg,#4da6ff,#a78bfa); -webkit-background-clip:text;
                  -webkit-text-fill-color:transparent'>퀀트 관제탑</span>
-    <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V9.1</span>
+    <span style='font-size:12px; color:#64748b; font-family:"IBM Plex Mono",monospace'>V9.2</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -4591,7 +4591,7 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
     # H2(##) 대신 여백 없는 인라인 타이틀 → 배지와 같은 수평선 정렬
     _sb_cols[0].markdown(
         "<div style='font-size:23px;font-weight:900;color:#f0f4ff;line-height:1.2;margin:0'>"
-        "🎯 V9.1 <span style='background:linear-gradient(90deg,#4da6ff,#a78bfa);"
+        "🎯 V9.2 <span style='background:linear-gradient(90deg,#4da6ff,#a78bfa);"
         "-webkit-background-clip:text;-webkit-text-fill-color:transparent'>Quant Command Center</span></div>",
         unsafe_allow_html=True)
     _market_badge = (
@@ -4680,7 +4680,7 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
 
     # ── 1행: 계좌 요약(전체폭) / 2행: 포트폴리오 관제 + 차트 ──
     #    (중복 매크로 카드행 · 홈 통합 랭킹 패널 제거 → 스캐너 탭으로 역할 분리)
-    _left, _right = st.columns([2, 3], gap="medium")  # V9.2 좌우 2단 관제
+    _left, _right = st.columns([1, 2], gap="medium")  # V9.2 좌우 2단 관제 (33:67 — 우측 관제 확대)
 
     # ══════════════════════════════════════════════
     # PANEL 1 — Account Summary + Live Signal Stream
