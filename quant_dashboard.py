@@ -600,14 +600,15 @@ def kis_get_org_net_daily(ticker, days=10):
 
 
 def kis_available():
-    """KIS API 사용 가능 여부 확인 — 사이드바 입력 키 or secrets 키."""
-    # 1) 사이드바 입력 키 (시세/수급 조회는 App Key+Secret만으로 충분)
+    """KIS API 사용 가능 여부 — 시세/수급 조회는 App Key+Secret만으로 충분.
+    (계좌번호 KIS_ACCOUNT_NO는 주문/잔고 전용 — 여기서 요구하면 시세 조회까지
+    '키 미설정'으로 오판되는 버그가 있었음 → 2키만 검사하도록 완화)"""
+    # 1) 사이드바 입력 키
     if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
         return True
-    # 2) secrets 완전체 (거래용 — 계좌번호 포함)
+    # 2) secrets (App Key + Secret 2개만 필수)
     try:
-        _keys = ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"]
-        return all(k in st.secrets for k in _keys)
+        return ("KIS_APP_KEY" in st.secrets) and ("KIS_APP_SECRET" in st.secrets)
     except:
         return False
 
@@ -3506,12 +3507,31 @@ with st.sidebar:
     with st.expander("🔑 한국투자증권(KIS) API 연동", expanded=False):
         st.caption("키 입력 시 외인 수급을 스크래핑 대신 **공식 KIS API**로 조회합니다. "
                    "(발급: KIS Developers · 시세/수급은 App Key+Secret만으로 충분)")
-        st.text_input("KIS App Key", type="password", key="_kis_app_key_input")
+        # 등록 현황 진단 — secrets에 어떤 키가 잡히는지 표시
+        _kis_found, _kis_missing = kis_debug_info()
+        if _kis_found:
+            st.caption(f"🗝️ secrets 감지: {', '.join(_kis_found)}")
+        st.text_input("KIS App Key", type="password", key="_kis_app_key_input",
+                      help="secrets에 이미 등록했다면 비워두세요")
         st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
         if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
-            st.success("✅ KIS 키 감지 — 외인 수급은 공식 API 경로로 조회됩니다.")
+            st.success("✅ 입력 키 감지 — 외인 수급은 공식 KIS API로 조회됩니다.")
         elif kis_available():
-            st.info("ℹ️ secrets에 등록된 KIS 키 사용 중")
+            st.success("✅ secrets 등록 키 사용 중 — 외인 수급은 공식 KIS API로 조회됩니다.")
+        else:
+            st.caption("⛔ 감지된 키 없음 — App Key/Secret 입력 시 즉시 활성화")
+        # 연결 자가진단 버튼 — 토큰 발급 + 삼성전자 수급 1건 조회
+        if st.button("🧪 KIS 연결 테스트", key="kis_conn_test", use_container_width=True):
+            with st.spinner("KIS 토큰 발급 + 수급 조회 테스트 중..."):
+                _tok_t = kis_get_token()
+                if not _tok_t:
+                    st.error("❌ 토큰 발급 실패 — App Key/Secret 값 확인 필요 (오타·실전/모의 구분)")
+                else:
+                    _inv_t = kis_get_investor("005930")
+                    if _inv_t:
+                        st.success(f"✅ 연결 정상 — 삼성전자 외인 순매수 {_inv_t.get('외인순매수',0):+,}주")
+                    else:
+                        st.warning("⚠️ 토큰은 발급됐으나 수급 조회 실패 — API 권한(국내주식 시세) 신청 여부 확인")
 
     # ── 🔄 실시간 코스피 외인 수급 스크래핑 (28차 엔진: KIS 우선 → cloudscraper WAF 우회 → JSON → FDR → pykrx) ──
     if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
