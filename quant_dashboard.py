@@ -677,6 +677,33 @@ def check_index_shutdown():
     except Exception as _e:
         return False, f"지수 조회 오류: {_e}", 0, 0
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def check_index_shutdown_us():
+    """미장 전용 지수 킬스위치 — S&P500(^GSPC)/나스닥(^IXIC) 당일 -2% 급락 시 신규매수 차단.
+    반환: (is_shutdown, reason, spx_chg, ndx_chg). 국장/미장 투트랙 동기화용."""
+    try:
+        import yfinance as _yf_us
+        _res = {}
+        for _n, _s in [("S&P500", "^GSPC"), ("나스닥", "^IXIC")]:
+            try:
+                _h = _yf_us.Ticker(_s).history(period="5d", interval="1d").dropna(subset=['Close'])
+                if len(_h) >= 2:
+                    _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
+                    if _c > 0 and _p > 0:
+                        _res[_n] = (_c / _p - 1) * 100
+            except Exception:
+                pass
+        _spx = round(_res.get("S&P500", 0), 2)
+        _ndx = round(_res.get("나스닥", 0), 2)
+        if _spx <= -2.0 or _ndx <= -2.0:
+            _reason = (f"🚨 美 지수 셧다운 — S&P500 {_spx:+.2f}% / 나스닥 {_ndx:+.2f}% "
+                       f"(-2.0% 급락) | 신규 매수 차단")
+            return True, _reason, _spx, _ndx
+        return False, "", _spx, _ndx
+    except Exception as _e:
+        return False, f"美 지수 조회 오류: {_e}", 0, 0
+
 # ── 전역 손절 비율 상수 ──────────────────────────────────────────────────────
 # 이 두 값만 바꾸면 전체 손절가 로직에 일괄 반영됨
 _STOP_LOSS_PCT  = 0.07   # 기본 손절: entry × (1 - 0.07) = -7%
@@ -2237,6 +2264,74 @@ def get_foreign_net_kospi():
         return None
 
 
+def _scrape_naver_foreign_net_kospi():
+    """네이버 증권 투자자별 매매동향에서 코스피 외국인 순매수(원)를 스크래핑.
+    반환: float(원) 또는 None. requests/BeautifulSoup 우선, 실패 시 urllib+정규식."""
+    _url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
+    _headers = {"User-Agent": "Mozilla/5.0"}
+    _html = None
+    try:
+        import requests as _rq
+        _html = _rq.get(_url, headers=_headers, timeout=6).text
+    except Exception:
+        try:
+            import urllib.request as _ur
+            _req = _ur.Request(_url, headers=_headers)
+            _raw = _ur.urlopen(_req, timeout=6).read()
+            for _enc in ("euc-kr", "utf-8"):
+                try:
+                    _html = _raw.decode(_enc); break
+                except Exception:
+                    continue
+        except Exception:
+            return None
+    if not _html:
+        return None
+    # 1) BeautifulSoup 파싱 (설치 시): 첫 데이터 행의 외국인 컬럼(억원)
+    try:
+        from bs4 import BeautifulSoup as _BS
+        _soup = _BS(_html, "html.parser")
+        for _tr in _soup.select("table.type_1 tr"):
+            _tds = _tr.find_all("td")
+            if len(_tds) >= 4 and _tds[0].get_text(strip=True):
+                # 컬럼: 날짜 | 개인 | 외국인 | 기관계 ... (단위 억원, 콤마/부호 포함)
+                _fn_txt = _tds[2].get_text(strip=True).replace(",", "")
+                if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
+                    return float(_fn_txt) * 100_000_000   # 억원 → 원
+    except Exception:
+        pass
+    # 2) 정규식 폴백: 첫 데이터 행 숫자 추출
+    try:
+        import re as _re_fn
+        _rows = _re_fn.findall(r"<tr[^>]*>(.*?)</tr>", _html, _re_fn.S)
+        for _row in _rows:
+            _cells = _re_fn.findall(r"<td[^>]*>(.*?)</td>", _row, _re_fn.S)
+            _clean = [_re_fn.sub(r"<[^>]+>", "", _c).strip().replace(",", "") for _c in _cells]
+            if len(_clean) >= 3 and _re_fn.match(r"\d{2}\.\d{2}", _clean[0] or ""):
+                _fn_txt = _clean[2]
+                if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
+                    return float(_fn_txt) * 100_000_000
+    except Exception:
+        pass
+    return None
+
+
+def fetch_foreign_net_buying():
+    """실시간 코스피 외국인 순매수(원) 자동 스크래핑 — 사이드바 버튼 전용.
+    우선순위: pykrx(KRX 정확) → 네이버 증권 → KIS 대형주 추정.
+    반환: (value_krw: float|None, source: str)."""
+    _v = get_foreign_net_kospi()          # pykrx (KRX)
+    if _v is not None:
+        return _v, "pykrx(KRX)"
+    _v = _scrape_naver_foreign_net_kospi()  # 네이버 증권
+    if _v is not None:
+        return _v, "네이버 증권"
+    _kis, _hit = get_foreign_net_kospi_kis_estimate()  # KIS 추정
+    if _kis is not None:
+        return _kis, f"KIS 추정(대형주 {_hit}종목)"
+    return None, "조회 실패"
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_foreign_net_kospi_kis_estimate():
     """KIS 폴백 — 주요 코스피 대형주 외국인 순매수 '수량' 합산으로 방향+개략 규모 추정.
@@ -3051,6 +3146,15 @@ with st.sidebar:
         _sb_oil   = get_wti_oil()
         _sb_flow  = st.session_state.get('_foreign_net_krw', None)
         _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow)
+
+        # ── 시장별(국장/미장) 독립 지수 킬스위치 — 메인 라디오(etf_market_sel)와 동기화 ──
+        _sb_mkt    = st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')
+        _sb_is_us  = ('미장' in str(_sb_mkt))
+        if _sb_is_us:
+            _idx_sd, _idx_msg, _idx_a, _idx_b = check_index_shutdown_us()
+        else:
+            _idx_sd, _idx_msg, _idx_a, _idx_b = check_index_shutdown()
+        _sb_black = _sb_black or _idx_sd   # 지수 급락도 블랙아웃으로 승격
         if _sb_black:
             _sbt, _sbc, _sbi = "진입 금지", "#ef4444", "🚫"
         elif _sb_gate["light"] == "red":
@@ -3065,7 +3169,11 @@ with st.sidebar:
             f"<div style='font-size:26px;line-height:1'>{_sbi}</div>"
             f"<div style='font-size:17px;font-weight:900;color:{_sbc};margin-top:2px'>{_sbt}</div>"
             f"</div>", unsafe_allow_html=True)
-        if _sb_black:
+        # 시장별 지수 킬스위치 경고 (미장 선택 시 S&P500/나스닥, 국장 시 코스피/코스닥)
+        _mkt_tag = "🇺🇸 미장" if _sb_is_us else "🇰🇷 국장"
+        if _idx_sd and _idx_msg:
+            st.error(f"[{_mkt_tag} 지수 킬스위치] {_idx_msg}")
+        if _sb_black and not _idx_sd:
             _al = _sbv.get('alerts', ['이벤트 48시간 이내'])
             st.error(f"🚨 매크로 블랙아웃: {_al[0] if _al else '이벤트 임박'}")
         # 핵심 수치 — 좁은 사이드바에서 2컬럼 대신 수직 배열(위아래로 넓게)
@@ -3084,33 +3192,22 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## ⚙️ 설정")
 
-    # ── 수동 입력 위젯 (설정 하단으로 이동 — 상단은 생존지표 전용) ──
-    # 외국인 수급 수동 입력 (사이드바 고정)
-    with st.expander("✍️ 외인 수급 수동입력", expanded=False):
-        _sbfn = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
-                                value=0.0, step=100.0, key="sb_fn_in")
-        _sbb1, _sbb2 = st.columns(2)
-        if _sbb1.button("적용", key="sb_fn_apply", use_container_width=True):
-            _v = float(_sbfn) * 100_000_000
-            st.session_state['_foreign_net_krw'] = _v
-            st.session_state['_foreign_net_src'] = 'manual'
-            try:
-                _fb_ref("/foreign_net_manual").set(
-                    {'krw': _v, 'date': datetime.now().strftime("%Y-%m-%d %H:%M")})
-            except Exception:
-                pass
+    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (수동 입력 폐지 → 완전 자동화) ──
+    if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
+                 use_container_width=True, help="pykrx(KRX)→네이버→KIS 순으로 당일 외국인 순매수를 자동 조회"):
+        with st.spinner("외국인 순매수 스크래핑 중..."):
+            _fn_v, _fn_src = fetch_foreign_net_buying()
+        if _fn_v is not None:
+            st.session_state['_foreign_net_krw'] = float(_fn_v)
+            st.session_state['_foreign_net_src'] = 'scrape'
+            st.session_state['_foreign_net_scrape_src'] = _fn_src
+            st.toast(f"✅ 외인 수급 {_fn_v/1e8:+,.0f}억원 ({_fn_src})", icon="🌍")
             st.rerun()
-        if _sbb2.button("자동복귀", key="sb_fn_auto", use_container_width=True):
-            st.session_state.pop('_foreign_net_src', None)
-            st.session_state.pop('_foreign_net_krw', None)
-            try:
-                _fb_ref("/foreign_net_manual").delete()
-            except Exception:
-                pass
-            st.rerun()
-    # 산자부 수출 수치 수동 입력 (사이드바 고정)
-    with st.expander("📦 산자부 수출 수동입력", expanded=False):
-        render_motie_manual_widget()
+        else:
+            st.warning("⚠️ 스크래핑 실패 — 잠시 후 재시도 (KRX/네이버/KIS 모두 무응답)")
+    _fn_src_disp = st.session_state.get('_foreign_net_scrape_src')
+    if _fn_src_disp:
+        st.caption(f"🌍 외인 수급 출처: {_fn_src_disp}")
 
     # ── 세션 정보 + 로그아웃 ──
     _auth_time = st.session_state.get('_auth_time', '')
@@ -3310,7 +3407,7 @@ with st.sidebar:
     n = len(_sb_pairs)
     st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
 
-    lookback = st.slider("분석 기간 (거래일)", 30, 120, 60)
+    # (분석 기간 슬라이더 삭제 — 글로벌 변수 충돌 방지. 지표 계산은 로직별 로컬 값 사용)
 
     model_name = st.selectbox("Gemini 모델", [
         "models/gemini-2.5-flash",
@@ -8866,8 +8963,11 @@ with tab_d:
 
                 # 브리핑 패널용 상태 캐시 저장 (tab_d1에서 읽음)
                 st.session_state.setdefault('_live_pos_states', {})[_tk] = _status_label
+                # 종목명: 코드(395160) 대신 한글명 매핑 → "KODEX AI반도체TOP2+ (395160)"
+                _disp_name = resolve_korean_name(_tk, _pos.get('name', _tk))
+                _disp_label = f"{_disp_name} ({_tk})" if _disp_name and _disp_name != _tk else _tk
                 st.session_state.setdefault('_live_pos_summary', {})[_tk] = {
-                    'name': _tk, 'cur': _cur_p, 'pnl': round(_pnl_pct, 2),
+                    'name': _disp_label, 'cur': _cur_p, 'pnl': round(_pnl_pct, 2),
                     'stop': _stop_p, 't1': _t1_p, 't2': _t2_p,
                     'unit': '원' if _is_kr else '$', 'state': _status_label,
                 }
@@ -9076,7 +9176,8 @@ with _tab_d1:
             return ['color:#475569'] * len(row)
 
         st.dataframe(
-            _sum_df.style.apply(_tbl_row_style, axis=1),
+            _sum_df.style.apply(_tbl_row_style, axis=1)
+                         .format({'수익률(%)': '{:+.2f}%'}),   # -19.210000 → -19.21%
             use_container_width=True, hide_index=True,
         )
     else:
@@ -12304,7 +12405,7 @@ with tab_e:
             _e4_prog = st.progress(0, text="데이터 로딩 중...")
             for _ei, (_et, _en) in enumerate(_e4_missing):
                 _e4_prog.progress((_ei+1)/max(len(_e4_missing),1), text=f"📡 {_en} 수집 중... ({_ei+1}/{len(_e4_missing)})")
-                _edf = fetch_ohlcv(_et, lookback)
+                _edf = fetch_ohlcv(_et, 60)   # 기본 60거래일 (글로벌 lookback 제거)
                 if _edf is not None and len(_edf) >= 20:
                     st.session_state.all_data_cache[_et] = {'name': _en, 'df': calc_indicators(_edf)}
             _e4_prog.empty()
