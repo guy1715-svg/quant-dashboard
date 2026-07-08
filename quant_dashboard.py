@@ -8478,6 +8478,52 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 _dc6.metric("MA 정배열", row.get('정배열',''))
                 st.caption(f"Z-Score: {row.get('Z-Score',0)} | 거래량%: {row.get('거래량%',0)}")
 
+                # ── 🎯 실전 가격 타점 (1위 종목 한정 — 상세 지표 안으로 이관, 메인 중복 제거) ──
+                if _is_top:
+                    _gap_v      = row.get('갭(%)', 0)
+                    _ma5_v      = row.get('MA5이격(%)', 0)
+                    _ma5_price  = float(row.get('MA5가격', row['현재가']))
+                    _prev_close = float(row.get('전일종가', row['현재가']))
+                    _cur_price  = float(row['현재가'])
+                    _is_kr_etf  = str(row['코드']).isdigit()
+                    _sym        = '원' if _is_kr_etf else '$'
+                    _fmt        = (lambda v: f"{v:,.0f}{_sym}") if _is_kr_etf else (lambda v: f"{_sym}{v:,.2f}")
+                    # 단일 함수 참조 — 상단 황금색 요약선과 1원도 안 어긋나게 통일
+                    _lv = calculate_trade_levels(_cur_price, _ma5_price, _prev_close,
+                                                 _gap_v, _ma5_v, _is_kr_etf)
+                    st.markdown("---")
+                    st.markdown(f"""
+<div style='background:rgba(30,30,50,0.7);border:2px solid {_lv['status_c']};border-radius:12px;padding:16px 20px;margin:4px 0'>
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>
+    <span style='font-size:16px;font-weight:800;color:{_lv['status_c']}'>{_lv['status']}</span>
+    <span style='font-size:12px;color:#94a3b8'>{_lv['comment']}</span>
+  </div>
+  <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center'>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🎯 매수 타점</div>
+      <div style='font-size:16px;font-weight:700;color:#fbbf24'>{_fmt(_lv['entry'])}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🛑 손절가 (-7%)</div>
+      <div style='font-size:16px;font-weight:700;color:#f43f5e'>{_fmt(_lv['stop'])}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🎯 1차 목표 (+8%)</div>
+      <div style='font-size:16px;font-weight:700;color:#22c55e'>{_fmt(_lv['target1'])}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>🚀 2차 목표 (+15%)</div>
+      <div style='font-size:16px;font-weight:700;color:#34d399'>{_fmt(_lv['target2'])}</div>
+    </div>
+    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
+      <div style='font-size:10px;color:#64748b'>⚖️ R:R</div>
+      <div style='font-size:16px;font-weight:700;color:{"#22c55e" if _lv['rr'] >= 2 else "#f97316"}'>{_lv['rr']:.1f}</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+                    st.caption(f"📐 MA5 이격도: **{_ma5_v:+.1f}%** · 갭: {_gap_v:+.1f}% "
+                               f"(이격 -1%~+1% = 타점권 / +3%↑ = 과열 눌림목 대기)")
+
             # ── 명칭 불일치 → st.error + 진입 차단 경고 ──
             if not _validated and _integrity_msg:
                 st.error(
@@ -8566,61 +8612,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                         st.success(f"✅ {_name_key} 추가됨")
                     else:
                         st.info("이미 추가된 종목입니다")
-        # ── 1위 ETF 갭상승 차단 + 매수 타점 카드 ──
-        if _is_top:
-            _gap_v      = row.get('갭(%)', 0)
-            _ma5_v      = row.get('MA5이격(%)', 0)
-            _ma5_price  = float(row.get('MA5가격', row['현재가']))
-            _prev_close = float(row.get('전일종가', row['현재가']))
-            _cur_price  = float(row['현재가'])
-            _is_gap     = _gap_v >= 3.0
-            _is_hot     = _ma5_v >= 3.0
-            _is_cool    = -1.0 <= _ma5_v <= 1.0
-            _is_kr_etf  = str(row['코드']).isdigit()
-            _sym        = '원' if _is_kr_etf else '$'
-            _fmt        = lambda v: f"{v:,.0f}{_sym}" if _is_kr_etf else f"{_sym}{v:,.2f}"
-
-            # 단일 함수 참조 — 랭킹 카드 가격 라인과 1원도 안 어긋나게 통일
-            _lv = calculate_trade_levels(_cur_price, _ma5_price, _prev_close,
-                                         _gap_v, _ma5_v, _is_kr_etf)
-            _entry    = _lv['entry']
-            _status   = _lv['status']
-            _status_c = _lv['status_c']
-            _comment  = _lv['comment']
-            _stop     = _lv['stop']
-            _target1  = _lv['target1']
-            _target2  = _lv['target2']
-            _rr       = _lv['rr']
-
-            st.markdown(f"""
-<div style='background:rgba(30,30,50,0.7);border:2px solid {_status_c};border-radius:12px;padding:16px 20px;margin:8px 0'>
-  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>
-    <span style='font-size:16px;font-weight:800;color:{_status_c}'>{_status}</span>
-    <span style='font-size:12px;color:#94a3b8'>{_comment}</span>
-  </div>
-  <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center'>
-    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
-      <div style='font-size:10px;color:#64748b'>🎯 매수 타점</div>
-      <div style='font-size:16px;font-weight:700;color:#fbbf24'>{_fmt(_entry)}</div>
-    </div>
-    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
-      <div style='font-size:10px;color:#64748b'>🛑 손절가 (-7%)</div>
-      <div style='font-size:16px;font-weight:700;color:#f43f5e'>{_fmt(_stop)}</div>
-    </div>
-    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
-      <div style='font-size:10px;color:#64748b'>🎯 1차 목표 (+8%)</div>
-      <div style='font-size:16px;font-weight:700;color:#22c55e'>{_fmt(_target1)}</div>
-    </div>
-    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
-      <div style='font-size:10px;color:#64748b'>🚀 2차 목표 (+15%)</div>
-      <div style='font-size:16px;font-weight:700;color:#34d399'>{_fmt(_target2)}</div>
-    </div>
-    <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:10px'>
-      <div style='font-size:10px;color:#64748b'>⚖️ R:R</div>
-      <div style='font-size:16px;font-weight:700;color:{"#22c55e" if _rr >= 2 else "#f97316"}'>{_rr:.1f}</div>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
+        # (1위 매수 타점 카드는 🔎 상세 지표 Expander 내부로 이관됨 — 메인 중복 노출 제거)
         st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
 
