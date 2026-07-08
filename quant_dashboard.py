@@ -12456,14 +12456,21 @@ with tab_e:
                                     unsafe_allow_html=True
                                 )
                     else:
-                        _tok = st.session_state.get('_k_t')
-                        _tok_age = _time_kis.time() - st.session_state.get('_k_ts', 0)
-                        if _tok and _tok_age > 21600:
-                            st.warning("⏰ KIS 토큰 만료 (6시간) — 페이지를 새로고침하면 자동 갱신됩니다.")
-                        elif not _tok:
-                            st.error("❌ KIS 토큰 없음 — API 키(KIS_APP_KEY / KIS_APP_SECRET)를 secrets에 등록해주세요.")
+                        # 실제 토큰 상태로 정직하게 진단 (옛 _k_t 세션키 오판 제거)
+                        _tok_now = kis_get_token()
+                        _has_acc = False
+                        try:
+                            _has_acc = bool(st.secrets.get("KIS_ACCOUNT_NO"))
+                        except Exception:
+                            _has_acc = False
+                        if not _tok_now:
+                            _terr2 = st.session_state.get('_kis_token_err', '키 확인 필요')
+                            st.error(f"❌ KIS 토큰 발급 실패 — {_terr2}")
+                        elif not _has_acc:
+                            st.warning("⚠️ 잔고 조회에는 **KIS_ACCOUNT_NO(계좌번호)**가 필요합니다 — "
+                                       "secrets에 추가하면 실제 잔고가 표시됩니다. (시세·수급 기능은 정상)")
                         else:
-                            st.warning("⚠️ 잔고 조회 실패 — KIS API 응답 오류. 잠시 후 새로고침해주세요.")
+                            st.info("⏳ 잔고 조회 일시 지연 — 상단 [🔄 실시간 갱신]을 누르면 정상 표시됩니다.")
 
                 with _kis_col2:
                     st.markdown("**📡 관심종목 실시간 현재가**")
