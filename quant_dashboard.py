@@ -2285,35 +2285,67 @@ def _http_get_text(_url, _headers=None, _timeout=6):
             return None, f"{type(_e1).__name__}/{type(_e2).__name__}: {str(_e2)[:60]}"
 
 
+def _parse_naver_investor_html(_html):
+    """네이버 투자자 매매동향 HTML → 첫 데이터 행의 외국인 순매수(원). 실패 시 None."""
+    import re as _re_fn
+    _rows = _re_fn.findall(r"<tr[^>]*>(.*?)</tr>", _html, _re_fn.S)
+    for _row in _rows:
+        _cells = _re_fn.findall(r"<td[^>]*>(.*?)</td>", _row, _re_fn.S)
+        _clean = [_re_fn.sub(r"<[^>]+>", "", _c).replace("&nbsp;", "").strip().replace(",", "")
+                  for _c in _cells]
+        if len(_clean) >= 4 and _re_fn.match(r"\d{2}[.\-/]\d{2}", _clean[0] or ""):
+            _fn_txt = _clean[2]   # 날짜 | 개인 | 외국인 | 기관계 ...
+            if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
+                return float(_fn_txt) * 100_000_000, _clean[0]
+    return None, None
+
+
 def _scrape_naver_foreign_net_kospi(_debug=None):
     """네이버 증권 투자자별 매매동향에서 코스피 외국인 순매수(원) 스크래핑.
-    반환: float(원) 또는 None. _debug(list)에 단계별 진단 기록."""
+    반환: float(원) 또는 None. _debug(list)에 단계별 진단 기록.
+    브라우저 헤더(Referer 등) 필수 — 없으면 네이버가 스텁/차단 페이지를 반환."""
     def _log(m):
         if _debug is not None:
             _debug.append(m)
-    _url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
-    _html, _err = _http_get_text(_url)
-    if not _html:
-        _log(f"네이버: 연결 실패 ({_err})")
-        return None
-    _log(f"네이버: HTML {len(_html)}바이트 수신")
-    import re as _re_fn
-    # 모든 <tr>에서 '날짜 + 숫자셀들' 패턴을 찾아 외국인(3번째 값) 추출
-    try:
-        _rows = _re_fn.findall(r"<tr[^>]*>(.*?)</tr>", _html, _re_fn.S)
-        for _row in _rows:
-            _cells = _re_fn.findall(r"<td[^>]*>(.*?)</td>", _row, _re_fn.S)
-            _clean = [_re_fn.sub(r"<[^>]+>", "", _c).replace("&nbsp;", "").strip().replace(",", "")
-                      for _c in _cells]
-            if len(_clean) >= 4 and _re_fn.match(r"\d{2}[.\-/]\d{2}", _clean[0] or ""):
-                _fn_txt = _clean[2]   # 날짜 | 개인 | 외국인 | 기관계 ...
-                if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
-                    _log(f"네이버: 파싱 성공 (외국인 {_fn_txt}억원, 기준 {_clean[0]})")
-                    return float(_fn_txt) * 100_000_000
-        _log("네이버: HTML은 받았으나 외국인 데이터 행 파싱 실패(페이지 구조 변경 가능)")
-    except Exception as _e:
-        _log(f"네이버: 파싱 예외 {type(_e).__name__}")
+    # 네이버 봇 차단 회피용 풀 브라우저 헤더 (Referer 없으면 1~2KB 스텁 반환됨)
+    _hdr = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        "Referer": "https://finance.naver.com/sise/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    }
+    # 후보 엔드포인트 순회 (구조 변경/차단 대비)
+    _urls = [
+        "https://finance.naver.com/sise/investorDealTrendDay.naver",
+        "https://finance.naver.com/sise/sise_deal_trend_day.naver",
+    ]
+    for _url in _urls:
+        _html, _err = _http_get_text(_url, _hdr)
+        if not _html:
+            _log(f"네이버[{_url.rsplit('/',1)[-1]}]: 연결 실패 ({_err})")
+            continue
+        _log(f"네이버[{_url.rsplit('/',1)[-1]}]: HTML {len(_html)}바이트 수신")
+        try:
+            _val, _basis = _parse_naver_investor_html(_html)
+            if _val is not None:
+                _log(f"네이버: 파싱 성공 (외국인 {_val/1e8:+,.0f}억원, 기준 {_basis})")
+                return _val
+            # 파싱 실패 + 응답이 작으면(스텁/차단) 내용 일부를 진단에 노출
+            if len(_html) < 3000:
+                _snip = _re_import_sub(_html)[:120]
+                _log(f"네이버: 스텁/차단 의심 — 응답 미리보기: {_snip}")
+            else:
+                _log("네이버: HTML은 받았으나 데이터 행 파싱 실패(구조 변경 가능)")
+        except Exception as _e:
+            _log(f"네이버: 파싱 예외 {type(_e).__name__}")
     return None
+
+
+def _re_import_sub(_html):
+    """HTML 태그 제거한 순수 텍스트 미리보기 (진단용)."""
+    import re as _re_p
+    return _re_p.sub(r"\s+", " ", _re_p.sub(r"<[^>]+>", " ", _html)).strip()
 
 
 def fetch_foreign_net_buying():
