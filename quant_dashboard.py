@@ -3030,6 +3030,13 @@ def _load_kr_stock_list():
 
 
 # ══════════════════════════════════════════
+# ⏱ 단일 KST 시간 소스 (모든 시간 표시가 공통 참조 — 파편화 방지)
+# ══════════════════════════════════════════
+_NOW_KST = datetime.utcnow() + timedelta(hours=9)   # 서버 UTC → KST
+st.session_state['_now_kst']     = _NOW_KST
+st.session_state['_now_kst_str'] = _NOW_KST.strftime('%Y.%m.%d %H:%M:%S KST')
+
+# ══════════════════════════════════════════
 # 사이드바
 # ══════════════════════════════════════════
 
@@ -3061,17 +3068,16 @@ with st.sidebar:
         if _sb_black:
             _al = _sbv.get('alerts', ['이벤트 48시간 이내'])
             st.error(f"🚨 매크로 블랙아웃: {_al[0] if _al else '이벤트 임박'}")
-        # 핵심 수치 2개 (환율 / 외국인 수급)
-        _skc1, _skc2 = st.columns(2)
-        _skc1.metric("환율", f"{_sb_krw:,.0f}" if isinstance(_sb_krw,(int,float)) else "—",
-                     delta=("경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=1450 else None),
-                     delta_color="inverse")
+        # 핵심 수치 — 좁은 사이드바에서 2컬럼 대신 수직 배열(위아래로 넓게)
+        st.metric("💱 원/달러 환율", f"{_sb_krw:,.0f}원" if isinstance(_sb_krw,(int,float)) else "—",
+                  delta=("⚠️ 1,450 경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=1450 else "안정"),
+                  delta_color="inverse")
         if isinstance(_sb_flow,(int,float)):
-            _skc2.metric("외인", f"{_sb_flow/1e8:+,.0f}억",
-                         delta=("매수" if _sb_flow>0 else "매도"),
-                         delta_color=("normal" if _sb_flow>0 else "inverse"))
+            st.metric("🌍 외국인 수급", f"{_sb_flow/1e8:+,.0f}억원",
+                      delta=("순매수" if _sb_flow>0 else "순매도"),
+                      delta_color=("normal" if _sb_flow>0 else "inverse"))
         else:
-            _skc2.metric("외인", "—")
+            st.metric("🌍 외국인 수급", "—")
         # 외국인 수급 수동 입력 (사이드바 고정)
         with st.expander("✍️ 외인 수급 수동입력", expanded=False):
             _sbfn = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
@@ -3647,7 +3653,7 @@ if _h3.button(_mobile_label, key="toggle_mobile", use_container_width=True):
     st.session_state.ui_mobile = not st.session_state.ui_mobile
     st.rerun()
 
-now = datetime.now().strftime('%Y.%m.%d %H:%M KST')
+now = st.session_state.get('_now_kst_str', '')   # 단일 KST 소스 참조
 st.markdown(f"<div style='font-size:12px; color:#64748b; font-family:\"IBM Plex Mono\",monospace; margin-bottom:20px'>⏱ {now}</div>", unsafe_allow_html=True)
 
 # ── 탭 ──
@@ -4091,7 +4097,7 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
         except Exception:
             pass
         st.rerun()
-    _rf2.caption(f"🕒 지수 갱신: {(datetime.utcnow()+timedelta(hours=9)).strftime('%H:%M:%S')} KST "
+    _rf2.caption(f"🕒 현재: {st.session_state.get('_now_kst', datetime.utcnow()+timedelta(hours=9)).strftime('%H:%M:%S')} KST "
                  f"· 자동 캐시 120초 (실시간 반영하려면 🔄)")
 
     # (전략 방향 · 블랙아웃 경고 · 수동 입력은 모두 사이드바 Sticky 패널로 이전 —
@@ -4265,44 +4271,6 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
   </div>
 </div>""", unsafe_allow_html=True)
 
-        # Live Signal Stream
-        st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:4px'>⚡ LIVE SIGNAL STREAM</div>", unsafe_allow_html=True)
-
-        # 신호 피드 조합: 관심종목 신호 + 최근 거래
-        _signal_feed = []
-        _tickers_cc = get_watchlist_tickers()
-        for _t_cc, _n_cc in _tickers_cc[:5]:
-            try:
-                _df_cc2 = all_data.get(_t_cc, {}).get('df')
-                if _df_cc2 is None:
-                    # 홈에서 all_data 캐시가 비어있으면 즉석 로드 (시그널 피드 빈칸 방지)
-                    _raw_cc = fetch_ohlcv(_t_cc, 80)
-                    if _raw_cc is not None and len(_raw_cc) >= 20:
-                        _df_cc2 = calc_indicators(_raw_cc)
-                        st.session_state.all_data_cache[_t_cc] = {'name': _n_cc, 'df': _df_cc2}
-                if _df_cc2 is None or len(_df_cc2) < 2:
-                    continue
-                _sig_cc = get_signal(_df_cc2)
-                _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
-                _chg_c2 = "#16a34a" if _chg_cc > 0 else "#ef4444"
-                for _s, _stype in _sig_cc[:1]:
-                    _signal_feed.append((_n_cc, _s, _chg_cc, _chg_c2))
-            except Exception:
-                pass
-
-        if _signal_feed:
-            for _sn, _ss, _sc, _scc in _signal_feed:
-                st.markdown(
-                    f"<div style='background:#0d1117;border-left:2px solid {_scc};border-radius:4px;"
-                    f"padding:5px 10px;margin-bottom:3px;font-size:11px'>"
-                    f"<span style='color:#f0f4ff;font-weight:600'>{_sn}</span> "
-                    f"<span style='color:#64748b'>{_ss}</span> "
-                    f"<span style='color:{_scc};float:right'>{_sc:+.1f}%</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.markdown("<div style='color:#374151;font-size:11px;padding:6px'>관심종목 신호 없음</div>", unsafe_allow_html=True)
 
         # 매크로 이벤트 다음 일정
         _future_cc = sorted(
@@ -4505,6 +4473,46 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
     # 2행 — PANEL 3(관제) + PANEL 4(차트) : 40% / 60%
     # ══════════════════════════════════════════════
     st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+    # ⚡ LIVE SIGNAL STREAM — 계좌 카드에서 분리해 전체폭 독립 컨테이너
+    with st.expander("⚡ LIVE SIGNAL STREAM (관심종목 실시간 신호)", expanded=True):
+        # Live Signal Stream
+
+        # 신호 피드 조합: 관심종목 신호 + 최근 거래
+        _signal_feed = []
+        _tickers_cc = get_watchlist_tickers()
+        for _t_cc, _n_cc in _tickers_cc[:5]:
+            try:
+                _df_cc2 = all_data.get(_t_cc, {}).get('df')
+                if _df_cc2 is None:
+                    # 홈에서 all_data 캐시가 비어있으면 즉석 로드 (시그널 피드 빈칸 방지)
+                    _raw_cc = fetch_ohlcv(_t_cc, 80)
+                    if _raw_cc is not None and len(_raw_cc) >= 20:
+                        _df_cc2 = calc_indicators(_raw_cc)
+                        st.session_state.all_data_cache[_t_cc] = {'name': _n_cc, 'df': _df_cc2}
+                if _df_cc2 is None or len(_df_cc2) < 2:
+                    continue
+                _sig_cc = get_signal(_df_cc2)
+                _chg_cc = (_df_cc2['종가'].iloc[-1] / _df_cc2['종가'].iloc[-2] - 1) * 100
+                _chg_c2 = "#16a34a" if _chg_cc > 0 else "#ef4444"
+                for _s, _stype in _sig_cc[:1]:
+                    _signal_feed.append((_n_cc, _s, _chg_cc, _chg_c2))
+            except Exception:
+                pass
+
+        if _signal_feed:
+            for _sn, _ss, _sc, _scc in _signal_feed:
+                st.markdown(
+                    f"<div style='background:#0d1117;border-left:2px solid {_scc};border-radius:4px;"
+                    f"padding:5px 10px;margin-bottom:3px;font-size:11px'>"
+                    f"<span style='color:#f0f4ff;font-weight:600'>{_sn}</span> "
+                    f"<span style='color:#64748b'>{_ss}</span> "
+                    f"<span style='color:{_scc};float:right'>{_sc:+.1f}%</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.markdown("<div style='color:#374151;font-size:11px;padding:6px'>관심종목 신호 없음</div>", unsafe_allow_html=True)
+
     _p3, _p4 = st.columns([4, 6])
 
     # ══════════════════════════════════════════════
