@@ -4585,8 +4585,13 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                         # 손절/목표 사이 진행률 바 (0%=손절, 100%=1차목표)
                         _range_p3   = _target_p3 - _stop_p3
                         _prog_p3    = max(0, min(100, (_cur_p3 - _stop_p3) / _range_p3 * 100)) if _range_p3 > 0 else 0
-                        _stop_warn  = _cur_p3 <= _stop_p3 * 1.03
+                        _stop_breached = _cur_p3 <= _stop_p3          # 손절가 하향 이탈(치명)
+                        _stop_warn  = _cur_p3 <= _stop_p3 * 1.03      # 손절 근접(경계)
                         _target_hit = _cur_p3 >= _target_p3
+                        # 상태 배지 문구: 이탈 > 근접 > 목표달성 우선순위
+                        _status_msg = ("🚨 손절 이탈 — 즉시 매도!" if _stop_breached
+                                       else "⚠️ 손절 근접!" if _stop_warn
+                                       else "✅ 목표 달성!" if _target_hit else "")
                         # 라이트/다크 모드에 따라 색상 분기
                         _is_light = not st.session_state.get('ui_dark', True)
                         if _is_light:
@@ -4654,7 +4659,7 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
 
                         # ── V9.1 Item 1: 카드 글로우 클래스 ──
                         _glow_class = "card-profit-high" if _pnl_pct_p3 >= 10 else ("card-stop-warn" if _stop_warn else "")
-                        st.markdown(f"""<div class='{_glow_class}' style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'><div><div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div><div style='color:#64748b;font-size:11px;margin-top:2px'>{_tk_p3} · {_qty_p3:,}주 · 평균 {_fmt_p3(_avg_p3)} · 평가 {_fmt_p3(_eval_p3)}</div></div><div style='text-align:right'><div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div><div style='font-size:12px;color:{_pnl_color}'>{"+" if _pnl_abs_p3>=0 else "-"}{_fmt_p3(abs(_pnl_abs_p3))}</div></div></div><div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'><div style='background:#111827;border-radius:8px;padding:8px;text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div></div><div style='background:#1a0a0a;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#ef4444" if _stop_warn else "#3f1515"}'><div style='font-size:10px;color:#ef4444'>🛑 손절 -7%</div><div style='font-size:14px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div></div><div style='background:#0a1a0d;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#16a34a" if _target_hit else "#14532d"}'><div style='font-size:10px;color:#16a34a'>🎯 1차 +8%</div><div style='font-size:14px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div></div></div><div style='background:#111827;border-radius:6px;padding:4px 8px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-bottom:3px'><span>손절 {_fmt_p3(_stop_p3)}</span><span>현재 {_fmt_p3(_cur_p3)}</span><span>목표 {_fmt_p3(_target_p3)}</span></div><div style='background:#1e293b;border-radius:4px;height:6px;overflow:hidden'><div style='background:{"#ef4444" if _prog_p3<25 else "#f97316" if _prog_p3<60 else "#16a34a"};height:100%;width:{_prog_p3:.0f}%;border-radius:4px;transition:width 0.3s'></div></div></div><div style='display:flex;justify-content:space-between;font-size:11px;color:#64748b'><span>R:R <b style='color:#f0f4ff'>1:{(_target_p3-_avg_p3)/max(_avg_p3-_stop_p3,1):.1f}</b></span><span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span><span>{"⚠️ 손절 근접!" if _stop_warn else "✅ 목표 달성!" if _target_hit else ""}</span></div></div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class='{_glow_class}' style='background:#0d1117;border:2px solid {_card_border_p3};border-radius:12px;padding:14px 16px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px'><div><div style='font-weight:800;font-size:14px;color:#f0f4ff'>{_nm_p3} {_ts_badge}</div><div style='color:#64748b;font-size:11px;margin-top:2px'>{_tk_p3} · {_qty_p3:,}주 · 평균 {_fmt_p3(_avg_p3)} · 평가 {_fmt_p3(_eval_p3)}</div></div><div style='text-align:right'><div style='font-size:22px;font-weight:900;color:{_pnl_color};line-height:1'>{_pnl_pct_p3:+.2f}%</div><div style='font-size:12px;color:{_pnl_color}'>{"+" if _pnl_abs_p3>=0 else "-"}{_fmt_p3(abs(_pnl_abs_p3))}</div></div></div><div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px'><div style='background:#111827;border-radius:8px;padding:8px;text-align:center'><div style='font-size:10px;color:#64748b'>현재가</div><div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_p3(_cur_p3)}</div></div><div style='background:#1a0a0a;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#ef4444" if _stop_warn else "#3f1515"}'><div style='font-size:10px;color:#ef4444'>🛑 손절 -7%</div><div style='font-size:14px;font-weight:700;color:#ef4444'>{_fmt_p3(_stop_p3)}</div></div><div style='background:#0a1a0d;border-radius:8px;padding:8px;text-align:center;border:1px solid {"#16a34a" if _target_hit else "#14532d"}'><div style='font-size:10px;color:#16a34a'>🎯 1차 +8%</div><div style='font-size:14px;font-weight:700;color:#16a34a'>{_fmt_p3(_target_p3)}</div></div></div><div style='background:#111827;border-radius:6px;padding:4px 8px;margin-bottom:8px'><div style='display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-bottom:3px'><span>손절 {_fmt_p3(_stop_p3)}</span><span>현재 {_fmt_p3(_cur_p3)}</span><span>목표 {_fmt_p3(_target_p3)}</span></div><div style='background:#1e293b;border-radius:4px;height:6px;overflow:hidden'><div style='background:{"#ef4444" if _prog_p3<25 else "#f97316" if _prog_p3<60 else "#16a34a"};height:100%;width:{_prog_p3:.0f}%;border-radius:4px;transition:width 0.3s'></div></div></div><div style='display:flex;justify-content:space-between;font-size:11px;color:#64748b'><span>R:R <b style='color:#f0f4ff'>1:{(_target_p3-_avg_p3)/max(_avg_p3-_stop_p3,1):.1f}</b></span><span>2차목표 <b style='color:#22d3ee'>{_fmt_p3(_t2_p3)}</b></span><span style='font-weight:{"800" if _stop_breached else "400"};color:{"#ef4444" if _stop_breached else "#64748b"}'>{_status_msg}</span></div></div>""", unsafe_allow_html=True)
 
 
                     except Exception as _ep3:
@@ -4734,12 +4739,14 @@ padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;al
                     _tgt_p4 = _avg_p4 * 1.08
                     _dist_stop_p4 = (_cur_p4_price - _stop_p4) / _cur_p4_price * 100
                     _dist_tgt_p4 = (_tgt_p4 - _cur_p4_price) / _cur_p4_price * 100
+                    _breached_p4 = _cur_p4_price <= _stop_p4     # 손절가 하향 이탈
                     _dc_stop_p4 = "#ef4444" if _dist_stop_p4 < 3 else "#f97316" if _dist_stop_p4 < 5 else "#64748b"
+                    _stop_txt_p4 = "🚨 이탈!" if _breached_p4 else f"-{_dist_stop_p4:.1f}%"
                     st.markdown(f"""
 <div style='display:flex;gap:6px;margin-bottom:6px'>
   <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center;border:1px solid #ef444440'>
-    <div style='font-size:10px;color:#ef4444'>🛑 손절까지</div>
-    <div style='font-size:16px;font-weight:800;color:{_dc_stop_p4}'>-{_dist_stop_p4:.1f}%</div>
+    <div style='font-size:10px;color:#ef4444'>{'🛑 손절 이탈' if _breached_p4 else '🛑 손절까지'}</div>
+    <div style='font-size:16px;font-weight:800;color:{"#ef4444" if _breached_p4 else _dc_stop_p4}'>{_stop_txt_p4}</div>
   </div>
   <div style='flex:1;background:#0d1117;border-radius:6px;padding:7px;text-align:center;border:1px solid #16a34a40'>
     <div style='font-size:10px;color:#16a34a'>🎯 목표까지</div>
