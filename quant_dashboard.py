@@ -10248,309 +10248,318 @@ with _tab_d1:
 
         st.divider()
 
-        # ── 백테스팅 ──
-        st.markdown("### 📊 ETF 로테이션 백테스팅")
-        st.caption("1위 ETF에 매월 스위칭 전략 vs 코스피 수익률 비교")
+        # ── 🛡️ 백테스팅 전체를 Expander로 격리 (일간 스캐너와 시각 충돌 방지) ──
+        with st.expander("🛡️ [중장기 참고용] 월간 ETF 로테이션 백테스팅 결과 보기", expanded=False):
+            # ── 백테스팅 ──
+            st.markdown("### 📊 ETF 로테이션 백테스팅")
+            st.caption("1위 ETF에 매월 스위칭 전략 vs 코스피 수익률 비교")
 
-        # 수수료/세금 설정 UI
-        st.markdown("#### ⚙️ 백테스팅 비용 설정")
-        _bt_c1, _bt_c2, _bt_c3 = st.columns(3)
-        _fee_buy  = _bt_c1.number_input("매수 수수료(%)", value=0.015, step=0.005,
-                                         format="%.3f", key="bt_fee_buy",
-                                         help="증권사 수수료 (보통 0.015%)")
-        _fee_sell = _bt_c2.number_input("매도 수수료+세금(%)", value=0.33, step=0.01,
-                                         format="%.3f", key="bt_fee_sell",
-                                         help="수수료 0.015% + 거래세 0.18% + 농특세 0.15% ≈ 0.33%")
-        _slip     = _bt_c3.number_input("슬리피지(%)", value=0.1, step=0.05,
-                                         format="%.2f", key="bt_slip",
-                                         help="호가 공백 오차 (보통 0.05~0.2%)")
+            # 수수료/세금 설정 UI
+            st.markdown("#### ⚙️ 백테스팅 비용 설정")
+            _bt_c1, _bt_c2, _bt_c3 = st.columns(3)
+            _fee_buy  = _bt_c1.number_input("매수 수수료(%)", value=0.015, step=0.005,
+                                             format="%.3f", key="bt_fee_buy",
+                                             help="증권사 수수료 (보통 0.015%)")
+            _fee_sell = _bt_c2.number_input("매도 수수료+세금(%)", value=0.33, step=0.01,
+                                             format="%.3f", key="bt_fee_sell",
+                                             help="수수료 0.015% + 거래세 0.18% + 농특세 0.15% ≈ 0.33%")
+            _slip     = _bt_c3.number_input("슬리피지(%)", value=0.1, step=0.05,
+                                             format="%.2f", key="bt_slip",
+                                             help="호가 공백 오차 (보통 0.05~0.2%)")
 
-        # 총 거래비용 (매수+매도 합산)
-        _total_cost = (_fee_buy + _fee_sell + _slip * 2) / 100
-        st.caption(f"💡 스위칭 1회당 총 비용: 약 {(_fee_buy + _fee_sell + _slip*2):.3f}% "
-                   f"(매수 {_fee_buy+_slip:.3f}% + 매도 {_fee_sell+_slip:.3f}%)")
+            # 총 거래비용 (매수+매도 합산)
+            _total_cost = (_fee_buy + _fee_sell + _slip * 2) / 100
+            st.caption(f"💡 스위칭 1회당 총 비용: 약 {(_fee_buy + _fee_sell + _slip*2):.3f}% "
+                       f"(매수 {_fee_buy+_slip:.3f}% + 매도 {_fee_sell+_slip:.3f}%)")
 
-        @st.cache_data(ttl=86400, show_spinner=False)
-        def run_etf_backtest(fee_buy, fee_sell, slip):
-            import yfinance as yf
-            import numpy as np
+            @st.cache_data(ttl=86400, show_spinner=False)
+            def run_etf_backtest(fee_buy, fee_sell, slip):
+                import yfinance as yf
+                import numpy as np
 
-            _buy_cost  = (fee_buy  + slip) / 100
-            _sell_cost = (fee_sell + slip) / 100
+                _buy_cost  = (fee_buy  + slip) / 100
+                _sell_cost = (fee_sell + slip) / 100
 
-            # 각 ETF 월별 수익률 계산
-            _monthly = {}
-            for ticker, name, _ in ETF_LIST:
-                try:
-                    _sym = f"{ticker}.KS"
-                    _df  = yf.Ticker(_sym).history(period="2y", interval="1mo")
-                    if _df is None or len(_df) < 6: continue
-                    _cl  = _df['Close']
-                    _ret = _cl.pct_change().dropna()
-                    _monthly[ticker] = {'name': name, 'returns': _ret}
-                except:
-                    pass
-
-            # 벤치마크 (코스피)
-            try:
-                _bm_df  = yf.Ticker("^KS11").history(period="2y", interval="1mo")
-                _bm_ret = _bm_df['Close'].pct_change().dropna()
-            except:
-                _bm_ret = None
-
-            if not _monthly: return None
-
-            _all_tickers = list(_monthly.keys())
-
-            # 공통 날짜
-            _dates = None
-            for t in _all_tickers:
-                _idx = _monthly[t]['returns'].index
-                _dates = set(_idx) if _dates is None else _dates & set(_idx)
-            _dates = sorted(_dates)
-            if len(_dates) < 4: return None
-
-            # 로테이션 전략 (수수료 반영)
-            _portfolio     = [1.0]  # 수수료 반영
-            _portfolio_raw = [1.0]  # 수수료 미반영 (비교용)
-            _chosen        = []
-            _bench         = [1.0]
-            _switch_count  = 0
-            _prev_best     = None
-            _total_fee     = 0.0
-
-            for _i, _dt in enumerate(_dates[3:], 3):
-                # 직전 3개월 모멘텀
-                _scores = {}
-                for t in _all_tickers:
-                    _rets = _monthly[t]['returns']
-                    _rd   = dict(zip(_rets.index, _rets))
-                    _past = [_rd.get(d, 0) for d in _dates[_i-3:_i]]
-                    if _past:
-                        _scores[t] = sum(_past)
-
-                if not _scores:
-                    _portfolio.append(_portfolio[-1])
-                    _portfolio_raw.append(_portfolio_raw[-1])
-                    _chosen.append(_prev_best or '없음')
-                    continue
-
-                _best_t = max(_scores, key=_scores.get)
-                _best_n = _monthly[_best_t]['name']
-
-                # 해당 월 수익률
-                _rets_t    = _monthly[_best_t]['returns']
-                _month_ret = dict(zip(_rets_t.index, _rets_t)).get(_dt, 0)
-
-                # 수수료 적용 (스위칭 발생 시에만)
-                _fee_this = 0.0
-                if _prev_best is not None and _best_t != _prev_best:
-                    # 매도(이전) + 매수(신규) 비용
-                    _fee_this   = _sell_cost + _buy_cost
-                    _switch_count += 1
-                    _total_fee  += _fee_this
-                elif _prev_best is None:
-                    # 최초 매수
-                    _fee_this  = _buy_cost
-                    _total_fee += _fee_this
-
-                _portfolio.append(_portfolio[-1] * (1 + _month_ret - _fee_this))
-                _portfolio_raw.append(_portfolio_raw[-1] * (1 + _month_ret))
-                _chosen.append(_best_n)
-                _prev_best = _best_t
-
-                # 최종 매도세 (마지막 달)
-                if _i == len(_dates) - 1:
-                    _portfolio[-1] *= (1 - _sell_cost)
-                    _total_fee += _sell_cost
-
-                # 벤치마크
-                if _bm_ret is not None:
-                    _bm_m = dict(zip(_bm_ret.index, _bm_ret)).get(_dt, 0)
-                    _bench.append(_bench[-1] * (1 + _bm_m))
-                else:
-                    _bench.append(_bench[-1])
-
-            # 성과 지표
-            _port_arr  = np.array(_portfolio)
-            _raw_arr   = np.array(_portfolio_raw)
-            _bench_arr = np.array(_bench)
-
-            _port_ret  = (_port_arr[-1]  - 1) * 100
-            _raw_ret   = (_raw_arr[-1]   - 1) * 100
-            _bench_ret = (_bench_arr[-1] - 1) * 100
-
-            # MDD
-            _peak = np.maximum.accumulate(_port_arr)
-            _mdd  = (((_port_arr - _peak) / _peak) * 100).min()
-
-            # 샤프
-            _m_rets = np.diff(_port_arr) / _port_arr[:-1]
-            _sharpe = round(_m_rets.mean() / _m_rets.std() * np.sqrt(12)
-                            if _m_rets.std() > 0 else 0, 2)
-
-            # 승률
-            _win_months = sum(1 for r in _m_rets if r > 0)
-            _win_rate   = round(_win_months / len(_m_rets) * 100, 1) if _m_rets.size > 0 else 0
-
-            # ── 이번 달(진행 중) 추천 종목 — 최근 3개월 완료분 모멘텀 기준 ──
-            _next_pick = None
-            try:
-                _recent = _dates[-3:]
-                _ns = {}
-                for t in _all_tickers:
-                    _rd = dict(zip(_monthly[t]['returns'].index, _monthly[t]['returns']))
-                    _ns[t] = sum(_rd.get(d, 0) for d in _recent)
-                if _ns:
-                    _nb = max(_ns, key=_ns.get)
-                    _next_month = (_dates[-1].to_pydatetime().replace(day=1)
-                                   + timedelta(days=32)).strftime('%Y-%m') if _dates else ''
-                    _next_pick = {'month': _next_month, 'name': _monthly[_nb]['name']}
-            except Exception:
-                _next_pick = None
-
-            return {
-                'dates':        _dates[3:],
-                'next_pick':    _next_pick,
-                'portfolio':    [round((v-1)*100, 2) for v in _portfolio[1:]],
-                'portfolio_raw':[round((v-1)*100, 2) for v in _portfolio_raw[1:]],
-                'benchmark':    [round((v-1)*100, 2) for v in _bench[1:]],
-                'chosen':       _chosen,
-                'total_ret':    round(_port_ret, 2),
-                'raw_ret':      round(_raw_ret, 2),
-                'fee_drag':     round(_raw_ret - _port_ret, 2),
-                'bench_ret':    round(_bench_ret, 2),
-                'mdd':          round(_mdd, 2),
-                'sharpe':       _sharpe,
-                'win_rate':     _win_rate,
-                'switch_count': _switch_count,
-                'total_fee_pct':round(_total_fee * 100, 3),
-            }
-
-        with st.spinner("백테스팅 계산 중... (최초 1회)"):
-            _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip)
-
-        if _bt:
-            # 성과 요약
-            # 1행 — 핵심 수익률
-            _bt1, _bt2, _bt3, _bt4 = st.columns(4)
-            _ret_c = 'up' if _bt['total_ret'] > 0 else 'down'
-            _alpha = _bt['total_ret'] - _bt['bench_ret']
-            _ac    = 'up' if _alpha > 0 else 'down'
-
-            _bt1.markdown(
-                f"<div class='metric-card'><div class='label'>수수료 반영 수익률</div>"
-                f"<div class='value {_ret_c}'>{_bt['total_ret']:+.2f}%</div>"
-                f"<div style='font-size:11px;color:#64748b'>수수료 전: {_bt.get('raw_ret',0):+.2f}%</div></div>",
-                unsafe_allow_html=True)
-            _bt2.markdown(
-                f"<div class='metric-card'><div class='label'>코스피 수익률</div>"
-                f"<div class='value {'up' if _bt['bench_ret']>0 else 'down'}'>{_bt['bench_ret']:+.2f}%</div></div>",
-                unsafe_allow_html=True)
-            _bt3.markdown(
-                f"<div class='metric-card'><div class='label'>알파(초과수익)</div>"
-                f"<div class='value {_ac}'>{_alpha:+.2f}%</div></div>",
-                unsafe_allow_html=True)
-            _bt4.markdown(
-                f"<div class='metric-card'><div class='label'>MDD / 샤프</div>"
-                f"<div class='value flat'>{_bt['mdd']:.1f}% / {_bt['sharpe']}</div></div>",
-                unsafe_allow_html=True)
-
-            # 2행 — 비용 분석
-            _bt5, _bt6, _bt7, _bt8 = st.columns(4)
-            _bt5.markdown(
-                f"<div class='metric-card'><div class='label'>수수료 비용 합계</div>"
-                f"<div class='value down'>-{_bt.get('fee_drag',0):.2f}%</div>"
-                f"<div style='font-size:11px;color:#64748b'>총 {_bt.get('total_fee_pct',0):.3f}%</div></div>",
-                unsafe_allow_html=True)
-            _bt6.markdown(
-                f"<div class='metric-card'><div class='label'>스위칭 횟수</div>"
-                f"<div class='value flat'>{_bt.get('switch_count',0)}회</div>"
-                f"<div style='font-size:11px;color:#64748b'>월평균 {_bt.get('switch_count',0)/max(len(_bt['dates']),1):.1f}회</div></div>",
-                unsafe_allow_html=True)
-            _bt7.markdown(
-                f"<div class='metric-card'><div class='label'>월간 승률</div>"
-                f"<div class='value {'up' if _bt.get('win_rate',0)>50 else 'down'}'>{_bt.get('win_rate',0):.1f}%</div></div>",
-                unsafe_allow_html=True)
-            _bt8.markdown(
-                f"<div class='metric-card'><div class='label'>수수료 최적화 팁</div>"
-                f"<div class='value flat' style='font-size:13px'>{'✅ 효율적' if _bt.get('switch_count',0) < 12 else '⚠️ 과도한 교체'}</div>"
-                f"<div style='font-size:11px;color:#64748b'>연 {_bt.get('switch_count',0)/2:.0f}회 교체</div></div>",
-                unsafe_allow_html=True)
-
-            # 수익률 차트
-            import plotly.graph_objects as go
-            _fig_bt = go.Figure()
-            _fig_bt.add_trace(go.Scatter(
-                x=list(range(len(_bt['portfolio']))),
-                y=_bt['portfolio'],
-                name='전략 (수수료 반영)',
-                line=dict(color='#34d399', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(52,211,153,0.08)'
-            ))
-            if 'portfolio_raw' in _bt:
-                _fig_bt.add_trace(go.Scatter(
-                    x=list(range(len(_bt['portfolio_raw']))),
-                    y=_bt['portfolio_raw'],
-                    name='전략 (수수료 전)',
-                    line=dict(color='#34d399', width=1.2, dash='dot'),
-                    opacity=0.5
-                ))
-            _fig_bt.add_trace(go.Scatter(
-                x=list(range(len(_bt['benchmark']))),
-                y=_bt['benchmark'],
-                name='코스피',
-                line=dict(color='#38bdf8', width=1.5, dash='dash')
-            ))
-            _fig_bt.add_hline(y=0, line_color='#2d3a55', line_width=0.8)
-            _fig_bt.update_layout(
-                paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
-                font=dict(color='#8899bb', size=11),
-                height=300,
-                legend=dict(orientation='h', y=1.02),
-                margin=dict(l=10, r=40, t=30, b=10),
-                yaxis=dict(gridcolor='#1a2535', ticksuffix='%', side='right'),
-                xaxis=dict(gridcolor='#1a2535', title='개월'),
-            )
-            st.plotly_chart(_fig_bt, use_container_width=True)
-
-            # 월별 선택 ETF 히스토리
-            with st.expander("📋 월별 선택 ETF 히스토리"):
-                _hist_rows = []
-                for _d, _c, _p, _b in zip(
-                    _bt['dates'], _bt['chosen'],
-                    _bt['portfolio'], _bt['benchmark']
-                ):
+                # 각 ETF 월별 수익률 계산
+                _monthly = {}
+                for ticker, name, _ in ETF_LIST:
                     try:
-                        _d_str = str(_d)[:7]
+                        _sym = f"{ticker}.KS"
+                        _df  = yf.Ticker(_sym).history(period="2y", interval="1mo")
+                        if _df is None or len(_df) < 6: continue
+                        _cl  = _df['Close']
+                        _ret = _cl.pct_change().dropna()
+                        _monthly[ticker] = {'name': name, 'returns': _ret}
                     except:
-                        _d_str = str(_d)
-                    _hist_rows.append({
-                        '월': _d_str,
-                        '선택 ETF': _c,
-                        '전략 누적(%)': f"{_p:+.2f}%",
-                        '코스피 누적(%)': f"{_b:+.2f}%",
-                    })
-                # 이번 달(진행 중) 추천 — 월봉 미완성이라 누적 수익률은 '진행중'
-                _np = _bt.get('next_pick')
-                if _np and _np.get('name'):
-                    _hist_rows.append({
-                        '월': f"{_np.get('month','')} (진행중)",
-                        '선택 ETF': f"🎯 {_np['name']}",
-                        '전략 누적(%)': "집계중",
-                        '코스피 누적(%)': "집계중",
-                    })
-                st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
-                if _np and _np.get('name'):
-                    st.caption(f"🎯 이번 달({_np.get('month','')}) 추천: **{_np['name']}** — "
-                               "월봉이 끝나야 수익률이 확정되므로 누적은 '집계중'으로 표시됩니다.")
+                        pass
 
-            if st.button("🔄 백테스팅 재실행", key="bt_rerun"):
-                run_etf_backtest.clear()
-                st.rerun()
-        else:
-            st.warning("백테스팅 데이터 부족 (2년 데이터 필요)")
+                # 벤치마크 (코스피)
+                try:
+                    _bm_df  = yf.Ticker("^KS11").history(period="2y", interval="1mo")
+                    _bm_ret = _bm_df['Close'].pct_change().dropna()
+                except:
+                    _bm_ret = None
+
+                if not _monthly: return None
+
+                _all_tickers = list(_monthly.keys())
+
+                # 공통 날짜
+                _dates = None
+                for t in _all_tickers:
+                    _idx = _monthly[t]['returns'].index
+                    _dates = set(_idx) if _dates is None else _dates & set(_idx)
+                _dates = sorted(_dates)
+                # ── ⛔ Look-ahead Bias 차단: 월봉이 '완전히 마감된' 과거 달까지만 사용 ──
+                #    yfinance 1mo 봉은 진행 중인 당월(예: 2026-07)도 포함 → 부분 데이터가
+                #    수익률/추천에 선반영됨. KST 기준 '이번 달 1일' 이전 봉만 남긴다.
+                _kst_now  = datetime.utcnow() + timedelta(hours=9)
+                _cur_ym   = (_kst_now.year, _kst_now.month)
+                _dates    = [d for d in _dates if (d.year, d.month) < _cur_ym]
+                if len(_dates) < 4: return None
+
+                # 로테이션 전략 (수수료 반영)
+                _portfolio     = [1.0]  # 수수료 반영
+                _portfolio_raw = [1.0]  # 수수료 미반영 (비교용)
+                _chosen        = []
+                _bench         = [1.0]
+                _switch_count  = 0
+                _prev_best     = None
+                _total_fee     = 0.0
+
+                for _i, _dt in enumerate(_dates[3:], 3):
+                    # 직전 3개월 모멘텀
+                    _scores = {}
+                    for t in _all_tickers:
+                        _rets = _monthly[t]['returns']
+                        _rd   = dict(zip(_rets.index, _rets))
+                        _past = [_rd.get(d, 0) for d in _dates[_i-3:_i]]
+                        if _past:
+                            _scores[t] = sum(_past)
+
+                    if not _scores:
+                        _portfolio.append(_portfolio[-1])
+                        _portfolio_raw.append(_portfolio_raw[-1])
+                        _chosen.append(_prev_best or '없음')
+                        continue
+
+                    _best_t = max(_scores, key=_scores.get)
+                    _best_n = _monthly[_best_t]['name']
+
+                    # 해당 월 수익률
+                    _rets_t    = _monthly[_best_t]['returns']
+                    _month_ret = dict(zip(_rets_t.index, _rets_t)).get(_dt, 0)
+
+                    # 수수료 적용 (스위칭 발생 시에만)
+                    _fee_this = 0.0
+                    if _prev_best is not None and _best_t != _prev_best:
+                        # 매도(이전) + 매수(신규) 비용
+                        _fee_this   = _sell_cost + _buy_cost
+                        _switch_count += 1
+                        _total_fee  += _fee_this
+                    elif _prev_best is None:
+                        # 최초 매수
+                        _fee_this  = _buy_cost
+                        _total_fee += _fee_this
+
+                    _portfolio.append(_portfolio[-1] * (1 + _month_ret - _fee_this))
+                    _portfolio_raw.append(_portfolio_raw[-1] * (1 + _month_ret))
+                    _chosen.append(_best_n)
+                    _prev_best = _best_t
+
+                    # 최종 매도세 (마지막 달)
+                    if _i == len(_dates) - 1:
+                        _portfolio[-1] *= (1 - _sell_cost)
+                        _total_fee += _sell_cost
+
+                    # 벤치마크
+                    if _bm_ret is not None:
+                        _bm_m = dict(zip(_bm_ret.index, _bm_ret)).get(_dt, 0)
+                        _bench.append(_bench[-1] * (1 + _bm_m))
+                    else:
+                        _bench.append(_bench[-1])
+
+                # 성과 지표
+                _port_arr  = np.array(_portfolio)
+                _raw_arr   = np.array(_portfolio_raw)
+                _bench_arr = np.array(_bench)
+
+                _port_ret  = (_port_arr[-1]  - 1) * 100
+                _raw_ret   = (_raw_arr[-1]   - 1) * 100
+                _bench_ret = (_bench_arr[-1] - 1) * 100
+
+                # MDD
+                _peak = np.maximum.accumulate(_port_arr)
+                _mdd  = (((_port_arr - _peak) / _peak) * 100).min()
+
+                # 샤프
+                _m_rets = np.diff(_port_arr) / _port_arr[:-1]
+                _sharpe = round(_m_rets.mean() / _m_rets.std() * np.sqrt(12)
+                                if _m_rets.std() > 0 else 0, 2)
+
+                # 승률
+                _win_months = sum(1 for r in _m_rets if r > 0)
+                _win_rate   = round(_win_months / len(_m_rets) * 100, 1) if _m_rets.size > 0 else 0
+
+                # ── 이번 달(진행 중) 추천 종목 — 최근 3개월 완료분 모멘텀 기준 ──
+                _next_pick = None
+                try:
+                    _recent = _dates[-3:]
+                    _ns = {}
+                    for t in _all_tickers:
+                        _rd = dict(zip(_monthly[t]['returns'].index, _monthly[t]['returns']))
+                        _ns[t] = sum(_rd.get(d, 0) for d in _recent)
+                    if _ns and _dates:
+                        _nb = max(_ns, key=_ns.get)
+                        _nm_dt = (_dates[-1].to_pydatetime().replace(day=1) + timedelta(days=32)).replace(day=1)
+                        # 추천 월이 '현재 진행 중인 이번 달'을 넘어서면(미래) 렌더 차단
+                        if (_nm_dt.year, _nm_dt.month) <= _cur_ym:
+                            _next_pick = {'month': _nm_dt.strftime('%Y-%m'), 'name': _monthly[_nb]['name']}
+                except Exception:
+                    _next_pick = None
+
+                return {
+                    'dates':        _dates[3:],
+                    'next_pick':    _next_pick,
+                    'portfolio':    [round((v-1)*100, 2) for v in _portfolio[1:]],
+                    'portfolio_raw':[round((v-1)*100, 2) for v in _portfolio_raw[1:]],
+                    'benchmark':    [round((v-1)*100, 2) for v in _bench[1:]],
+                    'chosen':       _chosen,
+                    'total_ret':    round(_port_ret, 2),
+                    'raw_ret':      round(_raw_ret, 2),
+                    'fee_drag':     round(_raw_ret - _port_ret, 2),
+                    'bench_ret':    round(_bench_ret, 2),
+                    'mdd':          round(_mdd, 2),
+                    'sharpe':       _sharpe,
+                    'win_rate':     _win_rate,
+                    'switch_count': _switch_count,
+                    'total_fee_pct':round(_total_fee * 100, 3),
+                }
+
+            with st.spinner("백테스팅 계산 중... (최초 1회)"):
+                _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip)
+
+            if _bt:
+                # 성과 요약
+                # 1행 — 핵심 수익률
+                _bt1, _bt2, _bt3, _bt4 = st.columns(4)
+                _ret_c = 'up' if _bt['total_ret'] > 0 else 'down'
+                _alpha = _bt['total_ret'] - _bt['bench_ret']
+                _ac    = 'up' if _alpha > 0 else 'down'
+
+                _bt1.markdown(
+                    f"<div class='metric-card'><div class='label'>수수료 반영 수익률</div>"
+                    f"<div class='value {_ret_c}'>{_bt['total_ret']:+.2f}%</div>"
+                    f"<div style='font-size:11px;color:#64748b'>수수료 전: {_bt.get('raw_ret',0):+.2f}%</div></div>",
+                    unsafe_allow_html=True)
+                _bt2.markdown(
+                    f"<div class='metric-card'><div class='label'>코스피 수익률</div>"
+                    f"<div class='value {'up' if _bt['bench_ret']>0 else 'down'}'>{_bt['bench_ret']:+.2f}%</div></div>",
+                    unsafe_allow_html=True)
+                _bt3.markdown(
+                    f"<div class='metric-card'><div class='label'>알파(초과수익)</div>"
+                    f"<div class='value {_ac}'>{_alpha:+.2f}%</div></div>",
+                    unsafe_allow_html=True)
+                _bt4.markdown(
+                    f"<div class='metric-card'><div class='label'>MDD / 샤프</div>"
+                    f"<div class='value flat'>{_bt['mdd']:.1f}% / {_bt['sharpe']}</div></div>",
+                    unsafe_allow_html=True)
+
+                # 2행 — 비용 분석
+                _bt5, _bt6, _bt7, _bt8 = st.columns(4)
+                _bt5.markdown(
+                    f"<div class='metric-card'><div class='label'>수수료 비용 합계</div>"
+                    f"<div class='value down'>-{_bt.get('fee_drag',0):.2f}%</div>"
+                    f"<div style='font-size:11px;color:#64748b'>총 {_bt.get('total_fee_pct',0):.3f}%</div></div>",
+                    unsafe_allow_html=True)
+                _bt6.markdown(
+                    f"<div class='metric-card'><div class='label'>스위칭 횟수</div>"
+                    f"<div class='value flat'>{_bt.get('switch_count',0)}회</div>"
+                    f"<div style='font-size:11px;color:#64748b'>월평균 {_bt.get('switch_count',0)/max(len(_bt['dates']),1):.1f}회</div></div>",
+                    unsafe_allow_html=True)
+                _bt7.markdown(
+                    f"<div class='metric-card'><div class='label'>월간 승률</div>"
+                    f"<div class='value {'up' if _bt.get('win_rate',0)>50 else 'down'}'>{_bt.get('win_rate',0):.1f}%</div></div>",
+                    unsafe_allow_html=True)
+                _bt8.markdown(
+                    f"<div class='metric-card'><div class='label'>수수료 최적화 팁</div>"
+                    f"<div class='value flat' style='font-size:13px'>{'✅ 효율적' if _bt.get('switch_count',0) < 12 else '⚠️ 과도한 교체'}</div>"
+                    f"<div style='font-size:11px;color:#64748b'>연 {_bt.get('switch_count',0)/2:.0f}회 교체</div></div>",
+                    unsafe_allow_html=True)
+
+                # 수익률 차트
+                import plotly.graph_objects as go
+                _fig_bt = go.Figure()
+                _fig_bt.add_trace(go.Scatter(
+                    x=list(range(len(_bt['portfolio']))),
+                    y=_bt['portfolio'],
+                    name='전략 (수수료 반영)',
+                    line=dict(color='#34d399', width=2.5),
+                    fill='tozeroy',
+                    fillcolor='rgba(52,211,153,0.08)'
+                ))
+                if 'portfolio_raw' in _bt:
+                    _fig_bt.add_trace(go.Scatter(
+                        x=list(range(len(_bt['portfolio_raw']))),
+                        y=_bt['portfolio_raw'],
+                        name='전략 (수수료 전)',
+                        line=dict(color='#34d399', width=1.2, dash='dot'),
+                        opacity=0.5
+                    ))
+                _fig_bt.add_trace(go.Scatter(
+                    x=list(range(len(_bt['benchmark']))),
+                    y=_bt['benchmark'],
+                    name='코스피',
+                    line=dict(color='#38bdf8', width=1.5, dash='dash')
+                ))
+                _fig_bt.add_hline(y=0, line_color='#2d3a55', line_width=0.8)
+                _fig_bt.update_layout(
+                    paper_bgcolor='#0a0e1a', plot_bgcolor='#0f1726',
+                    font=dict(color='#8899bb', size=11),
+                    height=300,
+                    legend=dict(orientation='h', y=1.02),
+                    margin=dict(l=10, r=40, t=30, b=10),
+                    yaxis=dict(gridcolor='#1a2535', ticksuffix='%', side='right'),
+                    xaxis=dict(gridcolor='#1a2535', title='개월'),
+                )
+                st.plotly_chart(_fig_bt, use_container_width=True)
+
+                # 월별 선택 ETF 히스토리
+                with st.expander("📋 월별 선택 ETF 히스토리"):
+                    _hist_rows = []
+                    for _d, _c, _p, _b in zip(
+                        _bt['dates'], _bt['chosen'],
+                        _bt['portfolio'], _bt['benchmark']
+                    ):
+                        try:
+                            _d_str = str(_d)[:7]
+                        except:
+                            _d_str = str(_d)
+                        _hist_rows.append({
+                            '월': _d_str,
+                            '선택 ETF': _c,
+                            '전략 누적(%)': f"{_p:+.2f}%",
+                            '코스피 누적(%)': f"{_b:+.2f}%",
+                        })
+                    # 이번 달(진행 중) 추천 — 월봉 미완성이라 누적 수익률은 '진행중'
+                    _np = _bt.get('next_pick')
+                    if _np and _np.get('name'):
+                        _hist_rows.append({
+                            '월': f"{_np.get('month','')} (진행중)",
+                            '선택 ETF': f"🎯 {_np['name']}",
+                            '전략 누적(%)': "집계중",
+                            '코스피 누적(%)': "집계중",
+                        })
+                    st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+                    if _np and _np.get('name'):
+                        st.caption(f"🎯 이번 달({_np.get('month','')}) 추천: **{_np['name']}** — "
+                                   "월봉이 끝나야 수익률이 확정되므로 누적은 '집계중'으로 표시됩니다.")
+
+                if st.button("🔄 백테스팅 재실행", key="bt_rerun"):
+                    run_etf_backtest.clear()
+                    st.rerun()
+            else:
+                st.warning("백테스팅 데이터 부족 (2년 데이터 필요)")
 
     # ══════════════════════════════════════════════════════════════════════
     # [영역 3] 퀀트 엔진 백엔드 (평소 닫아둠)
