@@ -5299,6 +5299,168 @@ with tab_b:
     sel_name = all_data[sel_ticker]['name']
     sel_df   = all_data[sel_ticker]['df']
 
+    # ══════════════════════════════════════════════════════════════
+    # 📊 분석 요약 (탭 위로 승격 — 종목/전략 즉시 결론) : Verdict + Checklist + 추천가
+    # ══════════════════════════════════════════════════════════════
+    # ── 핵심 지표 계산 ──
+    l = sel_df.iloc[-1]; p = sel_df.iloc[-2]
+    chg = (l['종가'] / p['종가'] - 1) * 100
+    bb_r = l['BB_upper'] - l['BB_lower']
+    bb_p = round((l['종가'] - l['BB_lower']) / bb_r * 100, 1) if bb_r > 0 else 50
+    _sigs     = get_signal(sel_df)
+    _buy_cnt  = sum(1 for _, t in _sigs if t == 'buy')
+    _sell_cnt = sum(1 for _, t in _sigs if t == 'sell')
+    _v891     = run_v891_system_check()
+
+    _kis_price = None
+    if kis_available() and is_korean_ticker(sel_ticker):
+        _kis_price = kis_get_price(sel_ticker)
+    _display_price = _kis_price['현재가'] if _kis_price else l['종가']
+    _kis_badge = " <span style='font-size:10px;color:#34d399'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#64748b'>● 지연</span>"
+
+    # ── 타점 계산 ──
+    try:
+        _ep = calc_entry_point(sel_df, st.session_state.analysis_preset)
+        entry_price   = _ep['entry']
+        stop_price    = _ep['stoploss']
+        target1_price = _ep['target1']
+        target2_price = _ep['target2']
+    except Exception as _ep_err:
+        st.error(f"타점 계산 오류: {_ep_err}")
+        entry_price = stop_price = target1_price = target2_price = 0
+        _ep = {'rr': 0, 'gap_pct': 0, 'reason': '계산 실패', 'cur': l['종가'],
+               'entry': 0, 'stoploss': 0, 'target1': 0, 'target2': 0}
+
+    # ══════════════════════════════════════════
+    # 1. AI VERDICT CARD
+    # ══════════════════════════════════════════
+    if not _v891['can_enter']:
+        _vd_icon = "🔴"; _vd_color = "#f43f5e"
+        _vd_bg = "rgba(244,63,94,0.12)"; _vd_border = "#f43f5e80"
+        _vd_label = "🚫 진입 차단"
+        _vd_lines = [
+            _v891['alerts'][0] if _v891['alerts'] else "시스템 차단 상태입니다.",
+            "매크로/시간 필터에 의해 진입이 제한됩니다.",
+            "차트 분석 및 대기 모드를 유지하세요."
+        ]
+    elif _ep['rr'] < 2.0:
+        _vd_icon = "🔴"; _vd_color = "#f43f5e"
+        _vd_bg = "rgba(244,63,94,0.10)"; _vd_border = "#f43f5e80"
+        _vd_label = "❌ 진입 불가"
+        _vd_lines = [
+            f"R:R {_ep['rr']} — 최소 기준 2.0 미달로 기각합니다.",
+            "손절 대비 수익 기대값이 불충분한 구간입니다.",
+            "다음 타점을 기다리거나 전략 프리셋을 변경하세요."
+        ]
+    elif _buy_cnt >= 2 and _ep['rr'] >= 2.0:
+        _vd_icon = "🟢"; _vd_color = "#34d399"
+        _vd_bg = "rgba(52,211,153,0.12)"; _vd_border = "#34d39980"
+        _vd_label = "✅ 매수 권장"
+        _vd_lines = [
+            f"퀀트 신호 {_buy_cnt}개 동시 발현, 기술적 조건 충족.",
+            f"눌림목 달성 후 반등 흐름 확인 (R:R {_ep['rr']}).",
+            "손실 소멸가 + 익절가 안전 구간 — 진입 검토하세요."
+        ]
+    else:
+        _vd_icon = "🟡"; _vd_color = "#fbbf24"
+        _vd_bg = "rgba(251,191,36,0.10)"; _vd_border = "#fbbf2480"
+        _vd_label = "⚠️ 관망"
+        _vd_lines = [
+            f"매수 신호 {_buy_cnt}개 — 기준 2개 미달, 확신도 부족.",
+            "현재 가격대는 추가 확인이 필요한 구간입니다.",
+            "신호 강화 또는 지지선 근접 시 재진입 검토하세요."
+        ]
+
+    # ── 분석 기록 저장 (사용자가 명시적으로 누를 때만 — 자동 남발 방지) ──
+    _vd_check = "✅" if _vd_icon == "🟢" else "⚠️" if _vd_icon == "🟡" else "❌"
+    _rr_ok   = _ep['rr'] >= 2.0
+    _sig_ok  = _buy_cnt >= 2
+    _sys_ok  = _v891['can_enter']
+    _vol_ok  = l.get('거래량_비율', 100) >= 120
+    _rsi_ok  = 30 <= l['RSI'] <= 65
+    _ma_ok   = l['종가'] > l.get('MA20', l['종가'])
+
+    def _ck_badge(label, ok, detail=""):
+        c  = "#16a34a" if ok else "#dc2626"
+        bg = "rgba(22,163,74,0.12)" if ok else "rgba(220,38,38,0.12)"
+        bd = "#16a34a50" if ok else "#dc262650"
+        ic = "✅" if ok else "❌"
+        return (
+            f"<div style='background:{bg};border:1px solid {bd};border-radius:9px;"
+            f"padding:7px 4px;text-align:center'>"
+            f"<div style='font-size:16px'>{ic}</div>"
+            f"<div style='font-size:10px;font-weight:700;color:{c};margin-top:2px'>{label}</div>"
+            f"<div style='font-size:9px;color:#64748b'>{detail}</div>"
+            f"</div>"
+        )
+
+    # ── 📊 요약 그리드 [1.5 : 2.5] — 좌: Verdict+체크리스트 / 우: 자동 추천가 (PROJECTION 제외) ──
+    _sumc1, _sumc2 = st.columns([1.5, 2.5], gap="medium")
+    with _sumc1:
+        st.markdown(f"""
+<div style='background:{_vd_bg};border:2px solid {_vd_border};border-radius:14px;
+padding:14px 16px;margin-bottom:10px'>
+  <div style='display:flex;align-items:center;gap:12px'>
+    <div style='font-size:38px;line-height:1'>{_vd_icon}</div>
+    <div style='flex:1'>
+      <div style='font-size:18px;font-weight:900;color:{_vd_color}'>{_vd_label}</div>
+      <div style='font-size:10px;color:#64748b'>{sel_name[:14]} · 신호 {_buy_cnt}매수/{_sell_cnt}매도</div>
+    </div>
+    <div style='text-align:right'>
+      <div style='font-size:9px;color:#64748b'>R:R</div>
+      <div style='font-size:26px;font-weight:900;color:{_vd_color};font-family:IBM Plex Mono;line-height:1'>{_ep["rr"]}</div>
+    </div>
+  </div>
+  <div style='margin-top:8px'>
+    {''.join(f"<div style='font-size:11px;color:#94a3b8;margin-bottom:2px'>{_vd_check} {ln}</div>" for ln in _vd_lines)}
+  </div>
+</div>
+<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:6px'>
+  {_ck_badge("R:R 2.0+", _rr_ok, str(_ep["rr"]))}
+  {_ck_badge("매수신호 2+", _sig_ok, f"{_buy_cnt}개")}
+  {_ck_badge("시스템", _sys_ok, "매크로")}
+  {_ck_badge("거래량", _vol_ok, f"{l.get('거래량_비율',100):.0f}%")}
+  {_ck_badge("RSI 30-65", _rsi_ok, f"{l['RSI']:.0f}")}
+  {_ck_badge("MA20 위", _ma_ok, f"{l.get('MA20',0):,.0f}")}
+</div>""", unsafe_allow_html=True)
+        if st.button("💾 이 분석 기록에 저장", key=f"save_log_{sel_ticker}", use_container_width=True):
+            save_analysis_log(
+                sel_ticker, sel_name, _vd_label, _ep['rr'],
+                _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
+                preset=st.session_state.analysis_preset, score=_buy_cnt, source="분석탭"
+            )
+            st.toast(f"✅ {sel_name} 분석 기록 저장됨", icon="💾")
+    with _sumc2:
+        st.markdown(f"""
+<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:14px 16px'>
+  <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:10px'>
+    🎯 자동 추천가 (진입/손절/목표)
+    <span style='float:right;color:#64748b'>현재가 <b style='color:#f0f4ff'>{format_price(_display_price, sel_ticker)}</b>{_kis_badge}</span>
+  </div>
+  <div style='display:grid;grid-template-columns:repeat(2,1fr);gap:10px'>
+    <div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:14px;text-align:center'>
+      <div style='font-size:11px;color:#64748b'>🎯 진입 타점</div>
+      <div style='font-size:22px;font-weight:800;color:#fbbf24'>{_ep["entry"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>{_ep["gap_pct"]:+.1f}% 대기</div>
+    </div>
+    <div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:10px;padding:14px;text-align:center'>
+      <div style='font-size:11px;color:#64748b'>🛑 손절가</div>
+      <div style='font-size:22px;font-weight:800;color:#f43f5e'>{_ep["stoploss"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>-7%</div>
+    </div>
+    <div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:10px;padding:14px;text-align:center'>
+      <div style='font-size:11px;color:#64748b'>🎯 1차 목표</div>
+      <div style='font-size:22px;font-weight:800;color:#34d399'>{_ep["target1"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>+8%</div>
+    </div>
+    <div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:10px;padding:14px;text-align:center'>
+      <div style='font-size:11px;color:#64748b'>✨ 2차 목표</div>
+      <div style='font-size:22px;font-weight:800;color:#a78bfa'>{_ep["target2"]:,.0f}</div>
+      <div style='font-size:10px;color:#64748b'>+15%</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
     _sub_b1, _sub_b2, _sub_b3 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석", "📋 분석 기록"])
 
     with _sub_b1:
@@ -5353,166 +5515,6 @@ with tab_b:
                 st.stop()
 
             # (종목/전략 선택은 상단 Control Ribbon으로 통합 이관 — sel_ticker/sel_df 재사용)
-
-            # ── 핵심 지표 계산 ──
-            l = sel_df.iloc[-1]; p = sel_df.iloc[-2]
-            chg = (l['종가'] / p['종가'] - 1) * 100
-            bb_r = l['BB_upper'] - l['BB_lower']
-            bb_p = round((l['종가'] - l['BB_lower']) / bb_r * 100, 1) if bb_r > 0 else 50
-            _sigs     = get_signal(sel_df)
-            _buy_cnt  = sum(1 for _, t in _sigs if t == 'buy')
-            _sell_cnt = sum(1 for _, t in _sigs if t == 'sell')
-            _v891     = run_v891_system_check()
-
-            _kis_price = None
-            if kis_available() and is_korean_ticker(sel_ticker):
-                _kis_price = kis_get_price(sel_ticker)
-            _display_price = _kis_price['현재가'] if _kis_price else l['종가']
-            _kis_badge = " <span style='font-size:10px;color:#34d399'>● 실시간</span>" if _kis_price else " <span style='font-size:10px;color:#64748b'>● 지연</span>"
-
-            # ── 타점 계산 ──
-            try:
-                _ep = calc_entry_point(sel_df, st.session_state.analysis_preset)
-                entry_price   = _ep['entry']
-                stop_price    = _ep['stoploss']
-                target1_price = _ep['target1']
-                target2_price = _ep['target2']
-            except Exception as _ep_err:
-                st.error(f"타점 계산 오류: {_ep_err}")
-                entry_price = stop_price = target1_price = target2_price = 0
-                _ep = {'rr': 0, 'gap_pct': 0, 'reason': '계산 실패', 'cur': l['종가'],
-                       'entry': 0, 'stoploss': 0, 'target1': 0, 'target2': 0}
-
-            # ══════════════════════════════════════════
-            # 1. AI VERDICT CARD
-            # ══════════════════════════════════════════
-            if not _v891['can_enter']:
-                _vd_icon = "🔴"; _vd_color = "#f43f5e"
-                _vd_bg = "rgba(244,63,94,0.12)"; _vd_border = "#f43f5e80"
-                _vd_label = "🚫 진입 차단"
-                _vd_lines = [
-                    _v891['alerts'][0] if _v891['alerts'] else "시스템 차단 상태입니다.",
-                    "매크로/시간 필터에 의해 진입이 제한됩니다.",
-                    "차트 분석 및 대기 모드를 유지하세요."
-                ]
-            elif _ep['rr'] < 2.0:
-                _vd_icon = "🔴"; _vd_color = "#f43f5e"
-                _vd_bg = "rgba(244,63,94,0.10)"; _vd_border = "#f43f5e80"
-                _vd_label = "❌ 진입 불가"
-                _vd_lines = [
-                    f"R:R {_ep['rr']} — 최소 기준 2.0 미달로 기각합니다.",
-                    "손절 대비 수익 기대값이 불충분한 구간입니다.",
-                    "다음 타점을 기다리거나 전략 프리셋을 변경하세요."
-                ]
-            elif _buy_cnt >= 2 and _ep['rr'] >= 2.0:
-                _vd_icon = "🟢"; _vd_color = "#34d399"
-                _vd_bg = "rgba(52,211,153,0.12)"; _vd_border = "#34d39980"
-                _vd_label = "✅ 매수 권장"
-                _vd_lines = [
-                    f"퀀트 신호 {_buy_cnt}개 동시 발현, 기술적 조건 충족.",
-                    f"눌림목 달성 후 반등 흐름 확인 (R:R {_ep['rr']}).",
-                    "손실 소멸가 + 익절가 안전 구간 — 진입 검토하세요."
-                ]
-            else:
-                _vd_icon = "🟡"; _vd_color = "#fbbf24"
-                _vd_bg = "rgba(251,191,36,0.10)"; _vd_border = "#fbbf2480"
-                _vd_label = "⚠️ 관망"
-                _vd_lines = [
-                    f"매수 신호 {_buy_cnt}개 — 기준 2개 미달, 확신도 부족.",
-                    "현재 가격대는 추가 확인이 필요한 구간입니다.",
-                    "신호 강화 또는 지지선 근접 시 재진입 검토하세요."
-                ]
-
-            # ── 분석 기록 저장 (사용자가 명시적으로 누를 때만 — 자동 남발 방지) ──
-            if st.button("💾 이 분석 기록에 저장", key=f"save_log_{sel_ticker}", use_container_width=True):
-                save_analysis_log(
-                    sel_ticker, sel_name, _vd_label, _ep['rr'],
-                    _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
-                    preset=st.session_state.analysis_preset, score=_buy_cnt, source="분석탭"
-                )
-                st.toast(f"✅ {sel_name} 분석 기록 저장됨", icon="💾")
-
-            _vd_check = "✅" if _vd_icon == "🟢" else "⚠️" if _vd_icon == "🟡" else "❌"
-            st.markdown(f"""
-<div style='background:{_vd_bg};border:2px solid {_vd_border};border-radius:16px;
-padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
-  <div style='font-size:56px;line-height:1'>{_vd_icon}</div>
-  <div style='flex:1'>
-    <div style='font-size:24px;font-weight:900;color:{_vd_color};margin-bottom:8px'>
-      VERDICT: {_vd_label}
-    </div>
-    {''.join(f"<div style='font-size:12px;color:#94a3b8;margin-bottom:2px'>{_vd_check} {ln}</div>" for ln in _vd_lines)}
-  </div>
-  <div style='text-align:right;min-width:90px'>
-    <div style='font-size:10px;color:#64748b'>R:R Ratio</div>
-    <div style='font-size:36px;font-weight:900;color:{_vd_color};font-family:IBM Plex Mono;line-height:1.1'>{_ep["rr"]}</div>
-    <div style='font-size:10px;color:#64748b;margin-top:4px'>{sel_name[:12]}</div>
-    <div style='font-size:10px;color:#64748b'>신호 {_buy_cnt}매수/{_sell_cnt}매도</div>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-            # ══════════════════════════════════════════
-            # 2. CHECKLIST CARD — 대형 스테이터스 배지
-            # ══════════════════════════════════════════
-            _rr_ok   = _ep['rr'] >= 2.0
-            _sig_ok  = _buy_cnt >= 2
-            _sys_ok  = _v891['can_enter']
-            _vol_ok  = l.get('거래량_비율', 100) >= 120
-            _rsi_ok  = 30 <= l['RSI'] <= 65
-            _ma_ok   = l['종가'] > l.get('MA20', l['종가'])
-
-            def _ck_badge(label, ok, detail=""):
-                c  = "#16a34a" if ok else "#dc2626"
-                bg = "rgba(22,163,74,0.12)" if ok else "rgba(220,38,38,0.12)"
-                bd = "#16a34a50" if ok else "#dc262650"
-                ic = "✅" if ok else "❌"
-                glow = f"box-shadow:0 0 10px 2px {'#16a34a' if ok else '#dc2626'}50;" if ok else ""
-                return (
-                    f"<div style='background:{bg};border:1px solid {bd};border-radius:10px;"
-                    f"padding:10px;text-align:center;{glow}'>"
-                    f"<div style='font-size:20px'>{ic}</div>"
-                    f"<div style='font-size:11px;font-weight:700;color:{c};margin-top:4px'>{label}</div>"
-                    f"<div style='font-size:10px;color:#64748b;margin-top:2px'>{detail}</div>"
-                    f"</div>"
-                )
-
-            st.markdown(f"""
-<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:14px 16px;margin-bottom:14px'>
-  <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:10px'>
-    CHECKLIST CARD — {sel_name} ({sel_ticker})
-    <span style='float:right;color:#64748b'>현재가 <b style='color:#f0f4ff'>{format_price(_display_price, sel_ticker)}</b>{_kis_badge}</span>
-  </div>
-  <div style='display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:10px'>
-    {_ck_badge("R:R 2.0+", _rr_ok, str(_ep["rr"]))}
-    {_ck_badge("매수신호 2+", _sig_ok, f"{_buy_cnt}개")}
-    {_ck_badge("시스템 OK", _sys_ok, "매크로")}
-    {_ck_badge("거래량 폭발", _vol_ok, f"{l.get('거래량_비율',100):.0f}%")}
-    {_ck_badge("RSI 30-65", _rsi_ok, f"{l['RSI']:.0f}")}
-    {_ck_badge("MA20 위", _ma_ok, f"{l.get('MA20',0):,.0f}")}
-  </div>
-  <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px'>
-    <div style='background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:10px;text-align:center'>
-      <div style='font-size:10px;color:#64748b'>🎯 진입</div>
-      <div style='font-size:17px;font-weight:800;color:#fbbf24'>{_ep["entry"]:,.0f}</div>
-      <div style='font-size:10px;color:#64748b'>{_ep["gap_pct"]:+.1f}% 대기</div>
-    </div>
-    <div style='background:rgba(244,63,94,0.1);border:1px solid rgba(244,63,94,0.3);border-radius:10px;padding:10px;text-align:center'>
-      <div style='font-size:10px;color:#64748b'>🛑 손절가</div>
-      <div style='font-size:17px;font-weight:800;color:#f43f5e'>{_ep["stoploss"]:,.0f}</div>
-      <div style='font-size:10px;color:#64748b'>-7%</div>
-    </div>
-    <div style='background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.3);border-radius:10px;padding:10px;text-align:center'>
-      <div style='font-size:10px;color:#64748b'>🎯 익절 1차</div>
-      <div style='font-size:17px;font-weight:800;color:#34d399'>{_ep["target1"]:,.0f}</div>
-      <div style='font-size:10px;color:#64748b'>+8%</div>
-    </div>
-    <div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:10px;padding:10px;text-align:center'>
-      <div style='font-size:10px;color:#64748b'>✨ 익절 2차</div>
-      <div style='font-size:17px;font-weight:800;color:#a78bfa'>{_ep["target2"]:,.0f}</div>
-      <div style='font-size:10px;color:#64748b'>+15%</div>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
 
             # ══════════════════════════════════════════
             # 3. MULTI-PANE CHART + TOGGLE + VALUATION BAND
@@ -5637,75 +5639,77 @@ padding:20px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px'>
   <span><span style='color:#ef4444'>■</span> 과열 구간 (RSI&gt;65 또는 BB상단75%)</span>
 </div>""", unsafe_allow_html=True)
 
-            # ── 수동 조정 ──
-            with st.expander("✏️ 수동 조정", expanded=False):
-                _unit   = get_currency(sel_ticker)
+            # ── ✏️ 수동 타점 조정 ↔ 실시간 PROJECTION (좌우 [1:1] 결합) ──
+            _mcol, _pcol = st.columns([1, 1], gap="medium")
+            with _mcol:
+                st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:6px'>✏️ 수동 타점 조정</div>", unsafe_allow_html=True)
+                _unit    = get_currency(sel_ticker)
                 _is_kr_m = is_korean_ticker(sel_ticker)
-                _step   = 100.0 if _is_kr_m else 0.01     # US는 센트 단위
-                # 종목별 key → 종목 전환 시 이전 값이 남지 않고 새 타점이 반영됨
-                lc1, lc2, lc3, lc4 = st.columns(4)
-                entry_price   = lc1.number_input(f"매수가 ({_unit})",   value=float(entry_price or 0),   step=_step, key=f"madj_entry_{sel_ticker}")
-                stop_price    = lc2.number_input(f"손절가 ({_unit})",   value=float(stop_price or 0),    step=_step, key=f"madj_stop_{sel_ticker}")
-                target1_price = lc3.number_input(f"1차 목표 ({_unit})", value=float(target1_price or 0), step=_step, key=f"madj_t1_{sel_ticker}")
-                target2_price = lc4.number_input(f"2차 목표 ({_unit})", value=float(target2_price or 0), step=_step, key=f"madj_t2_{sel_ticker}")
+                _step    = 100.0 if _is_kr_m else 0.01
+                _mca, _mcb = st.columns(2)
+                entry_price   = _mca.number_input(f"매수가 ({_unit})",   value=float(entry_price or 0),   step=_step, key=f"madj_entry_{sel_ticker}")
+                stop_price    = _mcb.number_input(f"손절가 ({_unit})",   value=float(stop_price or 0),    step=_step, key=f"madj_stop_{sel_ticker}")
+                target1_price = _mca.number_input(f"1차 목표 ({_unit})", value=float(target1_price or 0), step=_step, key=f"madj_t1_{sel_ticker}")
+                target2_price = _mcb.number_input(f"2차 목표 ({_unit})", value=float(target2_price or 0), step=_step, key=f"madj_t2_{sel_ticker}")
+                st.caption("← 숫자를 바꾸면 우측 시나리오가 즉시 반응")
+            with _pcol:
+                # ══════════════════════════════════════════
+                # 4. PERFORMANCE PROJECTION CARD
+                # ══════════════════════════════════════════
+                if entry_price > 0 and stop_price > 0:
+                    _pp_e = entry_price
+                    _pp_s = stop_price
+                    _pp_t1 = target1_price if target1_price > 0 else _pp_e * 1.08
+                    _pp_t2 = target2_price if target2_price > 0 else _pp_e * 1.15
+                    _pp_loss = (_pp_s - _pp_e) / _pp_e * 100
+                    _pp_base = (_pp_t1 - _pp_e) / _pp_e * 100
+                    _pp_best = (_pp_t2 - _pp_e) / _pp_e * 100
+                    _pp_rr   = abs(_pp_base / _pp_loss) if _pp_loss != 0 else 0
+                    _pp_mx   = max(abs(_pp_best), abs(_pp_base), abs(_pp_loss), 1)
+                    _pp_bw_best = abs(_pp_best) / _pp_mx * 100
+                    _pp_bw_base = abs(_pp_base) / _pp_mx * 100
+                    _pp_bw_loss = abs(_pp_loss) / _pp_mx * 100
 
-            # ══════════════════════════════════════════
-            # 4. PERFORMANCE PROJECTION CARD
-            # ══════════════════════════════════════════
-            if entry_price > 0 and stop_price > 0:
-                _pp_e = entry_price
-                _pp_s = stop_price
-                _pp_t1 = target1_price if target1_price > 0 else _pp_e * 1.08
-                _pp_t2 = target2_price if target2_price > 0 else _pp_e * 1.15
-                _pp_loss = (_pp_s - _pp_e) / _pp_e * 100
-                _pp_base = (_pp_t1 - _pp_e) / _pp_e * 100
-                _pp_best = (_pp_t2 - _pp_e) / _pp_e * 100
-                _pp_rr   = abs(_pp_base / _pp_loss) if _pp_loss != 0 else 0
-                _pp_mx   = max(abs(_pp_best), abs(_pp_base), abs(_pp_loss), 1)
-                _pp_bw_best = abs(_pp_best) / _pp_mx * 100
-                _pp_bw_base = abs(_pp_base) / _pp_mx * 100
-                _pp_bw_loss = abs(_pp_loss) / _pp_mx * 100
-
-                st.markdown(f"""
-<div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:16px 20px;margin-top:6px'>
-  <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:12px'>
-    PERFORMANCE PROJECTION
-    <span style='float:right;font-size:12px;color:#94a3b8'>Risk/Reward
-      <b style='color:#fbbf24;font-size:18px;margin-left:6px'>{_pp_rr:.2f}</b>
-      &nbsp;<span style='font-size:11px;color:#64748b'>(승률 기준 63.9%)</span>
-    </span>
-  </div>
-  <div style='display:flex;flex-direction:column;gap:10px'>
-    <div style='display:flex;align-items:center;gap:10px'>
-      <span style='color:#a78bfa;font-size:11px;font-weight:700;min-width:40px'>Best</span>
-      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
-        <div style='width:{_pp_bw_best:.0f}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);height:100%;border-radius:4px'></div>
+                    st.markdown(f"""
+    <div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:16px 20px;margin-top:6px'>
+      <div style='font-size:11px;color:#64748b;font-weight:700;margin-bottom:12px'>
+        PERFORMANCE PROJECTION
+        <span style='float:right;font-size:12px;color:#94a3b8'>Risk/Reward
+          <b style='color:#fbbf24;font-size:18px;margin-left:6px'>{_pp_rr:.2f}</b>
+          &nbsp;<span style='font-size:11px;color:#64748b'>(승률 기준 63.9%)</span>
+        </span>
       </div>
-      <span style='color:#a78bfa;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_best:+.1f}%</span>
-    </div>
-    <div style='display:flex;align-items:center;gap:10px'>
-      <span style='color:#34d399;font-size:11px;font-weight:700;min-width:40px'>Base</span>
-      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
-        <div style='width:{_pp_bw_base:.0f}%;background:linear-gradient(90deg,#16a34a,#34d399);height:100%;border-radius:4px'></div>
+      <div style='display:flex;flex-direction:column;gap:10px'>
+        <div style='display:flex;align-items:center;gap:10px'>
+          <span style='color:#a78bfa;font-size:11px;font-weight:700;min-width:40px'>Best</span>
+          <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+            <div style='width:{_pp_bw_best:.0f}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);height:100%;border-radius:4px'></div>
+          </div>
+          <span style='color:#a78bfa;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_best:+.1f}%</span>
+        </div>
+        <div style='display:flex;align-items:center;gap:10px'>
+          <span style='color:#34d399;font-size:11px;font-weight:700;min-width:40px'>Base</span>
+          <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+            <div style='width:{_pp_bw_base:.0f}%;background:linear-gradient(90deg,#16a34a,#34d399);height:100%;border-radius:4px'></div>
+          </div>
+          <span style='color:#34d399;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_base:+.1f}%</span>
+        </div>
+        <div style='display:flex;align-items:center;gap:10px'>
+          <span style='color:#f43f5e;font-size:11px;font-weight:700;min-width:40px'>Worst</span>
+          <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
+            <div style='width:{_pp_bw_loss:.0f}%;background:linear-gradient(90deg,#991b1b,#f43f5e);height:100%;border-radius:4px'></div>
+          </div>
+          <span style='color:#f43f5e;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_loss:+.1f}%</span>
+        </div>
       </div>
-      <span style='color:#34d399;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_base:+.1f}%</span>
-    </div>
-    <div style='display:flex;align-items:center;gap:10px'>
-      <span style='color:#f43f5e;font-size:11px;font-weight:700;min-width:40px'>Worst</span>
-      <div style='flex:1;background:#1e293b;border-radius:4px;height:16px'>
-        <div style='width:{_pp_bw_loss:.0f}%;background:linear-gradient(90deg,#991b1b,#f43f5e);height:100%;border-radius:4px'></div>
+      <div style='margin-top:12px;display:flex;gap:16px;font-size:11px;color:#64748b;
+      border-top:1px solid #1e293b;padding-top:10px;flex-wrap:wrap'>
+        <span>진입 <b style='color:#fbbf24'>{_pp_e:,.0f}</b></span>
+        <span>손절 <b style='color:#f43f5e'>{_pp_s:,.0f}</b></span>
+        <span>1차목표 <b style='color:#34d399'>{_pp_t1:,.0f}</b></span>
+        <span>2차목표 <b style='color:#a78bfa'>{_pp_t2:,.0f}</b></span>
       </div>
-      <span style='color:#f43f5e;font-size:14px;font-weight:800;min-width:50px;text-align:right'>{_pp_loss:+.1f}%</span>
-    </div>
-  </div>
-  <div style='margin-top:12px;display:flex;gap:16px;font-size:11px;color:#64748b;
-  border-top:1px solid #1e293b;padding-top:10px;flex-wrap:wrap'>
-    <span>진입 <b style='color:#fbbf24'>{_pp_e:,.0f}</b></span>
-    <span>손절 <b style='color:#f43f5e'>{_pp_s:,.0f}</b></span>
-    <span>1차목표 <b style='color:#34d399'>{_pp_t1:,.0f}</b></span>
-    <span>2차목표 <b style='color:#a78bfa'>{_pp_t2:,.0f}</b></span>
-  </div>
-</div>""", unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
             # 이평선 현황 — 컬러 바 형태
             st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
