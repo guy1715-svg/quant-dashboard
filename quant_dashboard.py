@@ -390,29 +390,70 @@ _KIS_URL_INVESTOR = f"{_KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-inve
 
 import time as _time_kis
 
+def _secret_lookup(*names):
+    """st.secrets에서 값 탐색 — 최상위 + 1단계 섹션([kis] 등)까지, 키 이름 대소문자 무시.
+    이름이 조금 달라도(별칭) 잡히도록. 반환: 문자열 값 or ''."""
+    _wanted = {n.lower() for n in names}
+    try:
+        _sec = st.secrets
+    except Exception:
+        return ""
+    # 1) 최상위 키
+    try:
+        for _k in list(_sec.keys()):
+            if str(_k).lower() in _wanted:
+                _v = _sec[_k]
+                if isinstance(_v, str) and _v.strip():
+                    return _v.strip()
+    except Exception:
+        pass
+    # 2) 섹션(1단계 중첩) 내부
+    try:
+        for _k in list(_sec.keys()):
+            _v = _sec[_k]
+            if hasattr(_v, "keys"):
+                for _kk in list(_v.keys()):
+                    if str(_kk).lower() in _wanted:
+                        _vv = _v[_kk]
+                        if isinstance(_vv, str) and _vv.strip():
+                            return _vv.strip()
+    except Exception:
+        pass
+    return ""
+
+def _secret_top_keys():
+    """진단용 — secrets에 실제로 존재하는 항목 이름 목록(값 아님)."""
+    _out = []
+    try:
+        for _k in list(st.secrets.keys()):
+            _v = st.secrets[_k]
+            if hasattr(_v, "keys"):
+                _out.append(f"[{_k}]:" + "/".join(str(x) for x in list(_v.keys())))
+            else:
+                _out.append(str(_k))
+    except Exception:
+        pass
+    return _out
+
 def _kis_key():
-    """KIS App Key — 사이드바 입력(session) → st.secrets → 환경변수 순."""
+    """KIS App Key — 사이드바 입력 → secrets(별칭·섹션 포함) → 환경변수."""
     _v = st.session_state.get('_kis_app_key_input', '')
     if _v:
         return _v
-    try:
-        if "KIS_APP_KEY" in st.secrets:
-            return st.secrets["KIS_APP_KEY"]
-    except Exception:
-        pass
+    _s = _secret_lookup("KIS_APP_KEY", "KIS_KEY", "APP_KEY", "KIS_APPKEY", "kis_app_key")
+    if _s:
+        return _s
     import os as _os_k
     return _os_k.environ.get("KIS_APP_KEY", "")
 
 def _kis_secret():
-    """KIS App Secret — 사이드바 입력(session) → st.secrets → 환경변수 순."""
+    """KIS App Secret — 사이드바 입력 → secrets(별칭·섹션 포함) → 환경변수."""
     _v = st.session_state.get('_kis_app_secret_input', '')
     if _v:
         return _v
-    try:
-        if "KIS_APP_SECRET" in st.secrets:
-            return st.secrets["KIS_APP_SECRET"]
-    except Exception:
-        pass
+    _s = _secret_lookup("KIS_APP_SECRET", "KIS_SECRET", "APP_SECRET", "KIS_APPSECRET", "kis_app_secret")
+    if _s:
+        return _s
     import os as _os_k
     return _os_k.environ.get("KIS_APP_SECRET", "")
 
@@ -3525,12 +3566,9 @@ with st.sidebar:
     st.markdown("## ⚙️ 설정")
 
     # ── 🔑 KIS API 연동 (secrets 키 있으면 입력창 숨김 · 없을 때만 런타임 입력) ──
-    _sec_kis_key = _sec_kis_secret = ""
-    try:
-        _sec_kis_key    = str(st.secrets.get("KIS_APP_KEY", "") or "")
-        _sec_kis_secret = str(st.secrets.get("KIS_APP_SECRET", "") or "")
-    except Exception:
-        pass
+    #    별칭·섹션까지 탐색하는 _kis_key()/_kis_secret()로 감지 (이름 조금 달라도 잡음)
+    _sec_kis_key    = _kis_key()
+    _sec_kis_secret = _kis_secret()
 
     if _sec_kis_key and _sec_kis_secret:
         # secrets 키로 자동 연동 → 입력창 불필요, 회색 한 줄만
@@ -3545,6 +3583,14 @@ with st.sidebar:
         else:
             with st.expander("🔑 KIS API 키 입력 (선택 — secrets 미사용 시)", expanded=False):
                 st.caption("secrets에 KIS_APP_KEY/SECRET을 넣으면 이 입력창은 자동으로 사라집니다.")
+                # 진단 — secrets에 실제로 어떤 항목이 있는지(값 아닌 '이름'만) 표시
+                _sk = _secret_top_keys()
+                if _sk:
+                    st.caption("🗝️ secrets 감지 항목: " + ", ".join(_sk))
+                    st.caption("↑ 여기에 KIS_APP_KEY/KIS_APP_SECRET이 안 보이면 이름이 다르거나 "
+                               "[섹션] 아래 있는 것 — 최상단으로 옮기거나 이름을 맞춰주세요.")
+                else:
+                    st.caption("⚠️ secrets가 비어있음 — Manage app → Settings → Secrets에 등록 필요")
                 st.text_input("KIS App Key", type="password", key="_kis_app_key_input")
                 st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
                 st.toggle("모의투자 키 사용 (VTS)", key="_kis_mock_input",
