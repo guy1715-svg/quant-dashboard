@@ -8384,12 +8384,37 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 "#34d399" if "추가매집" in _rank_state else
                 "#64748b"
             )
+            # ── 🎯 실전 가격 타점 계산 (매수/손절/목표/RR) ──
+            _cur_r  = float(row.get('현재가', 0) or 0)
+            _ma5_r  = float(row.get('MA5가격', 0) or 0)
+            _u_r    = currency_symbol
+            _fmt_r  = (lambda v: f"{v:,.0f}{_u_r}") if _u_r == '원' else (lambda v: f"{_u_r}{v:,.2f}")
+            # 매수 타점 = MA5(현재가 아래일 때) 또는 현재가 -2.3% 눌림목
+            _entry_r = _ma5_r if (0 < _ma5_r < _cur_r) else _cur_r * 0.977
+            _stop_r  = _entry_r * (1 - _STOP_LOSS_PCT)   # 타점 대비 -7%
+            _tgt_r   = _entry_r * 1.08                    # +8%
+            _rr_r    = (_tgt_r - _entry_r) / max(_entry_r - _stop_r, 1e-9)
+            _in_zone = _cur_r <= _entry_r * 1.01          # 타점 도달(진입 가능)
+            _entry_badge = (
+                "<span style='background:#16a34a25;color:#34d399;font-size:9px;font-weight:700;"
+                "padding:2px 7px;border-radius:8px;margin-left:6px'>🎯 진입 가능</span>" if _in_zone else
+                "<span style='background:#f59e0b20;color:#fbbf24;font-size:9px;font-weight:700;"
+                "padding:2px 7px;border-radius:8px;margin-left:6px'>⏳ 눌림목 대기</span>"
+            ) if _cur_r > 0 else ""
+            _price_line = (
+                f"<div style='margin-top:6px;font-size:11px;color:#94a3b8;letter-spacing:0.2px'>"
+                f"🎯 타점 <b style='color:#fbbf24'>{_fmt_r(_entry_r)}</b> &nbsp;|&nbsp; "
+                f"🛑 손절 <b style='color:#ef4444'>{_fmt_r(_stop_r)}</b> &nbsp;|&nbsp; "
+                f"🚀 목표 <b style='color:#34d399'>{_fmt_r(_tgt_r)}</b> &nbsp;|&nbsp; "
+                f"⚖️ R:R <b style='color:#f0f4ff'>1:{_rr_r:.1f}</b></div>"
+            ) if _cur_r > 0 else ""
             st.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border_color};border-radius:10px;"
                 f"padding:12px 18px;margin-bottom:4px'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<div>"
                 f"<b style='font-size:15px'>{_rank}{_rank_change_html} {row['ETF명']}</b>"
+                f"{_entry_badge}"
                 f"<span style='color:#64748b;font-size:11px'> ({row['코드']})</span>"
                 f"{_info_icon}{_val_badge}{_tag}{_crown_badge}{_dot_bar}"
                 f"</div>"
@@ -8402,6 +8427,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"border-radius:12px;font-size:11px;font-weight:700;border:1px solid {_state_c}50'>"
                 f"{_rank_state}</span>"
                 f"</div>"
+                f"{_price_line}"
                 f"</div>",
                 unsafe_allow_html=True
             )
@@ -8949,6 +8975,19 @@ with tab_d:
             )
 
 with _tab_d1:
+    # ── 시장 레짐 기반 전략 자동 추천 알림 (블랙아웃/폭락장 = 정찰 모드) ──
+    try:
+        _rg_d = detect_market_regime_for_strategy()
+        _sb_black_d = not run_v891_system_check().get('can_enter', True)
+        _rec_lbl_d = {"bounce": "📉 반등매매", "trend": "📈 추세매매", "bottom": "🎯 바닥확인"}.get(_rg_d["preset"], "🎯 바닥확인")
+        if _sb_black_d or _rg_d["regime"] == "crash":
+            st.warning(f"🚨 현재 시장 날씨는 **[{_rg_d['label']}]** — **[{_rec_lbl_d}]** 정찰 전략이 자동 추천/세팅되었습니다. "
+                       f"(실매수 금지 · 관망/정찰 우선)")
+        elif _rg_d["regime"] == "bull":
+            st.info(f"📈 현재 시장 날씨는 **[{_rg_d['label']}]** — **[{_rec_lbl_d}]** 전략을 권장합니다.")
+    except Exception:
+        pass
+
     # ══════════════════════════════════════════════════════════════════════
     # [영역 1] 액션 브리핑 — st.columns(3) 메트릭 3개
     # ══════════════════════════════════════════════════════════════════════
@@ -9756,28 +9795,41 @@ with _tab_d1:
             _render_etf_ranking(_all_ranked, currency_symbol=_all_top_sym, key_prefix='all_etf', show_add_btn=True, rank_history=_all_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
-    ETF_LIST = [
-        # 삼성증권 HTS 기준 ETF 종목코드
-        ("069500",  "KODEX 200",              "KS"),  # 코스피200
-        ("133690",  "TIGER 나스닥100",        "KS"),  # 나스닥100
-        ("091160",  "KODEX 반도체",           "KS"),  # 반도체 섹터
-        ("395160",  "KODEX AI반도체TOP2+",    "KS"),  # AI반도체
-        ("463250",  "TIGER K방산&우주",       "KS"),  # K방산
-        ("487240",  "KODEX AI전력핵심설비",   "KS"),  # AI전력 (2026 수익률 1위)
-        ("411060",  "ACE KRX금현물",          "KS"),  # 금현물
-        ("364980",  "TIGER 조선TOP10",        "KS"),  # 조선 ETF
-        ("305720",  "KODEX 2차전지산업",      "KS"),  # 2차전지
-        ("140710",  "TIGER 원자력테마",       "KS"),  # 원자력
+    # 관제판 대상 = 상단 라디오(_etf_market) 선택에 따라 동적 스위칭
+    _ETF_LIST_KR = [
+        ("069500", "KODEX 200", "KS"), ("133690", "TIGER 나스닥100", "KS"),
+        ("091160", "KODEX 반도체", "KS"), ("395160", "KODEX AI반도체TOP2+", "KS"),
+        ("463250", "TIGER K방산&우주", "KS"), ("487240", "KODEX AI전력핵심설비", "KS"),
+        ("411060", "ACE KRX금현물", "KS"), ("364980", "TIGER 조선TOP10", "KS"),
+        ("305720", "KODEX 2차전지산업", "KS"), ("140710", "TIGER 원자력테마", "KS"),
     ]
+    _ETF_LIST_US = [
+        ("SPY", "SPDR S&P500", "US"), ("QQQ", "Invesco 나스닥100", "US"),
+        ("DIA", "SPDR 다우존스", "US"), ("IWM", "iShares 러셀2000", "US"),
+        ("XLK", "Technology Select", "US"), ("XLF", "Financial Select", "US"),
+        ("XLE", "Energy Select", "US"), ("XLV", "Health Care Select", "US"),
+        ("XLI", "Industrials Select", "US"), ("XLY", "Consumer Discretionary", "US"),
+        ("XLP", "Consumer Staples", "US"), ("XLU", "Utilities Select", "US"),
+        ("XLB", "Materials Select", "US"), ("SOXX", "iShares 반도체", "US"),
+        ("SMH", "VanEck 반도체", "US"), ("GLD", "SPDR 금", "US"),
+        ("TLT", "iShares 장기국채", "US"), ("ARKK", "ARK 혁신", "US"),
+    ]
+    if _etf_market == "🇺🇸 미장 ETF":
+        ETF_LIST = _ETF_LIST_US
+    elif _etf_market == "🌐 전체 통합":
+        ETF_LIST = _ETF_LIST_KR + _ETF_LIST_US
+    else:
+        ETF_LIST = _ETF_LIST_KR
 
     @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
-    def fetch_etf_data():
+    def fetch_etf_data(etf_list):
         import yfinance as yf
         import numpy as np
         results = []
-        for ticker, name, mkt in ETF_LIST:
+        for ticker, name, mkt in etf_list:
             try:
-                _sym = f"{ticker}.KS"
+                # 한국 6자리=.KS, 미국 티커=접미사 없음 (관제판 시장 동기화)
+                _sym = f"{ticker}.KS" if (str(ticker).isdigit() and len(str(ticker)) == 6) else ticker
                 _df  = yf.Ticker(_sym).history(period="1y", interval="1d")
                 if _df is None or len(_df) < 60:
                     results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,
@@ -9888,10 +9940,24 @@ with _tab_d1:
 
                 _chg = round((_cl.iloc[-1]/_cl.iloc[-2]-1)*100, 2)
 
+                # 통화 인식(한국 6자리=원, 그 외=달러) — 소수점/타점 계산
+                _is_kr_etf = str(ticker).isdigit() and len(str(ticker)) == 6
+                _cur_e   = float(_cl.iloc[-1])
+                _ma20_e  = float(_cl.tail(20).mean())
+                _low5_e  = float(_cl.tail(5).min())
+                # 눌림목 매수 타점: MA20·최근5일저가 중 낮은 값(현재가 아래). 지지선이
+                # 현재가보다 높으면 현재가 -2.3% 눌림 대기 타점으로 대체.
+                _entry_e = min(_ma20_e, _low5_e)
+                if _entry_e >= _cur_e:
+                    _entry_e = _cur_e * 0.977
+                _nd_e = 0 if _is_kr_etf else 2
+
                 results.append({
                     '종목코드':    ticker,
                     'ETF명':      name,
-                    '현재가':     round(_cl.iloc[-1], 0),
+                    '현재가':     round(_cur_e, _nd_e),
+                    '타점':       round(_entry_e, _nd_e),
+                    '_원화':      _is_kr_etf,
                     '등락(%)':    _chg,
                     'ADX':        _adx,
                     'RSI':        _rsi,
@@ -9906,7 +9972,7 @@ with _tab_d1:
                     '상태':       '활성' if _adx >= 25 else '탈락',
                 })
             except Exception as _e:
-                results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'등락(%)':0,
+                results.append({'종목코드':ticker,'ETF명':name,'현재가':0,'타점':0,'_원화':True,'등락(%)':0,
                                 'ADX':0,'RSI':0,'MACD':'','Z-Score':0,
                                 '모멘텀(%)':0,'거래량%':0,'BB위치':0,'52주위치':0,
                                 '정배열':'❌','종합점수':0,'상태':'오류'})
@@ -9914,7 +9980,7 @@ with _tab_d1:
 
     with st.spinner("ETF 데이터 로딩 중..."):
         try:
-            _etf_data = fetch_etf_data()
+            _etf_data = fetch_etf_data(tuple(ETF_LIST))
         except Exception as _fe:
             st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
             st.toast("⏳ API 호출 지연 중", icon="⚠️")
@@ -10244,15 +10310,23 @@ with _tab_d1:
 </div>""", unsafe_allow_html=True)
 
         elif _hold_sel == "(없음 / 신규진입)" and _top1 is not None:
-            # 신규 진입 안내
+            # 신규 진입 안내 — 통화 인식 + 눌림목 타점 가이드
+            _t1_kr   = bool(_top1.get('_원화', True))
+            _t1_u    = "원" if _t1_kr else "$"
+            _t1_cur  = float(_top1.get('현재가', 0) or 0)
+            _t1_ent  = float(_top1.get('타점', 0) or 0)
+            _fmt_e   = (lambda v: f"{v:,.0f}원") if _t1_kr else (lambda v: f"${v:,.2f}")
+            _pullback = (not _t1_kr) and _t1_ent > 0 and _t1_cur > _t1_ent   # 미장 & 현재가>타점 = 눌림목 대기
             st.markdown(f"""
 <div style='background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.25);border-radius:12px;padding:16px 20px;margin-bottom:12px'>
-  <div style='font-size:13px;color:#34d399;font-weight:700;margin-bottom:8px'>🟢 신규 진입 추천 (현재 1위)</div>
+  <div style='font-size:13px;color:#34d399;font-weight:700;margin-bottom:8px'>🟢 신규 진입 추천 (현재 1위 · {_etf_market})</div>
   <div style='display:flex;gap:24px;flex-wrap:wrap'>
     <div><div style='font-size:11px;color:#64748b'>ETF명</div>
          <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_top1['ETF명']}</div></div>
     <div><div style='font-size:11px;color:#64748b'>현재가</div>
-         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1['현재가']:,.0f}원</div></div>
+         <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_fmt_e(_t1_cur)}</div></div>
+    <div><div style='font-size:11px;color:#64748b'>🎯 매수 타점</div>
+         <div style='font-size:14px;font-weight:700;color:#fbbf24'>{_fmt_e(_t1_ent)}</div></div>
     <div><div style='font-size:11px;color:#64748b'>종합점수</div>
          <div style='font-size:14px;font-weight:700;color:#fbbf24'>{_top1['종합점수']}점</div></div>
     <div><div style='font-size:11px;color:#64748b'>ADX(추세강도)</div>
@@ -10261,6 +10335,12 @@ with _tab_d1:
          <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1["모멘텀(%)"]:+.1f}%</div></div>
   </div>
 </div>""", unsafe_allow_html=True)
+            if _pullback:
+                st.warning(
+                    f"⏳ 3일 연속 조건은 만족해가나, 현재 **눌림목 대기 상태**입니다. "
+                    f"오늘 밤 미국 장에 타점가 **{_fmt_e(_t1_ent)}**로 지정가 예약 매수를 걸어두십시오.")
+            elif not _t1_kr:
+                st.success(f"✅ 현재가가 타점({_fmt_e(_t1_ent)}) 이하 — 진입 유효 구간입니다.")
 
         # 스위칭 규칙 요약
         with st.expander("📋 스위칭 규칙 보기"):
