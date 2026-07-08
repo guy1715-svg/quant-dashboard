@@ -8294,7 +8294,10 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         _od_html += "</div></div>"
         st.markdown(_od_html, unsafe_allow_html=True)
 
-    for _i, row in df_ranked.iterrows():
+    # ── 단일 카드 렌더러 (Top 3는 메인, 4위 이하는 Expander 격리용으로 재사용) ──
+    #    in_expander=True → 이미 '더 보기' Expander 안이므로 상세 지표를 중첩
+    #    Expander 대신 container로 인라인 표시(Streamlit 중첩 Expander 금지 회피).
+    def _render_card(_i, row, in_expander=False):
         _is_top  = (_i == 0 and row['상태'] == '활성')
         _is_dead = (row['상태'] != '활성')
         _rank   = '🥇' if _is_top else f"{_i+1}위"
@@ -8313,7 +8316,7 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"</div>",
                 unsafe_allow_html=True
             )
-            continue
+            return
 
         # ── 랭킹 히스토리: 크라운 배지 + 도트 바 ──
         _hist_ranks = _rh.get(_tk_code, [])
@@ -8478,7 +8481,11 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 unsafe_allow_html=True
             )
             # ── 백엔드 퀀트 지표 (Progressive Disclosure) ──
-            with st.expander(f"🔎 {row['ETF명']} 상세 지표", expanded=False):
+            # 4위 이하는 이미 '더 보기' Expander 안 → 중첩 금지 회피 위해 container로 인라인
+            _detail_cm = st.container() if in_expander else st.expander(f"🔎 {row['ETF명']} 상세 지표", expanded=False)
+            with _detail_cm:
+                if in_expander:
+                    st.markdown(f"**🔎 {row['ETF명']} 상세 지표**")
                 _dc1, _dc2, _dc3 = st.columns(3)
                 _dc1.metric("ADX(14)", f"{row.get('ADX',0)}", help="25 미만 탈락")
                 _dc2.metric("RSI(14)", f"{row.get('RSI',0)}")
@@ -8625,6 +8632,15 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                         st.info("이미 추가된 종목입니다")
         # (1위 매수 타점 카드는 🔎 상세 지표 Expander 내부로 이관됨 — 메인 중복 노출 제거)
         st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
+
+    # ── Top 3만 메인 노출 · 4위 이하(활성+탈락 종목)는 Expander로 강제 격리 ──
+    _n_total = len(df_ranked)
+    for _i, row in df_ranked.iloc[:3].iterrows():
+        _render_card(_i, row, in_expander=False)
+    if _n_total > 3:
+        with st.expander("🔽 4위 이하 종목 더 보기 (클릭하여 펼치기)", expanded=False):
+            for _i, row in df_ranked.iloc[3:].iterrows():
+                _render_card(_i, row, in_expander=True)
 
 
 with tab_d:
