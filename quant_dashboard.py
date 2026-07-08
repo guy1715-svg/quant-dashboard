@@ -3230,6 +3230,13 @@ with st.sidebar:
                       delta_color=("normal" if _sb_flow>0 else "inverse"))
         else:
             st.metric("🌍 외국인 수급", "—")
+        # WTI 유가 · 반도체 수출 YoY — 메인 매크로 카드행에서 사이드바로 이관(2열 압축)
+        _sb_oil2 = get_wti_oil()
+        _sb_me   = fetch_motie_exports()
+        _sb_yoy  = _sb_me.get("semi_yoy") if _sb_me else None
+        _sbm1, _sbm2 = st.columns(2)
+        _sbm1.metric("🛢️ WTI", f"${_sb_oil2:.1f}" if isinstance(_sb_oil2,(int,float)) else "—")
+        _sbm2.metric("💾 반도체 YoY", f"{_sb_yoy:+.1f}%" if isinstance(_sb_yoy,(int,float)) else "대기")
     except Exception:
         st.caption("⚠️ 상태 패널 일시 비활성 (데이터 지연)")
 
@@ -3319,7 +3326,7 @@ with st.sidebar:
         _sb_pairs = [l.split(",", 1) for l in _sb_fixed_lines]
 
     # 관심 종목 리스트 — Expander로 접어 사이드바 슬림화 (평소 한 줄만 노출)
-    with st.expander(f"📋 관심 종목 ({len(_sb_pairs)}개)", expanded=False):
+    with st.expander(f"📋 내 관심 종목 (Watchlist) · {len(_sb_pairs)}개", expanded=False):
         if not _sb_pairs:
             st.caption("등록된 관심 종목이 없습니다. 아래에서 추가하세요.")
         for _t, _n in _sb_pairs:
@@ -3333,144 +3340,144 @@ with st.sidebar:
                 remove_ticker_from_firebase(_t)
                 st.rerun()
 
-    st.markdown("---")
-    st.markdown("**➕ 종목 추가**")
+        st.markdown("---")
+        st.markdown("**➕ 종목 추가**")
 
-    _sb_mkt = st.radio("시장", ["🇰🇷 국내", "🇺🇸 미국"], horizontal=True, key="sb_mkt")
+        _sb_mkt = st.radio("시장", ["🇰🇷 국내", "🇺🇸 미국"], horizontal=True, key="sb_mkt")
 
-    # ── 미국 인기 종목 목록 ──
-    _US_POPULAR = {
-        "AAPL":"Apple","MSFT":"Microsoft","NVDA":"NVIDIA","AMZN":"Amazon",
-        "GOOGL":"Alphabet","META":"Meta","TSLA":"Tesla","AVGO":"Broadcom",
-        "BRK-B":"Berkshire Hathaway","JPM":"JPMorgan","V":"Visa","MA":"Mastercard",
-        "UNH":"UnitedHealth","JNJ":"Johnson & Johnson","XOM":"Exxon Mobil",
-        "WMT":"Walmart","PG":"P&G","HD":"Home Depot","CVX":"Chevron",
-        "MRK":"Merck","ABBV":"AbbVie","LLY":"Eli Lilly","PFE":"Pfizer",
-        "BAC":"Bank of America","KO":"Coca-Cola","PEP":"PepsiCo",
-        "ORCL":"Oracle","CRM":"Salesforce","ADBE":"Adobe","AMD":"AMD",
-        "INTC":"Intel","QCOM":"Qualcomm","TXN":"Texas Instruments",
-        "NFLX":"Netflix","DIS":"Disney","PYPL":"PayPal","SQ":"Block",
-        "SHOP":"Shopify","UBER":"Uber","LYFT":"Lyft","ABNB":"Airbnb",
-        "COIN":"Coinbase","HOOD":"Robinhood","PLTR":"Palantir",
-        "RIVN":"Rivian","NIO":"NIO","BIDU":"Baidu","BABA":"Alibaba",
-        "TSM":"TSMC","ASML":"ASML","ARM":"ARM Holdings",
-        "SPY":"S&P500 ETF","QQQ":"나스닥100 ETF","IWM":"러셀2000 ETF",
-        "GLD":"금 ETF","TLT":"장기국채 ETF","TQQQ":"나스닥3x","SQQQ":"나스닥-3x",
-        "SOXX":"반도체 ETF","SMH":"반도체 ETF2","ARKK":"ARK 혁신",
-        "JEPI":"JPM 배당","SCHD":"Schwab 배당","EWY":"한국 ETF",
-    }
+        # ── 미국 인기 종목 목록 ──
+        _US_POPULAR = {
+            "AAPL":"Apple","MSFT":"Microsoft","NVDA":"NVIDIA","AMZN":"Amazon",
+            "GOOGL":"Alphabet","META":"Meta","TSLA":"Tesla","AVGO":"Broadcom",
+            "BRK-B":"Berkshire Hathaway","JPM":"JPMorgan","V":"Visa","MA":"Mastercard",
+            "UNH":"UnitedHealth","JNJ":"Johnson & Johnson","XOM":"Exxon Mobil",
+            "WMT":"Walmart","PG":"P&G","HD":"Home Depot","CVX":"Chevron",
+            "MRK":"Merck","ABBV":"AbbVie","LLY":"Eli Lilly","PFE":"Pfizer",
+            "BAC":"Bank of America","KO":"Coca-Cola","PEP":"PepsiCo",
+            "ORCL":"Oracle","CRM":"Salesforce","ADBE":"Adobe","AMD":"AMD",
+            "INTC":"Intel","QCOM":"Qualcomm","TXN":"Texas Instruments",
+            "NFLX":"Netflix","DIS":"Disney","PYPL":"PayPal","SQ":"Block",
+            "SHOP":"Shopify","UBER":"Uber","LYFT":"Lyft","ABNB":"Airbnb",
+            "COIN":"Coinbase","HOOD":"Robinhood","PLTR":"Palantir",
+            "RIVN":"Rivian","NIO":"NIO","BIDU":"Baidu","BABA":"Alibaba",
+            "TSM":"TSMC","ASML":"ASML","ARM":"ARM Holdings",
+            "SPY":"S&P500 ETF","QQQ":"나스닥100 ETF","IWM":"러셀2000 ETF",
+            "GLD":"금 ETF","TLT":"장기국채 ETF","TQQQ":"나스닥3x","SQQQ":"나스닥-3x",
+            "SOXX":"반도체 ETF","SMH":"반도체 ETF2","ARKK":"ARK 혁신",
+            "JEPI":"JPM 배당","SCHD":"Schwab 배당","EWY":"한국 ETF",
+        }
 
-    if _sb_mkt == "🇰🇷 국내":
-        _sb_query = st.text_input("종목명 또는 코드 검색", placeholder="삼성전자 또는 005930", key="sb_kr_query")
-        _sb_sel_code = ""; _sb_sel_name = ""
+        if _sb_mkt == "🇰🇷 국내":
+            _sb_query = st.text_input("종목명 또는 코드 검색", placeholder="삼성전자 또는 005930", key="sb_kr_query")
+            _sb_sel_code = ""; _sb_sel_name = ""
 
-        if _sb_query:
-            _kr_map = _load_kr_stock_list()
-            _q = _sb_query.strip()
-            # 코드 or 이름으로 필터
-            _matches = [
-                (c, n) for c, n in _kr_map.items()
-                if _q in n or _q in c
-            ][:10]
+            if _sb_query:
+                _kr_map = _load_kr_stock_list()
+                _q = _sb_query.strip()
+                # 코드 or 이름으로 필터
+                _matches = [
+                    (c, n) for c, n in _kr_map.items()
+                    if _q in n or _q in c
+                ][:10]
 
-            if _matches:
-                _opts = [f"{n} ({c})" for c, n in _matches]
-                _chosen = st.selectbox("검색결과", _opts, key="sb_kr_sel")
-                if _chosen:
-                    _sb_sel_name = _chosen.split(" (")[0]
-                    _sb_sel_code = _chosen.split("(")[-1].replace(")", "")
-            else:
-                # DB 조회 실패 시 직접 입력 fallback
-                _q_strip = _sb_query.strip()
-                if _q_strip.isdigit() and len(_q_strip) == 6:
-                    # 6자리 코드 직접 입력 → 한글 우선 해석 (내부 DB → pykrx → yfinance)
-                    _fb_name = ""
-                    # 내부 DB/pykrx에 한글명 있으면 yfinance 호출 생략
-                    _kr_resolved = resolve_korean_name(_q_strip, "")
-                    if _kr_resolved and _kr_resolved != _q_strip:
-                        _fb_name = _kr_resolved
-                    else:
-                        # 최후 폴백: yfinance 영어명
-                        try:
-                            import yfinance as _yf_sb
-                            for _sfx in [".KS", ".KQ"]:
-                                _info_sb = _yf_sb.Ticker(_q_strip + _sfx).info
-                                if _info_sb and _info_sb.get("shortName"):
-                                    _fb_name = _info_sb["shortName"].replace(" Ordinary Shares", "").strip()
-                                    break
-                        except Exception:
-                            pass
-                        if not _fb_name:
-                            _fb_name = _q_strip
-                    _sb_sel_code = _q_strip
-                    _sb_sel_name = _fb_name
-                    st.info(f"✅ 코드 직접 입력: {_fb_name} ({_q_strip})")
+                if _matches:
+                    _opts = [f"{n} ({c})" for c, n in _matches]
+                    _chosen = st.selectbox("검색결과", _opts, key="sb_kr_sel")
+                    if _chosen:
+                        _sb_sel_name = _chosen.split(" (")[0]
+                        _sb_sel_code = _chosen.split("(")[-1].replace(")", "")
                 else:
-                    st.caption("검색 결과 없음 — 6자리 종목코드를 직접 입력해보세요 (예: 005930)")
+                    # DB 조회 실패 시 직접 입력 fallback
+                    _q_strip = _sb_query.strip()
+                    if _q_strip.isdigit() and len(_q_strip) == 6:
+                        # 6자리 코드 직접 입력 → 한글 우선 해석 (내부 DB → pykrx → yfinance)
+                        _fb_name = ""
+                        # 내부 DB/pykrx에 한글명 있으면 yfinance 호출 생략
+                        _kr_resolved = resolve_korean_name(_q_strip, "")
+                        if _kr_resolved and _kr_resolved != _q_strip:
+                            _fb_name = _kr_resolved
+                        else:
+                            # 최후 폴백: yfinance 영어명
+                            try:
+                                import yfinance as _yf_sb
+                                for _sfx in [".KS", ".KQ"]:
+                                    _info_sb = _yf_sb.Ticker(_q_strip + _sfx).info
+                                    if _info_sb and _info_sb.get("shortName"):
+                                        _fb_name = _info_sb["shortName"].replace(" Ordinary Shares", "").strip()
+                                        break
+                            except Exception:
+                                pass
+                            if not _fb_name:
+                                _fb_name = _q_strip
+                        _sb_sel_code = _q_strip
+                        _sb_sel_name = _fb_name
+                        st.info(f"✅ 코드 직접 입력: {_fb_name} ({_q_strip})")
+                    else:
+                        st.caption("검색 결과 없음 — 6자리 종목코드를 직접 입력해보세요 (예: 005930)")
 
-        if st.button("➕ 추가", key="sb_add", use_container_width=True, disabled=not _sb_sel_code):
-            if add_ticker(_sb_sel_code.strip(), _sb_sel_name.strip()):
-                st.success(f"✅ {_sb_sel_name} 추가됨")
-                st.rerun()
-            else:
-                st.warning("이미 있는 종목")
+            if st.button("➕ 추가", key="sb_add", use_container_width=True, disabled=not _sb_sel_code):
+                if add_ticker(_sb_sel_code.strip(), _sb_sel_name.strip()):
+                    st.success(f"✅ {_sb_sel_name} 추가됨")
+                    st.rerun()
+                else:
+                    st.warning("이미 있는 종목")
 
-    else:  # 미국
-        _sb_query_us = st.text_input("티커 또는 종목명 검색", placeholder="AAPL 또는 Apple", key="sb_us_query")
-        _sb_sel_code = ""; _sb_sel_name = ""
+        else:  # 미국
+            _sb_query_us = st.text_input("티커 또는 종목명 검색", placeholder="AAPL 또는 Apple", key="sb_us_query")
+            _sb_sel_code = ""; _sb_sel_name = ""
 
-        if _sb_query_us:
-            _q_us = _sb_query_us.strip().upper()
-            # 인기 목록에서 필터
-            _matches_us = [
-                (t, n) for t, n in _US_POPULAR.items()
-                if _q_us in t or _q_us in n.upper()
-            ][:8]
+            if _sb_query_us:
+                _q_us = _sb_query_us.strip().upper()
+                # 인기 목록에서 필터
+                _matches_us = [
+                    (t, n) for t, n in _US_POPULAR.items()
+                    if _q_us in t or _q_us in n.upper()
+                ][:8]
 
-            # 인기 목록 없으면 yfinance로 직접 조회 시도
-            if not _matches_us:
-                try:
-                    import yfinance as yf
-                    _info = yf.Ticker(_q_us).fast_info
-                    _price = getattr(_info, 'last_price', None)
-                    if _price:
-                        _full = yf.Ticker(_q_us).info
-                        _auto = _full.get("shortName") or _full.get("longName") or _q_us
-                        _matches_us = [(_q_us, _auto)]
-                except Exception:
-                    pass
+                # 인기 목록 없으면 yfinance로 직접 조회 시도
+                if not _matches_us:
+                    try:
+                        import yfinance as yf
+                        _info = yf.Ticker(_q_us).fast_info
+                        _price = getattr(_info, 'last_price', None)
+                        if _price:
+                            _full = yf.Ticker(_q_us).info
+                            _auto = _full.get("shortName") or _full.get("longName") or _q_us
+                            _matches_us = [(_q_us, _auto)]
+                    except Exception:
+                        pass
 
-            if _matches_us:
-                _opts_us = [f"{t} — {n}" for t, n in _matches_us]
-                _chosen_us = st.selectbox("검색결과", _opts_us, key="sb_us_sel")
-                if _chosen_us:
-                    _sb_sel_code = _chosen_us.split(" — ")[0].strip()
-                    _sb_sel_name = _chosen_us.split(" — ")[1].strip()
-            else:
-                st.caption("목록에 없는 종목이면 정확한 티커를 입력 후 추가")
-                # 직접 입력 fallback
-                _sb_sel_code = _sb_query_us.strip().upper()
-                _sb_sel_name = _sb_query_us.strip().upper()
+                if _matches_us:
+                    _opts_us = [f"{t} — {n}" for t, n in _matches_us]
+                    _chosen_us = st.selectbox("검색결과", _opts_us, key="sb_us_sel")
+                    if _chosen_us:
+                        _sb_sel_code = _chosen_us.split(" — ")[0].strip()
+                        _sb_sel_name = _chosen_us.split(" — ")[1].strip()
+                else:
+                    st.caption("목록에 없는 종목이면 정확한 티커를 입력 후 추가")
+                    # 직접 입력 fallback
+                    _sb_sel_code = _sb_query_us.strip().upper()
+                    _sb_sel_name = _sb_query_us.strip().upper()
 
-        if st.button("➕ 추가", key="sb_add_us", use_container_width=True, disabled=not _sb_sel_code):
-            _final_code = _sb_sel_code.strip()
-            _final_name = _sb_sel_name.strip()
-            # 이름이 티커와 같으면 yfinance로 이름 보완
-            if _final_name == _final_code:
-                try:
-                    import yfinance as yf
-                    _full = yf.Ticker(_final_code).info
-                    _final_name = _full.get("shortName") or _full.get("longName") or _final_code
-                except Exception:
-                    pass
-            if add_ticker(_final_code, _final_name):
-                st.success(f"✅ {_final_name} 추가됨")
-                st.rerun()
-            else:
-                st.warning("이미 있는 종목")
+            if st.button("➕ 추가", key="sb_add_us", use_container_width=True, disabled=not _sb_sel_code):
+                _final_code = _sb_sel_code.strip()
+                _final_name = _sb_sel_name.strip()
+                # 이름이 티커와 같으면 yfinance로 이름 보완
+                if _final_name == _final_code:
+                    try:
+                        import yfinance as yf
+                        _full = yf.Ticker(_final_code).info
+                        _final_name = _full.get("shortName") or _full.get("longName") or _final_code
+                    except Exception:
+                        pass
+                if add_ticker(_final_code, _final_name):
+                    st.success(f"✅ {_final_name} 추가됨")
+                    st.rerun()
+                else:
+                    st.warning("이미 있는 종목")
 
-    n = len(_sb_pairs)
-    st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
+        n = len(_sb_pairs)
+        st.markdown(f"<div style='font-size:11px; color:#34d399'>✅ 총 {n}개 종목</div>", unsafe_allow_html=True)
 
     # (분석 기간 슬라이더 삭제 — 글로벌 변수 충돌 방지. 지표 계산은 로직별 로컬 값 사용)
 
@@ -4759,7 +4766,7 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
     st.markdown("<hr style='margin:12px 0;border-color:#1e2a3a'>", unsafe_allow_html=True)
     _bot1, _bot2 = st.columns(2)
     with _bot1:
-        with st.expander("📖 대시보드 사용 가이드", expanded=False):
+        with st.expander("📖 퀀트 관제탑 사용 가이드 및 일일 루틴 보기", expanded=False):
             st.markdown("""
 ### 🗺️ 탭별 역할 한눈에 보기
 
