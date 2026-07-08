@@ -2264,72 +2264,84 @@ def get_foreign_net_kospi():
         return None
 
 
-def _scrape_naver_foreign_net_kospi():
-    """네이버 증권 투자자별 매매동향에서 코스피 외국인 순매수(원)를 스크래핑.
-    반환: float(원) 또는 None. requests/BeautifulSoup 우선, 실패 시 urllib+정규식."""
-    _url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
-    _headers = {"User-Agent": "Mozilla/5.0"}
-    _html = None
+def _http_get_text(_url, _headers=None, _timeout=6):
+    """requests 우선, 실패 시 urllib 폴백으로 텍스트 취득. 반환:(text|None, err|None)."""
+    _headers = _headers or {"User-Agent": "Mozilla/5.0"}
     try:
         import requests as _rq
-        _html = _rq.get(_url, headers=_headers, timeout=6).text
-    except Exception:
+        _r = _rq.get(_url, headers=_headers, timeout=_timeout)
+        return _r.text, (None if _r.status_code == 200 else f"HTTP {_r.status_code}")
+    except Exception as _e1:
         try:
             import urllib.request as _ur
-            _req = _ur.Request(_url, headers=_headers)
-            _raw = _ur.urlopen(_req, timeout=6).read()
+            _raw = _ur.urlopen(_ur.Request(_url, headers=_headers), timeout=_timeout).read()
             for _enc in ("euc-kr", "utf-8"):
                 try:
-                    _html = _raw.decode(_enc); break
+                    return _raw.decode(_enc), None
                 except Exception:
                     continue
-        except Exception:
-            return None
+            return _raw.decode("utf-8", "replace"), None
+        except Exception as _e2:
+            return None, f"{type(_e1).__name__}/{type(_e2).__name__}: {str(_e2)[:60]}"
+
+
+def _scrape_naver_foreign_net_kospi(_debug=None):
+    """네이버 증권 투자자별 매매동향에서 코스피 외국인 순매수(원) 스크래핑.
+    반환: float(원) 또는 None. _debug(list)에 단계별 진단 기록."""
+    def _log(m):
+        if _debug is not None:
+            _debug.append(m)
+    _url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
+    _html, _err = _http_get_text(_url)
     if not _html:
+        _log(f"네이버: 연결 실패 ({_err})")
         return None
-    # 1) BeautifulSoup 파싱 (설치 시): 첫 데이터 행의 외국인 컬럼(억원)
+    _log(f"네이버: HTML {len(_html)}바이트 수신")
+    import re as _re_fn
+    # 모든 <tr>에서 '날짜 + 숫자셀들' 패턴을 찾아 외국인(3번째 값) 추출
     try:
-        from bs4 import BeautifulSoup as _BS
-        _soup = _BS(_html, "html.parser")
-        for _tr in _soup.select("table.type_1 tr"):
-            _tds = _tr.find_all("td")
-            if len(_tds) >= 4 and _tds[0].get_text(strip=True):
-                # 컬럼: 날짜 | 개인 | 외국인 | 기관계 ... (단위 억원, 콤마/부호 포함)
-                _fn_txt = _tds[2].get_text(strip=True).replace(",", "")
-                if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
-                    return float(_fn_txt) * 100_000_000   # 억원 → 원
-    except Exception:
-        pass
-    # 2) 정규식 폴백: 첫 데이터 행 숫자 추출
-    try:
-        import re as _re_fn
         _rows = _re_fn.findall(r"<tr[^>]*>(.*?)</tr>", _html, _re_fn.S)
         for _row in _rows:
             _cells = _re_fn.findall(r"<td[^>]*>(.*?)</td>", _row, _re_fn.S)
-            _clean = [_re_fn.sub(r"<[^>]+>", "", _c).strip().replace(",", "") for _c in _cells]
-            if len(_clean) >= 3 and _re_fn.match(r"\d{2}\.\d{2}", _clean[0] or ""):
-                _fn_txt = _clean[2]
+            _clean = [_re_fn.sub(r"<[^>]+>", "", _c).replace("&nbsp;", "").strip().replace(",", "")
+                      for _c in _cells]
+            if len(_clean) >= 4 and _re_fn.match(r"\d{2}[.\-/]\d{2}", _clean[0] or ""):
+                _fn_txt = _clean[2]   # 날짜 | 개인 | 외국인 | 기관계 ...
                 if _fn_txt and _fn_txt.lstrip("+-").replace(".", "").isdigit():
+                    _log(f"네이버: 파싱 성공 (외국인 {_fn_txt}억원, 기준 {_clean[0]})")
                     return float(_fn_txt) * 100_000_000
-    except Exception:
-        pass
+        _log("네이버: HTML은 받았으나 외국인 데이터 행 파싱 실패(페이지 구조 변경 가능)")
+    except Exception as _e:
+        _log(f"네이버: 파싱 예외 {type(_e).__name__}")
     return None
 
 
 def fetch_foreign_net_buying():
     """실시간 코스피 외국인 순매수(원) 자동 스크래핑 — 사이드바 버튼 전용.
-    우선순위: pykrx(KRX 정확) → 네이버 증권 → KIS 대형주 추정.
-    반환: (value_krw: float|None, source: str)."""
-    _v = get_foreign_net_kospi()          # pykrx (KRX)
+    우선순위: pykrx(KRX) → 네이버 증권 → KIS 대형주 추정.
+    반환: (value_krw|None, source:str, diagnostics:list[str])."""
+    _diag = []
+    # 1) pykrx (KRX 공식, 가장 정확 — 단 클라우드/해외 IP·KRX 로그인 요구 시 차단 가능)
+    try:
+        _v = get_foreign_net_kospi()
+    except Exception as _e:
+        _v = None; _diag.append(f"pykrx: 예외 {type(_e).__name__}")
     if _v is not None:
-        return _v, "pykrx(KRX)"
-    _v = _scrape_naver_foreign_net_kospi()  # 네이버 증권
+        return _v, "pykrx(KRX)", _diag + ["pykrx: 성공"]
+    _diag.append("pykrx: 무응답(데이터 없음·KRX 차단·로그인 요구 가능)")
+    # 2) 네이버 증권 스크래핑
+    _v = _scrape_naver_foreign_net_kospi(_diag)
     if _v is not None:
-        return _v, "네이버 증권"
-    _kis, _hit = get_foreign_net_kospi_kis_estimate()  # KIS 추정
+        return _v, "네이버 증권", _diag
+    # 3) KIS 대형주 추정
+    try:
+        _kis, _hit = get_foreign_net_kospi_kis_estimate()
+    except Exception as _e:
+        _kis, _hit = None, 0; _diag.append(f"KIS: 예외 {type(_e).__name__}")
     if _kis is not None:
-        return _kis, f"KIS 추정(대형주 {_hit}종목)"
-    return None, "조회 실패"
+        return _kis, f"KIS 추정(대형주 {_hit}종목)", _diag + ["KIS: 성공"]
+    _diag.append("KIS: 무응답(API 키 미설정 또는 응답 없음)")
+    return None, "조회 실패", _diag
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -3196,7 +3208,8 @@ with st.sidebar:
     if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
                  use_container_width=True, help="pykrx(KRX)→네이버→KIS 순으로 당일 외국인 순매수를 자동 조회"):
         with st.spinner("외국인 순매수 스크래핑 중..."):
-            _fn_v, _fn_src = fetch_foreign_net_buying()
+            _fn_v, _fn_src, _fn_diag = fetch_foreign_net_buying()
+        st.session_state['_foreign_net_diag'] = _fn_diag
         if _fn_v is not None:
             st.session_state['_foreign_net_krw'] = float(_fn_v)
             st.session_state['_foreign_net_src'] = 'scrape'
@@ -3204,10 +3217,26 @@ with st.sidebar:
             st.toast(f"✅ 외인 수급 {_fn_v/1e8:+,.0f}억원 ({_fn_src})", icon="🌍")
             st.rerun()
         else:
-            st.warning("⚠️ 스크래핑 실패 — 잠시 후 재시도 (KRX/네이버/KIS 모두 무응답)")
+            st.warning("⚠️ 자동 스크래핑 실패 — 아래 진단 확인 후 필요 시 수동 입력하세요.")
     _fn_src_disp = st.session_state.get('_foreign_net_scrape_src')
     if _fn_src_disp:
         st.caption(f"🌍 외인 수급 출처: {_fn_src_disp}")
+    # 진단 로그 (실패 원인 특정용)
+    _fn_diag_saved = st.session_state.get('_foreign_net_diag')
+    if _fn_diag_saved:
+        with st.expander("🔍 외인 수급 조회 진단", expanded=False):
+            for _dln in _fn_diag_saved:
+                st.caption(f"• {_dln}")
+    # 자동 3소스 모두 실패 시에만 노출되는 비상 수동 입력 (평소 숨김)
+    if st.session_state.get('_foreign_net_krw') is None:
+        with st.expander("✍️ (비상) 외인 수급 수동 입력", expanded=False):
+            _emx = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
+                                   value=0.0, step=100.0, key="sb_fn_emergency")
+            if st.button("적용", key="sb_fn_em_apply", use_container_width=True):
+                st.session_state['_foreign_net_krw'] = float(_emx) * 100_000_000
+                st.session_state['_foreign_net_src'] = 'manual'
+                st.session_state['_foreign_net_scrape_src'] = '수동 입력'
+                st.rerun()
 
     # ── 세션 정보 + 로그아웃 ──
     _auth_time = st.session_state.get('_auth_time', '')
