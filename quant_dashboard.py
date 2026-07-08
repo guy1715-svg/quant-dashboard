@@ -3524,43 +3524,66 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## ⚙️ 설정")
 
-    # ── 🔑 KIS 공식 API 키 (입력 시 스크래핑 대신 공식 경로 무조건 우선) ──
-    with st.expander("🔑 한국투자증권(KIS) API 연동", expanded=False):
-        st.caption("KIS 공식 API 연결 상태 확인·테스트용 (개별종목 시세·외인/기관 수급 조회에 사용). "
-                   "발급: KIS Developers · App Key+Secret만으로 충분")
-        # 등록 현황 진단 — secrets에 어떤 키가 잡히는지 표시
-        _kis_found, _kis_missing = kis_debug_info()
-        if _kis_found:
-            st.caption(f"🗝️ secrets 감지: {', '.join(_kis_found)}")
-        st.text_input("KIS App Key", type="password", key="_kis_app_key_input",
-                      help="secrets에 이미 등록했다면 비워두세요")
-        st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
-        st.toggle("모의투자 키 사용 (VTS)", key="_kis_mock_input",
-                  help="모의투자용 키는 접속 도메인이 달라(29443 포트) 이 토글을 켜야 토큰이 발급됩니다")
-        if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
-            st.success("✅ 입력 키 감지 — KIS 공식 API 사용 가능")
-        elif kis_available():
-            st.success("✅ secrets 등록 키 사용 중 — KIS 공식 API 사용 가능")
-        else:
-            st.caption("⛔ 감지된 키 없음 — App Key/Secret 입력 시 즉시 활성화")
-        # 연결 자가진단 버튼 — 토큰 발급 + 삼성전자 수급 1건 조회
-        if st.button("🧪 KIS 연결 테스트", key="kis_conn_test", use_container_width=True):
-            with st.spinner("KIS 토큰 발급 + 수급 조회 테스트 중..."):
-                _tok_t = kis_get_token()
-                if not _tok_t:
-                    _terr = st.session_state.get('_kis_token_err', '원인 미상')
-                    st.error(f"❌ 토큰 발급 실패 — {_terr}")
-                    if 'EGW00133' in str(_terr):
-                        st.caption("⏳ KIS 토큰은 **1분당 1회**만 발급 가능 — 60초 후 재시도하세요.")
-                    elif 'EGW00201' in str(_terr) or 'appkey' in str(_terr).lower():
-                        st.caption("🔑 App Key/Secret 값 오류 — 복사 시 앞뒤 공백/따옴표 포함 여부 확인. "
-                                   "모의투자 키라면 위 VTS 토글을 켜세요.")
+    # ── 🔑 KIS API 연동 (secrets 선로딩 · 빈 상태 무음 · 연동 시 한 줄 압축) ──
+    # (1) st.secrets에서 키 선로딩 → 존재하면 입력창에 1회 자동 채움(없으면 빈칸)
+    _sec_kis_key = _sec_kis_secret = ""
+    try:
+        _sec_kis_key    = str(st.secrets.get("KIS_APP_KEY", "") or "")
+        _sec_kis_secret = str(st.secrets.get("KIS_APP_SECRET", "") or "")
+    except Exception:
+        pass
+    if _sec_kis_key and '_kis_app_key_input' not in st.session_state:
+        st.session_state['_kis_app_key_input'] = _sec_kis_key
+    if _sec_kis_secret and '_kis_app_secret_input' not in st.session_state:
+        st.session_state['_kis_app_secret_input'] = _sec_kis_secret
+
+    _kis_has_key = bool(_kis_key() and _kis_secret())
+    # 키 지문 — 키 변경 시 연동 상태 재검증
+    _kis_fp = f"{_kis_key()[:10]}|{_kis_mock_mode()}" if _kis_has_key else ""
+    if st.session_state.get('_kis_conn_ok') and st.session_state.get('_kis_ok_fp') != _kis_fp:
+        st.session_state['_kis_conn_ok'] = False
+        st.session_state['_kis_auto_tried'] = False
+    # (2) 키가 있으면 세션당 1회 '조용히' 토큰 검증 (실패해도 에러 무음)
+    if _kis_has_key and not st.session_state.get('_kis_auto_tried'):
+        st.session_state['_kis_auto_tried'] = True
+        if kis_get_token():
+            st.session_state['_kis_conn_ok'] = True
+            st.session_state['_kis_ok_fp'] = _kis_fp
+
+    if st.session_state.get('_kis_conn_ok'):
+        # (3) 연동 완료 → 접힌 녹색 한 줄로 압축 (열면 키 변경 가능)
+        with st.expander("✅ KIS API 연동 완료", expanded=False):
+            st.caption("KIS 공식 API 정상 연결 — 개별종목 시세·외인/기관 수급 조회에 사용 중")
+            if st.button("🔌 연결 해제 / 키 변경", key="kis_disconnect", use_container_width=True):
+                st.session_state['_kis_conn_ok'] = False
+                st.session_state['_kis_auto_tried'] = False
+                st.rerun()
+    else:
+        # 미연동 상태 — 깔끔한 입력창 2개 + 테스트 버튼만. 에러는 테스트 실패 시에만.
+        with st.expander("🔑 한국투자증권(KIS) API 연동", expanded=False):
+            st.caption("KIS 공식 API 연결 (개별종목 시세·외인/기관 수급). 발급: KIS Developers")
+            st.text_input("KIS App Key", type="password", key="_kis_app_key_input")
+            st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
+            st.toggle("모의투자 키 사용 (VTS)", key="_kis_mock_input",
+                      help="모의투자용 키는 도메인이 달라(29443) 이 토글을 켜야 토큰이 발급됩니다")
+            if st.button("🧪 KIS 연결 테스트", key="kis_conn_test", use_container_width=True):
+                if not (_kis_key() and _kis_secret()):
+                    st.info("App Key와 Secret을 먼저 입력하세요.")   # 빈 입력은 에러 대신 안내만
                 else:
-                    _inv_t = kis_get_investor("005930")
-                    if _inv_t:
-                        st.success(f"✅ 연결 정상 — 삼성전자 외인 순매수 {_inv_t.get('외인순매수',0):+,}주")
+                    st.session_state['_kis_auto_tried'] = True
+                    with st.spinner("KIS 토큰 발급 테스트 중..."):
+                        _tok_t = kis_get_token()
+                    if _tok_t:
+                        st.session_state['_kis_conn_ok'] = True
+                        st.session_state['_kis_ok_fp'] = _kis_fp
+                        st.rerun()
                     else:
-                        st.warning("⚠️ 토큰은 발급됐으나 수급 조회 실패 — API 권한(국내주식 시세) 신청 여부 확인")
+                        _terr = st.session_state.get('_kis_token_err', '원인 미상')
+                        st.error(f"❌ 연결 실패 — {_terr}")
+                        if 'EGW00133' in str(_terr):
+                            st.caption("⏳ KIS 토큰은 1분당 1회만 발급 — 60초 후 재시도하세요.")
+                        elif 'EGW00201' in str(_terr) or 'appkey' in str(_terr).lower():
+                            st.caption("🔑 키 값 오류 — 복사 시 공백/따옴표 확인. 모의투자 키면 VTS 토글 ON.")
 
     # (🔄 외인 수급 스크래핑 블록 전체 폐기 — 버튼/경고/진단/비상입력 제거.
     #  외인 수급은 매크로 게이트·5AI 브리핑에서 None으로 안전하게 무시됨.)
