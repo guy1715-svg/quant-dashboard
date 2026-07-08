@@ -390,12 +390,39 @@ _KIS_URL_INVESTOR = f"{_KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-inve
 
 import time as _time_kis
 
-@st.cache_resource(ttl=21600, show_spinner=False)  # 6시간 (금요일 발급 → 월요일 장전 만료 방지)
-def _get_kis_token_cached():
-    """KIS API 접근 토큰 발급 — cache_resource로 격리 (6시간 TTL)"""
+def _kis_key():
+    """KIS App Key — 사이드바 입력(session) → st.secrets → 환경변수 순."""
+    _v = st.session_state.get('_kis_app_key_input', '')
+    if _v:
+        return _v
     try:
-        _key    = st.secrets["KIS_APP_KEY"]
-        _secret = st.secrets["KIS_APP_SECRET"]
+        if "KIS_APP_KEY" in st.secrets:
+            return st.secrets["KIS_APP_KEY"]
+    except Exception:
+        pass
+    import os as _os_k
+    return _os_k.environ.get("KIS_APP_KEY", "")
+
+def _kis_secret():
+    """KIS App Secret — 사이드바 입력(session) → st.secrets → 환경변수 순."""
+    _v = st.session_state.get('_kis_app_secret_input', '')
+    if _v:
+        return _v
+    try:
+        if "KIS_APP_SECRET" in st.secrets:
+            return st.secrets["KIS_APP_SECRET"]
+    except Exception:
+        pass
+    import os as _os_k
+    return _os_k.environ.get("KIS_APP_SECRET", "")
+
+@st.cache_resource(ttl=21600, show_spinner=False)  # 6시간 (금요일 발급 → 월요일 장전 만료 방지)
+def _get_kis_token_cached(_key_fp=""):
+    """KIS API 접근 토큰 발급 — cache_resource로 격리 (6시간 TTL).
+    _key_fp: 키 지문(캐시 무효화용 — 사이드바에서 키 교체 시 새 토큰 발급)."""
+    try:
+        _key    = _kis_key()
+        _secret = _kis_secret()
         _url    = _KIS_URL_TOKEN
         _res    = _requests.post(_url, json={
             "grant_type": "client_credentials",
@@ -411,15 +438,15 @@ def _get_kis_token_cached():
 
 def kis_get_token():
     """KIS API 접근 토큰 발급 — 6시간 TTL 자동 갱신"""
-    return _get_kis_token_cached()
+    return _get_kis_token_cached(_kis_key()[:8])
 
 def kis_get_price(ticker):
     """KIS API 실시간 현재가 조회"""
     try:
         _token  = kis_get_token()
         if not _token: return None
-        _key    = st.secrets["KIS_APP_KEY"]
-        _secret = st.secrets["KIS_APP_SECRET"]
+        _key    = _kis_key()
+        _secret = _kis_secret()
         _url    = _KIS_URL_PRICE
         _res    = _requests.get(_url, headers={
             "authorization": f"Bearer {_token}",
@@ -452,8 +479,8 @@ def kis_get_balance():
     try:
         _token  = kis_get_token()
         if not _token: return None
-        _key    = st.secrets["KIS_APP_KEY"]
-        _secret = st.secrets["KIS_APP_SECRET"]
+        _key    = _kis_key()
+        _secret = _kis_secret()
         _acc_no = st.secrets["KIS_ACCOUNT_NO"]
         _acc_pd = st.secrets.get("KIS_ACCOUNT_PD", "01")
         _url    = _KIS_URL_BALANCE
@@ -505,8 +532,8 @@ def kis_get_investor(ticker):
     try:
         _token  = kis_get_token()
         if not _token: return None
-        _key    = st.secrets["KIS_APP_KEY"]
-        _secret = st.secrets["KIS_APP_SECRET"]
+        _key    = _kis_key()
+        _secret = _kis_secret()
         _url    = _KIS_URL_INVESTOR
         _res    = _requests.get(_url, headers={
             "authorization": f"Bearer {_token}",
@@ -538,8 +565,8 @@ def kis_get_org_net_daily(ticker, days=10):
         _token = kis_get_token()
         if not _token:
             return None, 0
-        _key    = st.secrets["KIS_APP_KEY"]
-        _secret = st.secrets["KIS_APP_SECRET"]
+        _key    = _kis_key()
+        _secret = _kis_secret()
         _res = _requests.get(_KIS_URL_INVESTOR, headers={
             "authorization": f"Bearer {_token}",
             "appkey":        _key,
@@ -573,7 +600,11 @@ def kis_get_org_net_daily(ticker, days=10):
 
 
 def kis_available():
-    """KIS API 사용 가능 여부 확인"""
+    """KIS API 사용 가능 여부 확인 — 사이드바 입력 키 or secrets 키."""
+    # 1) 사이드바 입력 키 (시세/수급 조회는 App Key+Secret만으로 충분)
+    if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
+        return True
+    # 2) secrets 완전체 (거래용 — 계좌번호 포함)
     try:
         _keys = ["KIS_APP_KEY","KIS_APP_SECRET","KIS_ACCOUNT_NO"]
         return all(k in st.secrets for k in _keys)
@@ -2469,13 +2500,111 @@ def _fetch_fdr_foreign_net(_debug=None):
     return None
 
 
+def _fetch_naver_cloudscraper(_debug=None):
+    """[28차 WAF 우회] cloudscraper로 네이버 투자자별 매매동향 페이지 취득 →
+    pandas.read_html 테이블 파싱. 일반 requests가 403/에러HTML로 막힐 때의 주력 경로.
+    반환: 원 단위 float 또는 None."""
+    def _log(m):
+        if _debug is not None:
+            _debug.append(m)
+    try:
+        import cloudscraper as _cs
+    except ImportError:
+        _log("cloudscraper: 라이브러리 미설치 (requirements.txt 배포 후 재시도)")
+        return None
+    _urls = [
+        "https://finance.naver.com/sise/sise_trans_style.naver",   # 투자자별 매매동향 종합
+        "https://finance.naver.com/sise/investorDealTrendDay.naver",
+    ]
+    try:
+        _scraper = _cs.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    except Exception as _e:
+        _log(f"cloudscraper: 스크래퍼 생성 실패 {type(_e).__name__}")
+        return None
+    for _url in _urls:
+        _short = _url.rsplit('/', 1)[-1]
+        try:
+            _resp = _scraper.get(_url, timeout=8)
+            if _resp.status_code != 200:
+                _log(f"cloudscraper[{_short}]: HTTP {_resp.status_code}")
+                continue
+            _html = _resp.text
+            if len(_html) < 3000:
+                _log(f"cloudscraper[{_short}]: 스텁 응답 {len(_html)}바이트 — "
+                     f"{_re_import_sub(_html)[:80]}")
+                continue
+            _log(f"cloudscraper[{_short}]: HTML {len(_html)}바이트 수신")
+            # pandas read_html 테이블 파싱 (외국인 컬럼/행 유연 탐색)
+            try:
+                import io as _io_cs
+                _tables = pd.read_html(_io_cs.StringIO(_html))
+            except Exception as _pe:
+                _log(f"cloudscraper[{_short}]: read_html 실패 {type(_pe).__name__}")
+                # 폴백: 기존 정규식 파서 재활용
+                _v_rx, _basis = _parse_naver_investor_html(_html)
+                if _v_rx is not None:
+                    _log(f"cloudscraper[{_short}]: 정규식 파싱 성공 ({_v_rx/1e8:+,.0f}억원)")
+                    return _v_rx
+                continue
+            for _ti, _tb in enumerate(_tables):
+                if _tb is None or _tb.empty:
+                    continue
+                # (a) '외국인' 컬럼이 있는 시계열 테이블 → 첫 데이터 행
+                _cols = [str(c) for c in _tb.columns]
+                _fcol = next((c for c in _tb.columns if '외국인' in str(c)), None)
+                if _fcol is not None:
+                    _ser = pd.to_numeric(
+                        _tb[_fcol].astype(str).str.replace(',', '', regex=False),
+                        errors='coerce').dropna()
+                    if not _ser.empty:
+                        _v = float(_ser.iloc[0])
+                        if abs(_v) < 1_000_000:   # 억원/백만원 단위 보정
+                            _v *= 100_000_000
+                        _log(f"cloudscraper: 테이블{_ti} '외국인' 컬럼 파싱 성공 ({_v/1e8:+,.0f}억원)")
+                        return _v
+                # (b) 행 인덱스/첫 컬럼에 '외국인'이 있는 요약 테이블
+                _first = _tb.iloc[:, 0].astype(str)
+                _hit = _tb[_first.str.contains('외국인', na=False)]
+                if not _hit.empty:
+                    _nums = pd.to_numeric(
+                        _hit.iloc[0].astype(str).str.replace(',', '', regex=False),
+                        errors='coerce').dropna()
+                    if not _nums.empty:
+                        _v = float(_nums.iloc[-1])   # 마지막 숫자 컬럼 = 순매수
+                        if abs(_v) < 1_000_000:
+                            _v *= 100_000_000
+                        _log(f"cloudscraper: 테이블{_ti} '외국인' 행 파싱 성공 ({_v/1e8:+,.0f}억원)")
+                        return _v
+            _log(f"cloudscraper[{_short}]: 테이블 {len(_tables)}개 수신했으나 외국인 데이터 없음")
+        except Exception as _e:
+            _log(f"cloudscraper[{_short}]: {type(_e).__name__} {str(_e)[:60]}")
+    return None
+
+
 def fetch_foreign_net_buying():
-    """실시간 코스피 외국인 순매수(원) — 26차 전면 교체 엔진.
-    우선순위: ①네이버 실시간 JSON API → ②FinanceDataReader → ③pykrx(KRX)
-             → ④네이버 HTML 스크래핑 → ⑤KIS 대형주 추정.
+    """실시간 코스피 외국인 순매수(원) — 28차 철벽 우회 엔진.
+    ⓪ KIS 공식 API (키 입력 시 스크래핑 대신 무조건 우선 — 창과 방패 싸움 회피)
+    ① cloudscraper WAF 우회 → ② 네이버 JSON API → ③ FinanceDataReader
+    → ④ pykrx → ⑤ 네이버 HTML(레거시).
     반환: (value_krw|None, source:str, diagnostics:list[str])."""
     _diag = []
-    # ① 네이버 실시간 JSON API (가장 가볍고 빠름, 차단 유연)
+    # ⓪ KIS 공식 API — 키가 설정돼 있으면 스크래핑 생략하고 무조건 공식 경로
+    if kis_available():
+        _diag.append("KIS: 키 감지 → 공식 API 우선 조회")
+        try:
+            _kis0, _hit0 = get_foreign_net_kospi_kis_estimate()
+        except Exception as _e:
+            _kis0, _hit0 = None, 0
+            _diag.append(f"KIS: 예외 {type(_e).__name__}")
+        if _kis0 is not None:
+            return _kis0, f"KIS 공식 API (대형주 {_hit0}종목 합산)", _diag + ["KIS: 성공"]
+        _diag.append("KIS: 키는 있으나 응답 없음 → 스크래핑 폴백")
+    # ① cloudscraper WAF 우회 (requests 403 차단 대응 주력)
+    _v = _fetch_naver_cloudscraper(_diag)
+    if _v is not None:
+        return _v, "네이버(cloudscraper WAF 우회)", _diag
+    # ② 네이버 실시간 JSON API
     _v = _fetch_naver_polling_api(_diag)
     if _v is not None:
         return _v, "네이버 실시간 JSON API", _diag
@@ -3373,11 +3502,22 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## ⚙️ 설정")
 
-    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (26차 엔진: JSON API → FDR → pykrx → HTML → KIS) ──
+    # ── 🔑 KIS 공식 API 키 (입력 시 스크래핑 대신 공식 경로 무조건 우선) ──
+    with st.expander("🔑 한국투자증권(KIS) API 연동", expanded=False):
+        st.caption("키 입력 시 외인 수급을 스크래핑 대신 **공식 KIS API**로 조회합니다. "
+                   "(발급: KIS Developers · 시세/수급은 App Key+Secret만으로 충분)")
+        st.text_input("KIS App Key", type="password", key="_kis_app_key_input")
+        st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
+        if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
+            st.success("✅ KIS 키 감지 — 외인 수급은 공식 API 경로로 조회됩니다.")
+        elif kis_available():
+            st.info("ℹ️ secrets에 등록된 KIS 키 사용 중")
+
+    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (28차 엔진: KIS 우선 → cloudscraper WAF 우회 → JSON → FDR → pykrx) ──
     if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
                  use_container_width=True,
-                 help="네이버 실시간 JSON API → FinanceDataReader → pykrx → 네이버 HTML → KIS 순 자동 조회"):
-        with st.spinner("외국인 순매수 조회 중... (JSON API 우선)"):
+                 help="KIS 공식 API(키 입력 시) → cloudscraper WAF 우회 → 네이버 JSON → FDR → pykrx 순 자동 조회"):
+        with st.spinner("외국인 순매수 조회 중... (WAF 우회 엔진)"):
             _fn_v, _fn_src, _fn_diag = fetch_foreign_net_buying()
         st.session_state['_foreign_net_diag'] = _fn_diag
         if _fn_v is not None:
