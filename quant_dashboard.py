@@ -5249,53 +5249,15 @@ with tab_b:
     _km_b = _dt_tb.utcnow().minute
     _time_block_b = (9 <= _kh_b < 10) or (_kh_b == 10 and _km_b <= 30)
     if not _v891_b['can_enter'] or _time_block_b:
+        # ── 1줄 얇은 배너 (거대 박스·레짐 카운트다운 철거 → 차트 시인성 확보) ──
         _ban_msg  = _v891_b['alerts'][0] if not _v891_b['can_enter'] else "09:00~10:30 변동성 과다 구간"
-        _ban_title = "현재 매매 불가: " + ("FOMC 대기 모드" if _v891_b.get('blackout') else "진입 금지 구간")
-        st.markdown(f"""
-<div style='background:linear-gradient(135deg,#1a0000,#2d0a0a);border:2px solid #ef4444;
-border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
-  <div style='font-size:40px;margin-bottom:8px'>🚫</div>
-  <div style='font-size:22px;font-weight:900;color:#ef4444;margin-bottom:8px'>{_ban_title}</div>
-  <div style='font-size:14px;color:#fca5a5;margin-bottom:6px'>{_ban_msg}</div>
-  <div style='font-size:12px;color:#7f1d1d;margin-top:8px;border-top:1px solid #7f1d1d30;padding-top:8px'>
-    차트 분석 · 타점 계산은 가능 — 실제 주문은 금지 구간 해제 후 실행하세요
-  </div>
-</div>""", unsafe_allow_html=True)
-        # ── 시장 레짐 + 해제 카운트다운 ──
-        from datetime import datetime as _dt_reg, timedelta as _td_reg
-        _now_utc = _dt_reg.utcnow()
-        _now_kst = _now_utc + _td_reg(hours=9)
-        _kh_now  = _now_kst.hour
-        _km_now  = _now_kst.minute
-        if _v891_b.get('blackout'):
-            _regime_label = "FOMC 블랙아웃 모드 (매파적 리스크)"
-            _regime_icon  = "🦅"
-            _regime_color = "#f97316"
-        elif _time_block_b:
-            _regime_label = "장 초반 변동성 구간 (관망 필수)"
-            _regime_icon  = "⏰"
-            _regime_color = "#fbbf24"
-        else:
-            _regime_label = "일반 진입 금지 (시스템 알림)"
-            _regime_icon  = "🔒"
-            _regime_color = "#ef4444"
-        # 다음 09:00 KST까지 남은 시간
-        _next_open = _now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
-        if _now_kst >= _next_open:
-            _next_open += _td_reg(days=1)
-        _remaining = _next_open - _now_kst
-        _rem_h  = int(_remaining.total_seconds() // 3600)
-        _rem_m  = int((_remaining.total_seconds() % 3600) // 60)
+        _ban_kind = ("FOMC 블랙아웃" if _v891_b.get('blackout')
+                     else "장초반 변동성 구간" if _time_block_b else "지수 셧다운")
         st.markdown(
-            f"<div style='background:#0d1117;border:1px solid {_regime_color}40;border-radius:10px;"
-            f"padding:10px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center'>"
-            f"<div><span style='font-size:16px'>{_regime_icon}</span>"
-            f"<span style='color:{_regime_color};font-weight:700;font-size:13px;margin-left:8px'>금일 시장 레짐: {_regime_label}</span></div>"
-            f"<div style='text-align:right'>"
-            f"<div style='font-size:10px;color:#64748b'>다음 진입 가능 해제까지</div>"
-            f"<div style='font-size:16px;font-weight:900;color:#fbbf24;font-family:monospace'>{_rem_h:02d}:{_rem_m:02d}</div>"
-            f"<div style='font-size:10px;color:#64748b'>내일 09:00 KST 해제 예정</div>"
-            f"</div></div>",
+            f"<div style='background:rgba(239,68,68,0.12);border-left:3px solid #ef4444;"
+            f"border-radius:6px;padding:6px 14px;margin-bottom:10px;font-size:12.5px;color:#fca5a5'>"
+            f"🚨 <b style='color:#ef4444'>[매크로 킬스위치 발동] {_ban_kind}</b> — 신규 매수 차단 "
+            f"<span style='color:#7f1d1d'>(차트·타점 분석만 가능 · {_ban_msg})</span></div>",
             unsafe_allow_html=True
         )
     # ── 빠른 결론 헤드라인 (탭 선택 전) ──
@@ -5308,44 +5270,34 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center'>
             if _bdf is not None and len(_bdf) >= 20:
                 # M1: 루프 안에서 즉시 캐시 반영 — 부분 실패 시 이전 성공분 보존
                 st.session_state.all_data_cache[_bt] = {'name': _bn, 'df': calc_indicators(_bdf)}
-    if _b_tickers:
-        _b_quick_sel = st.selectbox(
-            "▶ 분석 종목 선택 (결론 우선 표시)",
-            [f"{n} ({t})" for t, n in _b_tickers if t in all_data],
-            key="b_quick_sel"
-        )
-        if _b_quick_sel:
-            _bq_tk = _b_quick_sel.split('(')[-1].replace(')','').strip()
-            if not is_korean_ticker(_bq_tk):
-                _bq_tk = _b_quick_sel.split(' ')[0].strip()
-            if _bq_tk in all_data:
-                try:
-                    _bq_df = all_data[_bq_tk]['df']
-                    _bq_ep = calc_entry_point(_bq_df, st.session_state.get('analysis_preset','bounce'))
-                    _bq_sigs = get_signal(_bq_df)
-                    _bq_buy  = sum(1 for _, t in _bq_sigs if t == 'buy')
-                    _bq_v891 = run_v891_system_check()
-                    if not _bq_v891['can_enter']:
-                        _bq_vd = "🚫 진입 차단"; _bq_vc = "#f43f5e"; _bq_vb = "rgba(244,63,94,0.12)"
-                    elif _bq_ep['rr'] < 2.0:
-                        _bq_vd = "❌ 진입 불가"; _bq_vc = "#f43f5e"; _bq_vb = "rgba(244,63,94,0.10)"
-                    elif _bq_buy >= 2:
-                        _bq_vd = "✅ 매수 권장"; _bq_vc = "#34d399"; _bq_vb = "rgba(52,211,153,0.12)"
-                    else:
-                        _bq_vd = "⚠️ 관망"; _bq_vc = "#fbbf24"; _bq_vb = "rgba(251,191,36,0.10)"
-                    st.markdown(f"""
-<div style='background:{_bq_vb};border:2px solid {_bq_vc}60;border-radius:12px;
-padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center'>
-  <div>
-    <span style='font-size:20px;font-weight:900;color:{_bq_vc}'>{_bq_vd}</span>
-    <span style='font-size:11px;color:#64748b;margin-left:12px'>
-      진입 {_bq_ep["entry"]:,.0f} | 손절 {_bq_ep["stoploss"]:,.0f} | 목표 {_bq_ep["target1"]:,.0f}
-    </span>
-  </div>
-  <span style='font-size:28px;font-weight:900;color:{_bq_vc};font-family:IBM Plex Mono'>R:R {_bq_ep["rr"]}</span>
-</div>""", unsafe_allow_html=True)
-                except Exception:
-                    pass
+    # ── 🎛️ Control Ribbon — 종목/전략 단일 통합 (상하단 중복 드롭다운 제거) ──
+    def _display_name(ticker, name):
+        return f"{name} ({ticker})" if is_korean_ticker(ticker) else f"{ticker} ({name})"
+    if not _b_tickers:
+        st.info("👈 사이드바에서 관심종목을 추가해주세요.")
+        st.stop()
+    _b1_opts = [_display_name(t, n) for t, n in _b_tickers if t in all_data]
+    if not _b1_opts:
+        st.warning("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+        st.stop()
+    if 'analysis_preset' not in st.session_state:
+        st.session_state.analysis_preset = 'bounce'
+    _pr_map = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
+    _rib1, _rib2 = st.columns([2, 1.4], vertical_alignment="bottom")
+    with _rib1:
+        selected = st.selectbox("🔎 분석 종목", _b1_opts, key="b_unified_sel")
+    with _rib2:
+        _pr_sel = st.radio("매매 전략", list(_pr_map.keys()), horizontal=True,
+                           index=list(_pr_map.values()).index(st.session_state.analysis_preset),
+                           key="preset_radio_b1")
+        if _pr_map[_pr_sel] != st.session_state.analysis_preset:
+            st.session_state.analysis_preset = _pr_map[_pr_sel]
+            st.rerun()
+    sel_ticker = selected.split('(')[-1].replace(')', '').strip()
+    if not is_korean_ticker(sel_ticker):
+        sel_ticker = selected.split(' ')[0].strip()
+    sel_name = all_data[sel_ticker]['name']
+    sel_df   = all_data[sel_ticker]['df']
 
     _sub_b1, _sub_b2, _sub_b3 = st.tabs(["📈 차트+지표", "🤖 Gemini 분석", "📋 분석 기록"])
 
@@ -5400,26 +5352,7 @@ padding:12px 20px;margin-bottom:10px;display:flex;justify-content:space-between;
                 st.warning("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
                 st.stop()
 
-            # ── 종목 선택 + 프리셋 ──
-            _sel_col_b, _pre_col_b = st.columns([2, 1])
-            with _sel_col_b:
-                selected = st.selectbox("종목 선택", _b1_opts)
-            sel_ticker = selected.split('(')[-1].replace(')', '').strip()
-            if not is_korean_ticker(sel_ticker):
-                sel_ticker = selected.split(' ')[0].strip()
-            sel_name = all_data[sel_ticker]['name']
-            sel_df   = all_data[sel_ticker]['df']
-
-            with _pre_col_b:
-                if 'analysis_preset' not in st.session_state:
-                    st.session_state.analysis_preset = 'bounce'
-                _pr_map = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
-                _pr_sel = st.radio("전략", list(_pr_map.keys()), horizontal=True,
-                                   index=list(_pr_map.values()).index(st.session_state.analysis_preset),
-                                   key="preset_radio_b1")
-                if _pr_map[_pr_sel] != st.session_state.analysis_preset:
-                    st.session_state.analysis_preset = _pr_map[_pr_sel]
-                    st.rerun()
+            # (종목/전략 선택은 상단 Control Ribbon으로 통합 이관 — sel_ticker/sel_df 재사용)
 
             # ── 핵심 지표 계산 ──
             l = sel_df.iloc[-1]; p = sel_df.iloc[-2]
