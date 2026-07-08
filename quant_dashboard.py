@@ -2348,12 +2348,142 @@ def _re_import_sub(_html):
     return _re_p.sub(r"\s+", " ", _re_p.sub(r"<[^>]+>", " ", _html)).strip()
 
 
+def _deep_find_foreign_amount(_obj, _depth=0):
+    """네이버 JSON 응답에서 외국인 순매수 금액 키를 재귀 탐색 (스키마 변동 내성).
+    후보 키: foreignerNetBuyAmount / foreignerPureBuyQuant / frgn* 등."""
+    if _depth > 6:
+        return None
+    _KEYS = ("foreignerNetBuyAmount", "foreignerPureBuyAmount", "foreignerNetBuy",
+             "frgnNetBuyAmt", "foreigner")
+    if isinstance(_obj, dict):
+        for _k, _val in _obj.items():
+            if _k in _KEYS and isinstance(_val, (int, float, str)):
+                try:
+                    return float(str(_val).replace(",", ""))
+                except ValueError:
+                    pass
+        for _val in _obj.values():
+            _r = _deep_find_foreign_amount(_val, _depth + 1)
+            if _r is not None:
+                return _r
+    elif isinstance(_obj, list):
+        for _it in _obj:
+            _r = _deep_find_foreign_amount(_it, _depth + 1)
+            if _r is not None:
+                return _r
+    return None
+
+
+def _fetch_naver_polling_api(_debug=None):
+    """[대안 1] 네이버 페이 증권 내부 실시간 JSON API — HTML 스크래핑보다 차단에 유연.
+    브라우저 User-Agent + Referer 필수. 반환: 원 단위 float 또는 None."""
+    def _log(m):
+        if _debug is not None:
+            _debug.append(m)
+    _hdr = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+        "Referer": "https://finance.naver.com/sise/sise_deal_trend.naver",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    # 후보 JSON 엔드포인트 순회 (스키마/경로 변동 대비)
+    _urls = [
+        "https://polling.finance.naver.com/api/realtime/domestic/investor/trend",
+        "https://m.stock.naver.com/api/stocks/investor/trend?category=kospi",
+    ]
+    for _url in _urls:
+        _short = _url.split("/api/")[-1][:40]
+        try:
+            import requests as _rq
+            _resp = _rq.get(_url, headers=_hdr, timeout=5)
+            if _resp.status_code != 200:
+                _log(f"네이버JSON[{_short}]: HTTP {_resp.status_code}")
+                continue
+            try:
+                _data = _resp.json()
+            except ValueError:
+                _log(f"네이버JSON[{_short}]: JSON 아님 ({len(_resp.text)}바이트)")
+                continue
+            # 1순위: 지시서 경로 (result.kospi.foreignerNetBuyAmount)
+            _kospi = (_data.get('result', {}) or {}).get('kospi', {}) if isinstance(_data, dict) else {}
+            _v = _kospi.get('foreignerNetBuyAmount') if isinstance(_kospi, dict) else None
+            if _v is None:
+                # 2순위: 재귀 키 탐색 (스키마 변동 대응)
+                _v = _deep_find_foreign_amount(_data)
+            if _v is not None:
+                _won = float(str(_v).replace(",", ""))
+                # 네이버 투자자 동향 금액 단위는 억원 → |값|<100만이면 억원으로 간주해 환산
+                if abs(_won) < 1_000_000:
+                    _won *= 100_000_000
+                _log(f"네이버JSON[{_short}]: 성공 ({_won/1e8:+,.0f}억원)")
+                return _won
+            _log(f"네이버JSON[{_short}]: 응답 수신했으나 외국인 금액 키 없음")
+        except Exception as _e:
+            _log(f"네이버JSON[{_short}]: {type(_e).__name__}")
+    return None
+
+
+def _fetch_fdr_foreign_net(_debug=None):
+    """[대안 2] FinanceDataReader 우회 수집 — KRX 마켓 스냅샷에서 외국인 순매수.
+    FDR 버전에 따라 API가 다르므로 다단 시도. 반환: 원 단위 float 또는 None."""
+    def _log(m):
+        if _debug is not None:
+            _debug.append(m)
+    try:
+        import FinanceDataReader as _fdr_fn
+    except ImportError:
+        _log("FDR: 라이브러리 미설치")
+        return None
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime('%Y%m%d')
+    # 시도 1: SnapShot (지시서 경로 — 일부 FDR 버전에만 존재)
+    try:
+        if hasattr(_fdr_fn, 'SnapShot'):
+            _df = _fdr_fn.SnapShot(_today, market='KOSPI')
+            if _df is not None and '외국인' in getattr(_df, 'index', []):
+                _col = '순매수' if '순매수' in _df.columns else _df.columns[-1]
+                _v = float(_df.loc['외국인', _col])
+                if _v == _v:
+                    if abs(_v) < 1_000_000:   # 억원 단위 보정
+                        _v *= 100_000_000
+                    _log(f"FDR SnapShot: 성공 ({_v/1e8:+,.0f}억원)")
+                    return _v
+            _log("FDR SnapShot: 응답에 외국인 행 없음")
+        else:
+            _log("FDR: SnapShot API 없음(버전 미지원) — 투자자 API 시도")
+    except Exception as _e:
+        _log(f"FDR SnapShot: {type(_e).__name__}")
+    # 시도 2: StockListing/DataReader 계열 투자자 데이터 (버전별 상이)
+    try:
+        if hasattr(_fdr_fn, 'InvestorTrading'):
+            _df2 = _fdr_fn.InvestorTrading('KOSPI', _today)
+            if _df2 is not None and not _df2.empty and '외국인' in _df2.index:
+                _v2 = float(_df2.loc['외국인'].iloc[-1])
+                if _v2 == _v2:
+                    if abs(_v2) < 1_000_000:
+                        _v2 *= 100_000_000
+                    _log(f"FDR InvestorTrading: 성공 ({_v2/1e8:+,.0f}억원)")
+                    return _v2
+    except Exception as _e:
+        _log(f"FDR InvestorTrading: {type(_e).__name__}")
+    return None
+
+
 def fetch_foreign_net_buying():
-    """실시간 코스피 외국인 순매수(원) 자동 스크래핑 — 사이드바 버튼 전용.
-    우선순위: pykrx(KRX) → 네이버 증권 → KIS 대형주 추정.
+    """실시간 코스피 외국인 순매수(원) — 26차 전면 교체 엔진.
+    우선순위: ①네이버 실시간 JSON API → ②FinanceDataReader → ③pykrx(KRX)
+             → ④네이버 HTML 스크래핑 → ⑤KIS 대형주 추정.
     반환: (value_krw|None, source:str, diagnostics:list[str])."""
     _diag = []
-    # 1) pykrx (KRX 공식, 가장 정확 — 단 클라우드/해외 IP·KRX 로그인 요구 시 차단 가능)
+    # ① 네이버 실시간 JSON API (가장 가볍고 빠름, 차단 유연)
+    _v = _fetch_naver_polling_api(_diag)
+    if _v is not None:
+        return _v, "네이버 실시간 JSON API", _diag
+    # ② FinanceDataReader 우회 수집
+    _v = _fetch_fdr_foreign_net(_diag)
+    if _v is not None:
+        return _v, "FinanceDataReader(KRX)", _diag
+    # ③ pykrx (KRX 공식 — 클라우드 IP·로그인 요구 시 차단 가능)
     try:
         _v = get_foreign_net_kospi()
     except Exception as _e:
@@ -2361,11 +2491,11 @@ def fetch_foreign_net_buying():
     if _v is not None:
         return _v, "pykrx(KRX)", _diag + ["pykrx: 성공"]
     _diag.append("pykrx: 무응답(데이터 없음·KRX 차단·로그인 요구 가능)")
-    # 2) 네이버 증권 스크래핑
+    # ④ 네이버 HTML 스크래핑 (레거시 폴백)
     _v = _scrape_naver_foreign_net_kospi(_diag)
     if _v is not None:
-        return _v, "네이버 증권", _diag
-    # 3) KIS 대형주 추정
+        return _v, "네이버 증권(HTML)", _diag
+    # ⑤ KIS 대형주 추정
     try:
         _kis, _hit = get_foreign_net_kospi_kis_estimate()
     except Exception as _e:
@@ -3243,20 +3373,23 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## ⚙️ 설정")
 
-    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (수동 입력 폐지 → 완전 자동화) ──
+    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (26차 엔진: JSON API → FDR → pykrx → HTML → KIS) ──
     if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
-                 use_container_width=True, help="pykrx(KRX)→네이버→KIS 순으로 당일 외국인 순매수를 자동 조회"):
-        with st.spinner("외국인 순매수 스크래핑 중..."):
+                 use_container_width=True,
+                 help="네이버 실시간 JSON API → FinanceDataReader → pykrx → 네이버 HTML → KIS 순 자동 조회"):
+        with st.spinner("외국인 순매수 조회 중... (JSON API 우선)"):
             _fn_v, _fn_src, _fn_diag = fetch_foreign_net_buying()
         st.session_state['_foreign_net_diag'] = _fn_diag
         if _fn_v is not None:
             st.session_state['_foreign_net_krw'] = float(_fn_v)
             st.session_state['_foreign_net_src'] = 'scrape'
             st.session_state['_foreign_net_scrape_src'] = _fn_src
+            st.session_state['_foreign_net_scrape_failed'] = False
             st.toast(f"✅ 외인 수급 {_fn_v/1e8:+,.0f}억원 ({_fn_src})", icon="🌍")
             st.rerun()
         else:
-            st.warning("⚠️ 자동 스크래핑 실패 — 아래 진단 확인 후 필요 시 수동 입력하세요.")
+            st.session_state['_foreign_net_scrape_failed'] = True
+            st.warning("⚠️ 자동 조회 전체 실패 — 아래 진단 확인 후 비상 수동 입력을 사용하세요.")
     _fn_src_disp = st.session_state.get('_foreign_net_scrape_src')
     if _fn_src_disp:
         st.caption(f"🌍 외인 수급 출처: {_fn_src_disp}")
@@ -3266,15 +3399,18 @@ with st.sidebar:
         with st.expander("🔍 외인 수급 조회 진단", expanded=False):
             for _dln in _fn_diag_saved:
                 st.caption(f"• {_dln}")
-    # 자동 3소스 모두 실패 시에만 노출되는 비상 수동 입력 (평소 숨김)
-    if st.session_state.get('_foreign_net_krw') is None:
-        with st.expander("✍️ (비상) 외인 수급 수동 입력", expanded=False):
+    # 자동 엔진 전체 실패 시 동적 활성화되는 비상 수동 입력 (성공 시 자동 숨김)
+    _fn_all_failed = (st.session_state.get('_foreign_net_scrape_failed', False)
+                      or st.session_state.get('_foreign_net_krw') is None)
+    if _fn_all_failed:
+        with st.expander("✍️ (비상) 외인 수급 수동 입력 — 자동 조회 실패 시 활성", expanded=True):
             _emx = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
                                    value=0.0, step=100.0, key="sb_fn_emergency")
             if st.button("적용", key="sb_fn_em_apply", use_container_width=True):
                 st.session_state['_foreign_net_krw'] = float(_emx) * 100_000_000
                 st.session_state['_foreign_net_src'] = 'manual'
                 st.session_state['_foreign_net_scrape_src'] = '수동 입력'
+                st.session_state['_foreign_net_scrape_failed'] = False
                 st.rerun()
 
     # ── 세션 정보 + 로그아웃 ──
