@@ -3739,6 +3739,17 @@ _ETF_HOLDINGS_DB = {
     "CIBR": [("PANW","Palo Alto Networks"),("CRWD","CrowdStrike"),("FTNT","Fortinet"),("ZS","Zscaler"),("OKTA","Okta"),("S","SentinelOne"),("CYBR","CyberArk"),("QLYS","Qualys"),("VRNS","Varonis"),("TENB","Tenable")],
 }
 
+# ── 구성종목 DB 보유 ETF의 한글명 보충 매핑 ──────────────────────────────────
+#   _MASTER_ETF_DB에 없는 코드(스나이핑 드롭다운이 '코드 (코드)'로 표기되던 원인)를
+#   보강. 드롭다운 표기 전용 — 조회 우선순위: _MASTER_ETF_DB → 이 딕셔너리 → 코드.
+_HOLDINGS_ETF_NAMES = {
+    "114800": "KODEX 인버스",
+    "122630": "KODEX 레버리지",
+    "139220": "TIGER 2차전지테마",
+    "012450": "한화에어로스페이스",
+    "098560": "반도체·방산 혼합 바스켓",
+}
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _scan_etf_holdings(etf_code: str, is_korean: bool = True) -> list[dict]:
     """ETF 구성종목 개별 스캐닝 — Z-Score/RSI/ATR 기반 타점 산출"""
@@ -9400,7 +9411,8 @@ with _tab_d1:
                 _kr_db_codes = [k for k in _ETF_HOLDINGS_DB if k.isdigit() and _ETF_HOLDINGS_DB[k]]
                 _kr_snipe_opts = {}
                 for _kc in _kr_db_codes:
-                    _kn = _MASTER_ETF_DB.get(_kc, _kc)
+                    # 조회 우선순위: 마스터 DB → 보충 매핑 → 코드 (숫자만 표기되던 버그 방지)
+                    _kn = _MASTER_ETF_DB.get(_kc) or _HOLDINGS_ETF_NAMES.get(_kc) or _kc
                     _kr_snipe_opts[f"{_kn} ({_kc})"] = _kc
                 # 랭킹에 있는 ETF도 추가 (DB에 없을 수 있음)
                 for _, _rrow in _kr_ranked.iterrows():
