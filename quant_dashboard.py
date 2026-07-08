@@ -3510,12 +3510,7 @@ with st.sidebar:
         st.metric("💱 원/달러 환율", f"{_sb_krw:,.0f}원" if isinstance(_sb_krw,(int,float)) else "—",
                   delta=("⚠️ 1,450 경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=1450 else "안정"),
                   delta_color="inverse")
-        if isinstance(_sb_flow,(int,float)):
-            st.metric("🌍 외국인 수급", f"{_sb_flow/1e8:+,.0f}억원",
-                      delta=("순매수" if _sb_flow>0 else "순매도"),
-                      delta_color=("normal" if _sb_flow>0 else "inverse"))
-        else:
-            st.metric("🌍 외국인 수급", "—")
+        # (🌍 외국인 수급 지표 제거 — 스크래핑/KRX 차단으로 폐기. 게이트는 None 방어)
         # WTI 유가 · 반도체 수출 YoY — 메인 매크로 카드행에서 사이드바로 이관(2열 압축)
         _sb_oil2 = get_wti_oil()
         _sb_me   = fetch_motie_exports()
@@ -3531,8 +3526,8 @@ with st.sidebar:
 
     # ── 🔑 KIS 공식 API 키 (입력 시 스크래핑 대신 공식 경로 무조건 우선) ──
     with st.expander("🔑 한국투자증권(KIS) API 연동", expanded=False):
-        st.caption("키 입력 시 외인 수급을 스크래핑 대신 **공식 KIS API**로 조회합니다. "
-                   "(발급: KIS Developers · 시세/수급은 App Key+Secret만으로 충분)")
+        st.caption("KIS 공식 API 연결 상태 확인·테스트용 (개별종목 시세·외인/기관 수급 조회에 사용). "
+                   "발급: KIS Developers · App Key+Secret만으로 충분")
         # 등록 현황 진단 — secrets에 어떤 키가 잡히는지 표시
         _kis_found, _kis_missing = kis_debug_info()
         if _kis_found:
@@ -3543,9 +3538,9 @@ with st.sidebar:
         st.toggle("모의투자 키 사용 (VTS)", key="_kis_mock_input",
                   help="모의투자용 키는 접속 도메인이 달라(29443 포트) 이 토글을 켜야 토큰이 발급됩니다")
         if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
-            st.success("✅ 입력 키 감지 — 외인 수급은 공식 KIS API로 조회됩니다.")
+            st.success("✅ 입력 키 감지 — KIS 공식 API 사용 가능")
         elif kis_available():
-            st.success("✅ secrets 등록 키 사용 중 — 외인 수급은 공식 KIS API로 조회됩니다.")
+            st.success("✅ secrets 등록 키 사용 중 — KIS 공식 API 사용 가능")
         else:
             st.caption("⛔ 감지된 키 없음 — App Key/Secret 입력 시 즉시 활성화")
         # 연결 자가진단 버튼 — 토큰 발급 + 삼성전자 수급 1건 조회
@@ -3567,45 +3562,8 @@ with st.sidebar:
                     else:
                         st.warning("⚠️ 토큰은 발급됐으나 수급 조회 실패 — API 권한(국내주식 시세) 신청 여부 확인")
 
-    # ── 🔄 실시간 코스피 외인 수급 스크래핑 (28차 엔진: KIS 우선 → cloudscraper WAF 우회 → JSON → FDR → pykrx) ──
-    if st.button("🔄 실시간 코스피 외인 수급 스크래핑", key="sb_fn_scrape",
-                 use_container_width=True,
-                 help="KIS 공식 API(키 입력 시) → cloudscraper WAF 우회 → 네이버 JSON → FDR → pykrx 순 자동 조회"):
-        with st.spinner("외국인 순매수 조회 중... (WAF 우회 엔진)"):
-            _fn_v, _fn_src, _fn_diag = fetch_foreign_net_buying()
-        st.session_state['_foreign_net_diag'] = _fn_diag
-        if _fn_v is not None:
-            st.session_state['_foreign_net_krw'] = float(_fn_v)
-            st.session_state['_foreign_net_src'] = 'scrape'
-            st.session_state['_foreign_net_scrape_src'] = _fn_src
-            st.session_state['_foreign_net_scrape_failed'] = False
-            st.toast(f"✅ 외인 수급 {_fn_v/1e8:+,.0f}억원 ({_fn_src})", icon="🌍")
-            st.rerun()
-        else:
-            st.session_state['_foreign_net_scrape_failed'] = True
-            st.warning("⚠️ 자동 조회 전체 실패 — 아래 진단 확인 후 비상 수동 입력을 사용하세요.")
-    _fn_src_disp = st.session_state.get('_foreign_net_scrape_src')
-    if _fn_src_disp:
-        st.caption(f"🌍 외인 수급 출처: {_fn_src_disp}")
-    # 진단 로그 (실패 원인 특정용)
-    _fn_diag_saved = st.session_state.get('_foreign_net_diag')
-    if _fn_diag_saved:
-        with st.expander("🔍 외인 수급 조회 진단", expanded=False):
-            for _dln in _fn_diag_saved:
-                st.caption(f"• {_dln}")
-    # 자동 엔진 전체 실패 시 동적 활성화되는 비상 수동 입력 (성공 시 자동 숨김)
-    _fn_all_failed = (st.session_state.get('_foreign_net_scrape_failed', False)
-                      or st.session_state.get('_foreign_net_krw') is None)
-    if _fn_all_failed:
-        with st.expander("✍️ (비상) 외인 수급 수동 입력 — 자동 조회 실패 시 활성", expanded=True):
-            _emx = st.number_input("코스피 외국인 순매수 (억원, 매도는 음수)",
-                                   value=0.0, step=100.0, key="sb_fn_emergency")
-            if st.button("적용", key="sb_fn_em_apply", use_container_width=True):
-                st.session_state['_foreign_net_krw'] = float(_emx) * 100_000_000
-                st.session_state['_foreign_net_src'] = 'manual'
-                st.session_state['_foreign_net_scrape_src'] = '수동 입력'
-                st.session_state['_foreign_net_scrape_failed'] = False
-                st.rerun()
+    # (🔄 외인 수급 스크래핑 블록 전체 폐기 — 버튼/경고/진단/비상입력 제거.
+    #  외인 수급은 매크로 게이트·5AI 브리핑에서 None으로 안전하게 무시됨.)
 
     # ── 세션 정보 + 로그아웃 ──
     _auth_time = st.session_state.get('_auth_time', '')
@@ -4615,38 +4573,8 @@ div[data-testid="stVerticalBlock"] { gap:0.55rem; }
     # (전략 방향 · 블랙아웃 경고 · 수동 입력은 모두 사이드바 Sticky 패널로 이전 —
     #  본문은 데이터 모니터링에만 집중. 여기서는 아무것도 렌더링하지 않음.)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # 🌐 외국인 수급 자동 연동 (pykrx) — 실패 시 수동 입력 폴백
-    # ══════════════════════════════════════════════════════════════════════
-    # 수동 입력이 있으면 자동/추정으로 덮어쓰지 않음 (사용자 우선). Firebase 복원 포함.
-    if st.session_state.get('_foreign_net_src') != 'manual':
-        try:
-            _fn_saved = _fb_ref("/foreign_net_manual").get()
-        except Exception:
-            _fn_saved = None
-        if isinstance(_fn_saved, dict) and _fn_saved.get('krw') is not None:
-            st.session_state['_foreign_net_krw'] = float(_fn_saved['krw'])
-            st.session_state['_foreign_net_src'] = 'manual'
-
-    if st.session_state.get('_foreign_net_src') != 'manual':
-        _fn_auto = get_foreign_net_kospi()
-        if _fn_auto is not None:
-            st.session_state['_foreign_net_krw'] = _fn_auto
-            st.session_state['_foreign_net_src'] = 'auto'
-        else:
-            # pykrx 실패 → KIS 대형주 합산 추정 시도
-            _fn_kis, _fn_hit = get_foreign_net_kospi_kis_estimate()
-            if _fn_kis is not None:
-                st.session_state['_foreign_net_krw'] = _fn_kis
-                st.session_state['_foreign_net_src'] = 'kis_est'
-                st.session_state['_foreign_net_hit'] = _fn_hit
-            elif st.session_state.get('_foreign_net_krw') is None:
-                st.session_state['_foreign_net_src'] = 'none'
-
-    # KIS 추정 출처 안내 (수동 입력창은 사이드바 Sticky 패널로 이동됨)
-    if st.session_state.get('_foreign_net_src') == 'kis_est':
-        st.caption(f"🏦 외국인 수급: KIS 대형주 {st.session_state.get('_foreign_net_hit',0)}종목 합산 추정 "
-                   f"(방향 신뢰·규모 근사) — 정확값은 사이드바 '외인 수급 수동입력'에서 덮어쓰기")
+    # (🌐 외국인 수급 자동 연동 폐기 — KRX/네이버 차단으로 신뢰 불가 → 사용 중단.
+    #  _foreign_net_krw는 None 유지, 매크로 게이트·5AI 브리핑이 방어적으로 무시함.)
 
     # ══════════════════════════════════════════════════════════════════════
     # 🤖 5AI Top-Down 레짐 브리핑 패널 (오늘의 AI 코멘트 — 3줄 요약)
