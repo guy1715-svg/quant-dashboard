@@ -9308,6 +9308,10 @@ with _tab_d1:
             _kr_active  = _df_kr[_df_kr['상태'] == '활성'].sort_values('종합점수', ascending=False)
             _kr_passive = _df_kr[_df_kr['상태'] != '활성']
             _kr_ranked  = pd.concat([_kr_active, _kr_passive]).reset_index(drop=True)
+            # ── 하단 관제판 동기화: 카테고리 필터 전(全) 랭킹을 세션에 저장 ──
+            #    (관제판/신규 진입 추천이 상단 스캐너 1위를 그대로 이어받도록)
+            st.session_state['_scanner_ranked_kr'] = _kr_ranked.copy()
+            st.session_state['_scanner_ranked_active'] = '_scanner_ranked_kr'
 
             _kr_cat = st.selectbox("카테고리 필터", ["전체", "국내지수", "미국지수추종", "반도체/IT", "방산/중공업", "에너지/전력", "2차전지", "금/원자재", "채권", "배당", "헬스케어"], key="kr_etf_cat")
 
@@ -9492,6 +9496,9 @@ with _tab_d1:
             _us_active  = _df_us[_df_us['상태'] == '활성'].sort_values('종합점수', ascending=False)
             _us_passive = _df_us[_df_us['상태'] != '활성']
             _us_ranked  = pd.concat([_us_active, _us_passive]).reset_index(drop=True)
+            # ── 하단 관제판 동기화: 카테고리 필터 전(全) 랭킹을 세션에 저장 ──
+            st.session_state['_scanner_ranked_us'] = _us_ranked.copy()
+            st.session_state['_scanner_ranked_active'] = '_scanner_ranked_us'
 
             if _us_cat != "전체":
                 _us_filter = _us_cat_map.get(_us_cat, [])
@@ -9811,6 +9818,36 @@ with _tab_d1:
         _active  = _df_etf[_df_etf['상태']=='활성'].sort_values('종합점수', ascending=False)
         _passive = _df_etf[_df_etf['상태']!='활성']
         _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🔗 상단 스캐너 ↔ 하단 관제판 데이터 바인딩 일치 (고스트 버그 저격)
+        #    관제판/신규 진입 추천이 '자체 fetch_etf_data(작은 유니버스)' 대신
+        #    상단 메인 스캐너에서 최종 정렬된 1위 랭킹을 그대로 이어받도록 교체.
+        #    → 상단 1위 KODEX 원자력이면 하단도 KODEX 원자력 (ACE금현물 잔상 제거)
+        # ══════════════════════════════════════════════════════════════════
+        _scan_key = '_scanner_ranked_kr' if _etf_market == "🇰🇷 국장 ETF" else '_scanner_ranked_us'
+        _scan_df  = st.session_state.get(_scan_key)
+        if _scan_df is not None and not _scan_df.empty:
+            _is_kr_scan = (_etf_market == "🇰🇷 국장 ETF")
+            _norm = _scan_df.copy()
+            # 스키마 정규화: 코드→종목코드, _원화/타점 보강 (관제판 필드 요구사항)
+            if '종목코드' not in _norm.columns and '코드' in _norm.columns:
+                _norm['종목코드'] = _norm['코드'].astype(str)
+            _norm['_원화'] = _is_kr_scan
+            if '타점' not in _norm.columns:
+                def _scan_entry(_r):
+                    try:
+                        _lv = calculate_trade_levels(
+                            _r.get('현재가'), _r.get('MA5가격'), _r.get('전일종가'),
+                            _r.get('갭(%)', 0), _r.get('MA5이격(%)', 0), _is_kr_scan)
+                        return _lv['entry']
+                    except Exception:
+                        return _r.get('현재가', 0)
+                _norm['타점'] = _norm.apply(_scan_entry, axis=1)
+            _df_etf  = _norm
+            _active  = _norm[_norm['상태']=='활성'].sort_values('종합점수', ascending=False).reset_index(drop=True)
+            _passive = _norm[_norm['상태']!='활성']
+            _ranked  = pd.concat([_active, _passive]).reset_index(drop=True)
 
         # ══════════════════════════════════════════
         # 🎯 실전 매매 관제판
