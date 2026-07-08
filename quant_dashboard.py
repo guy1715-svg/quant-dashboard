@@ -6198,10 +6198,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     # ══════════════════════════════════════════
     with st.expander("⚙️ 고급 스캔 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
 
-        # ── 프리셋 버튼 ──────────────────────────────────────────────────
-        st.markdown("##### ⚡ 전략 프리셋")
-        _pr1, _pr2, _pr3, _pr4 = st.columns(4)
-
+        # (빈 '전략 프리셋' 헤더/컬럼 제거 — 실제 프리셋 라디오는 아래 별도 블록)
         _opt_col1, _opt_col2, _opt_col3 = st.columns([2, 1, 1])
         with _opt_col1:
             _opt_months = st.slider("백테스트 기간 (개월)", 3, 12, 6, key="opt_months")
@@ -7528,6 +7525,16 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     if st.session_state.get('passed'):
         _sc_ids = [t for t, _ in get_watchlist_tickers()]
         _p_list = st.session_state.passed
+
+        # CSV 다운로드 (영구 패널 — rerun 후에도 유지)
+        try:
+            _dl_all = pd.DataFrame([{k: v for k, v in p.items() if k != 'reasons'} for p in _p_list])
+            st.download_button("📥 스캔 결과 CSV 다운로드",
+                               _dl_all.to_csv(index=False, encoding='utf-8-sig'),
+                               file_name="scan_result.csv", mime="text/csv",
+                               key="scan_csv_persist", use_container_width=True)
+        except Exception:
+            pass
 
         _s_c = sum(1 for _x in _p_list if 'S등급' in str(_x.get('등급','')))
         _a_c = sum(1 for _x in _p_list if 'A등급' in str(_x.get('등급','')))
@@ -8874,7 +8881,7 @@ with tab_d:
                 )
 
                 # C1: uuid 기반 버튼 key + id 필터 삭제
-                _btn_c1, _btn_c2, _btn_c3 = st.columns([2, 2, 1])
+                _btn_c1, _btn_c3 = st.columns([3, 1])   # 📝 수정(무동작) 제거
                 with _btn_c1:
                     _t1_label = "✅ 1차 익절 완료 표시" if not _pos.get('t1_done') else "↩️ 1차 익절 취소"
                     def _toggle_t1(_pid=_pos_id):
@@ -8885,8 +8892,6 @@ with tab_d:
                         _save_positions_to_ls()
                     st.button(_t1_label, key=f"op_t1_{_pos_id}", use_container_width=True,
                               on_click=_toggle_t1)
-                with _btn_c2:
-                    st.button("📝 수정", key=f"op_edit_{_pos_id}", use_container_width=True)
                 with _btn_c3:
                     def _del_pos(_pid=_pos_id, _ptk=_tk, _pavg=_avg, _pqty=_qty):
                         # 청산 시 거래일지에 매도 기록
@@ -9424,8 +9429,8 @@ with _tab_d1:
                 _kr_data = []
 
         if not _kr_data:
-            st.error("❌ ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
-            st.stop()
+            # st.stop() 제거 — 랭킹만 건너뛰고 아래 백테스트/다른 섹션은 계속 렌더
+            st.warning("⚠️ 국장 ETF 랭킹 로드 실패 (네트워크/지연) — 🔄 새로고침 후 재시도. 아래 섹션은 정상입니다.")
         if _kr_data:
             _df_kr = pd.DataFrame(_kr_data)
             _kr_active  = _df_kr[_df_kr['상태'] == '활성'].sort_values('종합점수', ascending=False)
@@ -9608,8 +9613,7 @@ with _tab_d1:
                 _us_data = []
 
         if not _us_data:
-            st.error("❌ 미장ETF 데이터 로드 실패. 네트워크 상태를 확인하거나 잠시 후 새로고침하세요.")
-            st.stop()
+            st.warning("⚠️ 미장 ETF 랭킹 로드 실패 (네트워크/지연) — 🔄 새로고침 후 재시도. 아래 섹션은 정상입니다.")
         if _us_data:
             _df_us = pd.DataFrame(_us_data)
             _us_active  = _df_us[_df_us['상태'] == '활성'].sort_values('종합점수', ascending=False)
@@ -11132,12 +11136,19 @@ with tab_e:
         # ── 4. 가상 매수 ──
         st.markdown("#### 📥 가상 매수 실행")
 
+        # 매수 가능 종목 = 관심종목 + 현재 보유 + 기본목록(중복 제거) — 관심종목도 매수 가능
+        _buy_universe = {}
+        for _t, _n in (get_watchlist_tickers() + [(p['ticker'], p.get('name', p['ticker']))
+                        for p in _acc.get('positions', [])] + list(TICKERS)):
+            if _t not in _buy_universe:
+                _buy_universe[_t] = _n
+        _buy_opts = [f"{_n} ({_t})" for _t, _n in _buy_universe.items()]
         _bc1, _bc2 = st.columns([2, 3])
-        _buy_ticker_sel = _bc1.selectbox("종목 선택",
-            [f"{n} ({t})" for t,n in TICKERS], key="buy_ticker_sel")
+        _buy_ticker_sel = _bc1.selectbox("종목 선택", _buy_opts or ["(관심종목 없음)"],
+                                         key="buy_ticker_sel")
         # 형식: "종목명 (티커)" → 괄호 안 티커 추출
         _bt = _buy_ticker_sel.split('(')[-1].replace(')','').strip()
-        _bn = dict([(t,n) for t,n in TICKERS]).get(_bt, _bt)
+        _bn = _buy_universe.get(_bt, _bt)
 
         # 현재가 자동 로드
         _is_kr = is_korean_ticker(_bt)
@@ -11241,24 +11252,29 @@ with tab_e:
                 _price_val = round(_buy_cur_safe, 2) if _buy_cur_safe > 0 else 1.0
         except (TypeError, ValueError):
             _price_val = 1 if _is_kr else 1.0
-        st.session_state['buy_price_inp'] = float(_price_val)
-        st.session_state['buy_qty_inp']   = max(1, _auto_qty)
-        st.session_state['buy_ai']        = _auto_5ai
+        # 종목이 바뀔 때만 기본값 갱신 → 같은 종목 내 수동 입력이 snap-back 되지 않음
+        if st.session_state.get('_buy_last_ticker') != _bt:
+            st.session_state['_buy_last_ticker'] = _bt
+            st.session_state['buy_price_inp'] = float(_price_val)
+            st.session_state['buy_qty_inp']   = max(1, _auto_qty)
+        st.session_state['buy_ai'] = _auto_5ai
 
         _brow1, _brow2, _brow3, _brow4 = st.columns(4)
         _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
         _price_step  = 100 if _is_kr else 1
-        _buy_price = _brow1.number_input(_price_label, value=float(_price_val),
-                                          step=float(_price_step), min_value=0.01, key="buy_price_inp")
-        _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, value=max(1, _auto_qty), key="buy_qty_inp")
+        # value= 제거: key+session_state가 값 관리 (중복 경고/덮어쓰기 방지)
+        _buy_price = _brow1.number_input(_price_label, step=float(_price_step),
+                                          min_value=0.01, key="buy_price_inp")
+        _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, key="buy_qty_inp")
         _ai_color  = "#16a34a" if _auto_5ai > 0 else "#dc2626" if _auto_5ai < 0 else "#64748b"
         _brow3.markdown(f"<div style='font-size:11px;color:#64748b;margin-bottom:4px'>5AI 점수 (자동계산)</div>"
                         f"<div style='font-size:26px;font-weight:700;color:{_ai_color}'>{_auto_5ai:+d}점</div>",
                         unsafe_allow_html=True)
         _ai_score  = _auto_5ai
-        _buy_total = _buy_price * _buy_qty
-        _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
         _net_buy_preview = calc_slippage(_buy_price, True, _is_kr)
+        # 현금 검증은 '실제 차감액(슬리피지 포함)' 기준 → 검증 통과 후 현금 음수 방지
+        _buy_total = _net_buy_preview * _buy_qty
+        _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
         _total_str = f"{_buy_total:,.0f}원" if _is_kr else f"${_buy_total:,.2f} (≈{_buy_total_krw:,.0f}원)"
         _slip_str  = f"{_net_buy_preview:,.0f}원/주" if _is_kr else f"${_net_buy_preview:,.2f}/주"
         _brow4.markdown(
@@ -11268,9 +11284,8 @@ with tab_e:
             unsafe_allow_html=True
         )
 
-        if 'buy_memo_val' not in st.session_state:
-            st.session_state['buy_memo_val'] = ''
-        _buy_memo = st.text_input("매수 근거 (Why)", value=st.session_state['buy_memo_val'],
+        # 위젯 key(buy_memo)로 직접 관리 → 매수 후 초기화가 실제로 반영됨
+        _buy_memo = st.text_input("매수 근거 (Why)",
                                    placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
 
         _cash_ok = _acc['cash'] >= _buy_total_krw
@@ -11329,7 +11344,7 @@ with tab_e:
             save_account(_acc)
             log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
                       _acc['cash'], _tv_now, ai_score=_ai_score, memo=st.session_state.get('buy_memo',''))
-            st.session_state['buy_memo_val'] = ''
+            st.session_state['buy_memo'] = ''   # 위젯 key 직접 초기화
             st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
             st.rerun()
 
@@ -11530,7 +11545,7 @@ with tab_e:
                         if _match_key:
                             try:
                                 _fb_ref(f"/quant_trades/{_match_key}").delete()
-                            except:
+                            except Exception:
                                 pass
                         _local = st.session_state.get('local_trade_log', [])
                         st.session_state['local_trade_log'] = [
