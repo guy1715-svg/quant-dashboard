@@ -416,29 +416,55 @@ def _kis_secret():
     import os as _os_k
     return _os_k.environ.get("KIS_APP_SECRET", "")
 
-@st.cache_resource(ttl=21600, show_spinner=False)  # 6시간 (금요일 발급 → 월요일 장전 만료 방지)
-def _get_kis_token_cached(_key_fp=""):
-    """KIS API 접근 토큰 발급 — cache_resource로 격리 (6시간 TTL).
-    _key_fp: 키 지문(캐시 무효화용 — 사이드바에서 키 교체 시 새 토큰 발급)."""
+def _kis_mock_mode():
+    """모의투자 모드 여부 — 사이드바 토글 → secrets KIS_MODE → 기본 실전."""
+    _t = st.session_state.get('_kis_mock_input')
+    if _t is not None:
+        return bool(_t)
     try:
-        _key    = _kis_key()
-        _secret = _kis_secret()
-        _url    = _KIS_URL_TOKEN
-        _res    = _requests.post(_url, json={
+        return str(st.secrets.get("KIS_MODE", "")).lower() in ("mock", "vts", "모의")
+    except Exception:
+        return False
+
+def _kis_base():
+    """실전/모의투자 도메인 분기 — 모의 키를 실전 도메인에 쓰면 무조건 토큰 실패."""
+    return ("https://openapivts.koreainvestment.com:29443" if _kis_mock_mode()
+            else "https://openapi.koreainvestment.com:9443")
+
+# 토큰 수동 캐시 — st.cache_resource는 실패(None)까지 6시간 캐시하는 버그가 있어
+# 성공만 캐시하고 실패는 즉시 재시도 가능하도록 dict로 직접 관리.
+_KIS_TOKEN_CACHE: dict = {}   # {key_fp: (token, expiry_ts)}
+
+def kis_get_token():
+    """KIS API 접근 토큰 — 성공만 6시간 캐시, 실패 사유는 세션에 기록."""
+    _key    = _kis_key()
+    _secret = _kis_secret()
+    if not _key or not _secret:
+        st.session_state['_kis_token_err'] = "App Key/Secret 미입력"
+        return None
+    _fp = f"{_key[:8]}|{_kis_mock_mode()}"
+    _hit = _KIS_TOKEN_CACHE.get(_fp)
+    if _hit and _hit[1] > _time_kis.time():
+        return _hit[0]
+    try:
+        _res = _requests.post(f"{_kis_base()}/oauth2/tokenP", json={
             "grant_type": "client_credentials",
             "appkey":     _key,
             "appsecret":  _secret
         }, timeout=10)
-        _token = _res.json().get("access_token")
+        _body = _res.json()
+        _token = _body.get("access_token")
         if _token:
+            _KIS_TOKEN_CACHE[_fp] = (_token, _time_kis.time() + 21600)
+            st.session_state.pop('_kis_token_err', None)
             return _token
-    except Exception:
-        pass
+        # 실패 — KIS 에러 코드/메시지 그대로 보존 (EGW00133=1분1회 제한 등)
+        st.session_state['_kis_token_err'] = (
+            f"{_body.get('error_code', _res.status_code)}: "
+            f"{_body.get('error_description', str(_body)[:120])}")
+    except Exception as _e:
+        st.session_state['_kis_token_err'] = f"{type(_e).__name__}: {str(_e)[:100]}"
     return None
-
-def kis_get_token():
-    """KIS API 접근 토큰 발급 — 6시간 TTL 자동 갱신"""
-    return _get_kis_token_cached(_kis_key()[:8])
 
 def kis_get_price(ticker):
     """KIS API 실시간 현재가 조회"""
@@ -447,7 +473,7 @@ def kis_get_price(ticker):
         if not _token: return None
         _key    = _kis_key()
         _secret = _kis_secret()
-        _url    = _KIS_URL_PRICE
+        _url    = f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price"
         _res    = _requests.get(_url, headers={
             "authorization": f"Bearer {_token}",
             "appkey":        _key,
@@ -534,7 +560,7 @@ def kis_get_investor(ticker):
         if not _token: return None
         _key    = _kis_key()
         _secret = _kis_secret()
-        _url    = _KIS_URL_INVESTOR
+        _url    = f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-investor"
         _res    = _requests.get(_url, headers={
             "authorization": f"Bearer {_token}",
             "appkey":        _key,
@@ -567,7 +593,7 @@ def kis_get_org_net_daily(ticker, days=10):
             return None, 0
         _key    = _kis_key()
         _secret = _kis_secret()
-        _res = _requests.get(_KIS_URL_INVESTOR, headers={
+        _res = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-investor", headers={
             "authorization": f"Bearer {_token}",
             "appkey":        _key,
             "appsecret":     _secret,
@@ -3514,6 +3540,8 @@ with st.sidebar:
         st.text_input("KIS App Key", type="password", key="_kis_app_key_input",
                       help="secrets에 이미 등록했다면 비워두세요")
         st.text_input("KIS App Secret", type="password", key="_kis_app_secret_input")
+        st.toggle("모의투자 키 사용 (VTS)", key="_kis_mock_input",
+                  help="모의투자용 키는 접속 도메인이 달라(29443 포트) 이 토글을 켜야 토큰이 발급됩니다")
         if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
             st.success("✅ 입력 키 감지 — 외인 수급은 공식 KIS API로 조회됩니다.")
         elif kis_available():
@@ -3525,7 +3553,13 @@ with st.sidebar:
             with st.spinner("KIS 토큰 발급 + 수급 조회 테스트 중..."):
                 _tok_t = kis_get_token()
                 if not _tok_t:
-                    st.error("❌ 토큰 발급 실패 — App Key/Secret 값 확인 필요 (오타·실전/모의 구분)")
+                    _terr = st.session_state.get('_kis_token_err', '원인 미상')
+                    st.error(f"❌ 토큰 발급 실패 — {_terr}")
+                    if 'EGW00133' in str(_terr):
+                        st.caption("⏳ KIS 토큰은 **1분당 1회**만 발급 가능 — 60초 후 재시도하세요.")
+                    elif 'EGW00201' in str(_terr) or 'appkey' in str(_terr).lower():
+                        st.caption("🔑 App Key/Secret 값 오류 — 복사 시 앞뒤 공백/따옴표 포함 여부 확인. "
+                                   "모의투자 키라면 위 VTS 토글을 켜세요.")
                 else:
                     _inv_t = kis_get_investor("005930")
                     if _inv_t:
