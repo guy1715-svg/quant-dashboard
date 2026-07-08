@@ -8205,6 +8205,42 @@ def _update_rank_history(df_ranked, history_key: str, max_days: int = 7) -> dict
     return _result
 
 # 국장ETF / 미장ETF 공용 지표 계산 함수
+def calculate_trade_levels(cur_price, ma5_price, prev_close, gap_pct, ma5_disp, is_kr=True):
+    """★ ETF 가격 전략 단일 산출 함수(Single Source) — 랭킹 카드·타점 위젯이 공통 참조.
+    갭/과열/눌림목 상황에 따라 매수 타점을 정하고 손절(-7%)·목표(+8%/+15%)·R:R을 계산.
+    반환 dict: entry, stop, target1, target2, rr, status, status_c, comment, in_zone."""
+    cur  = float(cur_price or 0)
+    ma5  = float(ma5_price) if ma5_price else cur
+    prev = float(prev_close) if prev_close else cur
+    _gp  = float(gap_pct or 0)
+    _md  = float(ma5_disp or 0)
+    _is_gap  = _gp >= 3.0
+    _is_hot  = _md >= 3.0
+    _is_cool = -1.0 <= _md <= 1.0
+    if _is_gap and _is_hot:
+        entry = round(ma5 * 0.99, 2); status = "⛔ 매수 차단"; sc = "#f43f5e"
+        cm = "갭상승+과열 — MA5 -1% 눌림목 대기"; zone = False
+    elif _is_gap:
+        entry = round(prev * 1.001, 2); status = "⛔ 갭상승 차단"; sc = "#f97316"
+        cm = f"갭상승 +{_gp:.1f}% — 전일종가 복귀 시 진입"; zone = False
+    elif _is_hot:
+        entry = round(ma5 * 0.99, 2); status = "⚠️ 과열 대기"; sc = "#f97316"
+        cm = f"MA5 이격 +{_md:.1f}% 과열 — MA5 -1% 눌림목 대기"; zone = False
+    elif _is_cool:
+        entry = round(cur, 2); status = "✅ 진입 타점"; sc = "#22c55e"
+        cm = f"MA5 이격 {_md:+.1f}% — 현재가가 타점권"; zone = True
+    else:
+        entry = round(ma5, 2); status = "⏳ 눌림목 대기"; sc = "#60a5fa"
+        cm = "MA5 도달(-1%~+1%) 시 진입"; zone = False
+    stop    = round(entry * (1 - _STOP_LOSS_PCT), 2)
+    target1 = round(entry * 1.08, 2)
+    target2 = round(entry * 1.15, 2)
+    _risk   = entry - stop
+    rr      = round((target1 - entry) / _risk, 1) if _risk > 0 else 0
+    return {'entry': entry, 'stop': stop, 'target1': target1, 'target2': target2,
+            'rr': rr, 'status': status, 'status_c': sc, 'comment': cm, 'in_zone': zone}
+
+
 def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show_add_btn=False, rank_history=None):
     """ETF 랭킹 카드 렌더링 공용 함수."""
     _rh = rank_history or {}  # {ticker: [rank_d0(today), rank_d1, rank_d2, ...]}
@@ -8384,17 +8420,14 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 "#34d399" if "추가매집" in _rank_state else
                 "#64748b"
             )
-            # ── 🎯 실전 가격 타점 계산 (매수/손절/목표/RR) ──
+            # ── 🎯 실전 가격 타점 (단일 함수 calculate_trade_levels 참조 — 위젯과 완전 일치) ──
             _cur_r  = float(row.get('현재가', 0) or 0)
-            _ma5_r  = float(row.get('MA5가격', 0) or 0)
             _u_r    = currency_symbol
             _fmt_r  = (lambda v: f"{v:,.0f}{_u_r}") if _u_r == '원' else (lambda v: f"{_u_r}{v:,.2f}")
-            # 매수 타점 = MA5(현재가 아래일 때) 또는 현재가 -2.3% 눌림목
-            _entry_r = _ma5_r if (0 < _ma5_r < _cur_r) else _cur_r * 0.977
-            _stop_r  = _entry_r * (1 - _STOP_LOSS_PCT)   # 타점 대비 -7%
-            _tgt_r   = _entry_r * 1.08                    # +8%
-            _rr_r    = (_tgt_r - _entry_r) / max(_entry_r - _stop_r, 1e-9)
-            _in_zone = _cur_r <= _entry_r * 1.01          # 타점 도달(진입 가능)
+            _lv_r = calculate_trade_levels(_cur_r, row.get('MA5가격'), row.get('전일종가'),
+                                           row.get('갭(%)', 0), row.get('MA5이격(%)', 0),
+                                           str(row['코드']).isdigit())
+            _in_zone = _lv_r['in_zone']
             _entry_badge = (
                 "<span style='background:#16a34a25;color:#34d399;font-size:9px;font-weight:700;"
                 "padding:2px 7px;border-radius:8px;margin-left:6px'>🎯 진입 가능</span>" if _in_zone else
@@ -8403,10 +8436,10 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             ) if _cur_r > 0 else ""
             _price_line = (
                 f"<div style='margin-top:6px;font-size:11px;color:#94a3b8;letter-spacing:0.2px'>"
-                f"🎯 타점 <b style='color:#fbbf24'>{_fmt_r(_entry_r)}</b> &nbsp;|&nbsp; "
-                f"🛑 손절 <b style='color:#ef4444'>{_fmt_r(_stop_r)}</b> &nbsp;|&nbsp; "
-                f"🚀 목표 <b style='color:#34d399'>{_fmt_r(_tgt_r)}</b> &nbsp;|&nbsp; "
-                f"⚖️ R:R <b style='color:#f0f4ff'>1:{_rr_r:.1f}</b></div>"
+                f"🎯 타점 <b style='color:#fbbf24'>{_fmt_r(_lv_r['entry'])}</b> &nbsp;|&nbsp; "
+                f"🛑 손절 <b style='color:#ef4444'>{_fmt_r(_lv_r['stop'])}</b> &nbsp;|&nbsp; "
+                f"🚀 목표 <b style='color:#34d399'>{_fmt_r(_lv_r['target1'])}</b> &nbsp;|&nbsp; "
+                f"⚖️ R:R <b style='color:#f0f4ff'>1:{_lv_r['rr']:.1f}</b></div>"
             ) if _cur_r > 0 else ""
             st.markdown(
                 f"<div style='background:{_bg};border:1px solid {_border_color};border-radius:10px;"
@@ -8545,38 +8578,17 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             _sym        = '원' if _is_kr_etf else '$'
             _fmt        = lambda v: f"{v:,.0f}{_sym}" if _is_kr_etf else f"{_sym}{v:,.2f}"
 
-            # 상황별 타점 계산
-            if _is_gap and _is_hot:
-                _entry     = round(_ma5_price * 0.99, 2)
-                _status    = "⛔ 매수 차단"
-                _status_c  = "#f43f5e"
-                _comment   = f"갭상승+과열. 타점: MA5({_fmt(_ma5_price)}) -1% 눌림목 대기"
-            elif _is_gap:
-                _entry     = round(_prev_close * 1.001, 2)
-                _status    = "⛔ 갭상승 차단"
-                _status_c  = "#f97316"
-                _comment   = f"갭상승 +{_gap_v:.1f}%. 전일 종가({_fmt(_prev_close)}) 복귀 시 진입"
-            elif _is_hot:
-                _entry     = round(_ma5_price * 0.99, 2)
-                _status    = "⚠️ 과열 대기"
-                _status_c  = "#f97316"
-                _comment   = f"MA5 이격 +{_ma5_v:.1f}% 과열. MA5 -1% 수준 눌림목 대기"
-            elif _is_cool:
-                _entry     = round(_cur_price, 2)
-                _status    = "✅ 진입 타점"
-                _status_c  = "#22c55e"
-                _comment   = f"MA5 이격 {_ma5_v:+.1f}% — 현재가가 타점 구간"
-            else:
-                _entry     = round(_ma5_price, 2)
-                _status    = "⏳ 눌림목 대기"
-                _status_c  = "#60a5fa"
-                _comment   = f"MA5({_fmt(_ma5_price)}) 도달(-1%~+1%) 시 진입"
-
-            _stop     = round(_entry * (1 - _STOP_LOSS_PCT), 2)
-            _target1  = round(_entry * 1.08, 2)
-            _target2  = round(_entry * 1.15, 2)
-            _risk     = _entry - _stop
-            _rr       = round((_target1 - _entry) / _risk, 1) if _risk > 0 else 0
+            # 단일 함수 참조 — 랭킹 카드 가격 라인과 1원도 안 어긋나게 통일
+            _lv = calculate_trade_levels(_cur_price, _ma5_price, _prev_close,
+                                         _gap_v, _ma5_v, _is_kr_etf)
+            _entry    = _lv['entry']
+            _status   = _lv['status']
+            _status_c = _lv['status_c']
+            _comment  = _lv['comment']
+            _stop     = _lv['stop']
+            _target1  = _lv['target1']
+            _target2  = _lv['target2']
+            _rr       = _lv['rr']
 
             st.markdown(f"""
 <div style='background:rgba(30,30,50,0.7);border:2px solid {_status_c};border-radius:12px;padding:16px 20px;margin:8px 0'>
