@@ -722,11 +722,12 @@ def check_macro_blackout():
             pass
     return False, ""
 
-def kis_get_index(iscd):
+def kis_get_index(iscd, _token=None):
     """KIS 국내 업종/지수 현재가 — iscd: '0001'(코스피)/'1001'(코스닥).
+    _token: 캐시 함수 밖에서 미리 발급한 토큰(세션쓰기 회피). 없으면 즉석 발급.
     반환: {'현재': float, '등락': float(%)} 또는 None. 실패는 은폐 없이 None(과거값 반환 금지)."""
     try:
-        _token = kis_get_token()
+        _token = _token or kis_get_token()
         if not _token:
             return None
         _res = _requests.get(
@@ -777,15 +778,13 @@ def _kis_index_probe(iscd="0001"):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_index_quotes():
-    """★ 지수/매크로 단일 소스(SSOT).
-    코스피·코스닥 = KIS 공식 API(정문·실시간, 크롤링/FDR 폐기),
-    나스닥·환율·유가·VIX = yfinance(KIS 미제공 해외물).
-    실패 시 은폐 없이 해당 키를 생략 → 렌더에서 '❌ 수신 불가' 명시."""
+def _get_index_quotes_impl(_token, _bucket):
+    """실제 지수 수집 (캐시 본체). 토큰은 밖에서 주입 — 캐시 함수 내 세션쓰기(=예외) 회피.
+    _bucket: 60초 캐시 버킷 키. 코스피/코스닥=KIS, 나스닥/환율/유가/VIX=yfinance."""
     _r = {}
     # ── 코스피/코스닥: KIS API only (yfinance/FDR/네이버 크롤링 전면 폐기) ──
     for _n, _iscd in [("코스피", "0001"), ("코스닥", "1001")]:
-        _idx = kis_get_index(_iscd)
+        _idx = kis_get_index(_iscd, _token)   # 미리 발급한 토큰 사용 (세션쓰기 없음)
         if _idx:
             _r[_n] = _idx
         # 실패 시 아무것도 넣지 않음 (Silent Failure 제거 — 과거값 반환 안 함)
@@ -804,6 +803,18 @@ def get_index_quotes():
     except Exception:
         pass
     return _r
+
+
+def get_index_quotes():
+    """★ 지수/매크로 단일 소스(SSOT) 래퍼.
+    KIS 토큰을 캐시 함수 '밖'에서 발급(세션쓰기 허용) 후 캐시 본체에 주입 →
+    @st.cache_data 안에서 세션쓰기 예외로 인한 '수신 불가' 버그 원천 차단."""
+    try:
+        _tok = kis_get_token()
+    except Exception:
+        _tok = None
+    _bucket = int((datetime.utcnow().timestamp()) // 60)   # 60초 캐시 버킷
+    return _get_index_quotes_impl(_tok or "", _bucket)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -3558,7 +3569,7 @@ st.session_state['_now_kst_str'] = _NOW_KST.strftime('%Y.%m.%d %H:%M:%S KST')
 def _clear_macro_caches():
     """사이드바·헤더 매크로 데이터 전체 캐시 초기화 — 킬스위치/환율/유가/지수/수출 동기화.
     메인 [🔄 지수 갱신]·[🔄 새로고침]·사이드바 [🔄 실시간 동기화]가 공통 호출."""
-    for _mfn in (get_index_quotes, check_index_shutdown, check_index_shutdown_us,
+    for _mfn in (_get_index_quotes_impl, check_index_shutdown, check_index_shutdown_us,
                  get_usd_krw, get_wti_oil, fetch_motie_exports):
         try:
             _mfn.clear()
