@@ -8388,7 +8388,13 @@ padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
                         _ep_sup = _ep_ov['stoploss']
                         _ep_ent = _ep_ov['entry']
                         _ep_tgt = _ep_ov['target1']
-                        _ep_cur = float(_df_ov['Close'].iloc[-1]) if 'Close' in _df_ov.columns else _ep_ent
+                        # 현재가 = 실제 당일 종가('종가' 컬럼) — 'Close'(영문)는 없어 항상 진입가로 덮이던 버그 수정
+                        if '종가' in _df_ov.columns:
+                            _ep_cur = float(_df_ov['종가'].iloc[-1])
+                        elif 'Close' in _df_ov.columns:
+                            _ep_cur = float(_df_ov['Close'].iloc[-1])
+                        else:
+                            _ep_cur = float(_ep_ov.get('cur') or _sel_item.get('현재가') or _ep_ent)
 
                         st.markdown(
                             f"<div style='background:{_vb_ov};border:2px solid {_vc_ov}50;border-radius:12px;"
