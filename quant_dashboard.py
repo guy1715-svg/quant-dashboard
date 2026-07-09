@@ -5589,6 +5589,14 @@ padding:14px 16px;margin-bottom:10px'>
                                       annotation_font=dict(color=_sl_c, size=12, family='IBM Plex Mono'),
                                       annotation_position="right", row=1, col=1)
 
+            # ── 현재가 기준선 (흰색 점선 — 타점선과 시각 분리, 우측 Y축 라벨) ──
+            _cur_line = float(_display_price or 0)
+            if _cur_line > 0:
+                _mp_fig.add_hline(y=_cur_line, line=dict(color='#f8fafc', dash='dot', width=1.4),
+                                  annotation_text=f"<b>현재가 {_cur_line:,.0f}</b>",
+                                  annotation_font=dict(color='#f8fafc', size=12, family='IBM Plex Mono'),
+                                  annotation_position="right", row=1, col=1)
+
             _mp_ri = 2
 
             if _mp_rsi and 'RSI' in _mpdf.columns:
