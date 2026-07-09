@@ -4658,10 +4658,10 @@ div[data-testid="stMetricLabel"] { font-size:0.78rem; }
 section[data-testid="stSidebar"] > div:first-child { padding-top:8px; }
 /* 긴급 경고(st.error) 강조 — 큰 폰트·굵게 */
 div[data-testid="stAlert"] { font-size:0.95rem; font-weight:700; border-radius:10px; }
-/* V9.2 콤팩트: 블록 간 간격·메트릭 패딩 조여 세로 부피 축소 */
-div[data-testid="stVerticalBlock"] { gap:0.38rem; }
-div[data-testid="stMetric"] { padding:7px 12px; }
-div[data-testid="stExpander"] { margin-bottom:0.3rem; }
+/* V9.11 롤백: 과도한 압축(0.38rem)으로 헤더↔5AI 배지 겹침 → 정상 간격 복원 */
+div[data-testid="stVerticalBlock"] { gap:0.8rem; }
+div[data-testid="stMetric"] { padding:8px 13px; }
+div[data-testid="stExpander"] { margin-bottom:0.5rem; }
 </style>""", unsafe_allow_html=True)
 
     # ── 상단 상태 바 (지수 배지와 세로 중앙 정렬) ──
@@ -4763,6 +4763,8 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
                     f"<div style='font-size:9px;color:#64748b'>{_extra}</div></div>")
 
         _sv = _brief.get("score_val")
+        # 헤더(지수 갱신·시간) ↔ 5AI 배지 사이 세로 여백 확보 (겹침 방지)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
         _bcols = st.columns(5)
         _bcols[0].markdown(_pill("환율", _st.get("krw", -1),
                                  f"{_ai_krw:,.0f}" if isinstance(_ai_krw,(int,float)) else "—"), unsafe_allow_html=True)
