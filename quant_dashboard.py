@@ -3553,10 +3553,16 @@ with st.sidebar:
             f"<div style='font-size:17px;font-weight:900;color:{_sbc};margin-top:2px'>{_sbt}</div>"
             f"</div>", unsafe_allow_html=True)
         # 🔄 실시간 동기화 미니 버튼 — 매크로 캐시만 즉시 비우고 사이드바 최신화
-        if st.button("🔄 실시간 동기화", key="sb_macro_sync", use_container_width=True,
-                     help="킬스위치·환율·유가·지수 캐시를 즉시 비우고 최신값으로 갱신"):
+        def _sb_macro_sync():
             _clear_macro_caches()
-            st.rerun()
+            st.session_state['_macro_sync_ts'] = (datetime.utcnow() + timedelta(hours=9)).strftime('%H:%M:%S')
+            st.toast("🔄 매크로 동기화 완료 — 최신 시세로 갱신", icon="✅")
+        st.button("🔄 실시간 동기화", key="sb_macro_sync", use_container_width=True,
+                  on_click=_sb_macro_sync,
+                  help="킬스위치·환율·유가·지수 캐시를 즉시 비우고 최신값으로 갱신")
+        _sync_ts = st.session_state.get('_macro_sync_ts')
+        if _sync_ts:
+            st.caption(f"🕒 마지막 동기화: {_sync_ts} KST · 장마감 시 값이 동일할 수 있음")
         # 시장별 지수 킬스위치 경고 (미장 선택 시 S&P500/나스닥, 국장 시 코스피/코스닥)
         _mkt_tag = "🇺🇸 미장" if _sb_is_us else "🇰🇷 국장"
         if _idx_sd and _idx_msg:
@@ -5251,6 +5257,52 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
                 )
 
 
+def _calc_adx14(df, period=14):
+    """Wilder ADX(14) — 지표 df에 ADX 컬럼이 없어 즉석 계산. 실패 시 0."""
+    try:
+        _h = df['고가'].astype(float); _l = df['저가'].astype(float); _c = df['종가'].astype(float)
+        _up = _h.diff(); _dn = -_l.diff()
+        _plus_dm  = ((_up > _dn) & (_up > 0)) * _up
+        _minus_dm = ((_dn > _up) & (_dn > 0)) * _dn
+        _tr = pd.concat([_h - _l, (_h - _c.shift()).abs(), (_l - _c.shift()).abs()], axis=1).max(axis=1)
+        _atr  = _tr.ewm(alpha=1/period, adjust=False).mean()
+        _pdi  = 100 * _plus_dm.ewm(alpha=1/period, adjust=False).mean() / _atr
+        _mdi  = 100 * _minus_dm.ewm(alpha=1/period, adjust=False).mean() / _atr
+        _dx   = 100 * (_pdi - _mdi).abs() / (_pdi + _mdi).replace(0, np.nan)
+        _adx  = _dx.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
+        return round(float(_adx), 1) if _adx == _adx else 0.0
+    except Exception:
+        return 0.0
+
+
+def get_ai_recommended_strategy(df):
+    """ADX / RSI / 20MA 이격도 기반 전략 자동 추천.
+    반환: (preset_key, reason:str, adx:float).
+      추세(trend): ADX>25 AND 종가>20MA
+      반등(bounce): RSI<30 OR (RSI가 30 상향 돌파하며 상승 중)
+      바닥(bottom): 종가-20MA 이격도 ≤ -15%
+    우선순위: 바닥(극단) → 반등 → 추세 → 기본(반등)."""
+    try:
+        _l = df.iloc[-1]
+        _close = float(_l['종가'])
+        _ma20  = float(_l.get('MA20', _close)) or _close
+        _rsi   = float(_l.get('RSI', 50))
+        _disp  = (_close / _ma20 - 1) * 100 if _ma20 > 0 else 0.0
+        _adx   = _calc_adx14(df)
+        _rsi_prev = float(df.iloc[-2].get('RSI', _rsi)) if len(df) >= 2 else _rsi
+        _rsi_cross_up = (_rsi_prev < 30 <= _rsi)   # 30 상향 돌파
+        if _disp <= -15:
+            return 'bottom', f"20MA 이격도 {_disp:.1f}% (≤ -15%) — 과매도 극단, 바닥 확인이 유리합니다.", _adx
+        if _rsi < 30 or _rsi_cross_up:
+            _why = f"RSI {_rsi:.0f} 과매도" if _rsi < 30 else f"RSI 30 상향 돌파({_rsi:.0f})"
+            return 'bounce', f"{_why} — 반등 매매가 유리합니다.", _adx
+        if _adx > 25 and _close > _ma20:
+            return 'trend', f"ADX {_adx:.0f} (>25)·종가>20MA — 추세 매매가 유리합니다.", _adx
+        return 'bounce', f"뚜렷한 신호 없음 (ADX {_adx:.0f}·RSI {_rsi:.0f}) — 기본 반등 전략.", _adx
+    except Exception:
+        return 'bounce', "데이터 부족 — 기본 반등 전략.", 0.0
+
+
 with tab_b:
     st.markdown("### 🔍 분석")
     # ── 진입 금지 / 매크로 블랙아웃 대형 배너 ──
@@ -5293,22 +5345,36 @@ with tab_b:
         st.stop()
     if 'analysis_preset' not in st.session_state:
         st.session_state.analysis_preset = 'bounce'
-    _pr_map = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
+    _pr_map  = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
+    _key_map = {"bounce": "📉 반등", "trend": "📈 추세", "bottom": "🎯 바닥"}
     _rib1, _rib2, _rib3 = st.columns([2, 1, 1], vertical_alignment="bottom")
     with _rib1:
         selected = st.selectbox("🔎 분석 종목", _b1_opts, key="b_unified_sel")
-    with _rib2:
-        _pr_sel = st.radio("매매 전략", list(_pr_map.keys()), horizontal=True,
-                           index=list(_pr_map.values()).index(st.session_state.analysis_preset),
-                           key="preset_radio_b1")
-        if _pr_map[_pr_sel] != st.session_state.analysis_preset:
-            st.session_state.analysis_preset = _pr_map[_pr_sel]
-            st.rerun()
+    # 라디오보다 먼저 종목/데이터 확정 → AI 추천 계산에 사용
     sel_ticker = selected.split('(')[-1].replace(')', '').strip()
     if not is_korean_ticker(sel_ticker):
         sel_ticker = selected.split(' ')[0].strip()
     sel_name = all_data[sel_ticker]['name']
     sel_df   = all_data[sel_ticker]['df']
+
+    # ── ✨ AI 전략 자동 추천 (ADX/RSI/20MA 이격도) ──
+    _ai_reco, _ai_reason, _ai_adx = get_ai_recommended_strategy(sel_df)
+    _reco_lbl = _key_map.get(_ai_reco, "📉 반등")
+    # 종목 최초 분석 시 → 추천 전략을 라디오 기본값으로 자동 세팅
+    if st.session_state.get('_analysis_last_ticker') != sel_ticker:
+        st.session_state['_analysis_last_ticker'] = sel_ticker
+        st.session_state['preset_radio_b1'] = _reco_lbl
+        st.session_state['analysis_preset'] = _ai_reco
+
+    with _rib2:
+        def _fmt_strat(_opt):
+            return f"{_opt} ✨AI추천" if _opt == _reco_lbl else _opt
+        _pr_sel = st.radio("매매 전략", list(_pr_map.keys()), horizontal=True,
+                           format_func=_fmt_strat, key="preset_radio_b1")
+        if _pr_map[_pr_sel] != st.session_state.analysis_preset:
+            st.session_state.analysis_preset = _pr_map[_pr_sel]
+            st.rerun()
+    st.caption(f"✨ AI 전략 추천: **{_reco_lbl}** — {_ai_reason}")
 
     # ══════════════════════════════════════════════════════════════
     # 📊 분석 요약 (탭 위로 승격 — 종목/전략 즉시 결론) : Verdict + Checklist + 추천가
