@@ -4775,6 +4775,8 @@ div[data-testid="stExpander"] { margin-bottom:0.5rem; }
                                  f"VIX {_vix:.0f}" if isinstance(_vix,(int,float)) else "—"), unsafe_allow_html=True)
         _bcols[4].markdown(_pill("레짐", _regime_s, _brief["light"].upper()), unsafe_allow_html=True)
 
+        # 배지 행 ↔ 상세 가이드 Expander 사이 여백 확보 (겹침 방지)
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         # 상세 줄글 설명은 Expander로 격리 (평소 접힘)
         with st.expander(f"🔎 5AI 분석 상세 가이드 및 기각 사유 보기 — {_brief['verdict']}", expanded=False):
             for _ln in _brief["lines"]:
