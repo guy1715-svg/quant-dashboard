@@ -751,6 +751,31 @@ def kis_get_index(iscd):
         return None
 
 
+def _kis_index_probe(iscd="0001"):
+    """진단용 — KIS 지수 API 원시 응답(status/rt_cd/msg) 반환. 실패 원인 특정용."""
+    try:
+        _tok = kis_get_token()
+        if not _tok:
+            return {"단계": "토큰 발급 실패", "사유": st.session_state.get('_kis_token_err', '원인 미상')}
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            headers={"authorization": f"Bearer {_tok}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "FHPUP02100000", "custtype": "P"},
+            params={"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": iscd}, timeout=5)
+        _out = {"HTTP": _res.status_code}
+        try:
+            _j = _res.json()
+            _out["rt_cd"] = _j.get("rt_cd")
+            _out["msg1"]  = _j.get("msg1")
+            _out["현재지수"] = _j.get("output", {}).get("bstp_nmix_prpr")
+            _out["등락률"]  = _j.get("output", {}).get("bstp_nmix_prdy_ctrt")
+        except Exception:
+            _out["body"] = _res.text[:400]
+        return _out
+    except Exception as _e:
+        return {"예외": f"{type(_e).__name__}: {str(_e)[:200]}"}
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_index_quotes():
     """★ 지수/매크로 단일 소스(SSOT).
@@ -4666,7 +4691,24 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
         _clear_macro_caches()             # 사이드바 킬스위치/환율/유가/지수/수출 캐시 동시 초기화
         st.rerun()
     _rf2.caption(f"🕒 현재: {st.session_state.get('_now_kst', datetime.utcnow()+timedelta(hours=9)).strftime('%H:%M:%S')} KST "
-                 f"· 자동 캐시 120초 (실시간 반영하려면 🔄)")
+                 f"· 자동 캐시 60초 (실시간 반영하려면 🔄)")
+
+    # ── 🔬 KIS 지수 API 진단 (코스피/코스닥 '수신 불가' 원인 특정용) ──
+    if not _mkt_home.get("코스피") or not _mkt_home.get("코스닥"):
+        with st.expander("🔬 지수 API 진단 (코스피/코스닥 수신 불가 원인 보기)", expanded=False):
+            st.caption("KIS 국내 업종/지수 API가 실제로 어떤 응답을 주는지 확인합니다.")
+            if st.button("▶ KIS 지수 API 테스트 실행", key="kis_idx_probe_btn"):
+                _pr_kospi  = _kis_index_probe("0001")
+                _pr_kosdaq = _kis_index_probe("1001")
+                st.write("**코스피(0001):**", _pr_kospi)
+                st.write("**코스닥(1001):**", _pr_kosdaq)
+                _msg = str(_pr_kospi.get("msg1", "")) + str(_pr_kospi.get("사유", "")) + str(_pr_kospi.get("예외", ""))
+                if _pr_kospi.get("rt_cd") == "0":
+                    st.success("✅ API 정상 응답 — 위 현재지수/등락률이 보이면 파싱만 맞추면 됩니다.")
+                elif "모의" in _msg or "권한" in _msg or "없" in _msg:
+                    st.error("⛔ 계정 권한/모드 문제 — KIS Developers에서 '국내주식 시세' 신청 또는 실전/모의 키 확인 필요")
+                else:
+                    st.warning("⚠️ 위 rt_cd·msg1(또는 예외) 내용을 그대로 복사해 알려주시면 정확히 고칩니다.")
 
     # (전략 방향 · 블랙아웃 경고 · 수동 입력은 모두 사이드바 Sticky 패널로 이전 —
     #  본문은 데이터 모니터링에만 집중. 여기서는 아무것도 렌더링하지 않음.)
