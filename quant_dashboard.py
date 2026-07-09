@@ -3606,10 +3606,12 @@ with st.sidebar:
             _sbt, _sbc, _sbi = "진입 가능", "#16a34a", "🟢"
         st.markdown(
             f"<div style='background:{_sbc}20;border:2px solid {_sbc};border-radius:12px;"
-            f"padding:10px 12px;margin-bottom:8px;text-align:center'>"
+            f"padding:10px 12px;margin-bottom:14px;text-align:center'>"
             f"<div style='font-size:26px;line-height:1'>{_sbi}</div>"
             f"<div style='font-size:17px;font-weight:900;color:{_sbc};margin-top:2px'>{_sbt}</div>"
             f"</div>", unsafe_allow_html=True)
+        # 상태 박스 ↔ 동기화 버튼 사이 안전 여백 확보 (겹침 방지)
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         # 🔄 실시간 동기화 미니 버튼 — 매크로 캐시만 즉시 비우고 사이드바 최신화
         def _sb_macro_sync():
             _clear_macro_caches()
@@ -4696,8 +4698,11 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
                 f"<div style='font-size:12px;font-weight:700;color:#f59e0b'>⚠️ 수신 불가</div>",
                 unsafe_allow_html=True)
 
-    # ── 지수 새로고침 (Streamlit은 상호작용 없으면 자동 갱신 안 됨 → 수동 갱신) ──
-    _rf1, _rf2 = st.columns([1, 6])
+    # ── 지수 새로고침 (버튼·시간 텍스트 세로 중앙 정렬 → 가로 라인 정돈) ──
+    try:
+        _rf1, _rf2 = st.columns([1, 6], vertical_alignment="center")
+    except TypeError:
+        _rf1, _rf2 = st.columns([1, 6])   # 구버전 폴백
     if _rf1.button("🔄 지수 갱신", key="refresh_index", use_container_width=True):
         _clear_macro_caches()             # 사이드바 킬스위치/환율/유가/지수/수출 캐시 동시 초기화
         st.rerun()
@@ -5017,8 +5022,11 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
                         # 카드 렌더링 — V9.1: 퀵 액션 바 상단 배치
                         _ts_badge = "<span style='background:#7c3aed;color:#fff;font-size:9px;padding:1px 6px;border-radius:10px'>🔒 트레일링스탑</span>" if _ts_active else ""
 
-                        # ── 퀵 액션 바 (카드 위쪽) ──
-                        _qa1, _qa2, _qa3 = st.columns(3)
+                        # ── 퀵 액션 바 (카드 위쪽) — 버튼 간격 확보(미스클릭 방지) ──
+                        try:
+                            _qa1, _qa2, _qa3 = st.columns(3, gap="medium")
+                        except TypeError:
+                            _qa1, _qa2, _qa3 = st.columns(3)   # 구버전 폴백
                         with _qa1:
                             if st.button(f"📉 절반 매도", key=f"half_sell_{_tk_p3}", use_container_width=True):
                                 _half_qty = max(1, _qty_p3 // 2)
