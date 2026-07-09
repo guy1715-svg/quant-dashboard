@@ -8017,6 +8017,14 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                 _tgrade = _tx.get('등급', '')
                 _tscore = _tx.get('점수', _tx.get('score', 0))
                 _tadx   = _tx.get('ADX', _tx.get('adx', '-'))
+                # ── 연속등장 배지 (스나이퍼 수칙 STEP3: 3일 연속 = 사격 허가) ──
+                _tstk = _streak_now.get(str(_ttk), 1)
+                if _tstk >= 3:
+                    _tstk_txt, _tstk_c = "🟢 3일 연속 (사격)", "#22c55e"
+                elif _tstk == 2:
+                    _tstk_txt, _tstk_c = "🟡 2일 연속 (대기)", "#fbbf24"
+                else:
+                    _tstk_txt, _tstk_c = "⚪ 1일차 신규 (보류)", "#94a3b8"
                 _t_ep = None
                 try:
                     _tdf = st.session_state.get('all_data_cache', {}).get(_ttk, {}).get('df')
@@ -8040,6 +8048,8 @@ padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
     <span style='font-size:15px;font-weight:900;color:{_gc}'>{_rank_ic[_ti]} {_tgrade}</span>
     <span style='font-size:12px;font-weight:700;color:#fbbf24'>{_tscore}점</span>
   </div>
+  <div style='display:inline-block;background:{_tstk_c}22;border:1px solid {_tstk_c}77;color:{_tstk_c};
+  font-size:11px;font-weight:800;padding:2px 10px;border-radius:10px;margin-bottom:6px'>연속등장 {_tstk_txt}</div>
   <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_tx.get('name','')}</div>
   <div style='font-size:10px;color:#64748b;margin-bottom:8px'>{_ttk} · {_tcur:,.0f}{_tu} · ADX {_tadx}</div>
   <div style='display:flex;justify-content:space-between;font-size:11px'>
