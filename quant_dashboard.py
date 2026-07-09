@@ -6627,7 +6627,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     # ══════════════════════════════════════════
     # ⚙️ 고급 스캔 설정 (Progressive Disclosure — 기본 닫힘)
     # ══════════════════════════════════════════
-    with st.expander("⚙️ 고급 스캔 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
+    with st.expander("🔬 AI 파라미터 자동 최적화 (Walk-Forward · 연구용)", expanded=False):
 
         # (빈 '전략 프리셋' 헤더/컬럼 제거 — 실제 프리셋 라디오는 아래 별도 블록)
         _opt_col1, _opt_col2, _opt_col3 = st.columns([2, 1, 1])
@@ -6815,7 +6815,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
     st.divider()
 
-    with st.expander("⚙️ 스캐너 설정 (프리셋 · 필터 · AI 최적화)", expanded=False):
+    with st.expander("⚡ 전략 프리셋 & 지표 필터 선택", expanded=False):
         # ── 프리셋: 시장 레짐 기반 자동 추천 라디오 ──
         st.markdown("#### ⚡ 전략 프리셋")
 
@@ -6933,33 +6933,30 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     if st.session_state.get("scanner_market") not in _SC_OPTS:
         st.session_state["scanner_market"] = _SC_OPTS[0]
 
-    # ─ 메인 조작부: 시장 선택 + 종목 수 + 스캔 버튼만 ─
-    _mc1, _mc2 = st.columns([3, 1])
-    with _mc1:
-        market_type = st.selectbox(
-            "🌏 스캔 대상 시장",
-            _SC_OPTS,
-            key="scanner_market",
-        )
-    with _mc2:
+    # ── 🎯 스캔 Control Ribbon — 시장 / 종목수 / 모드 / 시작 버튼 1줄 압축 ──
+    try:
+        _rc1, _rc2, _rc3, _rc4 = st.columns([2.2, 1, 2, 1.3], vertical_alignment="bottom")
+    except TypeError:
+        _rc1, _rc2, _rc3, _rc4 = st.columns([2.2, 1, 2, 1.3])
+    with _rc1:
+        market_type = st.selectbox("🌏 대상 시장", _SC_OPTS, key="scanner_market")
+    with _rc2:
         top_n = st.slider("종목 수", 20, 300, 100, key="scanner_topn")
-
-    # ── UI 동기화: 시장 선택에 따라 스캔 모드 자동 고정 ──────────────────
+    # ── UI 동기화: 시장 선택에 따라 스캔 모드 자동 고정 (radio 생성 前 세션 세팅) ──
     _market_forces_etf = ("국내 ETF" in market_type or "미국 ETF" in market_type)
     _market_forces_stock = ("국장 통합" in market_type or "미장 핵심" in market_type)
     if _market_forces_etf and st.session_state.get("scan_mode") != "🏦 ETF":
         st.session_state["scan_mode"] = "🏦 ETF"
     elif _market_forces_stock and st.session_state.get("scan_mode") == "🏦 ETF":
         st.session_state["scan_mode"] = "📈 개별주"
-
-    scan_mode = st.radio(
-        "스캔 모드",
-        ["📈 개별주", "🏦 ETF", "🔀 통합"],
-        horizontal=True,
-        key="scan_mode",
-        disabled=(_market_forces_etf or _market_forces_stock),
-        help="시장 선택에 따라 자동 고정됩니다" if (_market_forces_etf or _market_forces_stock) else None,
-    )
+    with _rc3:
+        scan_mode = st.radio(
+            "스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode",
+            disabled=(_market_forces_etf or _market_forces_stock),
+            help="시장 선택에 따라 자동 고정됩니다" if (_market_forces_etf or _market_forces_stock) else None,
+        )
+    with _rc4:
+        scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
 
     # session_state에서 필터값 읽기 (고급 설정 expander가 닫혀있어도 유지됨)
     use_rsi   = st.session_state.get('f_rsi',   True)
@@ -6979,15 +6976,19 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     max_price = st.session_state.get('f_maxp', 100000 if _is_us else 2000000)
     use_gemini_scan = st.session_state.get('f_gemini', False)
 
-    # 가격 필터 — key 유지용 (label 숨김, 고급 설정 expander 안에서 관리)
-    _hidden_mp = st.number_input(
-        f"최소 주가({'$' if _is_us else '원'})",
-        value=st.session_state.get('f_minp', 1 if _is_us else 5000),
-        step=1 if _is_us else 1000, key="f_minp", label_visibility="collapsed")
-    _hidden_mx = st.number_input(
-        f"최대 주가({'$' if _is_us else '원'})",
-        value=st.session_state.get('f_maxp', 100000 if _is_us else 2000000),
-        step=100 if _is_us else 10000, key="f_maxp", label_visibility="collapsed")
+    # ── ⚙️ 스캐너 상세 설정 (가격 필터) — 라벨 없이 떠돌던 유령 입력창 라벨화 + 격리 ──
+    with st.expander("⚙️ 스캐너 상세 설정 (가격 필터)", expanded=False):
+        _pf1, _pf2 = st.columns(2)
+        _hidden_mp = _pf1.number_input(
+            f"최소 주가 ({'$' if _is_us else '원'})",
+            value=st.session_state.get('f_minp', 1 if _is_us else 5000),
+            step=1 if _is_us else 1000, key="f_minp",
+            help="이 가격 미만 종목은 스캔에서 제외")
+        _hidden_mx = _pf2.number_input(
+            f"최대 주가 ({'$' if _is_us else '원'})",
+            value=st.session_state.get('f_maxp', 100000 if _is_us else 2000000),
+            step=100 if _is_us else 10000, key="f_maxp",
+            help="이 가격 초과 종목은 스캔에서 제외 (초고가주 배제)")
     min_price = float(_hidden_mp)
     max_price = float(_hidden_mx)
     use_gemini_scan = st.session_state.get('f_gemini', False)
@@ -7028,7 +7029,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         f"</div>",
         unsafe_allow_html=True,
     )
-    scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
+    # (🚀 스캔 시작 버튼은 상단 Control Ribbon으로 이동)
 
     if scan_btn:
         st.session_state.passed = []
@@ -8053,10 +8054,14 @@ padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
     <span style='color:#f43f5e'>🛑 손절 {_stop_s}</span>
   </div>
 </div>""", unsafe_allow_html=True)
-                    if st.button("⚡ 실전 매매로", key=f"scan_target_{_ttk}", use_container_width=True):
+                    if st.button("🔍 분석 탭으로 이동", key=f"scan_target_{_ttk}", use_container_width=True):
+                        _tnm = _tx.get('name', _ttk)
+                        add_ticker(_ttk, _tnm)                    # 분석 탭 드롭다운에 노출
                         st.session_state['scanner_selection'] = _ttk
-                        add_ticker(_ttk, _tx.get('name', _ttk))
-                        st.toast(f"⚡ {_tx.get('name','')} → 관심종목 추가 · 실전운용 탭에서 등록", icon="🎯")
+                        # 분석 탭 종목 드롭다운(b_unified_sel) 사전 선택
+                        _disp = f"{_tnm} ({_ttk})" if str(_ttk).isdigit() else f"{_ttk} ({_tnm})"
+                        st.session_state['b_unified_sel'] = _disp
+                        st.toast(f"🔍 {_tnm} → 관심종목 추가 · 상단 '분석' 탭에서 확인", icon="🎯")
             st.divider()
 
         # 전체 추가 버튼
