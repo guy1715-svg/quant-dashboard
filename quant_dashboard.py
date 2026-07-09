@@ -722,27 +722,49 @@ def check_macro_blackout():
             pass
     return False, ""
 
-@st.cache_data(ttl=120, show_spinner=False)
-def get_index_quotes():
-    """★ 지수/매크로 단일 소스(Single Source of Truth).
-    코스피·코스닥 = FinanceDataReader(KRX 정확), 나스닥·환율·유가·VIX = yfinance.
-    반환: {name: {'현재': float, '등락': float(%)}}. 모든 화면(헤더·경고·브리핑)이 이걸 참조."""
-    _r = {}
+def kis_get_index(iscd):
+    """KIS 국내 업종/지수 현재가 — iscd: '0001'(코스피)/'1001'(코스닥).
+    반환: {'현재': float, '등락': float(%)} 또는 None. 실패는 은폐 없이 None(과거값 반환 금지)."""
     try:
-        import FinanceDataReader as _fdr
-        _end = datetime.now().strftime('%Y-%m-%d')
-        _start = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-        for _n, _s in [("코스피", "KS11"), ("코스닥", "KQ11")]:
-            try:
-                _h = _fdr.DataReader(_s, _start, _end).dropna(subset=['Close'])
-                if len(_h) >= 2:
-                    _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
-                    if _c > 0 and _p > 0:
-                        _r[_n] = {'현재': _c, '등락': (_c/_p-1)*100}
-            except Exception:
-                pass
-    except ImportError:
-        pass
+        _token = kis_get_token()
+        if not _token:
+            return None
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            headers={
+                "authorization": f"Bearer {_token}",
+                "appkey": _kis_key(), "appsecret": _kis_secret(),
+                "tr_id": "FHPUP02100000", "custtype": "P",
+            },
+            params={"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": iscd},
+            timeout=5,
+        )
+        _out = _res.json().get("output", {})
+        if not _out:
+            return None
+        _cur = float(str(_out.get("bstp_nmix_prpr", 0) or 0).replace(",", ""))
+        _chg = float(str(_out.get("bstp_nmix_prdy_ctrt", 0) or 0).replace(",", ""))
+        if _cur > 0:
+            return {'현재': _cur, '등락': _chg}
+        return None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_index_quotes():
+    """★ 지수/매크로 단일 소스(SSOT).
+    코스피·코스닥 = KIS 공식 API(정문·실시간, 크롤링/FDR 폐기),
+    나스닥·환율·유가·VIX = yfinance(KIS 미제공 해외물).
+    실패 시 은폐 없이 해당 키를 생략 → 렌더에서 '❌ 수신 불가' 명시."""
+    _r = {}
+    # ── 코스피/코스닥: KIS API only (yfinance/FDR/네이버 크롤링 전면 폐기) ──
+    for _n, _iscd in [("코스피", "0001"), ("코스닥", "1001")]:
+        _idx = kis_get_index(_iscd)
+        if _idx:
+            _r[_n] = _idx
+        # 실패 시 아무것도 넣지 않음 (Silent Failure 제거 — 과거값 반환 안 함)
+    # ── 나스닥/환율/유가/VIX: KIS 미제공 해외물 → yfinance 유지 ──
     try:
         import yfinance as _yf2
         for _n, _s in [("나스닥", "^IXIC"), ("달러/원", "KRW=X"), ("VIX", "^VIX"), ("WTI유가", "CL=F")]:
@@ -4630,6 +4652,12 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
             _sb_cols[2+_i_sb].markdown(
                 f"<div style='font-size:11px;color:#64748b'>{_nm_sb}</div>"
                 f"<div style='font-size:13px;font-weight:700;color:{_c_sb}'>{'▲' if _up_sb else '▼'}{abs(_d_sb.get('등락',0)):.2f}%</div>",
+                unsafe_allow_html=True)
+        else:
+            # 은폐 금지 — 과거값 대신 명시적 수신 실패 표기
+            _sb_cols[2+_i_sb].markdown(
+                f"<div style='font-size:11px;color:#64748b'>{_nm_sb}</div>"
+                f"<div style='font-size:12px;font-weight:700;color:#f59e0b'>⚠️ 수신 불가</div>",
                 unsafe_allow_html=True)
 
     # ── 지수 새로고침 (Streamlit은 상호작용 없으면 자동 갱신 안 됨 → 수동 갱신) ──
