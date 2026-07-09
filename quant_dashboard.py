@@ -2176,55 +2176,100 @@ def parse_motie_export_text(text):
     return out
 
 
+def _pg_won_price(tk, fallback):
+    """연기금 표시가 정상화 — KIS 정확 원화가 우선(yfinance KRX 10배 왜곡 회피), 실패 시 폴백."""
+    try:
+        _kp = kis_get_price(str(tk))
+        if _kp and _kp.get('현재가'):
+            _v = float(_kp['현재가'])
+            if _v > 0:
+                return _v
+    except Exception:
+        pass
+    try:
+        return float(fallback)
+    except Exception:
+        return 0.0
+
+
 def render_pension_results(pg_df, streak_map, streak_locked, mode_label, top_n, n_results):
     """연기금 스캔 결과 표시 + 관심종목 버튼 — 세션 캐시 기반으로 스캔 없이도 렌더.
     ⚠️ 반드시 try/except 밖에서 호출 (버튼 st.rerun 예외가 삼켜지지 않도록)."""
     if pg_df is None or len(pg_df) == 0:
         return
 
-    def _pg_highlight(row):
-        _s = row.get('연속등장(일)', 0)
-        if _s >= 3: return ['background-color:#0d2a0d'] * len(row)
-        if _s == 2: return ['background-color:#1a1a06'] * len(row)
-        return [''] * len(row)
-
-    _three = pg_df[pg_df['연속등장(일)'] >= 3]
-    if not _three.empty:
-        _ns = ", ".join(f"{r['종목명']}({r['종목코드']})" for _, r in _three.iterrows())
-        st.success(f"🟢 **3일 연속 등장 → 매수 검토 대상:** {_ns}")
-    elif not pg_df[pg_df['연속등장(일)'] == 2].empty:
-        _tn = ", ".join(f"{r['종목명']}({r['종목코드']})" for _, r in pg_df[pg_df['연속등장(일)'] == 2].iterrows())
-        st.warning(f"🟡 **2일 연속 등장 → 내일 재확인:** {_tn}")
-
+    # 종합점수 내림차순 정렬 (레거시 표/버튼 폐기 → V9.13 TARGET LOCK-ON 카드 통일)
+    _sorted = pg_df.sort_values('종합점수', ascending=False).reset_index(drop=True)
     if streak_locked:
         st.caption("🔒 오늘 스캔 기록 확정 (날짜 Lock — 재스캔해도 연속일 카운트 고정)")
+    st.markdown(f"#### 🏛️ {mode_label} — 연기금 추종 TARGET")
 
-    st.markdown(f"#### {mode_label} TOP {min(top_n, n_results)}")
-    st.caption("종합점수 = 연속일×10 + 순매수강도×2 + 외인쌍끌이 20점 (KRX모드) | "
-               "연속상승×10 + 거래량비율×5 (프록시모드)  |  🟢배경=3일연속 🟡배경=2일연속")
+    def _pg_parse_won(_s):
+        try:
+            return float(str(_s).replace(',', '').replace('원', '').strip())
+        except Exception:
+            return 0.0
 
-    _disp = ['연속등장(일)'] + [c for c in pg_df.columns if c != '연속등장(일)']
-    st.dataframe(pg_df[_disp].style.apply(_pg_highlight, axis=1),
-                 use_container_width=True, hide_index=True)
+    _rank_ic = ["🥇", "🥈", "🥉"]
+    _top3 = _sorted.head(3)
+    _tcols = st.columns(len(_top3)) if len(_top3) else []
+    for _ti, (_, _row) in enumerate(_top3.iterrows()):
+        _tk = str(_row['종목코드']); _nm = str(_row['종목명'])
+        _score = _row.get('종합점수', 0)
+        _rsi   = _row.get('RSI', '-')
+        _cur   = _pg_parse_won(_row.get('현재가', 0))   # 이미 KIS 정상화된 값
+        _cons  = _row.get('연기금연속(일)', _row.get('연속상승(일)', '-'))
+        # 연속등장 배지
+        _stk = int(streak_map.get(_tk, _row.get('연속등장(일)', 1)))
+        if _stk >= 3:   _stk_txt, _stk_c = "🟢 3일 연속 (매수 검토)", "#22c55e"
+        elif _stk == 2: _stk_txt, _stk_c = "🟡 2일 연속 (대기)",     "#fbbf24"
+        else:           _stk_txt, _stk_c = "⚪ 1일차 신규 (보류)",    "#94a3b8"
+        # 진입/손절 타점
+        _p_ep = None
+        try:
+            _pdf = st.session_state.get('all_data_cache', {}).get(_tk, {}).get('df')
+            if _pdf is None:
+                _praw = fetch_ohlcv(_tk, 80)
+                if _praw is not None and len(_praw) >= 20:
+                    _pdf = calc_indicators(_praw)
+            if _pdf is not None:
+                _p_ep = calc_entry_point(_pdf, 'bounce')
+        except Exception:
+            _p_ep = None
+        _ent_s = f"{_p_ep['entry']:,.0f}" if _p_ep and _p_ep.get('entry') else "-"
+        _stp_s = f"{_p_ep['stoploss']:,.0f}" if _p_ep and _p_ep.get('stoploss') else "-"
+        _gc = "#ffd166"
+        with _tcols[_ti]:
+            st.markdown(f"""
+<div style='background:linear-gradient(160deg,#0f172a,#1a1a2e);border:2px solid {_gc}80;border-radius:14px;
+padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>
+    <span style='font-size:15px;font-weight:900;color:{_gc}'>{_rank_ic[_ti]} 🏛️ 연기금</span>
+    <span style='font-size:12px;font-weight:700;color:#fbbf24'>{_score}점</span>
+  </div>
+  <div style='display:inline-block;background:{_stk_c}22;border:1px solid {_stk_c}77;color:{_stk_c};
+  font-size:11px;font-weight:800;padding:2px 10px;border-radius:10px;margin-bottom:6px'>연속등장 {_stk_txt}</div>
+  <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_nm}</div>
+  <div style='font-size:10px;color:#64748b;margin-bottom:8px'>{_tk} · {_cur:,.0f}원 · RSI {_rsi} · 연기금 {_cons}일</div>
+  <div style='display:flex;justify-content:space-between;font-size:11px'>
+    <span style='color:#fbbf24'>🎯 진입 {_ent_s}</span>
+    <span style='color:#f43f5e'>🛑 손절 {_stp_s}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+            if st.button("🔍 분석 탭으로 이동", key=f"pg_target_{_tk}", use_container_width=True):
+                add_ticker(_tk, _nm)
+                st.session_state['scanner_selection'] = _tk
+                st.session_state['b_unified_sel'] = f"{_nm} ({_tk})"
+                st.toast(f"🔍 {_nm} → 관심종목 추가 · 상단 '분석' 탭에서 확인", icon="🎯")
 
-    st.markdown("##### 📡 관심종목 즉시 추가")
-    st.caption("버튼을 누르면 해당 종목이 관심종목에 추가되고 개별종목 분석탭에 자동 입력됩니다.")
-    _cols = st.columns(min(len(pg_df), 3))
-    for _bi, (_, _row) in enumerate(pg_df.head(6).iterrows()):
-        _s = int(streak_map.get(str(_row['종목코드']), 1))
-        _ic = "🟢" if _s >= 3 else "🟡" if _s == 2 else "⚪"
-        with _cols[_bi % 3]:
-            if st.button(f"{_ic} {_row['종목명']}\n연속{_s}일 · {_row['종목코드']}",
-                         key=f"pg_wl_{_row['종목코드']}", use_container_width=True):
-                _tc, _tnm = str(_row['종목코드']), str(_row['종목명'])
-                _added = add_ticker(_tc, _tnm)
-                st.session_state['analysis_ticker'] = _tc
-                st.session_state['snipe_ticker_input'] = _tc
-                if _added:
-                    st.toast(f"✅ {_tnm}({_tc}) 관심종목 추가 완료!", icon="✅")
-                else:
-                    st.toast(f"ℹ️ {_tnm}({_tc}) 이미 관심종목에 있습니다.", icon="ℹ️")
-                st.rerun()
+    # 4위 이하 → 서랍 (V9.13 스펙 통일)
+    _rest = _sorted.iloc[3:]
+    if not _rest.empty:
+        with st.expander(f"📂 4위 이하 스캔 결과 · 전체 상세 (대기 종목 {len(_rest)}개)", expanded=False):
+            st.caption("종합점수 = 연속일×10 + 순매수강도×2 + 외인쌍끌이 20점 (KRX모드) | "
+                       "현재가는 KIS 정상화값(yfinance 10배 왜곡 보정)")
+            _disp = ['연속등장(일)'] + [c for c in _sorted.columns if c != '연속등장(일)']
+            st.dataframe(_rest[_disp], use_container_width=True, hide_index=True)
 
 
 def save_motie_manual(data: dict):
@@ -6548,7 +6593,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                 '연기금연속(일)':  _pen_streak,
                                 '순매수강도(%)':   round(_intensity, 2),
                                 '외인쌍끌이':      "✅" if _for_bonus else "-",
-                                '현재가':          f"{int(_cur):,}원",
+                                '현재가':          f"{int(_pg_won_price(_tk, _cur)):,}원",
                                 'RSI':            round(_rsi, 1),
                                 'MA60대비(%)':    round((_cur/_ma60-1)*100,1),
                                 '종합점수':        round(_score, 1),
@@ -6568,7 +6613,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                 '종목코드':     _tk, '종목명': _nm, '시장': _mkt,
                                 '연속상승(일)':  _streak,
                                 '거래량비율':    round(_vol_r, 2),
-                                '현재가':        f"{int(_cur):,}원",
+                                '현재가':        f"{int(_pg_won_price(_tk, _cur)):,}원",
                                 'RSI':          round(_rsi, 1),
                                 'MA60대비(%)':  round((_cur/_ma60-1)*100,1),
                                 '정배열':        "✅" if _ma20>_ma60 else "-",
