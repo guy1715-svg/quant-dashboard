@@ -5283,7 +5283,7 @@ with tab_b:
     if 'analysis_preset' not in st.session_state:
         st.session_state.analysis_preset = 'bounce'
     _pr_map = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
-    _rib1, _rib2 = st.columns([2, 1.4], vertical_alignment="bottom")
+    _rib1, _rib2, _rib3 = st.columns([2, 1, 1], vertical_alignment="bottom")
     with _rib1:
         selected = st.selectbox("🔎 분석 종목", _b1_opts, key="b_unified_sel")
     with _rib2:
@@ -5394,6 +5394,16 @@ with tab_b:
             f"</div>"
         )
 
+    # ── 💾 저장 버튼을 Control Ribbon Col 3에 배치 (verdict 계산 완료 후 렌더) ──
+    with _rib3:
+        if st.button("💾 분석 실행 및 저장", key=f"save_log_{sel_ticker}", use_container_width=True):
+            save_analysis_log(
+                sel_ticker, sel_name, _vd_label, _ep['rr'],
+                _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
+                preset=st.session_state.analysis_preset, score=_buy_cnt, source="분석탭"
+            )
+            st.toast(f"✅ {sel_name} 분석 기록 저장됨", icon="💾")
+
     # ── 📊 요약 그리드 [1.5 : 2.5] — 좌: Verdict+체크리스트 / 우: 자동 추천가 (PROJECTION 제외) ──
     _sumc1, _sumc2 = st.columns([1.5, 2.5], gap="medium")
     with _sumc1:
@@ -5423,13 +5433,6 @@ padding:14px 16px;margin-bottom:10px'>
   {_ck_badge("RSI 30-65", _rsi_ok, f"{l['RSI']:.0f}")}
   {_ck_badge("MA20 위", _ma_ok, f"{l.get('MA20',0):,.0f}")}
 </div>""", unsafe_allow_html=True)
-        if st.button("💾 이 분석 기록에 저장", key=f"save_log_{sel_ticker}", use_container_width=True):
-            save_analysis_log(
-                sel_ticker, sel_name, _vd_label, _ep['rr'],
-                _ep['entry'], _ep['stoploss'], _ep['target1'], _ep['target2'],
-                preset=st.session_state.analysis_preset, score=_buy_cnt, source="분석탭"
-            )
-            st.toast(f"✅ {sel_name} 분석 기록 저장됨", icon="💾")
     with _sumc2:
         st.markdown(f"""
 <div style='background:#0d1117;border:1px solid #1e293b;border-radius:12px;padding:14px 16px'>
@@ -7826,6 +7829,57 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             unsafe_allow_html=True,
         )
 
+        # ══════════════════════════════════════════════════════
+        # 🎯 TARGET LOCK-ON — 1~3위 종목 카드 (st.columns(3))
+        # ══════════════════════════════════════════════════════
+        _top3 = _p_list[:3]
+        if _top3:
+            _rank_ic = ["🥇", "🥈", "🥉"]
+            _tcols = st.columns(len(_top3))
+            for _ti, _tx in enumerate(_top3):
+                _ttk  = _tx['ticker']
+                _tkr  = is_korean_ticker(_ttk)
+                _tu   = '원' if _tkr else '$'
+                _tcur = float(_tx.get('현재가', 0) or 0)
+                _tgrade = _tx.get('등급', '')
+                _tscore = _tx.get('점수', _tx.get('score', 0))
+                _tadx   = _tx.get('ADX', _tx.get('adx', '-'))
+                _t_ep = None
+                try:
+                    _tdf = st.session_state.get('all_data_cache', {}).get(_ttk, {}).get('df')
+                    if _tdf is None and _ttk:
+                        _traw = fetch_ohlcv(_ttk, 80)
+                        if _traw is not None and len(_traw) >= 20:
+                            _tdf = calc_indicators(_traw)
+                            st.session_state.setdefault('all_data_cache', {})[_ttk] = {'name': _tx.get('name',''), 'df': _tdf}
+                    if _tdf is not None:
+                        _t_ep = calc_entry_point(_tdf, st.session_state.get('analysis_preset','bounce'))
+                except Exception:
+                    _t_ep = None
+                _entry_s = f"{_t_ep['entry']:,.0f}" if _t_ep and _t_ep.get('entry') else "-"
+                _stop_s  = f"{_t_ep['stoploss']:,.0f}" if _t_ep and _t_ep.get('stoploss') else "-"
+                _gc = "#ffd166" if 'S등급' in _tgrade else "#34d399" if 'A등급' in _tgrade else "#60a5fa"
+                with _tcols[_ti]:
+                    st.markdown(f"""
+<div style='background:linear-gradient(160deg,#0f172a,#1a1a2e);border:2px solid {_gc}80;border-radius:14px;
+padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>
+    <span style='font-size:15px;font-weight:900;color:{_gc}'>{_rank_ic[_ti]} {_tgrade}</span>
+    <span style='font-size:12px;font-weight:700;color:#fbbf24'>{_tscore}점</span>
+  </div>
+  <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_tx.get('name','')}</div>
+  <div style='font-size:10px;color:#64748b;margin-bottom:8px'>{_ttk} · {_tcur:,.0f}{_tu} · ADX {_tadx}</div>
+  <div style='display:flex;justify-content:space-between;font-size:11px'>
+    <span style='color:#fbbf24'>🎯 진입 {_entry_s}</span>
+    <span style='color:#f43f5e'>🛑 손절 {_stop_s}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+                    if st.button("⚡ 실전 매매로", key=f"scan_target_{_ttk}", use_container_width=True):
+                        st.session_state['scanner_selection'] = _ttk
+                        add_ticker(_ttk, _tx.get('name', _ttk))
+                        st.toast(f"⚡ {_tx.get('name','')} → 관심종목 추가 · 실전운용 탭에서 등록", icon="🎯")
+            st.divider()
+
         # 전체 추가 버튼
         _new_items = [i for i in _p_list if i['ticker'] not in _sc_ids]
         if _new_items:
@@ -7840,188 +7894,190 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
 
         st.divider()
 
-        # ══════════════════════════════════════════════════════
-        # 📊 핵심 5컬럼 압축 메인 테이블 (Pandas Styler 적용)
-        # ══════════════════════════════════════════════════════
-        _streak_now = st.session_state.get('pension_streak_map', {})
+        # ── 📂 4위 이하 · 전체 스캔 결과 상세를 Expander로 캡슐화 (평소 접힘) ──
+        with st.expander("📂 4위 이하 스캔 결과 · 전체 상세 (대기 종목)", expanded=False):
+            # ══════════════════════════════════════════════════════
+            # 📊 핵심 5컬럼 압축 메인 테이블 (Pandas Styler 적용)
+            # ══════════════════════════════════════════════════════
+            _streak_now = st.session_state.get('pension_streak_map', {})
 
-        def _streak_badge(tk):
-            s = _streak_now.get(str(tk), 1)
-            return "🟢 3일연속" if s >= 3 else "🟡 2일연속" if s == 2 else "⚪ 1일"
+            def _streak_badge(tk):
+                s = _streak_now.get(str(tk), 1)
+                return "🟢 3일연속" if s >= 3 else "🟡 2일연속" if s == 2 else "⚪ 1일"
 
-        _display_rows = []
-        for _x in _p_list:
-            _tk = _x['ticker']
-            _chg = _x.get('등락(%)', 0)
-            _chg_str = f"{'▲' if _chg>0 else '▼'}{abs(_chg):.1f}%"
-            _display_rows.append({
-                '종목명':   f"{_x['name']} ({_tk})",
-                '현재가':   f"{_x.get('현재가',0):,.0f}",
-                '등락률':   _chg_str,
-                '연속등장': _streak_badge(_tk),
-                '등급':     _x.get('등급', ''),
-                # 스타일 판단용 내부 키 (표시 안 됨)
-                '_grade':   _x.get('등급', ''),
-                '_streak':  _streak_now.get(str(_tk), 1),
-                '_chg':     _chg,
-            })
+            _display_rows = []
+            for _x in _p_list:
+                _tk = _x['ticker']
+                _chg = _x.get('등락(%)', 0)
+                _chg_str = f"{'▲' if _chg>0 else '▼'}{abs(_chg):.1f}%"
+                _display_rows.append({
+                    '종목명':   f"{_x['name']} ({_tk})",
+                    '현재가':   f"{_x.get('현재가',0):,.0f}",
+                    '등락률':   _chg_str,
+                    '연속등장': _streak_badge(_tk),
+                    '등급':     _x.get('등급', ''),
+                    # 스타일 판단용 내부 키 (표시 안 됨)
+                    '_grade':   _x.get('등급', ''),
+                    '_streak':  _streak_now.get(str(_tk), 1),
+                    '_chg':     _chg,
+                })
 
-        _disp_df = pd.DataFrame(_display_rows)
+            _disp_df = pd.DataFrame(_display_rows)
 
-        def _row_style(row):
-            g  = row.get('_grade', '')
-            sk = row.get('_streak', 1)
-            # 강조: S등급 or 3일연속 → 연한 형광 녹색
-            if 'S등급' in str(g) or sk >= 3:
-                return ['background-color:rgba(52,211,153,0.10);color:#d1fae5']*len(row)
-            # 축소: B등급 or 1일 → 회색 dim
-            if 'B등급' in str(g) or sk == 1:
-                return ['color:#475569']*len(row)
-            return ['']*len(row)
+            def _row_style(row):
+                g  = row.get('_grade', '')
+                sk = row.get('_streak', 1)
+                # 강조: S등급 or 3일연속 → 연한 형광 녹색
+                if 'S등급' in str(g) or sk >= 3:
+                    return ['background-color:rgba(52,211,153,0.10);color:#d1fae5']*len(row)
+                # 축소: B등급 or 1일 → 회색 dim
+                if 'B등급' in str(g) or sk == 1:
+                    return ['color:#475569']*len(row)
+                return ['']*len(row)
 
-        _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
-        # ── 좌: 종목 테이블 / 우: 선택 종목 상세 카드 + 퀵 매매 ──
-        _scan_black = not run_v891_system_check().get('can_enter', True)
-        _tbl_col, _det_col = st.columns([4, 6])   # 좌 테이블 : 우 상세+차트 = 4:6
-        _sel_idx = None
-        with _tbl_col:
-            _styled = _disp_df[_visible_cols + ['_grade', '_streak', '_chg']].style.apply(_row_style, axis=1)
-            # on_select 지원 버전이면 행 클릭, 아니면 selectbox 폴백
-            _click_ok = False   # 사전 초기화 (TypeError 외 예외에도 NameError 방지)
-            try:
-                _evt = st.dataframe(
-                    _styled, use_container_width=True, hide_index=True,
-                    column_order=_visible_cols, key="scan_result_tbl",
-                    on_select="rerun", selection_mode="single-row",
-                )
-                _rows = getattr(getattr(_evt, "selection", None), "rows", None) or \
-                        (_evt.get("selection", {}).get("rows", []) if isinstance(_evt, dict) else [])
-                if _rows:
-                    _sel_idx = _rows[0]
-                _click_ok = True
-            except Exception:
-                # on_select 미지원(TypeError) 또는 기타 예외 → 정적 테이블 + selectbox 폴백
-                st.dataframe(_styled, use_container_width=True, hide_index=True, column_order=_visible_cols)
-                _click_ok = False
-        with _det_col:
-            _det_opts = {f"{_x['name']} ({_x['ticker']})": _x for _x in _p_list}
-            if _click_ok:
-                st.caption("👈 좌측 테이블에서 종목을 **클릭**하면 상세가 갱신됩니다.")
-                if _sel_idx is not None and 0 <= _sel_idx < len(_p_list):
-                    _sx = _p_list[_sel_idx]
+            _visible_cols = ['종목명', '현재가', '등락률', '연속등장', '등급']
+            # ── 좌: 종목 테이블 / 우: 선택 종목 상세 카드 + 퀵 매매 ──
+            _scan_black = not run_v891_system_check().get('can_enter', True)
+            _tbl_col, _det_col = st.columns([4, 6])   # 좌 테이블 : 우 상세+차트 = 4:6
+            _sel_idx = None
+            with _tbl_col:
+                _styled = _disp_df[_visible_cols + ['_grade', '_streak', '_chg']].style.apply(_row_style, axis=1)
+                # on_select 지원 버전이면 행 클릭, 아니면 selectbox 폴백
+                _click_ok = False   # 사전 초기화 (TypeError 외 예외에도 NameError 방지)
+                try:
+                    _evt = st.dataframe(
+                        _styled, use_container_width=True, hide_index=True,
+                        column_order=_visible_cols, key="scan_result_tbl",
+                        on_select="rerun", selection_mode="single-row",
+                    )
+                    _rows = getattr(getattr(_evt, "selection", None), "rows", None) or \
+                            (_evt.get("selection", {}).get("rows", []) if isinstance(_evt, dict) else [])
+                    if _rows:
+                        _sel_idx = _rows[0]
+                    _click_ok = True
+                except Exception:
+                    # on_select 미지원(TypeError) 또는 기타 예외 → 정적 테이블 + selectbox 폴백
+                    st.dataframe(_styled, use_container_width=True, hide_index=True, column_order=_visible_cols)
+                    _click_ok = False
+            with _det_col:
+                _det_opts = {f"{_x['name']} ({_x['ticker']})": _x for _x in _p_list}
+                if _click_ok:
+                    st.caption("👈 좌측 테이블에서 종목을 **클릭**하면 상세가 갱신됩니다.")
+                    if _sel_idx is not None and 0 <= _sel_idx < len(_p_list):
+                        _sx = _p_list[_sel_idx]
+                    else:
+                        _sx = _p_list[0]   # 미선택 시 1위 종목
                 else:
-                    _sx = _p_list[0]   # 미선택 시 1위 종목
-            else:
-                _det_lbl = st.selectbox("🎯 상세 볼 종목", list(_det_opts.keys()), key="scan_detail_sel")
-                _sx = _det_opts.get(_det_lbl, {})
-            _sx_tk = _sx.get('ticker', '')
-            _sx_kr = is_korean_ticker(_sx_tk) if _sx_tk else True
-            _u = '원' if _sx_kr else '$'
-            _cur = float(_sx.get('현재가', 0) or 0)
-            # 블랙아웃 오버레이 (신규 진입 실수 방지)
-            if _scan_black:
-                st.markdown(
-                    "<div style='background:#2a0505;border:2px solid #ef4444;border-radius:10px;"
-                    "padding:10px 14px;margin-bottom:8px;text-align:center;font-weight:900;"
-                    "color:#ef4444;font-size:14px'>🚫 시장 셧다운 — 신규 진입 불가</div>",
-                    unsafe_allow_html=True)
-            # 상세 지표 카드 (핵심만)
-            _d1, _d2 = st.columns(2)
-            _d1.metric("현재가", f"{_cur:,.0f}{_u}", delta=f"{_sx.get('등락(%)',0):+.1f}%",
-                       delta_color=("normal" if _sx.get('등락(%)',0) >= 0 else "inverse"))
-            _d2.metric("종합점수", f"{_sx.get('점수', _sx.get('score',0))}점", delta=_sx.get('등급',''))
-            _d3, _d4 = st.columns(2)
-            _d3.metric("RSI", f"{_sx.get('RSI','-')}")
-            _d4.metric("거래량비율", f"{_sx.get('거래량비율','-')}%")
-            _d5, _d6 = st.columns(2)
-            _d5.metric("수급(CMF)", f"{_sx.get('CMF','-')}")
-            _d6.metric("5일수익률", f"{_sx.get('5일수익률','-')}%")
-            # ── 5AI 정밀 타점 (지지/저항 기반 calc_entry_point) ──
-            _ep_sx = None
-            try:
-                _sdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
-                if _sdf is None and _sx_tk:
-                    _raw_sx = fetch_ohlcv(_sx_tk, 80)
-                    if _raw_sx is not None and len(_raw_sx) >= 20:
-                        _sdf = calc_indicators(_raw_sx)
-                        st.session_state.setdefault('all_data_cache', {})[_sx_tk] = {'name': _sx.get('name',''), 'df': _sdf}
-                if _sdf is not None:
-                    _ep_sx = calc_entry_point(_sdf, st.session_state.get('analysis_preset'))
-            except Exception:
+                    _det_lbl = st.selectbox("🎯 상세 볼 종목", list(_det_opts.keys()), key="scan_detail_sel")
+                    _sx = _det_opts.get(_det_lbl, {})
+                _sx_tk = _sx.get('ticker', '')
+                _sx_kr = is_korean_ticker(_sx_tk) if _sx_tk else True
+                _u = '원' if _sx_kr else '$'
+                _cur = float(_sx.get('현재가', 0) or 0)
+                # 블랙아웃 오버레이 (신규 진입 실수 방지)
+                if _scan_black:
+                    st.markdown(
+                        "<div style='background:#2a0505;border:2px solid #ef4444;border-radius:10px;"
+                        "padding:10px 14px;margin-bottom:8px;text-align:center;font-weight:900;"
+                        "color:#ef4444;font-size:14px'>🚫 시장 셧다운 — 신규 진입 불가</div>",
+                        unsafe_allow_html=True)
+                # 상세 지표 카드 (핵심만)
+                _d1, _d2 = st.columns(2)
+                _d1.metric("현재가", f"{_cur:,.0f}{_u}", delta=f"{_sx.get('등락(%)',0):+.1f}%",
+                           delta_color=("normal" if _sx.get('등락(%)',0) >= 0 else "inverse"))
+                _d2.metric("종합점수", f"{_sx.get('점수', _sx.get('score',0))}점", delta=_sx.get('등급',''))
+                _d3, _d4 = st.columns(2)
+                _d3.metric("RSI", f"{_sx.get('RSI','-')}")
+                _d4.metric("거래량비율", f"{_sx.get('거래량비율','-')}%")
+                _d5, _d6 = st.columns(2)
+                _d5.metric("수급(CMF)", f"{_sx.get('CMF','-')}")
+                _d6.metric("5일수익률", f"{_sx.get('5일수익률','-')}%")
+                # ── 5AI 정밀 타점 (지지/저항 기반 calc_entry_point) ──
                 _ep_sx = None
-            if _ep_sx and _ep_sx.get('entry'):
-                _e1, _e2, _e3 = st.columns(3)
-                _e1.metric("진입", f"{_ep_sx['entry']:,.0f}{_u}")
-                _e2.metric("손절", f"{_ep_sx['stoploss']:,.0f}{_u}",
-                           delta=f"{(_ep_sx['stoploss']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="inverse")
-                _e3.metric("목표", f"{_ep_sx['target1']:,.0f}{_u}",
-                           delta=f"{(_ep_sx['target1']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="normal")
-                st.caption(f"🎯 R:R **1:{_ep_sx.get('rr',0)}** · {_ep_sx.get('reason','지지/저항 기반')}")
-            else:
-                st.caption("🎯 정밀 타점 계산 불가 (데이터 부족) — 종목을 다시 선택하세요.")
-            # 퀵 매매
-            _qty_s = st.number_input("수량(주)", min_value=1, value=10, step=1, key="scan_quick_qty")
-            _qb1, _qb2 = st.columns(2)
-            if _qb1.button("🟢 가상 매수", key="scan_quick_buy", use_container_width=True,
-                           type="primary", disabled=(_scan_black or _cur <= 0)):
-                _acc_q = load_account()
-                _fx_q = 1.0 if _sx_kr else get_usd_krw()
-                _net_q = calc_slippage(_cur, True, _sx_kr)
-                _acc_q['cash'] -= _net_q * _qty_s * _fx_q
-                _pex = get_position(_acc_q, _sx_tk)
-                _nd = 0 if _sx_kr else 2
-                if _pex:
-                    _ov = _pex['avg_price'] * _pex['qty']; _nv = _net_q * _qty_s
-                    _pex['qty'] += _qty_s
-                    _pex['avg_price'] = round((_ov + _nv) / _pex['qty'], _nd)
+                try:
+                    _sdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
+                    if _sdf is None and _sx_tk:
+                        _raw_sx = fetch_ohlcv(_sx_tk, 80)
+                        if _raw_sx is not None and len(_raw_sx) >= 20:
+                            _sdf = calc_indicators(_raw_sx)
+                            st.session_state.setdefault('all_data_cache', {})[_sx_tk] = {'name': _sx.get('name',''), 'df': _sdf}
+                    if _sdf is not None:
+                        _ep_sx = calc_entry_point(_sdf, st.session_state.get('analysis_preset'))
+                except Exception:
+                    _ep_sx = None
+                if _ep_sx and _ep_sx.get('entry'):
+                    _e1, _e2, _e3 = st.columns(3)
+                    _e1.metric("진입", f"{_ep_sx['entry']:,.0f}{_u}")
+                    _e2.metric("손절", f"{_ep_sx['stoploss']:,.0f}{_u}",
+                               delta=f"{(_ep_sx['stoploss']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="inverse")
+                    _e3.metric("목표", f"{_ep_sx['target1']:,.0f}{_u}",
+                               delta=f"{(_ep_sx['target1']/_ep_sx['entry']-1)*100:+.1f}%", delta_color="normal")
+                    st.caption(f"🎯 R:R **1:{_ep_sx.get('rr',0)}** · {_ep_sx.get('reason','지지/저항 기반')}")
                 else:
-                    _acc_q['positions'].append({'ticker': _sx_tk, 'name': _sx.get('name', _sx_tk),
-                        'qty': _qty_s, 'avg_price': _net_q, 'entry_date': str(pd.Timestamp.now())[:10]})
-                save_account(_acc_q)
-                st.toast(f"✅ {_sx.get('name','')} {_qty_s}주 가상 매수", icon="🟢")
-                st.rerun()
-            if _qb2.button("🔴 가상 매도", key="scan_quick_sell", use_container_width=True,
-                           disabled=(_cur <= 0)):
-                _acc_q = load_account()
-                _pex = get_position(_acc_q, _sx_tk)
-                if not _pex:
-                    st.toast("보유 포지션이 없습니다.", icon="⚠️")
-                else:
+                    st.caption("🎯 정밀 타점 계산 불가 (데이터 부족) — 종목을 다시 선택하세요.")
+                # 퀵 매매
+                _qty_s = st.number_input("수량(주)", min_value=1, value=10, step=1, key="scan_quick_qty")
+                _qb1, _qb2 = st.columns(2)
+                if _qb1.button("🟢 가상 매수", key="scan_quick_buy", use_container_width=True,
+                               type="primary", disabled=(_scan_black or _cur <= 0)):
+                    _acc_q = load_account()
                     _fx_q = 1.0 if _sx_kr else get_usd_krw()
-                    _net_q = calc_slippage(_cur, False, _sx_kr)
-                    _sell_q = min(_qty_s, _pex['qty'])
-                    _acc_q['cash'] += _net_q * _sell_q * _fx_q
-                    _pex['qty'] -= _sell_q
-                    if _pex['qty'] <= 0:
-                        _acc_q['positions'] = [p for p in _acc_q['positions'] if p['ticker'] != _sx_tk]
+                    _net_q = calc_slippage(_cur, True, _sx_kr)
+                    _acc_q['cash'] -= _net_q * _qty_s * _fx_q
+                    _pex = get_position(_acc_q, _sx_tk)
+                    _nd = 0 if _sx_kr else 2
+                    if _pex:
+                        _ov = _pex['avg_price'] * _pex['qty']; _nv = _net_q * _qty_s
+                        _pex['qty'] += _qty_s
+                        _pex['avg_price'] = round((_ov + _nv) / _pex['qty'], _nd)
+                    else:
+                        _acc_q['positions'].append({'ticker': _sx_tk, 'name': _sx.get('name', _sx_tk),
+                            'qty': _qty_s, 'avg_price': _net_q, 'entry_date': str(pd.Timestamp.now())[:10]})
                     save_account(_acc_q)
-                    st.toast(f"✅ {_sx.get('name','')} {_sell_q}주 가상 매도", icon="🔴")
+                    st.toast(f"✅ {_sx.get('name','')} {_qty_s}주 가상 매수", icon="🟢")
                     st.rerun()
+                if _qb2.button("🔴 가상 매도", key="scan_quick_sell", use_container_width=True,
+                               disabled=(_cur <= 0)):
+                    _acc_q = load_account()
+                    _pex = get_position(_acc_q, _sx_tk)
+                    if not _pex:
+                        st.toast("보유 포지션이 없습니다.", icon="⚠️")
+                    else:
+                        _fx_q = 1.0 if _sx_kr else get_usd_krw()
+                        _net_q = calc_slippage(_cur, False, _sx_kr)
+                        _sell_q = min(_qty_s, _pex['qty'])
+                        _acc_q['cash'] += _net_q * _sell_q * _fx_q
+                        _pex['qty'] -= _sell_q
+                        if _pex['qty'] <= 0:
+                            _acc_q['positions'] = [p for p in _acc_q['positions'] if p['ticker'] != _sx_tk]
+                        save_account(_acc_q)
+                        st.toast(f"✅ {_sx.get('name','')} {_sell_q}주 가상 매도", icon="🔴")
+                        st.rerun()
 
-            # ── 선택 종목 미니 차트 (한 세트로 우측에 묶임) ──
-            try:
-                _cdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
-                if _cdf is None and _sx_tk:
-                    _rawc = fetch_ohlcv(_sx_tk, 60)
-                    if _rawc is not None and len(_rawc) >= 5:
-                        _cdf = calc_indicators(_rawc)
-                if _cdf is not None and len(_cdf) >= 5:
-                    import plotly.graph_objects as _go_s
-                    _cl_s = _cdf['종가'].tail(40)
-                    _figs = _go_s.Figure(_go_s.Scatter(
-                        y=_cl_s.values, mode='lines', line=dict(color='#4da6ff', width=1.6),
-                        fill='tozeroy', fillcolor='rgba(77,166,255,0.08)'))
-                    # 손절/목표 라인 (타점 있으면)
-                    if _ep_sx and _ep_sx.get('entry'):
-                        _figs.add_hline(y=_ep_sx['stoploss'], line=dict(color='#ef4444', dash='dot', width=1))
-                        _figs.add_hline(y=_ep_sx['target1'], line=dict(color='#16a34a', dash='dot', width=1))
-                    _figs.update_layout(height=190, margin=dict(l=0, r=0, t=6, b=0),
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                        xaxis=dict(visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=9)))
-                    st.caption(f"📈 {_sx.get('name','')} 최근 40일 (점선=손절/목표)")
-                    st.plotly_chart(_figs, use_container_width=True, key=f"scan_mini_chart_{_sx_tk}")
-            except Exception:
-                pass
+                # ── 선택 종목 미니 차트 (한 세트로 우측에 묶임) ──
+                try:
+                    _cdf = st.session_state.get('all_data_cache', {}).get(_sx_tk, {}).get('df')
+                    if _cdf is None and _sx_tk:
+                        _rawc = fetch_ohlcv(_sx_tk, 60)
+                        if _rawc is not None and len(_rawc) >= 5:
+                            _cdf = calc_indicators(_rawc)
+                    if _cdf is not None and len(_cdf) >= 5:
+                        import plotly.graph_objects as _go_s
+                        _cl_s = _cdf['종가'].tail(40)
+                        _figs = _go_s.Figure(_go_s.Scatter(
+                            y=_cl_s.values, mode='lines', line=dict(color='#4da6ff', width=1.6),
+                            fill='tozeroy', fillcolor='rgba(77,166,255,0.08)'))
+                        # 손절/목표 라인 (타점 있으면)
+                        if _ep_sx and _ep_sx.get('entry'):
+                            _figs.add_hline(y=_ep_sx['stoploss'], line=dict(color='#ef4444', dash='dot', width=1))
+                            _figs.add_hline(y=_ep_sx['target1'], line=dict(color='#16a34a', dash='dot', width=1))
+                        _figs.update_layout(height=190, margin=dict(l=0, r=0, t=6, b=0),
+                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                            xaxis=dict(visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=9)))
+                        st.caption(f"📈 {_sx.get('name','')} 최근 40일 (점선=손절/목표)")
+                        st.plotly_chart(_figs, use_container_width=True, key=f"scan_mini_chart_{_sx_tk}")
+                except Exception:
+                    pass
 
         # ══════════════════════════════════════════════════════
         # 🔎 종목별 상세 스코어 — expander로 은닉
