@@ -6913,14 +6913,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             st.checkbox("BB 하단 근접 (≤25%)",   disabled=_disabled, key="f_bb")
             st.checkbox("정배열 (MA5>MA20>MA60)", disabled=_disabled, key="f_align")
 
-        st.divider()
-        # ── AI 파라미터 자동 최적화 ─────────────────────────────────────────
-        st.markdown("##### 🔥 AI 파라미터 자동 최적화 (Walk-Forward)")
-        _etf_mode_now = ("국내 ETF" in st.session_state.get("scanner_market", "")
-                         or "미국 ETF" in st.session_state.get("scanner_market", ""))
-        if _etf_mode_now:
-            st.info("ℹ️ ETF 모드에서는 AI 최적화가 적용되지 않습니다. "
-                    "개별주(국장 통합/미장 핵심) 선택 시 활성화됩니다.")
+        # (🔥 AI 최적화 중복 스텁 제거 — 전용 '🔬 AI 파라미터 자동 최적화' Expander로 일원화)
 
     # ── 스캔 설정 — 메인 화면에 3가지만 노출 (Progressive Disclosure) ──
     _SC_OPTS = [
