@@ -6752,18 +6752,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         market_type = st.selectbox("🌏 대상 시장", _SC_OPTS, key="scanner_market")
     with _rc2:
         top_n = st.slider("종목 수", 20, 300, 100, key="scanner_topn")
-    # ── UI 동기화: 시장 선택에 따라 스캔 모드 자동 고정 (radio 생성 前 세션 세팅) ──
-    _market_forces_etf = ("국내 ETF" in market_type or "미국 ETF" in market_type)
-    _market_forces_stock = ("국장 통합" in market_type or "미장 핵심" in market_type)
-    if _market_forces_etf and st.session_state.get("scan_mode") != "🏦 ETF":
-        st.session_state["scan_mode"] = "🏦 ETF"
-    elif _market_forces_stock and st.session_state.get("scan_mode") == "🏦 ETF":
-        st.session_state["scan_mode"] = "📈 개별주"
+    # ── 스캔 모드: 잠금(disabled)·강제고정 완전 제거 — 시장 무관 자유 선택 ──
+    #    (ETF 유니버스는 스캔 핸들러의 _IS_ETF_UNIVERSE 가드가 모드와 무관하게 ETF 채점 처리)
     with _rc3:
         scan_mode = st.radio(
             "스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합", "🏛️ 연기금"], horizontal=True, key="scan_mode",
-            disabled=(_market_forces_etf or _market_forces_stock),
-            help="시장 선택에 따라 자동 고정됩니다" if (_market_forces_etf or _market_forces_stock) else None,
+            help="🏛️ 연기금은 국내(KOSPI/KOSDAQ) 대상 · 아래 '🏛️ 연기금 모드 설정'에서 세부 조건 지정",
         )
     with _rc4:
         scan_btn = st.button("🚀 스캔 시작", use_container_width=True, type="primary", key="scan_start_btn")
