@@ -3508,6 +3508,16 @@ st.session_state['_now_kst_str'] = _NOW_KST.strftime('%Y.%m.%d %H:%M:%S KST')
 # 사이드바
 # ══════════════════════════════════════════
 
+def _clear_macro_caches():
+    """사이드바·헤더 매크로 데이터 전체 캐시 초기화 — 킬스위치/환율/유가/지수/수출 동기화.
+    메인 [🔄 지수 갱신]·[🔄 새로고침]·사이드바 [🔄 실시간 동기화]가 공통 호출."""
+    for _mfn in (get_index_quotes, check_index_shutdown, check_index_shutdown_us,
+                 get_usd_krw, get_wti_oil, fetch_motie_exports):
+        try:
+            _mfn.clear()
+        except Exception:
+            pass
+
 with st.sidebar:
     # ══════════════════════════════════════════════════════════════════
     # 📌 STICKY 관제 상태 패널 — 모든 탭에서 항상 표시 (사이드바 최상단 고정)
@@ -3542,6 +3552,11 @@ with st.sidebar:
             f"<div style='font-size:26px;line-height:1'>{_sbi}</div>"
             f"<div style='font-size:17px;font-weight:900;color:{_sbc};margin-top:2px'>{_sbt}</div>"
             f"</div>", unsafe_allow_html=True)
+        # 🔄 실시간 동기화 미니 버튼 — 매크로 캐시만 즉시 비우고 사이드바 최신화
+        if st.button("🔄 실시간 동기화", key="sb_macro_sync", use_container_width=True,
+                     help="킬스위치·환율·유가·지수 캐시를 즉시 비우고 최신값으로 갱신"):
+            _clear_macro_caches()
+            st.rerun()
         # 시장별 지수 킬스위치 경고 (미장 선택 시 S&P500/나스닥, 국장 시 코스피/코스닥)
         _mkt_tag = "🇺🇸 미장" if _sb_is_us else "🇰🇷 국장"
         if _idx_sd and _idx_msg:
@@ -4614,11 +4629,7 @@ div[data-testid="stExpander"] { margin-bottom:0.3rem; }
     # ── 지수 새로고침 (Streamlit은 상호작용 없으면 자동 갱신 안 됨 → 수동 갱신) ──
     _rf1, _rf2 = st.columns([1, 6])
     if _rf1.button("🔄 지수 갱신", key="refresh_index", use_container_width=True):
-        get_index_quotes.clear()          # 단일 소스 캐시 비움 → 헤더·사이드바 동시 갱신
-        try:
-            check_index_shutdown.clear()
-        except Exception:
-            pass
+        _clear_macro_caches()             # 사이드바 킬스위치/환율/유가/지수/수출 캐시 동시 초기화
         st.rerun()
     _rf2.caption(f"🕒 현재: {st.session_state.get('_now_kst', datetime.utcnow()+timedelta(hours=9)).strftime('%H:%M:%S')} KST "
                  f"· 자동 캐시 120초 (실시간 반영하려면 🔄)")
