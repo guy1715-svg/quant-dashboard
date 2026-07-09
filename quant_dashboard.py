@@ -6095,7 +6095,7 @@ with tab_c:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
 
     # ── 📖 실전 매뉴얼 (기본 닫힘) ──────────────────────────────────────
-    with st.expander("📖 V9.1 스캐너 실전 매뉴얼 (필독)", expanded=False):
+    with st.expander("📖 관제탑 실전 매뉴얼 및 운용 수칙 (필독)", expanded=False):
         st.markdown("""
 ### 🦅 [V9.1 스나이퍼 스캐너 운용 수칙]
 
@@ -6155,7 +6155,11 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     # ══════════════════════════════════════════
     # 🏛️ 연기금 추종 스캐너 (Gemini V2 설계)
     # ══════════════════════════════════════════
-    with st.expander("🏛️ 연기금 추종 종목 스캐너", expanded=False):
+    # 연기금 모드가 선택됐거나 결과 캐시가 있으면 자동 펼침(결과가 서랍에 숨지 않도록)
+    _pension_active = ("연기금" in str(st.session_state.get('scan_mode', ''))
+                       or bool(st.session_state.get('_pg_cache'))
+                       or bool(st.session_state.get('_trigger_pension')))
+    with st.expander("🏛️ 연기금 모드 설정 · 결과 (스캔 모드 🏛️ 연기금 선택 시)", expanded=_pension_active):
         st.markdown("""
 **연기금(국민연금 등)이 연속 순매수 중인 종목**을 탐지합니다. (Gemini V2 설계)
 
@@ -6179,8 +6183,9 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
                                         help="N일 연속 순매수인 종목만 필터링")
 
         _pg_top_n = st.slider("결과 표시 종목 수", 5, 50, 20, key="pg_topn")
-        _run_pg = st.button("🏛️ 연기금 추종 스캔 시작", type="primary",
-                             use_container_width=True, key="run_pension_scan")
+        # 전용 발사 버튼 폐지 → 상단 Control Ribbon [스캔 모드: 🏛️ 연기금] + [🚀 스캔 시작]으로 통합
+        _run_pg = bool(st.session_state.pop('_trigger_pension', False))
+        st.caption("🚀 상단 Control Ribbon에서 스캔 모드를 **🏛️ 연기금**으로 두고 **[🚀 스캔 시작]**을 누르세요.")
 
         # ── 진단 버튼: pykrx 실제 컬럼 확인 ──
         if st.button("🔍 pykrx 진단 (삼성전자 005930 기준)", key="pg_diag"):
@@ -6624,196 +6629,8 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
             render_pension_results(_pgc['df'], _pgc['streak'], _pgc['locked'],
                                    _pgc['mode'], _pgc['topn'], _pgc['nres'])
 
-    # ══════════════════════════════════════════
-    # ⚙️ 고급 스캔 설정 (Progressive Disclosure — 기본 닫힘)
-    # ══════════════════════════════════════════
-    with st.expander("🔬 AI 파라미터 자동 최적화 (Walk-Forward · 연구용)", expanded=False):
-
-        # (빈 '전략 프리셋' 헤더/컬럼 제거 — 실제 프리셋 라디오는 아래 별도 블록)
-        _opt_col1, _opt_col2, _opt_col3 = st.columns([2, 1, 1])
-        with _opt_col1:
-            _opt_months = st.slider("백테스트 기간 (개월)", 3, 12, 6, key="opt_months")
-            _opt_topn   = st.slider("최적화 대상 종목 수", 10, 50, 20, key="opt_topn",
-                                     help="종목이 많을수록 정확하지만 시간이 오래 걸립니다")
-        with _opt_col2:
-            _opt_market = st.selectbox("대상 시장", ["KOSPI", "KOSDAQ", "KOSPI+KOSDAQ", "미국(S&P500)", "미국 ETF(VTI+)"], key="opt_market")
-        with _opt_col3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _run_opt = st.button("🔥 최적화 시작", use_container_width=True,
-                                  type="primary", key="run_optimizer")
-
-        # ── 현재 적용된 파라미터 표시 ──
-        _cur_c5 = st.session_state.get("opt_best_cond5", 0.08)
-        _cur_c6 = st.session_state.get("opt_best_cond6", 0.50)
-        st.info(f"📌 현재 스캐너 적용 파라미터 — cond5: **{_cur_c5*100:.0f}%** | cond6: **{_cur_c6*100:.0f}%**")
-
-        if _run_opt:
-            try:
-                from optimizer import run_walk_forward, fetch_ohlcv_for_optimization
-
-                # 종목 리스트 로드 (기존 스캐너와 동일 로직)
-                try:
-                    _oj = _os.path.join(_os.path.dirname(__file__), 'scanner_tickers.json')
-                    with open(_oj, 'r', encoding='utf-8') as _f:
-                        _tj = json.load(_f)
-                    _opt_kospi  = [tuple(x) for x in _tj.get('KOSPI',  [])]
-                    _opt_kosdaq = [tuple(x) for x in _tj.get('KOSDAQ', [])]
-                    _opt_sp500  = [tuple(x) for x in _tj.get('SP500',  [])]
-                except Exception:
-                    _opt_kospi  = [("005930","삼성전자"),("000660","SK하이닉스"),
-                                   ("042700","한미반도체"),("012450","한화에어로스페이스"),
-                                   ("329180","HD현대중공업"),("005380","현대차"),
-                                   ("000270","기아"),("035420","NAVER"),
-                                   ("051910","LG화학"),("006400","삼성SDI")]
-                    _opt_kosdaq = [("086520","에코프로"),("247540","에코프로비엠"),
-                                   ("196170","알테오젠"),("357780","솔브레인"),
-                                   ("058470","리노공업"),("095340","ISC"),
-                                   ("036930","주성엔지니어링"),("039030","이오테크닉스"),
-                                   ("240810","원익IPS"),("035900","JYP엔터테인먼트")]
-                    _opt_sp500  = [("AAPL","Apple"),("MSFT","Microsoft"),
-                                   ("NVDA","NVIDIA"),("GOOGL","Alphabet"),
-                                   ("AMZN","Amazon"),("META","Meta"),
-                                   ("TSLA","Tesla"),("AVGO","Broadcom"),
-                                   ("AMD","AMD"),("NFLX","Netflix"),
-                                   ("CRM","Salesforce"),("ORCL","Oracle"),
-                                   ("ADBE","Adobe"),("QCOM","Qualcomm"),
-                                   ("MU","Micron"),("INTC","Intel"),
-                                   ("COIN","Coinbase"),("SHOP","Shopify"),
-                                   ("UBER","Uber"),("SNOW","Snowflake")]
-
-                _opt_etf_uni_pairs = [
-                    ("VTI","Vanguard 전체주식시장"),("SPY","SPDR S&P500"),
-                    ("QQQ","Invesco 나스닥100"),("DIA","SPDR 다우존스"),
-                    ("IWM","iShares 러셀2000"),("JEPQ","JPMorgan Nasdaq Income"),
-                    ("SCHD","Schwab 배당주"),("TLT","iShares 미국채20년"),
-                    ("IEF","iShares 미국채7-10년"),("SOXX","iShares 반도체"),
-                    ("SMH","VanEck 반도체"),("ARKK","ARK 혁신"),
-                    ("TQQQ","ProShares 나스닥3X"),("SOXL","Direxion 반도체3X"),
-                    ("ITA","iShares 방산항공"),("GLD","SPDR 금"),
-                    ("SLV","iShares 은"),("XLE","Energy Select"),
-                    ("XLI","Industrials Select"),("BOTZ","글로벌 로보틱스AI"),
-                    ("PPA","Invesco 방산"),("EEM","iShares 이머징"),
-                ][:_opt_topn]
-
-                if _opt_market == "KOSPI":
-                    _opt_tickers = _opt_kospi[:_opt_topn]
-                elif _opt_market == "KOSDAQ":
-                    _opt_tickers = _opt_kosdaq[:_opt_topn]
-                elif _opt_market == "미국(S&P500)":
-                    _opt_tickers = _opt_sp500[:_opt_topn]
-                elif _opt_market == "미국 ETF(VTI+)":
-                    _opt_tickers = _opt_etf_uni_pairs
-                else:
-                    _half = _opt_topn // 2
-                    _opt_tickers = _opt_kospi[:_half] + _opt_kosdaq[:_half]
-
-                # ── Step 1: 데이터 다운로드 ──
-                st.markdown("**① 데이터 다운로드 중...**")
-                _dl_prog  = st.progress(0)
-                _dl_status = st.empty()
-
-                def _dl_cb(cur, tot):
-                    _dl_prog.progress(cur / tot)
-                    _dl_status.caption(f"{cur}/{tot} 종목 다운로드 중...")
-
-                _ticker_dfs = fetch_ohlcv_for_optimization(
-                    _opt_tickers, months=_opt_months, progress_cb=_dl_cb
-                )
-                _dl_prog.progress(1.0)
-                _dl_status.caption(f"✅ {len(_ticker_dfs)}/{len(_opt_tickers)} 종목 데이터 로드 완료")
-
-                if len(_ticker_dfs) < 3:
-                    st.error("데이터를 충분히 가져오지 못했습니다. 네트워크를 확인하거나 종목 수를 줄여주세요.")
-                    st.stop()
-
-                # ── Step 2: Walk-Forward 최적화 ──
-                st.markdown("**② Walk-Forward Grid Search 실행 중...**")
-                _wf_prog   = st.progress(0)
-                _wf_status = st.empty()
-
-                def _wf_cb(cur, tot):
-                    _wf_prog.progress(cur / tot)
-                    _wf_status.caption(f"그리드 탐색: {cur}/{tot}")
-
-                _report = run_walk_forward(
-                    _ticker_dfs,
-                    in_months=4,
-                    out_months=2,
-                    progress_cb=_wf_cb,
-                )
-                _wf_prog.progress(1.0)
-                _wf_status.caption("✅ 최적화 완료!")
-
-                # ── Step 3: 결과 저장 ──
-                st.session_state["opt_best_cond5"]  = _report.best_cond5
-                st.session_state["opt_best_cond6"]  = _report.best_cond6
-                st.session_state["opt_report"]      = _report
-                st.session_state["opt_applied"]     = True
-
-                st.success(
-                    f"🎯 최적 파라미터 도출 — "
-                    f"**cond5: {_report.best_cond5*100:.0f}%** | "
-                    f"**cond6: {_report.best_cond6*100:.0f}%** — "
-                    f"스캐너에 즉시 반영됩니다!"
-                )
-
-            except Exception as _oe:
-                st.error(f"최적화 오류: {_oe}")
-                import traceback; st.code(traceback.format_exc())
-
-        # ── 최적화 결과 표시 ──
-        if "opt_report" in st.session_state:
-            _rep = st.session_state["opt_report"]
-            st.divider()
-            st.markdown(f"#### 📊 최적화 결과 ({_rep.timestamp})")
-
-            _res_c1, _res_c2, _res_c3, _res_c4, _res_c5 = st.columns(5)
-            _res_c1.metric("최적 cond5", f"{_rep.best_cond5*100:.0f}%")
-            _res_c2.metric("최적 cond6", f"{_rep.best_cond6*100:.0f}%")
-            _res_c3.metric("OOS 승률",   f"{_rep.oos_win_rate:.1f}%")
-            _res_c4.metric("OOS 샤프",   f"{_rep.oos_sharpe:.2f}")
-            _res_c5.metric("OOS MDD",    f"{_rep.oos_mdd:.1f}%")
-
-            _mc1, _mc2 = st.columns(2)
-
-            with _mc1:
-                st.markdown("**윈도우별 Walk-Forward 결과**")
-                if _rep.window_results:
-                    _wf_df = pd.DataFrame(_rep.window_results).rename(columns={
-                        "window": "기간", "best_cond5": "cond5", "best_cond6": "cond6",
-                        "is_score": "IS 점수", "oos_win_rate": "OOS 승률(%)",
-                        "oos_sharpe": "OOS 샤프", "oos_mdd": "OOS MDD(%)",
-                        "oos_trades": "OOS 신호수",
-                    })
-                    _wf_df["cond5"] = (_wf_df["cond5"] * 100).astype(int).astype(str) + "%"
-                    _wf_df["cond6"] = (_wf_df["cond6"] * 100).astype(int).astype(str) + "%"
-                    st.dataframe(_wf_df, use_container_width=True, hide_index=True)
-
-            with _mc2:
-                st.markdown("**그리드 서치 히트맵 (마지막 윈도우)**")
-                if not _rep.grid_summary.empty:
-                    import plotly.graph_objects as _go_opt
-                    _gs = _rep.grid_summary.copy()
-                    _c5_labels = [f"{v*100:.0f}%" for v in sorted(_gs["cond5"].unique())]
-                    _c6_labels = [f"{v*100:.0f}%" for v in sorted(_gs["cond6"].unique())]
-                    _pivot = _gs.pivot_table(index="cond6", columns="cond5", values="score")
-                    _fig_hm = _go_opt.Figure(_go_opt.Heatmap(
-                        z=_pivot.values.tolist(),
-                        x=[f"{v*100:.0f}%" for v in _pivot.columns],
-                        y=[f"{v*100:.0f}%" for v in _pivot.index],
-                        colorscale="RdYlGn",
-                        colorbar_title="점수",
-                        hovertemplate="cond5=%{x}<br>cond6=%{y}<br>점수=%{z:.3f}<extra></extra>",
-                    ))
-                    _fig_hm.update_layout(
-                        title="Sharpe×승률 스코어 히트맵",
-                        xaxis_title="cond5 (5일 누적 수익률 하한)",
-                        yaxis_title="cond6 (거래량 비율 상한)",
-                        height=350, margin=dict(l=50, r=20, t=40, b=40),
-                    )
-                    st.plotly_chart(_fig_hm, use_container_width=True)
-
-    st.divider()
+    # ── 🔬 AI 파라미터 자동 최적화(Walk-Forward)는 스캐너에서 제거 → 추후 관리 탭으로 이전 ──
+    #    (스캔은 opt_best_cond5/6 기본값 사용 · opt_applied=False 경로로 정상 동작)
 
     with st.expander("⚡ 전략 프리셋 & 지표 필터 선택", expanded=False):
         # ── 프리셋: 시장 레짐 기반 자동 추천 라디오 ──
@@ -6944,7 +6761,7 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
         st.session_state["scan_mode"] = "📈 개별주"
     with _rc3:
         scan_mode = st.radio(
-            "스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합"], horizontal=True, key="scan_mode",
+            "스캔 모드", ["📈 개별주", "🏦 ETF", "🔀 통합", "🏛️ 연기금"], horizontal=True, key="scan_mode",
             disabled=(_market_forces_etf or _market_forces_stock),
             help="시장 선택에 따라 자동 고정됩니다" if (_market_forces_etf or _market_forces_stock) else None,
         )
@@ -7024,7 +6841,12 @@ border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
     )
     # (🚀 스캔 시작 버튼은 상단 Control Ribbon으로 이동)
 
-    if scan_btn:
+    if scan_btn and "연기금" in scan_mode:
+        # 🏛️ 연기금 모드 → 연기금 스캔 로직으로 분기 (상단 블록이 다음 런에서 실행)
+        st.session_state['_trigger_pension'] = True
+        st.rerun()
+
+    if scan_btn and "연기금" not in scan_mode:
         st.session_state.passed = []
 
         # ══════════════════════════════════════════════════════════════════
