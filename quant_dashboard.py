@@ -11313,42 +11313,8 @@ with tab_e:
                 _pairs.append((_p[0].strip(), _p[1].strip()))
         _tids = [t for t, n in _pairs]
 
-        def _do_delete(tk): remove_ticker(tk)
+        _mid_r = st.container()  # (관심종목 추가/리스트는 사이드바 Watchlist와 100% 중복 → 제거)
 
-        _mid_l, _mid_r = st.columns([1, 1])
-
-        with _mid_l:
-            st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>➕ 종목 추가</div>", unsafe_allow_html=True)
-            with st.form("add_ticker_form", clear_on_submit=True):
-                _fc2, _fn2 = st.columns(2)
-                _f_code = _fc2.text_input("종목코드", placeholder="005930")
-                _f_name = _fn2.text_input("종목명",   placeholder="삼성전자")
-                st.form_submit_button("✅ 추가", use_container_width=True)
-                if _f_code and _f_name:
-                    _code = _f_code.strip(); _name = _f_name.strip()
-                    if _code not in _tids:
-                        if add_ticker(_code, _name):
-                            st.rerun()
-                    else:
-                        st.warning("이미 등록됨")
-
-            # 태그형 목록 + 인라인 X 버튼
-            st.markdown(f"<div style='font-size:11px;color:#64748b;margin:10px 0 6px'>📋 관심종목 {len(_pairs)}개 — X 클릭 시 즉시 삭제</div>", unsafe_allow_html=True)
-            for _idx, (_tk, _nm) in enumerate(_pairs):
-                _is_kr = _tk.isdigit()
-                _flag = "🇰🇷" if _is_kr else "🇺🇸"
-                try:
-                    _tag_col, _del_col = st.columns([5, 1], vertical_alignment="center")
-                except TypeError:
-                    _tag_col, _del_col = st.columns([5, 1])
-                _tag_col.markdown(
-                    f"<div style='background:#1e293b;border:1px solid #334155;border-radius:20px;"
-                    f"padding:5px 14px;font-size:12px;display:inline-flex;align-items:center;gap:6px'>"
-                    f"{_flag} <span style='color:#f0f4ff;font-weight:700'>{_nm[:10]}</span>"
-                    f"<span style='color:#64748b;font-size:10px'>{_tk}</span></div>",
-                    unsafe_allow_html=True
-                )
-                _del_col.button("✕", key=f"tag_del_{_idx}_{_tk}", on_click=_do_delete, args=(_tk,))
 
         with _mid_r:
             st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>📈 시장별 종목 현황</div>", unsafe_allow_html=True)
@@ -11372,7 +11338,7 @@ with tab_e:
                     if _st2 in all_data:
                         try:
                             _sdf = all_data[_st2]['df']
-                            _sc  = _sdf['Close'].iloc[-1]; _sp = _sdf['Close'].iloc[-2]
+                            _sc  = _sdf['종가'].iloc[-1]; _sp = _sdf['종가'].iloc[-2]
                             _chgs.append((_sc / _sp - 1) * 100 if _sp and _sp > 0 else 0)
                         except Exception: pass
                 _avg_chg = sum(_chgs)/len(_chgs) if _chgs else 0
@@ -11394,7 +11360,7 @@ with tab_e:
                     if _st2 in all_data:
                         try:
                             _sdf2 = all_data[_st2]['df']
-                            _sc2  = _sdf2['Close'].iloc[-1]; _sp2 = _sdf2['Close'].iloc[-2]
+                            _sc2  = _sdf2['종가'].iloc[-1]; _sp2 = _sdf2['종가'].iloc[-2]
                             _sc_chg = (_sc2 / _sp2 - 1) * 100 if _sp2 and _sp2 > 0 else 0
                         except Exception: pass
                     _sc_c = "#39ff14" if _sc_chg > 0 else "#ff003c"
@@ -11410,61 +11376,6 @@ with tab_e:
             _tbl_html += "</div>"
             st.markdown(_tbl_html, unsafe_allow_html=True)
 
-        st.divider()
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 4. 스캐너 종목 그리드 타일 (C1~C6 2×3)
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        st.markdown("<div style='font-size:13px;font-weight:700;color:#94a3b8;margin-bottom:10px'>📊 스캐너 발굴 종목 — 점수 타일 (C1~C6)</div>", unsafe_allow_html=True)
-
-        def _do_add(tk, nm): add_ticker(tk, nm)
-
-        if st.session_state.passed:
-            _tile_html = "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px'>"
-            for _item in st.session_state.passed:
-                _tk2  = _item["ticker"]; _nm2 = _item["name"]
-                _chg  = _item.get("等락(%)", _item.get("등락(%)", 0))
-                _ssc2 = _item.get("score", 0)
-                _sgrd2 = _item.get("등급","")
-                _done = _tk2 in _tids
-                _gc2  = "#ffd166" if '🏆' in _sgrd2 else "#3b82f6"
-                _chg_c2 = "#39ff14" if _chg > 0 else "#ff003c"
-                _gcond2 = _item.get("조건","")
-                def _cx2(cs, n): return 1 if f"C{n}✅" in cs else 0
-                _scores = [_cx2(_gcond2, i) for i in range(1, 7)]
-                _score_html = "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:6px'>"
-                for _ci2, _cv2 in enumerate(_scores):
-                    _sc_bg = "#0a2a0a" if _cv2 else "#2a0a0a"
-                    _sc_c2 = "#39ff14" if _cv2 else "#ff003c"
-                    _score_html += (
-                        f"<div style='background:{_sc_bg};border-radius:3px;padding:2px;text-align:center;"
-                        f"font-size:9px;color:{_sc_c2};font-weight:700'>C{_ci2+1}</div>"
-                    )
-                _score_html += "</div>"
-                _tile_html += (
-                    f"<div style='background:#0d1117;border:1px solid {_gc2}40;border-radius:10px;"
-                    f"padding:10px 10px;{'opacity:0.6;' if _done else ''}'>"
-                    f"<div style='font-size:11px;font-weight:700;color:#f0f4ff'>{_nm2[:9]}</div>"
-                    f"<div style='font-size:9px;color:#64748b;margin-top:1px'>{_tk2}</div>"
-                    f"<div style='display:flex;justify-content:space-between;margin-top:4px'>"
-                    f"<span style='font-size:10px;color:{_chg_c2}'>{'▲' if _chg>0 else '▼'}{abs(_chg):.1f}%</span>"
-                    f"<span style='font-size:10px;color:#fbbf24;font-weight:700'>{_ssc2}점</span>"
-                    f"</div>"
-                    + _score_html +
-                    ("<div style='font-size:9px;color:#39ff14;margin-top:4px'>✅ 관심등록됨</div>" if _done else "") +
-                    f"</div>"
-                )
-            _tile_html += "</div>"
-            st.markdown(_tile_html, unsafe_allow_html=True)
-            st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
-            # 일괄 추가 버튼
-            _new_items2 = [i for i in st.session_state.passed if i['ticker'] not in _tids]
-            if _new_items2:
-                if st.button(f"⭐ 미등록 {len(_new_items2)}개 전체 추가", key="bulk_add_e1", use_container_width=True, type="primary"):
-                    _added = sum(1 for _it in _new_items2 if add_ticker(_it['ticker'], _it['name']))
-                    if _added: st.success(f"✅ {_added}개 추가!"); st.rerun()
-        else:
-            st.info("💡 스캐너 탭에서 먼저 스캔을 실행하면 발굴 종목이 여기에 표시됩니다.")
 
     # ══════════════════════════════════════════
     # 탭 6: ETF 로테이션 랭킹판
