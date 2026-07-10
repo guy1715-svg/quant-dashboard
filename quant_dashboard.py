@@ -10649,19 +10649,31 @@ with _tab_d1:
         with st.expander("🛡️ [중장기 참고용] 월간 ETF 로테이션 백테스팅 결과 보기", expanded=False):
             # ── 백테스팅 ──
             st.markdown("### 📊 ETF 로테이션 백테스팅")
-            st.caption("1위 ETF에 매월 스위칭 전략 vs 코스피 수익률 비교")
+            # ── 국장/미장 완전 분리: 벤치마크 지수·비용을 대상 시장 라디오에 연동 ──
+            _bt_is_us   = "미장" in str(_etf_market)
+            _bench_name = "S&P500" if _bt_is_us else "코스피"
+            _bench_sym  = "^GSPC" if _bt_is_us else "^KS11"
+            st.caption(f"1위 ETF에 매월 스위칭 전략 vs **{_bench_name}** 수익률 비교 · "
+                       f"대상 시장: {'🇺🇸 미장 ETF' if _bt_is_us else '🇰🇷 국장 ETF'}")
 
-            # 수수료/세금 설정 UI
+            # 수수료/세금 설정 UI (시장별 기본값·키 분리)
             st.markdown("#### ⚙️ 백테스팅 비용 설정")
             _bt_c1, _bt_c2, _bt_c3 = st.columns(3)
-            _fee_buy  = _bt_c1.number_input("매수 수수료(%)", value=0.015, step=0.005,
-                                             format="%.3f", key="bt_fee_buy",
-                                             help="증권사 수수료 (보통 0.015%)")
-            _fee_sell = _bt_c2.number_input("매도 수수료+세금(%)", value=0.33, step=0.01,
-                                             format="%.3f", key="bt_fee_sell",
-                                             help="수수료 0.015% + 거래세 0.18% + 농특세 0.15% ≈ 0.33%")
-            _slip     = _bt_c3.number_input("슬리피지(%)", value=0.1, step=0.05,
-                                             format="%.2f", key="bt_slip",
+            if _bt_is_us:
+                _def_buy, _def_sell, _def_slip = 0.100, 0.100, 0.05
+                _buy_help  = "해외주식 매매 수수료 (보통 0.1%)"
+                _sell_help = "해외주식 매도 수수료 + SEC/ECN fee 등 (≈0.1%)"
+            else:
+                _def_buy, _def_sell, _def_slip = 0.015, 0.330, 0.10
+                _buy_help  = "증권사 수수료 (보통 0.015%)"
+                _sell_help = "수수료 0.015% + 거래세 0.18% + 농특세 0.15% ≈ 0.33%"
+            _mk = "us" if _bt_is_us else "kr"
+            _fee_buy  = _bt_c1.number_input("매수 수수료(%)", value=_def_buy, step=0.005,
+                                             format="%.3f", key=f"bt_fee_buy_{_mk}", help=_buy_help)
+            _fee_sell = _bt_c2.number_input("매도 수수료+세금(%)", value=_def_sell, step=0.01,
+                                             format="%.3f", key=f"bt_fee_sell_{_mk}", help=_sell_help)
+            _slip     = _bt_c3.number_input("슬리피지(%)", value=_def_slip, step=0.05,
+                                             format="%.2f", key=f"bt_slip_{_mk}",
                                              help="호가 공백 오차 (보통 0.05~0.2%)")
 
             # 총 거래비용 (매수+매도 합산)
@@ -10670,7 +10682,7 @@ with _tab_d1:
                        f"(매수 {_fee_buy+_slip:.3f}% + 매도 {_fee_sell+_slip:.3f}%)")
 
             @st.cache_data(ttl=86400, show_spinner=False)
-            def run_etf_backtest(fee_buy, fee_sell, slip):
+            def run_etf_backtest(fee_buy, fee_sell, slip, bench_sym="^KS11", is_us=False):
                 import yfinance as yf
                 import numpy as np
 
@@ -10705,21 +10717,32 @@ with _tab_d1:
                     except Exception:
                         pass
 
-                # 벤치마크 (코스피) — yfinance ^KS11 실패 시 FDR 폴백
+                # 벤치마크 — 국장=^KS11, 미장=^GSPC/^IXIC (대상 시장 연동). yfinance 실패 시 폴백.
                 _bm_ret = None
                 try:
-                    _bm_df  = yf.Ticker("^KS11").history(period="2y", interval="1mo")
+                    _bm_df  = yf.Ticker(bench_sym).history(period="2y", interval="1mo")
                     if _bm_df is not None and len(_bm_df) >= 4:
                         _bm_ret = _bm_df['Close'].pct_change().dropna()
                 except Exception:
                     _bm_ret = None
                 if _bm_ret is None or len(_bm_ret) < 4:
-                    try:
-                        import FinanceDataReader as _fdr_bt
-                        _bm_d = _fdr_bt.DataReader("KS11").resample('M').last()['Close'].dropna()
-                        _bm_ret = _bm_d.pct_change().dropna()
-                    except Exception:
-                        _bm_ret = None
+                    if not is_us:
+                        # 국장: FDR(KS11 월말) 폴백
+                        try:
+                            import FinanceDataReader as _fdr_bt
+                            _bm_d = _fdr_bt.DataReader("KS11").resample('M').last()['Close'].dropna()
+                            _bm_ret = _bm_d.pct_change().dropna()
+                        except Exception:
+                            _bm_ret = None
+                    else:
+                        # 미장: ^GSPC 실패 시 ^IXIC(나스닥)로 재시도
+                        try:
+                            _alt = "^IXIC" if bench_sym != "^IXIC" else "^GSPC"
+                            _bm_df2 = yf.Ticker(_alt).history(period="2y", interval="1mo")
+                            if _bm_df2 is not None and len(_bm_df2) >= 4:
+                                _bm_ret = _bm_df2['Close'].pct_change().dropna()
+                        except Exception:
+                            _bm_ret = None
 
                 if not _monthly: return None
 
@@ -10858,7 +10881,7 @@ with _tab_d1:
                 }
 
             with st.spinner("백테스팅 계산 중... (최초 1회)"):
-                _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip)
+                _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip, _bench_sym, _bt_is_us)
 
             if _bt:
                 # 성과 요약
@@ -10874,7 +10897,7 @@ with _tab_d1:
                     f"<div style='font-size:11px;color:#64748b'>수수료 전: {_bt.get('raw_ret',0):+.2f}%</div></div>",
                     unsafe_allow_html=True)
                 _bt2.markdown(
-                    f"<div class='metric-card'><div class='label'>코스피 수익률</div>"
+                    f"<div class='metric-card'><div class='label'>{_bench_name} 수익률</div>"
                     f"<div class='value {'up' if _bt['bench_ret']>0 else 'down'}'>{_bt['bench_ret']:+.2f}%</div></div>",
                     unsafe_allow_html=True)
                 _bt3.markdown(
@@ -10930,7 +10953,7 @@ with _tab_d1:
                 _fig_bt.add_trace(go.Scatter(
                     x=list(range(len(_bt['benchmark']))),
                     y=_bt['benchmark'],
-                    name='코스피',
+                    name=_bench_name,
                     line=dict(color='#38bdf8', width=1.5, dash='dash')
                 ))
                 _fig_bt.add_hline(y=0, line_color='#2d3a55', line_width=0.8)
@@ -10960,7 +10983,7 @@ with _tab_d1:
                             '월': _d_str,
                             '선택 ETF': _c,
                             '전략 누적(%)': f"{_p:+.2f}%",
-                            '코스피 누적(%)': f"{_b:+.2f}%",
+                            f'{_bench_name} 누적(%)': f"{_b:+.2f}%",
                         })
                     # 이번 달(진행 중) 추천 — 월봉 미완성이라 누적 수익률은 '진행중'
                     _np = _bt.get('next_pick')
@@ -10969,7 +10992,7 @@ with _tab_d1:
                             '월': f"{_np.get('month','')} (진행중)",
                             '선택 ETF': f"🎯 {_np['name']}",
                             '전략 누적(%)': "집계중",
-                            '코스피 누적(%)': "집계중",
+                            f'{_bench_name} 누적(%)': "집계중",
                         })
                     st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
                     if _np and _np.get('name'):
