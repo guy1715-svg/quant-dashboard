@@ -1613,7 +1613,11 @@ hr { border-color: #e2e8f0 !important; }
     margin-top: 5px;
     letter-spacing: -0.5px;
     color: var(--text-pri);
+    white-space: nowrap;      /* 금액 숫자 중간 줄바꿈(32,275,93/5원) 방지 */
 }
+/* 페이퍼 계좌 5컬럼: 8자리 원화가 안 깨지도록 반응형 축소 */
+.pa-metric .value { font-size: clamp(12px, 1.15vw, 17px) !important; white-space: nowrap; }
+.pa-metric .label { font-size: 10px !important; }
 .metric-card .delta {
     font-size: var(--fs-sm);
     font-family: var(--font-mono);
@@ -11394,13 +11398,13 @@ with tab_e:
         # ── 1. 계좌 현황 ──
         st.markdown("#### 💰 가상 계좌 현황")
         _pa1, _pa2, _pa3, _pa4, _pa5 = st.columns(5)
-        _pa1.markdown(f"<div class='metric-card'><div class='label'>초기자본</div><div class='value flat'>{_acc['initial']:,.0f}원</div></div>", unsafe_allow_html=True)
-        _pa2.markdown(f"<div class='metric-card'><div class='label'>현금잔고</div><div class='value flat'>{_acc['cash']:,.0f}원</div></div>", unsafe_allow_html=True)
-        _pa3.markdown(f"<div class='metric-card'><div class='label'>총평가금액</div><div class='value flat'>{_total_val:,.0f}원</div></div>", unsafe_allow_html=True)
+        _pa1.markdown(f"<div class='metric-card pa-metric'><div class='label'>초기자본</div><div class='value flat'>{_acc['initial']:,.0f}원</div></div>", unsafe_allow_html=True)
+        _pa2.markdown(f"<div class='metric-card pa-metric'><div class='label'>현금잔고</div><div class='value flat'>{_acc['cash']:,.0f}원</div></div>", unsafe_allow_html=True)
+        _pa3.markdown(f"<div class='metric-card pa-metric'><div class='label'>총평가금액</div><div class='value flat'>{_total_val:,.0f}원</div></div>", unsafe_allow_html=True)
         _pnl_c = 'up' if _pnl >= 0 else 'down'
-        _pa4.markdown(f"<div class='metric-card'><div class='label'>총손익</div><div class='value {_pnl_c}'>{_pnl:+,.0f}원<br>({_pnl_pct:+.2f}%)</div></div>", unsafe_allow_html=True)
+        _pa4.markdown(f"<div class='metric-card pa-metric'><div class='label'>총손익</div><div class='value {_pnl_c}'>{_pnl:+,.0f}원<br>({_pnl_pct:+.2f}%)</div></div>", unsafe_allow_html=True)
         _mdd_c = 'down' if _mdd < -5 else 'flat'
-        _pa5.markdown(f"<div class='metric-card'><div class='label'>MDD</div><div class='value {_mdd_c}'>{_mdd:.2f}%</div></div>", unsafe_allow_html=True)
+        _pa5.markdown(f"<div class='metric-card pa-metric'><div class='label'>MDD</div><div class='value {_mdd_c}'>{_mdd:.2f}%</div></div>", unsafe_allow_html=True)
 
         if _mdd < -10:
             st.error(f"🚨 MDD 경고! {_mdd:.2f}% — 포지션 즉시 점검 필요")
@@ -11633,220 +11637,222 @@ with tab_e:
 
         st.divider()
 
-        # ── 4. 가상 매수 ──
-        st.markdown("#### 📥 가상 매수 실행")
+        # ── 🛠️ 가상 매수 실행을 Expander로 격리 (평소 시야 안 가림) ──
+        with st.expander("🛠️ 가상 매수 실행 (수동)", expanded=False):
+            # ── 4. 가상 매수 ──
+            st.markdown("#### 📥 가상 매수 실행")
 
-        # 매수 가능 종목 = 관심종목 + 현재 보유 + 기본목록(중복 제거) — 관심종목도 매수 가능
-        _buy_universe = {}
-        for _t, _n in (get_watchlist_tickers() + [(p['ticker'], p.get('name', p['ticker']))
-                        for p in _acc.get('positions', [])] + list(TICKERS)):
-            if _t not in _buy_universe:
-                _buy_universe[_t] = _n
-        _buy_opts = [f"{_n} ({_t})" for _t, _n in _buy_universe.items()]
-        _bc1, _bc2 = st.columns([2, 3])
-        _buy_ticker_sel = _bc1.selectbox("종목 선택", _buy_opts or ["(관심종목 없음)"],
-                                         key="buy_ticker_sel")
-        # 형식: "종목명 (티커)" → 괄호 안 티커 추출
-        _bt = _buy_ticker_sel.split('(')[-1].replace(')','').strip()
-        _bn = _buy_universe.get(_bt, _bt)
+            # 매수 가능 종목 = 관심종목 + 현재 보유 + 기본목록(중복 제거) — 관심종목도 매수 가능
+            _buy_universe = {}
+            for _t, _n in (get_watchlist_tickers() + [(p['ticker'], p.get('name', p['ticker']))
+                            for p in _acc.get('positions', [])] + list(TICKERS)):
+                if _t not in _buy_universe:
+                    _buy_universe[_t] = _n
+            _buy_opts = [f"{_n} ({_t})" for _t, _n in _buy_universe.items()]
+            _bc1, _bc2 = st.columns([2, 3])
+            _buy_ticker_sel = _bc1.selectbox("종목 선택", _buy_opts or ["(관심종목 없음)"],
+                                             key="buy_ticker_sel")
+            # 형식: "종목명 (티커)" → 괄호 안 티커 추출
+            _bt = _buy_ticker_sel.split('(')[-1].replace(')','').strip()
+            _bn = _buy_universe.get(_bt, _bt)
 
-        # 현재가 자동 로드
-        _is_kr = is_korean_ticker(_bt)
+            # 현재가 자동 로드
+            _is_kr = is_korean_ticker(_bt)
 
-        # USD/KRW 환율 — 포지션 카드에서 조회한 값 재사용
-        _usd_krw = _pos_usd_krw
+            # USD/KRW 환율 — 포지션 카드에서 조회한 값 재사용
+            _usd_krw = _pos_usd_krw
 
-        # 종목 변경 시 매수가 session_state 초기화
-        if st.session_state.get('_last_buy_ticker') != _bt:
-            st.session_state['_last_buy_ticker'] = _bt
-            st.session_state.pop('buy_price_inp', None)
+            # 종목 변경 시 매수가 session_state 초기화
+            if st.session_state.get('_last_buy_ticker') != _bt:
+                st.session_state['_last_buy_ticker'] = _bt
+                st.session_state.pop('buy_price_inp', None)
 
-        try:
-            _buy_df  = fetch_ohlcv(_bt, 5)
-            _buy_cur = float(_buy_df['종가'].iloc[-1]) if _buy_df is not None and not _buy_df.empty else 0
-        except:
-            _buy_cur = 0
-
-        _buy_cur_krw = _buy_cur * (_usd_krw if not _is_kr else 1.0)
-        _cur_disp = f"{_buy_cur:,.0f}원" if _is_kr else (
-            f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)" if _buy_cur > 0 else "가격 로드 실패 — 수동 입력 필요"
-        )
-
-        _fx_disp = f" | 환율: <b style='color:#94a3b8'>{_usd_krw:,.0f}원/$</b>" if not _is_kr else ""
-        _bc2.markdown(
-            f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
-            f"현재가: <b style='font-size:18px;color:#fbbf24'>{_cur_disp}</b>"
-            f"{_fx_disp} | "
-            f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
-            unsafe_allow_html=True
-        )
-        if not _is_kr and _buy_cur == 0:
-            st.warning("⚠️ 현재가를 가져오지 못했습니다. 매수가를 직접 입력해주세요.")
-
-        # ── 5AI 점수 자동계산 (RSI·MACD·MA·모멘텀·거래량) ──
-        def _calc_5ai(_df):
-            if _df is None or len(_df) < 20:
-                return 0
             try:
-                _cl = _df['종가']; _vol = _df['거래량']
-                _score = 0
-                # RSI
-                _d = _cl.diff(); _g = _d.clip(lower=0).rolling(14).mean(); _l = (-_d.clip(upper=0)).rolling(14).mean()
-                _rsi = (100 - 100/(1+_g/_l.replace(0,np.nan))).iloc[-1]
-                if _rsi >= 60: _score += 1
-                elif _rsi <= 40: _score -= 1
-                # MACD
-                _m = _cl.ewm(span=12).mean() - _cl.ewm(span=26).mean()
-                _s = _m.ewm(span=9).mean()
-                if _m.iloc[-1] > _s.iloc[-1] and _m.iloc[-2] <= _s.iloc[-2]: _score += 2
-                elif _m.iloc[-1] > _s.iloc[-1]: _score += 1
-                elif _m.iloc[-1] < _s.iloc[-1]: _score -= 1
-                # MA 정배열
-                if _cl.iloc[-1] > _cl.rolling(20).mean().iloc[-1] > _cl.rolling(60).mean().iloc[-1]: _score += 1
-                elif _cl.iloc[-1] < _cl.rolling(20).mean().iloc[-1]: _score -= 1
-                # 모멘텀
-                _mom = (_cl.iloc[-1]/_cl.iloc[-20]-1)*100
-                if _mom >= 5: _score += 1
-                elif _mom <= -5: _score -= 1
-                # 거래량
-                if _vol.iloc[-1] > _vol.tail(20).mean()*1.5: _score += 1
-                return max(-5, min(5, _score))
+                _buy_df  = fetch_ohlcv(_bt, 5)
+                _buy_cur = float(_buy_df['종가'].iloc[-1]) if _buy_df is not None and not _buy_df.empty else 0
             except:
-                return 0
-        _auto_5ai = _calc_5ai(_buy_df)
+                _buy_cur = 0
 
-        # ── 빠른 투자금액 버튼 ──
-        st.markdown("**💰 투자금액 선택**")
-        _qb1, _qb2, _qb3, _qb4 = st.columns(4)
-        if _qb1.button("10만원",    key="inv_10w",   use_container_width=True): st.session_state['invest_amt_inp'] = 100000
-        if _qb2.button("100만원",   key="inv_100w",  use_container_width=True): st.session_state['invest_amt_inp'] = 1000000
-        if _qb3.button("1,000만원", key="inv_1000w", use_container_width=True): st.session_state['invest_amt_inp'] = 10000000
-        if _qb4.button("전액",      key="inv_all",   use_container_width=True): st.session_state['invest_amt_inp'] = int(_acc['cash'])
+            _buy_cur_krw = _buy_cur * (_usd_krw if not _is_kr else 1.0)
+            _cur_disp = f"{_buy_cur:,.0f}원" if _is_kr else (
+                f"${_buy_cur:,.2f} (≈{_buy_cur_krw:,.0f}원)" if _buy_cur > 0 else "가격 로드 실패 — 수동 입력 필요"
+            )
 
-        # ── 투자금액(원) → 수량 자동계산 ──
-        _inv_col1, _inv_col2 = st.columns([3, 2])
-        _invest_amt = _inv_col1.number_input(
-            "또는 직접 입력 (원)",
-            value=st.session_state.get('invest_amt_inp', 10000000),
-            step=100000, min_value=0, key="invest_amt_inp",
-            help="원화 기준 투자금액 → 현재가(환율 반영) 기준 매수 가능 수량 자동 계산"
-        )
-        _auto_qty  = int(_invest_amt / _buy_cur_krw) if _buy_cur_krw > 0 and _invest_amt > 0 else 0
-        _auto_cost_krw = _auto_qty * _buy_cur_krw
-        _auto_cost_usd = _auto_qty * _buy_cur
-        _cost_str  = f"{_auto_cost_krw:,.0f}원" if _is_kr else f"${_auto_cost_usd:,.2f} (≈{_auto_cost_krw:,.0f}원)"
-        _inv_col2.markdown(
-            f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin-top:28px'>"
-            f"<span style='font-size:12px;color:#166534'>매수 가능 수량</span><br>"
-            f"<b style='font-size:22px;color:#15803d'>{_auto_qty:,}주</b>"
-            f"<span style='font-size:12px;color:#166534'> (실투자: {_cost_str})</span></div>",
-            unsafe_allow_html=True
-        )
+            _fx_disp = f" | 환율: <b style='color:#94a3b8'>{_usd_krw:,.0f}원/$</b>" if not _is_kr else ""
+            _bc2.markdown(
+                f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-top:28px'>"
+                f"현재가: <b style='font-size:18px;color:#fbbf24'>{_cur_disp}</b>"
+                f"{_fx_disp} | "
+                f"현금잔고: <b style='color:#34d399'>{_acc['cash']:,.0f}원</b></div>",
+                unsafe_allow_html=True
+            )
+            if not _is_kr and _buy_cur == 0:
+                st.warning("⚠️ 현재가를 가져오지 못했습니다. 매수가를 직접 입력해주세요.")
 
-        # 매수가·수량·5AI 를 session_state에 항상 동기화 (종목/금액 변경 즉시 반영)
-        try:
-            _buy_cur_safe = float(_buy_cur) if _buy_cur and not (isinstance(_buy_cur, float) and np.isnan(_buy_cur)) else 0.0
-            if _is_kr:
-                _price_val = max(1, int(_buy_cur_safe)) if _buy_cur_safe > 0 else 1
-            else:
-                _price_val = round(_buy_cur_safe, 2) if _buy_cur_safe > 0 else 1.0
-        except (TypeError, ValueError):
-            _price_val = 1 if _is_kr else 1.0
-        # 종목이 바뀔 때만 기본값 갱신 → 같은 종목 내 수동 입력이 snap-back 되지 않음
-        if st.session_state.get('_buy_last_ticker') != _bt:
-            st.session_state['_buy_last_ticker'] = _bt
-            st.session_state['buy_price_inp'] = float(_price_val)
-            st.session_state['buy_qty_inp']   = max(1, _auto_qty)
-        st.session_state['buy_ai'] = _auto_5ai
+            # ── 5AI 점수 자동계산 (RSI·MACD·MA·모멘텀·거래량) ──
+            def _calc_5ai(_df):
+                if _df is None or len(_df) < 20:
+                    return 0
+                try:
+                    _cl = _df['종가']; _vol = _df['거래량']
+                    _score = 0
+                    # RSI
+                    _d = _cl.diff(); _g = _d.clip(lower=0).rolling(14).mean(); _l = (-_d.clip(upper=0)).rolling(14).mean()
+                    _rsi = (100 - 100/(1+_g/_l.replace(0,np.nan))).iloc[-1]
+                    if _rsi >= 60: _score += 1
+                    elif _rsi <= 40: _score -= 1
+                    # MACD
+                    _m = _cl.ewm(span=12).mean() - _cl.ewm(span=26).mean()
+                    _s = _m.ewm(span=9).mean()
+                    if _m.iloc[-1] > _s.iloc[-1] and _m.iloc[-2] <= _s.iloc[-2]: _score += 2
+                    elif _m.iloc[-1] > _s.iloc[-1]: _score += 1
+                    elif _m.iloc[-1] < _s.iloc[-1]: _score -= 1
+                    # MA 정배열
+                    if _cl.iloc[-1] > _cl.rolling(20).mean().iloc[-1] > _cl.rolling(60).mean().iloc[-1]: _score += 1
+                    elif _cl.iloc[-1] < _cl.rolling(20).mean().iloc[-1]: _score -= 1
+                    # 모멘텀
+                    _mom = (_cl.iloc[-1]/_cl.iloc[-20]-1)*100
+                    if _mom >= 5: _score += 1
+                    elif _mom <= -5: _score -= 1
+                    # 거래량
+                    if _vol.iloc[-1] > _vol.tail(20).mean()*1.5: _score += 1
+                    return max(-5, min(5, _score))
+                except:
+                    return 0
+            _auto_5ai = _calc_5ai(_buy_df)
 
-        _brow1, _brow2, _brow3, _brow4 = st.columns(4)
-        _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
-        _price_step  = 100 if _is_kr else 1
-        # value= 제거: key+session_state가 값 관리 (중복 경고/덮어쓰기 방지)
-        _buy_price = _brow1.number_input(_price_label, step=float(_price_step),
-                                          min_value=0.01, key="buy_price_inp")
-        _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, key="buy_qty_inp")
-        _ai_color  = "#16a34a" if _auto_5ai > 0 else "#dc2626" if _auto_5ai < 0 else "#64748b"
-        _brow3.markdown(f"<div style='font-size:11px;color:#64748b;margin-bottom:4px'>5AI 점수 (자동계산)</div>"
-                        f"<div style='font-size:26px;font-weight:700;color:{_ai_color}'>{_auto_5ai:+d}점</div>",
-                        unsafe_allow_html=True)
-        _ai_score  = _auto_5ai
-        _net_buy_preview = calc_slippage(_buy_price, True, _is_kr)
-        # 현금 검증은 '실제 차감액(슬리피지 포함)' 기준 → 검증 통과 후 현금 음수 방지
-        _buy_total = _net_buy_preview * _buy_qty
-        _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
-        _total_str = f"{_buy_total:,.0f}원" if _is_kr else f"${_buy_total:,.2f} (≈{_buy_total_krw:,.0f}원)"
-        _slip_str  = f"{_net_buy_preview:,.0f}원/주" if _is_kr else f"${_net_buy_preview:,.2f}/주"
-        _brow4.markdown(
-            f"<div style='padding-top:28px'>"
-            f"필요금액: <b>{_total_str}</b><br>"
-            f"<span style='font-size:11px;color:#64748b'>슬리피지 반영: {_slip_str}</span></div>",
-            unsafe_allow_html=True
-        )
+            # ── 빠른 투자금액 버튼 ──
+            st.markdown("**💰 투자금액 선택**")
+            _qb1, _qb2, _qb3, _qb4 = st.columns(4)
+            if _qb1.button("10만원",    key="inv_10w",   use_container_width=True): st.session_state['invest_amt_inp'] = 100000
+            if _qb2.button("100만원",   key="inv_100w",  use_container_width=True): st.session_state['invest_amt_inp'] = 1000000
+            if _qb3.button("1,000만원", key="inv_1000w", use_container_width=True): st.session_state['invest_amt_inp'] = 10000000
+            if _qb4.button("전액",      key="inv_all",   use_container_width=True): st.session_state['invest_amt_inp'] = int(_acc['cash'])
 
-        # 위젯 key(buy_memo)로 직접 관리 → 매수 후 초기화가 실제로 반영됨
-        _buy_memo = st.text_input("매수 근거 (Why)",
-                                   placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
+            # ── 투자금액(원) → 수량 자동계산 ──
+            _inv_col1, _inv_col2 = st.columns([3, 2])
+            _invest_amt = _inv_col1.number_input(
+                "또는 직접 입력 (원)",
+                value=st.session_state.get('invest_amt_inp', 10000000),
+                step=100000, min_value=0, key="invest_amt_inp",
+                help="원화 기준 투자금액 → 현재가(환율 반영) 기준 매수 가능 수량 자동 계산"
+            )
+            _auto_qty  = int(_invest_amt / _buy_cur_krw) if _buy_cur_krw > 0 and _invest_amt > 0 else 0
+            _auto_cost_krw = _auto_qty * _buy_cur_krw
+            _auto_cost_usd = _auto_qty * _buy_cur
+            _cost_str  = f"{_auto_cost_krw:,.0f}원" if _is_kr else f"${_auto_cost_usd:,.2f} (≈{_auto_cost_krw:,.0f}원)"
+            _inv_col2.markdown(
+                f"<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin-top:28px'>"
+                f"<span style='font-size:12px;color:#166534'>매수 가능 수량</span><br>"
+                f"<b style='font-size:22px;color:#15803d'>{_auto_qty:,}주</b>"
+                f"<span style='font-size:12px;color:#166534'> (실투자: {_cost_str})</span></div>",
+                unsafe_allow_html=True
+            )
 
-        _cash_ok = _acc['cash'] >= _buy_total_krw
-        if not _cash_ok:
-            st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
-
-        # ETF 여부 판단 (종목명에 ETF 키워드 포함 또는 미국 ETF 티커)
-        _is_etf = any(kw in _bn.upper() for kw in ["KODEX","TIGER","ACE","SOL","KBSTAR","HANARO","KOSEF","RISE","PLUS","ETF"]) \
-                  or (not _bt.isdigit() and len(_bt) <= 5)
-
-        # V8.9.1 진입 가능 여부 확인
-        _v891_check = run_v891_system_check()
-        _blocked = not _v891_check['can_enter']
-
-        if _blocked:
-            for _a in _v891_check['alerts']:
-                if _is_etf:
-                    st.warning(f"⚠️ 참고: {_a}")  # ETF는 경고만
+            # 매수가·수량·5AI 를 session_state에 항상 동기화 (종목/금액 변경 즉시 반영)
+            try:
+                _buy_cur_safe = float(_buy_cur) if _buy_cur and not (isinstance(_buy_cur, float) and np.isnan(_buy_cur)) else 0.0
+                if _is_kr:
+                    _price_val = max(1, int(_buy_cur_safe)) if _buy_cur_safe > 0 else 1
                 else:
-                    st.error(_a)
-            if _is_etf:
-                st.info("ℹ️ ETF 로테이션은 매크로 이벤트 차단 제외 — 진입 가능합니다.")
-            else:
-                st.warning("⚠️ V9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+                    _price_val = round(_buy_cur_safe, 2) if _buy_cur_safe > 0 else 1.0
+            except (TypeError, ValueError):
+                _price_val = 1 if _is_kr else 1.0
+            # 종목이 바뀔 때만 기본값 갱신 → 같은 종목 내 수동 입력이 snap-back 되지 않음
+            if st.session_state.get('_buy_last_ticker') != _bt:
+                st.session_state['_buy_last_ticker'] = _bt
+                st.session_state['buy_price_inp'] = float(_price_val)
+                st.session_state['buy_qty_inp']   = max(1, _auto_qty)
+            st.session_state['buy_ai'] = _auto_5ai
 
-        # ETF는 블랙아웃 차단 무시, 개별주만 차단
-        _entry_blocked = _blocked and not _is_etf
+            _brow1, _brow2, _brow3, _brow4 = st.columns(4)
+            _price_label = "매수가 (원)" if _is_kr else "매수가 ($)"
+            _price_step  = 100 if _is_kr else 1
+            # value= 제거: key+session_state가 값 관리 (중복 경고/덮어쓰기 방지)
+            _buy_price = _brow1.number_input(_price_label, step=float(_price_step),
+                                              min_value=0.01, key="buy_price_inp")
+            _buy_qty   = _brow2.number_input("수량 (주)", min_value=1, key="buy_qty_inp")
+            _ai_color  = "#16a34a" if _auto_5ai > 0 else "#dc2626" if _auto_5ai < 0 else "#64748b"
+            _brow3.markdown(f"<div style='font-size:11px;color:#64748b;margin-bottom:4px'>5AI 점수 (자동계산)</div>"
+                            f"<div style='font-size:26px;font-weight:700;color:{_ai_color}'>{_auto_5ai:+d}점</div>",
+                            unsafe_allow_html=True)
+            _ai_score  = _auto_5ai
+            _net_buy_preview = calc_slippage(_buy_price, True, _is_kr)
+            # 현금 검증은 '실제 차감액(슬리피지 포함)' 기준 → 검증 통과 후 현금 음수 방지
+            _buy_total = _net_buy_preview * _buy_qty
+            _buy_total_krw = _buy_total if _is_kr else _buy_total * _usd_krw
+            _total_str = f"{_buy_total:,.0f}원" if _is_kr else f"${_buy_total:,.2f} (≈{_buy_total_krw:,.0f}원)"
+            _slip_str  = f"{_net_buy_preview:,.0f}원/주" if _is_kr else f"${_net_buy_preview:,.2f}/주"
+            _brow4.markdown(
+                f"<div style='padding-top:28px'>"
+                f"필요금액: <b>{_total_str}</b><br>"
+                f"<span style='font-size:11px;color:#64748b'>슬리피지 반영: {_slip_str}</span></div>",
+                unsafe_allow_html=True
+            )
 
-        if not _cash_ok:
-            st.error(f"❌ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
-        if _entry_blocked:
-            st.error("❌ V9.1 매크로 블랙아웃 — 개별주 신규 진입 차단 중")
-        if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
-                     type="primary", disabled=(not _cash_ok or _entry_blocked)):
-            _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
-            _buy_fx = 1.0 if is_korean_ticker(_bt) else _usd_krw   # 미국주식은 원화로 환산 차감
-            _cost  = _net_b * _buy_qty          # native 통화(원 or $)
-            _acc['cash'] -= _cost * _buy_fx     # 현금은 항상 KRW
-            # 평단가는 native 통화로 저장 (US는 센트 보존 → 정수 round 금지)
-            _avg_ndigits = 0 if is_korean_ticker(_bt) else 2
-            _pos_exist = get_position(_acc, _bt)
-            if _pos_exist:
-                _old_v = _pos_exist['avg_price'] * _pos_exist['qty']
-                _new_v = _net_b * _buy_qty
-                _pos_exist['qty']      += _buy_qty
-                _pos_exist['avg_price'] = round((_old_v + _new_v) / _pos_exist['qty'], _avg_ndigits)
-            else:
-                _acc['positions'].append({
-                    'ticker': _bt, 'name': _bn,
-                    'qty': _buy_qty, 'avg_price': _net_b,
-                    'entry_date': str(pd.Timestamp.now())[:10]
-                })
-            _tv_now = calc_portfolio_value(_acc)
-            _acc['peak']   = max(_acc['peak'], _tv_now)
-            _acc['trough'] = min(_acc['trough'], _tv_now)
-            save_account(_acc)
-            log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
-                      _acc['cash'], _tv_now, ai_score=_ai_score, memo=st.session_state.get('buy_memo',''))
-            st.session_state['buy_memo'] = ''   # 위젯 key 직접 초기화
-            st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
-            st.rerun()
+            # 위젯 key(buy_memo)로 직접 관리 → 매수 후 초기화가 실제로 반영됨
+            _buy_memo = st.text_input("매수 근거 (Why)",
+                                       placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
+
+            _cash_ok = _acc['cash'] >= _buy_total_krw
+            if not _cash_ok:
+                st.warning(f"⚠️ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
+
+            # ETF 여부 판단 (종목명에 ETF 키워드 포함 또는 미국 ETF 티커)
+            _is_etf = any(kw in _bn.upper() for kw in ["KODEX","TIGER","ACE","SOL","KBSTAR","HANARO","KOSEF","RISE","PLUS","ETF"]) \
+                      or (not _bt.isdigit() and len(_bt) <= 5)
+
+            # V8.9.1 진입 가능 여부 확인
+            _v891_check = run_v891_system_check()
+            _blocked = not _v891_check['can_enter']
+
+            if _blocked:
+                for _a in _v891_check['alerts']:
+                    if _is_etf:
+                        st.warning(f"⚠️ 참고: {_a}")  # ETF는 경고만
+                    else:
+                        st.error(_a)
+                if _is_etf:
+                    st.info("ℹ️ ETF 로테이션은 매크로 이벤트 차단 제외 — 진입 가능합니다.")
+                else:
+                    st.warning("⚠️ V9.1 방어 시스템 — 현재 신규 진입 차단 상태입니다.")
+
+            # ETF는 블랙아웃 차단 무시, 개별주만 차단
+            _entry_blocked = _blocked and not _is_etf
+
+            if not _cash_ok:
+                st.error(f"❌ 현금 부족 — 필요: {_buy_total_krw:,.0f}원 / 보유: {_acc['cash']:,.0f}원")
+            if _entry_blocked:
+                st.error("❌ V9.1 매크로 블랙아웃 — 개별주 신규 진입 차단 중")
+            if st.button("📥 가상 매수 실행", key="exec_buy", use_container_width=True,
+                         type="primary", disabled=(not _cash_ok or _entry_blocked)):
+                _net_b = calc_slippage(_buy_price, True, is_korean_ticker(_bt))
+                _buy_fx = 1.0 if is_korean_ticker(_bt) else _usd_krw   # 미국주식은 원화로 환산 차감
+                _cost  = _net_b * _buy_qty          # native 통화(원 or $)
+                _acc['cash'] -= _cost * _buy_fx     # 현금은 항상 KRW
+                # 평단가는 native 통화로 저장 (US는 센트 보존 → 정수 round 금지)
+                _avg_ndigits = 0 if is_korean_ticker(_bt) else 2
+                _pos_exist = get_position(_acc, _bt)
+                if _pos_exist:
+                    _old_v = _pos_exist['avg_price'] * _pos_exist['qty']
+                    _new_v = _net_b * _buy_qty
+                    _pos_exist['qty']      += _buy_qty
+                    _pos_exist['avg_price'] = round((_old_v + _new_v) / _pos_exist['qty'], _avg_ndigits)
+                else:
+                    _acc['positions'].append({
+                        'ticker': _bt, 'name': _bn,
+                        'qty': _buy_qty, 'avg_price': _net_b,
+                        'entry_date': str(pd.Timestamp.now())[:10]
+                    })
+                _tv_now = calc_portfolio_value(_acc)
+                _acc['peak']   = max(_acc['peak'], _tv_now)
+                _acc['trough'] = min(_acc['trough'], _tv_now)
+                save_account(_acc)
+                log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
+                          _acc['cash'], _tv_now, ai_score=_ai_score, memo=st.session_state.get('buy_memo',''))
+                st.session_state['buy_memo'] = ''   # 위젯 key 직접 초기화
+                st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
+                st.rerun()
 
         st.divider()
 
