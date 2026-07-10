@@ -10258,6 +10258,8 @@ with _tab_d1:
         _top1 = _active.iloc[0] if not _active.empty else None
 
         # ── 🗓️ 3거래일 연속 1위 룰 배지 (Whipsaw 방지) ──
+        _dc = 0            # 연속 1위 일차 — 신규 진입 게이트 공용(try 실패 대비 기본값)
+        _switch_ok = False # 방어 3조건 통과 여부
         if _top1 is not None:
             try:
                 _day_info = _get_rotation_day_count(str(_top1['종목코드']))
@@ -10573,9 +10575,17 @@ with _tab_d1:
             _t1_ent  = float(_top1.get('타점', 0) or 0)
             _fmt_e   = (lambda v: f"{v:,.0f}원") if _t1_kr else (lambda v: f"${v:,.2f}")
             _pullback = (not _t1_kr) and _t1_ent > 0 and _t1_cur > _t1_ent   # 미장 & 현재가>타점 = 눌림목 대기
+
+            # ── 🚦 3거래일 연속 1위 게이트 — 1·2일차는 매수 제안 절대 차단(Whipsaw 방지) ──
+            _ready = (_dc >= 3)
+            _panel_c  = "#34d399" if _ready else "#fbbf24"
+            _panel_bg = "rgba(52,211,153,0.07)" if _ready else "rgba(251,191,36,0.07)"
+            _panel_bd = "rgba(52,211,153,0.25)" if _ready else "rgba(251,191,36,0.30)"
+            _panel_title = (f"🟢 신규 진입 추천 (현재 1위 · {_etf_market})" if _ready
+                            else f"🟡 신규 진입 대기 (카운트 누적 중 · 연속 1위 {_dc}일차)")
             st.markdown(f"""
-<div style='background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.25);border-radius:12px;padding:16px 20px;margin-bottom:12px'>
-  <div style='font-size:13px;color:#34d399;font-weight:700;margin-bottom:8px'>🟢 신규 진입 추천 (현재 1위 · {_etf_market})</div>
+<div style='background:{_panel_bg};border:1px solid {_panel_bd};border-radius:12px;padding:16px 20px;margin-bottom:12px'>
+  <div style='font-size:13px;color:{_panel_c};font-weight:700;margin-bottom:8px'>{_panel_title}</div>
   <div style='display:flex;gap:24px;flex-wrap:wrap'>
     <div><div style='font-size:11px;color:#64748b'>ETF명</div>
          <div style='font-size:15px;font-weight:800;color:#f0f4ff'>{_top1['ETF명']}</div></div>
@@ -10591,12 +10601,20 @@ with _tab_d1:
          <div style='font-size:14px;font-weight:700;color:#f0f4ff'>{_top1["모멘텀(%)"]:+.1f}%</div></div>
   </div>
 </div>""", unsafe_allow_html=True)
-            if _pullback:
+
+            if not _ready:
+                # 1·2일차 → 매수 유도 문구 완전 차단, 관망 강제
                 st.warning(
-                    f"⏳ 3일 연속 조건은 만족해가나, 현재 **눌림목 대기 상태**입니다. "
+                    "⚠️ 아직 3거래일 연속 1위 조건이 충족되지 않았습니다. "
+                    "Whipsaw 방지를 위해 오늘 장은 매수를 집행하지 않고 절대 관망합니다.")
+            elif _pullback:
+                st.warning(
+                    f"⏳ 3일 연속 조건 충족 · 현재 **눌림목 대기 상태**입니다. "
                     f"오늘 밤 미국 장에 타점가 **{_fmt_e(_t1_ent)}**로 지정가 예약 매수를 걸어두십시오.")
             elif not _t1_kr:
-                st.success(f"✅ 현재가가 타점({_fmt_e(_t1_ent)}) 이하 — 진입 유효 구간입니다.")
+                st.success(f"✅ 3일 연속 조건 충족 · 현재가가 타점({_fmt_e(_t1_ent)}) 이하 — 진입 유효 구간입니다.")
+            else:
+                st.success(f"✅ 3일 연속 조건 충족 — 09:30 이후 타점 {_fmt_e(_t1_ent)} 진입 검토 구간입니다.")
 
         # 스위칭 규칙 요약
         with st.expander("📋 스위칭 규칙 보기"):
