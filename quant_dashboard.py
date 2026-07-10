@@ -9428,37 +9428,43 @@ with _tab_d1:
             st.session_state['_etf_refresh_ok'] = False
             st.session_state['_etf_refresh_err'] = str(_ce)
 
-    _rf_c1, _rf_c2 = st.columns([1.4, 4])
-    with _rf_c1:
-        st.button("🔄 실시간 시세 강제 갱신", key="etf_force_refresh_btn",
-                  type="primary", use_container_width=True,
-                  on_click=_force_refresh_etf,
-                  help="전체 캐시를 비우고 최신 호가를 다시 불러옵니다")
-    with _rf_c2:
-        _last_rf = st.session_state.get('_etf_refresh_ts')
-        if st.session_state.get('_etf_refresh_ok') is False:
-            st.warning(f"⏳ API 호출 지연 중 — {st.session_state.get('_etf_refresh_err','')[:60]}")
-        elif _last_rf:
-            st.caption(f"🟢 마지막 강제 갱신: {_last_rf} · 시세 캐시 TTL 60초")
-        else:
-            st.caption("💡 시세가 멈춘 것 같으면 좌측 버튼으로 강제 갱신하세요 (캐시 TTL 60초)")
-
-    # ── 투트랙(국장/미장) 라디오 — '전체 통합' 제거(15차 UI 다이어트) ──
-    # 🔥 현재 우위 뱃지: 직전 렌더에서 저장한 국장/미장 1위 종합점수를 비교해
-    #    더 높은 시장 옵션에만 표시. format_func로 '표시'만 바꾸므로 위젯 저장값은
-    #    항상 안정("🇰🇷 국장 ETF"/"🇺🇸 미장 ETF") → 옵션 변화로 인한 선택 리셋 없음.
+    # ── 🎯 Control Ribbon: 대상 시장 / 카테고리 / 새로고침 / 강제 갱신 1줄 통합 ──
     _kr_sc = st.session_state.get('_kr_top_score')
     _us_sc = st.session_state.get('_us_top_score')
     def _fmt_etf_market(_opt):
         if _kr_sc is None or _us_sc is None:
             return _opt
         if _opt == "🇰🇷 국장 ETF" and _kr_sc > _us_sc:
-            return f"{_opt}  (🔥 현재 우위 {int(_kr_sc)}점)"
+            return f"{_opt} (🔥 우위 {int(_kr_sc)})"
         if _opt == "🇺🇸 미장 ETF" and _us_sc > _kr_sc:
-            return f"{_opt}  (🔥 현재 우위 {int(_us_sc)}점)"
+            return f"{_opt} (🔥 우위 {int(_us_sc)})"
         return _opt
-    _etf_market = st.radio("", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF"],
-                           format_func=_fmt_etf_market, horizontal=True, key="etf_market_sel")
+    try:
+        _erc1, _erc2, _erc3, _erc4 = st.columns([2.4, 2, 1, 1.2], vertical_alignment="bottom")
+    except TypeError:
+        _erc1, _erc2, _erc3, _erc4 = st.columns([2.4, 2, 1, 1.2])
+    with _erc1:
+        _etf_market = st.radio("대상 시장", ["🇰🇷 국장 ETF", "🇺🇸 미장 ETF"],
+                               format_func=_fmt_etf_market, horizontal=True, key="etf_market_sel")
+    with _erc2:
+        if _etf_market == "🇰🇷 국장 ETF":
+            st.selectbox("카테고리", ["전체","국내지수","미국지수추종","반도체/IT","방산/중공업",
+                                     "에너지/전력","2차전지","금/원자재","채권","배당","헬스케어"],
+                         key="kr_etf_cat")
+        else:
+            st.selectbox("카테고리", ["전체","주요지수","섹터","테마/성장","방산","에너지/원자재",
+                                     "채권","레버리지/인버스","배당","국제"], key="us_etf_cat")
+    with _erc3:
+        if st.button("🔄 새로고침", key="etf_ribbon_refresh", use_container_width=True,
+                     help="현재 시장 랭킹 데이터만 새로 불러옵니다"):
+            (fetch_kr_etf_data if _etf_market == "🇰🇷 국장 ETF" else fetch_us_etf_data).clear()
+            st.rerun()
+    with _erc4:
+        _last_rf = st.session_state.get('_etf_refresh_ts')
+        st.button("🔄 강제 갱신", key="etf_force_refresh_btn", on_click=_force_refresh_etf,
+                  use_container_width=True,
+                  help=("전체 캐시를 비우고 최신 호가 재조회 (시세 멈춤 시 사용·TTL 60초)"
+                        + (f" · 마지막 {_last_rf}" if _last_rf else "")))
 
     # ── 탭 전환 시 데이터 클렌징(State Reset) ──
     # 국장↔미장 전환 즉시 순위 히스토리/통합 잔상을 비워, 이전 시장 데이터가
@@ -9640,12 +9646,7 @@ with _tab_d1:
 
     # ── 시장별 분기: 라디오 토글에 따라 국장/미장/전체 랭킹판 표시 ──
     if _etf_market == "🇰🇷 국장 ETF":
-        _cc1, _cc2 = st.columns([4, 1])
-        with _cc2:
-            if st.button("🔄 새로고침", key="kr_etf_refresh"):
-                fetch_kr_etf_data.clear()
-                st.rerun()
-
+        # (새로고침/카테고리는 상단 Control Ribbon으로 통합 이관)
         with st.spinner("국장ETF 데이터 로딩 중..."):
             try:
                 _kr_data = fetch_kr_etf_data()
@@ -9667,7 +9668,7 @@ with _tab_d1:
             st.session_state['_scanner_ranked_kr'] = _kr_ranked.copy()
             st.session_state['_scanner_ranked_active'] = '_scanner_ranked_kr'
 
-            _kr_cat = st.selectbox("카테고리 필터", ["전체", "국내지수", "미국지수추종", "반도체/IT", "방산/중공업", "에너지/전력", "2차전지", "금/원자재", "채권", "배당", "헬스케어"], key="kr_etf_cat")
+            _kr_cat = st.session_state.get("kr_etf_cat", "전체")   # 상단 리본에서 선택
 
             _cat_map = {
                 "국내지수":    ["069500","102110","229200","233740","153130"],
@@ -9815,14 +9816,9 @@ with _tab_d1:
                         )
 
     elif _etf_market == "🇺🇸 미장 ETF":
-        _uc1, _uc2 = st.columns([4, 1])
-        with _uc2:
-            if st.button("🔄 새로고침", key="us_etf_refresh"):
-                fetch_us_etf_data.clear()
-                st.rerun()
-
+        # (새로고침/카테고리는 상단 Control Ribbon으로 통합 이관)
         _us_cat_options = ["전체", "주요지수", "섹터", "테마/성장", "방산", "에너지/원자재", "채권", "레버리지/인버스", "배당", "국제"]
-        _us_cat = st.selectbox("카테고리 필터", _us_cat_options, key="us_etf_cat")
+        _us_cat = st.session_state.get("us_etf_cat", "전체")   # 상단 리본에서 선택
 
         _us_cat_map = {
             "주요지수":      ["SPY","QQQ","IWM","DIA","VTI","VOO"],
