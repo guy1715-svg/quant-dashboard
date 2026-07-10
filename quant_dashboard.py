@@ -743,10 +743,17 @@ def kis_get_index(iscd, _token=None):
         _out = _res.json().get("output", {})
         if not _out:
             return None
-        _cur = float(str(_out.get("bstp_nmix_prpr", 0) or 0).replace(",", ""))
-        _chg = float(str(_out.get("bstp_nmix_prdy_ctrt", 0) or 0).replace(",", ""))
+        def _f(_k):
+            try:
+                return float(str(_out.get(_k, 0) or 0).replace(",", ""))
+            except Exception:
+                return 0.0
+        _cur = _f("bstp_nmix_prpr")
+        _chg = _f("bstp_nmix_prdy_ctrt")
         if _cur > 0:
-            return {'현재': _cur, '등락': _chg}
+            # [Phase2 prep] 장중 고가/저가 — 휩쏘 override용(수신 시에만 채워짐)
+            return {'현재': _cur, '등락': _chg,
+                    '고가': _f("bstp_nmix_hgpr"), '저가': _f("bstp_nmix_lwpr")}
         return None
     except Exception:
         return None
@@ -770,6 +777,9 @@ def _kis_index_probe(iscd="0001"):
             _out["msg1"]  = _j.get("msg1")
             _out["현재지수"] = _j.get("output", {}).get("bstp_nmix_prpr")
             _out["등락률"]  = _j.get("output", {}).get("bstp_nmix_prdy_ctrt")
+            # [Phase2 test] 장중 고가/저가 필드 수신 여부 확인용
+            _out["고가(hgpr)"] = _j.get("output", {}).get("bstp_nmix_hgpr")
+            _out["저가(lwpr)"] = _j.get("output", {}).get("bstp_nmix_lwpr")
         except Exception:
             _out["body"] = _res.text[:400]
         return _out
@@ -2089,9 +2099,65 @@ def get_wti_oil():
         return st.session_state.get('_last_wti', None)
 
 
-def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None):
-    """매크로 레짐 게이트 — 환율·유가·외국인수급 종합 신호등.
+def _clamp(x, lo, hi):
+    return lo if x < lo else hi if x > hi else x
+
+
+def whipsaw_override(intra_high, intra_low, close, prev_close, atr14_pct=None):
+    """[V6.1 Phase2] 장중 휩쏘/Bull Trap 감지 — 종가 무관 즉시 위험전환.
+    ⚠️ 배선 대기: KIS 고가(bstp_nmix_hgpr)/저가(lwpr) 정상 수신 확인 후 게이트에 연결.
+    반환: (triggered:bool, reason:str)."""
+    try:
+        if not all(isinstance(v, (int, float)) and v > 0 for v in (intra_high, intra_low, close, prev_close)):
+            return False, ""
+        day_range = (intra_high - intra_low) / prev_close * 100      # 장중 진폭
+        low_dd    = (intra_low  - prev_close) / prev_close * 100      # 장중 최저 낙폭
+        close_chg = (close - prev_close) / prev_close * 100
+        if day_range >= 5.0:
+            return True, f"🚨 장중 진폭 {day_range:.1f}%≥5% — 변동성 발작(위험전환)"
+        if low_dd <= -4.0 and close_chg >= -1.0:
+            return True, f"🚨 장중 {low_dd:.1f}% 급락 후 {close_chg:+.1f}% 반등 — Bull Trap 의심(위험전환)"
+        if atr14_pct and atr14_pct > 0 and day_range >= atr14_pct * 2.0:
+            return True, f"🚨 진폭이 ATR14({atr14_pct:.1f}%)의 2배 초과 — 변동성 체제전환"
+        return False, ""
+    except Exception:
+        return False, ""
+
+
+def fx_nonlinear_risk(krw, krw_series=None):
+    """[V6.1 Phase1] 환율 비선형 발작 리스크 — 1,500 초과분 지수 가속 + 상승속도 + 1,510 하드 격상.
+    반환: (score:float, state:'safe'|'warn'|'danger', reason:str). 절대 예외 없음."""
+    try:
+        if not isinstance(krw, (int, float)) or krw != krw or krw <= 0:
+            return 0.0, "unknown", ""
+        base  = _clamp((krw - 1480) / 40.0, 0.0, 1.0)            # 1,480~1,520 선형 warn
+        over  = max(0.0, krw - 1500)
+        accel = (over / 10.0) ** 1.6                             # 1500:0 · 1510:1.44 · 1520:2.9 · 1550:9.4
+        vel = 0.0
+        if isinstance(krw_series, (list, tuple)) and len(krw_series) >= 3 and krw >= 1500:
+            _d2 = krw - float(krw_series[-3])                    # 최근 2거래일 상승폭
+            if _d2 >= 12:
+                vel = min(_d2 / 10.0, 3.0)                       # 이틀 +12원↑ = 외인 이탈 가속
+        score = base + accel + vel
+        # 하드 임계 격상: 1,510 돌파 = 프로그램매도 발작 → danger 강제
+        if krw >= 1510 or score >= 2.0:
+            state = "danger"
+        elif score >= 0.8:
+            state = "warn"
+        else:
+            state = "safe"
+        _r = (f"환율 {krw:,.0f}원" +
+              (f" ≥1,510 발작(가속 {accel:.1f}·속도 {vel:.1f})" if state == "danger"
+               else " 경계" if state == "warn" else " 안정"))
+        return score, state, _r
+    except Exception:
+        return 0.0, "unknown", ""
+
+
+def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_series=None):
+    """매크로 레짐 게이트 — 환율(비선형 발작)·유가·외국인수급 종합 신호등.
     모든 입력 None/NaN 허용(부분판정). 절대 예외 없이 dict 반환.
+    krw_series: 최근 거래일 환율 시계열(속도 항 계산용, 선택).
     반환: light('green'|'amber'|'red'), verdict, risk(int), krw/oil/flow 상태, reasons[]"""
     def _num(x):
         return isinstance(x, (int, float)) and (x == x)   # not None, not NaN
@@ -2100,12 +2166,11 @@ def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None):
 
     krw_state = "unknown"
     if _num(krw) and krw > 0:
-        if krw >= 1520:
-            risk += 2; krw_state = "danger"; reasons.append(f"환율 {krw:,.0f}원 ≥1,520 (리스크오프)")
-        elif krw >= 1480:
-            risk += 1; krw_state = "warn"; reasons.append(f"환율 {krw:,.0f}원 경계")
-        else:
-            krw_state = "safe"; reasons.append(f"환율 {krw:,.0f}원 안정")
+        # [Phase1] 비선형 발작 모델 — 1,500 초과 지수가속 + 속도 + 1,510 하드 격상
+        _fx_score, krw_state, _fx_reason = fx_nonlinear_risk(krw, krw_series)
+        risk += int(round(min(_fx_score, 4.0))) if krw_state != "danger" else max(2, int(round(min(_fx_score, 4.0))))
+        if _fx_reason:
+            reasons.append(_fx_reason)
 
     oil_state = "unknown"
     if _num(oil) and oil > 0:
@@ -3631,7 +3696,20 @@ with st.sidebar:
         _sb_krw   = get_usd_krw()
         _sb_oil   = get_wti_oil()
         _sb_flow  = st.session_state.get('_foreign_net_krw', None)
-        _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow)
+        # [Phase1] 환율 일별 시계열 기록(속도 항용) — 거래일당 1샘플, 최근 8일 유지
+        if isinstance(_sb_krw, (int, float)) and _sb_krw > 0:
+            from datetime import date as _date_fx
+            _fx_store = st.session_state.setdefault('_krw_daily', {'dates': [], 'vals': {}})
+            _tfx = str(_date_fx.today())
+            _fx_store['vals'][_tfx] = float(_sb_krw)
+            if _tfx not in _fx_store['dates']:
+                _fx_store['dates'].append(_tfx)
+            _fx_store['dates'] = _fx_store['dates'][-8:]
+            _fx_store['vals'] = {d: _fx_store['vals'][d] for d in _fx_store['dates']}
+            _krw_series = [_fx_store['vals'][d] for d in _fx_store['dates']]
+        else:
+            _krw_series = None
+        _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow, krw_series=_krw_series)
 
         # ── 시장별(국장/미장) 독립 지수 킬스위치 — 메인 라디오(etf_market_sel)와 동기화 ──
         _sb_mkt    = st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')
@@ -9801,66 +9879,7 @@ with _tab_d1:
                 else:
                     st.info("공매도 데이터를 불러오지 못했습니다 (KRX 지연 또는 비영업일).")
 
-            # ── 🎯 개별종목 스나이핑 리스트 (ETF 선택 가능) ──
-            if _kr_top is not None:
-                st.markdown(f"---")
-                st.markdown("### 🔫 개별종목 스나이핑 — 구성종목 타점 추적")
-
-                # 국장 ETF 선택 — _ETF_HOLDINGS_DB 한국 코드 목록 + 랭킹 ETF 포함
-                _kr_db_codes = [k for k in _ETF_HOLDINGS_DB if k.isdigit() and _ETF_HOLDINGS_DB[k]]
-                _kr_snipe_opts = {}
-                for _kc in _kr_db_codes:
-                    # 조회 우선순위: 마스터 DB → 보충 매핑 → 코드 (숫자만 표기되던 버그 방지)
-                    _kn = _MASTER_ETF_DB.get(_kc) or _HOLDINGS_ETF_NAMES.get(_kc) or _kc
-                    _kr_snipe_opts[f"{_kn} ({_kc})"] = _kc
-                # 랭킹에 있는 ETF도 추가 (DB에 없을 수 있음)
-                for _, _rrow in _kr_ranked.iterrows():
-                    _rc = str(_rrow['코드'])
-                    if _rc.isdigit():
-                        _rn = _rrow['ETF명']
-                        _rlabel = f"{_rn} ({_rc})"
-                        if _rlabel not in _kr_snipe_opts:
-                            _kr_snipe_opts[_rlabel] = _rc
-                _kr_snipe_labels = sorted(_kr_snipe_opts.keys())
-                # 기본 선택: 현재 1위 ETF
-                _default_label = f"{_kr_top['ETF명']} ({_kr_top['코드']})"
-                _default_idx = _kr_snipe_labels.index(_default_label) if _default_label in _kr_snipe_labels else 0
-                _sel_label = st.selectbox("📦 스캔할 ETF 선택 (구성종목 DB 보유 ETF)",
-                                          _kr_snipe_labels, index=_default_idx,
-                                          key="kr_snipe_etf_sel",
-                                          help="구성종목 DB가 있는 ETF만 표시됩니다. 1위 ETF가 기본 선택.")
-                _top_code = _kr_snipe_opts[_sel_label]
-                _top_name = _sel_label.rsplit(" (", 1)[0]
-
-                st.caption(f"{_top_name} 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5% (더 타이트한 쪽 자동 적용)")
-
-                with st.spinner("구성종목 스캔 중..."):
-                    _snipe_list = _scan_etf_holdings(_top_code, is_korean=True)
-
-                if not _snipe_list:
-                    st.info("구성종목 DB 없음 또는 데이터 로드 실패")
-                else:
-                    _fmt_p = lambda p: f"{int(p):,}원" if p >= 100 else f"{p:,.2f}"
-                    for _h in _snipe_list:
-                        st.markdown(
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                            f"background:#111827;border-left:3px solid {_h['타점색']};border-radius:6px;"
-                            f"padding:10px 14px;margin:4px 0'>"
-                            f"<div>"
-                            f"<b>{_h['종목명']}</b> <span style='color:#64748b;font-size:11px'>{_h['종목코드']}</span>"
-                            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>현재가 {_fmt_p(_h['현재가'])} · MA5이격 {_h['MA5이격']:+.1f}%</div>"
-                            f"</div>"
-                            f"<div style='text-align:center'>"
-                            f"<div style='color:{_h['타점색']};font-weight:700;font-size:13px'>{_h['타점']}</div>"
-                            f"<div style='font-size:11px;color:#64748b'>RSI {_h['RSI']} · Z {_h['Z-Score']:+.2f}</div>"
-                            f"</div>"
-                            f"<div style='text-align:right'>"
-                            f"<div style='font-size:13px;font-weight:700'>R:R {_h['R:R']:.1f}</div>"
-                            f"<div style='font-size:11px;color:#f43f5e'>손절 {_fmt_p(_h['손절가'])}</div>"
-                            f"</div>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+            # (🔫 개별종목 스나이핑 삭제 — 전용 스캐너/분석 탭에서 수행, ETF 로테이션엔 불필요)
 
     elif _etf_market == "🇺🇸 미장 ETF":
         # (새로고침/카테고리는 상단 Control Ribbon으로 통합 이관)
@@ -9934,41 +9953,7 @@ with _tab_d1:
             _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True, rank_history=_us_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
-            # ── 🎯 개별종목 스나이핑 리스트 (미장 ETF 1위 구성종목) ──
-            _us_top = _us_active.iloc[0] if not _us_active.empty else None
-            if _us_top is not None:
-                _us_top_code = str(_us_top['코드'])
-                _us_top_name = _us_top['ETF명']
-                st.markdown("---")
-                st.markdown(f"### 🔫 개별종목 스나이핑 — `{_us_top_name}` 구성종목 타점 추적")
-                st.caption(f"ETF 1위({_us_top_name}) 상위 구성종목 실시간 스캔 | 손절: 전일저가 or -5%")
-
-                with st.spinner("구성종목 스캔 중..."):
-                    _us_snipe = _scan_etf_holdings(_us_top_code, is_korean=False)
-
-                if not _us_snipe:
-                    st.info("구성종목 DB 없음 또는 데이터 로드 실패")
-                else:
-                    for _h in _us_snipe:
-                        st.markdown(
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                            f"background:#111827;border-left:3px solid {_h['타점색']};border-radius:6px;"
-                            f"padding:10px 14px;margin:4px 0'>"
-                            f"<div>"
-                            f"<b>{_h['종목명']}</b> <span style='color:#64748b;font-size:11px'>{_h['종목코드']}</span>"
-                            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>현재가 ${_h['현재가']:,.2f} · MA5이격 {_h['MA5이격']:+.1f}%</div>"
-                            f"</div>"
-                            f"<div style='text-align:center'>"
-                            f"<div style='color:{_h['타점색']};font-weight:700;font-size:13px'>{_h['타점']}</div>"
-                            f"<div style='font-size:11px;color:#64748b'>RSI {_h['RSI']} · Z {_h['Z-Score']:+.2f}</div>"
-                            f"</div>"
-                            f"<div style='text-align:right'>"
-                            f"<div style='font-size:13px;font-weight:700'>R:R {_h['R:R']:.1f}</div>"
-                            f"<div style='font-size:11px;color:#f43f5e'>손절 ${_h['손절가']:,.2f}</div>"
-                            f"</div>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+            # (🔫 개별종목 스나이핑 삭제 — 전용 스캐너/분석 탭에서 수행)
 
     else:  # 🌐 전체 통합 (15차 UI 다이어트로 라디오에서 제거 — 도달 불가 레거시)
         st.markdown("### 🌐 국장+미장 ETF 통합 랭킹판")
@@ -10728,13 +10713,31 @@ with _tab_d1:
                     _bm_ret = None
                 if _bm_ret is None or len(_bm_ret) < 4:
                     if not is_us:
-                        # 국장: FDR(KS11 월말) 폴백
+                        # 국장 코스피 월봉 수익률 2중 폴백: ① FDR(날짜 지정) → ② pykrx
+                        _end_bt = datetime.utcnow() + timedelta(hours=9)
+                        _start_bt = _end_bt - timedelta(days=760)
+                        # ① FinanceDataReader (명시적 2년 구간)
                         try:
                             import FinanceDataReader as _fdr_bt
-                            _bm_d = _fdr_bt.DataReader("KS11").resample('M').last()['Close'].dropna()
-                            _bm_ret = _bm_d.pct_change().dropna()
+                            _bm_d = _fdr_bt.DataReader("KS11", _start_bt.strftime('%Y-%m-%d'),
+                                                       _end_bt.strftime('%Y-%m-%d'))
+                            _bm_m = _bm_d['Close'].resample('M').last().dropna()
+                            if len(_bm_m) >= 4:
+                                _bm_ret = _bm_m.pct_change().dropna()
                         except Exception:
-                            _bm_ret = None
+                            pass
+                        # ② pykrx 코스피 지수(1001)
+                        if _bm_ret is None or len(_bm_ret) < 4:
+                            try:
+                                from pykrx import stock as _pk_bt
+                                _pk_df = _pk_bt.get_index_ohlcv(_start_bt.strftime('%Y%m%d'),
+                                                                _end_bt.strftime('%Y%m%d'), "1001")
+                                if _pk_df is not None and not _pk_df.empty:
+                                    _pk_m = _pk_df['종가'].resample('M').last().dropna()
+                                    if len(_pk_m) >= 4:
+                                        _bm_ret = _pk_m.pct_change().dropna()
+                            except Exception:
+                                pass
                     else:
                         # 미장: ^GSPC 실패 시 ^IXIC(나스닥)로 재시도
                         try:
