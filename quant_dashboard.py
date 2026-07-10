@@ -8548,6 +8548,44 @@ def _update_rank_history(df_ranked, history_key: str, max_days: int = 7) -> dict
             _result.setdefault(_tk, []).append(_r)
     return _result
 
+
+def _render_rampup_panel(df_ranked, rank_history, key_prefix='etf'):
+    """🚀 아래서 치고 올라오는 샛별 — 최근 순위 가속도(과거→현재 상승폭) 상위 3.
+    당일 순위와 무관하게 rank_delta(=과거순위-현재순위)가 가장 큰 종목을 선취매 힌트로 노출."""
+    if not rank_history or '코드' not in getattr(df_ranked, 'columns', []):
+        return
+    _name_map = df_ranked.set_index(df_ranked['코드'].astype(str))['ETF명'].to_dict()
+    _cur_rank = {str(r['코드']): _i + 1 for _i, (_, r) in enumerate(df_ranked.iterrows())
+                 if r.get('상태') == '활성'}
+    _vel = []
+    for _tk, _ranks in rank_history.items():
+        if len(_ranks) < 2:
+            continue                      # 스냅샷 2개 이상 있어야 가속도 계산
+        _cur_r  = _cur_rank.get(str(_tk), _ranks[0])
+        _past_r = _ranks[-1]
+        _delta  = _past_r - _cur_r
+        if _delta > 0:
+            _vel.append((str(_tk), _name_map.get(str(_tk), str(_tk)), _past_r, _cur_r, _delta))
+    _vel.sort(key=lambda x: x[4], reverse=True)
+    _top3 = _vel[:3]
+    if not _top3:
+        st.caption("🚀 Ramp-up: 순위 스냅샷 누적 중 — 2거래일 이상 데이터가 쌓이면 급상승 종목이 표시됩니다.")
+        return
+    st.markdown("<div style='font-size:13px;font-weight:800;color:#22c55e;margin:6px 0 2px'>"
+                "🚀 아래에서 치고 올라오는 샛별 (Ramp-up TOP 3)</div>", unsafe_allow_html=True)
+    st.caption("⚠️ 최근 순위 가속도 최상위 — **1위 달성 전 선취매 검토 가능 구간** (당일 절대순위 무관)")
+    _rc = st.columns(len(_top3))
+    for _ci, (_tk, _nm, _pr, _cr, _dl) in enumerate(_top3):
+        with _rc[_ci]:
+            st.markdown(
+                f"<div style='background:rgba(34,197,94,0.08);border:1px solid #22c55e66;"
+                f"border-radius:10px;padding:10px 12px'>"
+                f"<div style='font-size:13px;font-weight:800;color:#f0f4ff'>{_nm}</div>"
+                f"<div style='font-size:10px;color:#64748b'>{_tk}</div>"
+                f"<div style='font-size:18px;font-weight:900;color:#22c55e;margin-top:4px'>🚀 ▲{_dl}</div>"
+                f"<div style='font-size:10px;color:#94a3b8'>{_pr}위 → {_cr}위 (가속)</div>"
+                f"</div>", unsafe_allow_html=True)
+
 # 국장ETF / 미장ETF 공용 지표 계산 함수
 def calculate_trade_levels(cur_price, ma5_price, prev_close, gap_pct, ma5_disp, is_kr=True):
     """★ ETF 가격 전략 단일 산출 함수(Single Source) — 랭킹 카드·타점 위젯이 공통 참조.
@@ -8688,14 +8726,22 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
                 f"<span style='font-size:10px;color:{_t_c};margin-left:4px'>{_t_icon}</span>"
             )
 
-        # 순위 변동 화살표 (직전 vs 현재)
+        # 순위 변동 배지 — 다일 누적(가장 오래된 스냅샷 대비) → 아래서 치고 오르는 종목 강조
         _rank_change_html = ""
         if len(_hist_ranks) >= 2:
-            _prev_r = _hist_ranks[1]; _cur_r = _i + 1
-            if _cur_r < _prev_r:
-                _rank_change_html = f"<span style='color:#34d399;font-size:10px;margin-left:4px'>▲{_prev_r-_cur_r}</span>"
-            elif _cur_r > _prev_r:
-                _rank_change_html = f"<span style='color:#ef4444;font-size:10px;margin-left:4px'>▼{_cur_r-_prev_r}</span>"
+            _cur_r  = _i + 1
+            _past_r = _hist_ranks[-1]          # 최대 7일 전 순위
+            _delta  = _past_r - _cur_r         # +면 상승
+            _dback  = len(_hist_ranks) - 1
+            if _delta >= 3:                    # 3계단 이상 급상승 = 불기둥
+                _rank_change_html = (f"<span title='{_past_r}위 → {_cur_r}위 ({_dback}일)' "
+                    f"style='color:#22c55e;font-size:10px;font-weight:800;margin-left:4px'>🚀▲{_delta}</span>")
+            elif _delta > 0:
+                _rank_change_html = (f"<span title='{_past_r}위 → {_cur_r}위' "
+                    f"style='color:#34d399;font-size:10px;margin-left:4px'>▲{_delta}</span>")
+            elif _delta < 0:
+                _rank_change_html = (f"<span title='{_past_r}위 → {_cur_r}위' "
+                    f"style='color:#94a3b8;font-size:10px;margin-left:4px'>▼{-_delta}</span>")
 
         _bg     = '#1a1400' if _is_top else '#111827'
         _macd   = row.get('MACD', '')
@@ -9715,6 +9761,7 @@ with _tab_d1:
                     st.plotly_chart(_kr_hm_fig, use_container_width=True)
 
             _kr_rh = _update_rank_history(_kr_ranked, '_rh_kr')
+            _render_rampup_panel(_kr_ranked, _kr_rh, key_prefix='kr_etf')
             _render_etf_ranking(_kr_ranked, currency_symbol='원', key_prefix='kr_etf', show_add_btn=True, rank_history=_kr_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
@@ -9883,6 +9930,7 @@ with _tab_d1:
                     st.plotly_chart(_hm_fig, use_container_width=True)
 
             _us_rh = _update_rank_history(_us_ranked, '_rh_us')
+            _render_rampup_panel(_us_ranked, _us_rh, key_prefix='us_etf')
             _render_etf_ranking(_us_ranked, currency_symbol='$', key_prefix='us_etf', show_add_btn=True, rank_history=_us_rh)
             st.caption("종합점수 = ADX(25) + RSI(15) + MACD(20) + Z-Score(15) + 모멘텀(15) + 정배열(10) + 거래량(10) | ADX 25미만 자동 탈락")
 
