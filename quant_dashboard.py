@@ -10682,7 +10682,8 @@ with _tab_d1:
                        f"(매수 {_fee_buy+_slip:.3f}% + 매도 {_fee_sell+_slip:.3f}%)")
 
             @st.cache_data(ttl=86400, show_spinner=False)
-            def run_etf_backtest(fee_buy, fee_sell, slip, bench_sym="^KS11", is_us=False):
+            def run_etf_backtest(fee_buy, fee_sell, slip, bench_sym="^KS11", is_us=False, etf_universe=()):
+                # etf_universe: 대상 시장 ETF 튜플(캐시 키에 포함 → 국장/미장 유니버스 혼선 차단)
                 import yfinance as yf
                 import numpy as np
 
@@ -10693,7 +10694,7 @@ with _tab_d1:
                 # 한국 6자리=.KS, 미국 티커=접미사 없음.
                 def _bt_sym(_t):
                     return f"{_t}.KS" if (str(_t).isdigit() and len(str(_t)) == 6) else str(_t)
-                _sym_map_bt = {_bt_sym(t): (t, name) for t, name, _ in ETF_LIST}
+                _sym_map_bt = {_bt_sym(t): (t, name) for t, name, _ in etf_universe}
                 _all_syms_bt = list(_sym_map_bt.keys())
                 _monthly = {}
                 try:
@@ -10881,7 +10882,8 @@ with _tab_d1:
                 }
 
             with st.spinner("백테스팅 계산 중... (최초 1회)"):
-                _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip, _bench_sym, _bt_is_us)
+                _bt = run_etf_backtest(_fee_buy, _fee_sell, _slip, _bench_sym, _bt_is_us,
+                                       tuple(tuple(_x) for _x in ETF_LIST))
 
             if _bt:
                 # 성과 요약
