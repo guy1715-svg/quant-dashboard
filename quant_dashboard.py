@@ -10677,25 +10677,49 @@ with _tab_d1:
                 _buy_cost  = (fee_buy  + slip) / 100
                 _sell_cost = (fee_sell + slip) / 100
 
-                # 각 ETF 월별 수익률 계산
+                # 각 ETF 월별 수익률 — 배치 다운로드(순차 호출 rate-limit 회피).
+                # 한국 6자리=.KS, 미국 티커=접미사 없음.
+                def _bt_sym(_t):
+                    return f"{_t}.KS" if (str(_t).isdigit() and len(str(_t)) == 6) else str(_t)
+                _sym_map_bt = {_bt_sym(t): (t, name) for t, name, _ in ETF_LIST}
+                _all_syms_bt = list(_sym_map_bt.keys())
                 _monthly = {}
-                for ticker, name, _ in ETF_LIST:
+                try:
+                    _batch_bt = yf.download(_all_syms_bt, period="2y", interval="1mo",
+                                            group_by="ticker", progress=False, threads=True)
+                except Exception:
+                    _batch_bt = None
+                for _sym, (ticker, name) in _sym_map_bt.items():
                     try:
-                        _sym = f"{ticker}.KS"
-                        _df  = yf.Ticker(_sym).history(period="2y", interval="1mo")
-                        if _df is None or len(_df) < 6: continue
-                        _cl  = _df['Close']
+                        if _batch_bt is None:
+                            _df = yf.Ticker(_sym).history(period="2y", interval="1mo")
+                            _cl = _df['Close'] if _df is not None else None
+                        else:
+                            _sub = _batch_bt[_sym] if len(_all_syms_bt) > 1 else _batch_bt
+                            _cl = _sub['Close'].dropna()
+                        if _cl is None or len(_cl) < 6:
+                            continue
                         _ret = _cl.pct_change().dropna()
-                        _monthly[ticker] = {'name': name, 'returns': _ret}
-                    except:
+                        if len(_ret) >= 4:
+                            _monthly[ticker] = {'name': name, 'returns': _ret}
+                    except Exception:
                         pass
 
-                # 벤치마크 (코스피)
+                # 벤치마크 (코스피) — yfinance ^KS11 실패 시 FDR 폴백
+                _bm_ret = None
                 try:
                     _bm_df  = yf.Ticker("^KS11").history(period="2y", interval="1mo")
-                    _bm_ret = _bm_df['Close'].pct_change().dropna()
-                except:
+                    if _bm_df is not None and len(_bm_df) >= 4:
+                        _bm_ret = _bm_df['Close'].pct_change().dropna()
+                except Exception:
                     _bm_ret = None
+                if _bm_ret is None or len(_bm_ret) < 4:
+                    try:
+                        import FinanceDataReader as _fdr_bt
+                        _bm_d = _fdr_bt.DataReader("KS11").resample('M').last()['Close'].dropna()
+                        _bm_ret = _bm_d.pct_change().dropna()
+                    except Exception:
+                        _bm_ret = None
 
                 if not _monthly: return None
 
@@ -10956,7 +10980,11 @@ with _tab_d1:
                     run_etf_backtest.clear()
                     st.rerun()
             else:
-                st.warning("백테스팅 데이터 부족 (2년 데이터 필요)")
+                st.warning("⏳ 백테스팅 데이터 로드 실패 — yfinance 월봉 조회가 일시 지연/차단된 상태입니다 "
+                           "(백테스팅 기능은 정상, 데이터만 미수신). 아래 버튼으로 재시도하세요.")
+                if st.button("🔄 백테스팅 데이터 재시도", key="bt_retry_empty"):
+                    run_etf_backtest.clear()
+                    st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════
     # [영역 3] 퀀트 엔진 백엔드 (평소 닫아둠)
