@@ -2172,44 +2172,98 @@ def whipsaw_override(intra_high, intra_low, close, prev_close, atr14_pct=None):
         return False, ""
 
 
+FX_HARD_PANIC = 1550.0   # [V6.1 Phase2] 절대 하드블락 — MA밴드가 아무리 상승해도 이 위는 무조건 danger(적응형 무감각 차단)
+
+
 def fx_nonlinear_risk(krw, krw_series=None):
-    """[V6.1 Phase1] 환율 비선형 발작 리스크 — 1,500 초과분 지수 가속 + 상승속도 + 1,510 하드 격상.
+    """[V6.1 Phase2] 환율 비선형 발작 리스크 — MA90+Nσ 동적 소프트 앵커 + 절대 하드블락 하이브리드.
+    ▸ 동적: 90일 이동평균+1.5σ 상단을 발작 경계로 삼아 뉴노멀(밴드 상향)을 자동 추종.
+    ▸ 하이브리드: 밴드가 올라도 절대 FX_HARD_PANIC(1,550) 위는 무조건 danger → '적응형 무감각' 차단.
+    ▸ 폴백: MA 표본(60개) 미확보 시 V6.1 검증 고정모델(1,510 하드) 그대로 사용.
     반환: (score:float, state:'safe'|'warn'|'danger', reason:str). 절대 예외 없음."""
     try:
         if not isinstance(krw, (int, float)) or krw != krw or krw <= 0:
             return 0.0, "unknown", ""
-        base  = _clamp((krw - 1480) / 40.0, 0.0, 1.0)            # 1,480~1,520 선형 warn
-        over  = max(0.0, krw - 1500)
-        accel = (over / 10.0) ** 1.6                             # 1500:0 · 1510:1.44 · 1520:2.9 · 1550:9.4
+        # ── 동적 소프트 앵커 산출: MA90 + 1.5σ (표본 60+ 확보 시에만) ──
+        _ma = _sd = _anchor = None
+        if isinstance(krw_series, (list, tuple)) and len(krw_series) >= 60:
+            import numpy as _np
+            # 최근 90개만 슬라이스 → 시계열이 길어져도 연산량 O(90) 상한 고정(볼린저 유사연산 부하 차단)
+            _arr = _np.fromiter((float(x) for x in krw_series[-90:]
+                                 if isinstance(x, (int, float)) and x > 0), dtype=float)
+            if _arr.size >= 60:
+                _ma = float(_arr.mean()); _sd = float(_arr.std())
+                _anchor = _ma + 1.5 * _sd            # 1.5σ 상단 = 동적 발작 경계
+
+        if _anchor and _sd and _sd > 3:
+            # [동적] 앵커·σ 기반 정규화 비선형 모델
+            _warn_lo = _ma + 0.5 * _sd
+            _unit    = _sd
+            base  = _clamp((krw - _warn_lo) / max(_anchor - _warn_lo, 1e-9), 0.0, 1.0)
+            over  = max(0.0, krw - _anchor)
+            accel = (over / _unit) ** 1.6
+            _dyn  = True
+        else:
+            # [폴백] V6.1 고정 모델 — 표본 부족 시 기존 검증 로직 유지(1,510 하드)
+            _anchor = 1510.0
+            base  = _clamp((krw - 1480) / 40.0, 0.0, 1.0)       # 1,480~1,520 선형 warn
+            over  = max(0.0, krw - 1500)
+            accel = (over / 10.0) ** 1.6                        # 1500:0 · 1510:1.44 · 1520:2.9 · 1550:9.4
+            _unit = 10.0
+            _dyn  = False
+
         vel = 0.0
-        if isinstance(krw_series, (list, tuple)) and len(krw_series) >= 3 and krw >= 1500:
+        if isinstance(krw_series, (list, tuple)) and len(krw_series) >= 3 and krw >= (_anchor - 10):
             _d2 = krw - float(krw_series[-3])                    # 최근 2거래일 상승폭
             if _d2 >= 12:
                 vel = min(_d2 / 10.0, 3.0)                       # 이틀 +12원↑ = 외인 이탈 가속
         score = base + accel + vel
-        # 하드 임계 격상: 1,510 돌파 = 프로그램매도 발작 → danger 강제
-        if krw >= 1510 or score >= 2.0:
-            state = "danger"
+
+        # ── 하이브리드 판정: 절대 하드블락 최우선 → 동적앵커 초과 → score ──
+        if krw >= FX_HARD_PANIC:
+            state, _hard = "danger", True
+        elif krw >= _anchor or score >= 2.0:
+            state, _hard = "danger", False
         elif score >= 0.8:
-            state = "warn"
+            state, _hard = "warn", False
         else:
-            state = "safe"
-        _r = (f"환율 {krw:,.0f}원" +
-              (f" ≥1,510 발작(가속 {accel:.1f}·속도 {vel:.1f})" if state == "danger"
-               else " 경계" if state == "warn" else " 안정"))
+            state, _hard = "safe", False
+
+        _mode = (f"동적앵커 {_anchor:,.0f}(MA90 {_ma:,.0f}+1.5σ)" if _dyn else f"고정앵커 {_anchor:,.0f}")
+        if state == "danger":
+            _r = f"환율 {krw:,.0f}원 " + (f"≥{FX_HARD_PANIC:,.0f} 절대패닉 하드블락"
+                                        if _hard else f"발작({_mode}, 가속 {accel:.1f}·속도 {vel:.1f})")
+        elif state == "warn":
+            _r = f"환율 {krw:,.0f}원 경계({_mode})"
+        else:
+            _r = f"환율 {krw:,.0f}원 안정({_mode})"
         return score, state, _r
     except Exception:
         return 0.0, "unknown", ""
 
 
-def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_series=None, basis_info=None):
+def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_series=None,
+                              basis_info=None, intraday=None):
     """매크로 레짐 게이트 — 환율(비선형 발작)·유가·외국인수급·선물베이시스 종합 신호등.
     모든 입력 None/NaN 허용(부분판정). 절대 예외 없이 dict 반환.
     krw_series: 최근 거래일 환율 시계열(속도 항 계산용, 선택).
     basis_info: kis_futures_basis_proxy() 결과(①-b 선물수급 프록시, 선택).
+    intraday:  [Phase2] 장중 고가/저가 dict {'high','low','close','prev_close','atr14_pct'}.
+               hgpr/lwpr 실수신 오차 <0.1% 검증 후에만 주입 → 휩쏘 최우선 오버라이드 발동.
     반환: light('green'|'amber'|'red'), verdict, risk(int), krw/oil/flow 상태, reasons[]"""
     def _num(x):
         return isinstance(x, (int, float)) and (x == x)   # not None, not NaN
+
+    # ── [Phase2] 휩쏘 최우선 오버라이드 — 장중 변동성 발작은 다른 지표 무관 즉시 red ──
+    # dormant: intraday 미주입(None) 시 완전 무해. 오차율 검증 후 사이드바에서 dict 주입 시 발동.
+    if isinstance(intraday, dict):
+        _wtrig, _wreason = whipsaw_override(
+            intraday.get('high'), intraday.get('low'),
+            intraday.get('close'), intraday.get('prev_close'), intraday.get('atr14_pct'))
+        if _wtrig:
+            return {"light": "red", "verdict": "🔴 장중 변동성 발작 — 즉시 방어(휩쏘 오버라이드)",
+                    "risk": 99, "krw": "unknown", "oil": "unknown", "flow": "unknown",
+                    "reasons": [_wreason]}
 
     reasons, risk = [], 0
 
@@ -3758,7 +3812,7 @@ with st.sidebar:
         _sb_krw   = get_usd_krw()
         _sb_oil   = get_wti_oil()
         _sb_flow  = st.session_state.get('_foreign_net_krw', None)
-        # [Phase1] 환율 일별 시계열 기록(속도 항용) — 거래일당 1샘플, 최근 8일 유지
+        # [Phase2] 환율 일별 시계열 기록(속도항 + MA90 소프트앵커용) — 거래일당 1샘플, 최근 95일 유지
         if isinstance(_sb_krw, (int, float)) and _sb_krw > 0:
             from datetime import date as _date_fx
             _fx_store = st.session_state.setdefault('_krw_daily', {'dates': [], 'vals': {}})
@@ -3766,7 +3820,7 @@ with st.sidebar:
             _fx_store['vals'][_tfx] = float(_sb_krw)
             if _tfx not in _fx_store['dates']:
                 _fx_store['dates'].append(_tfx)
-            _fx_store['dates'] = _fx_store['dates'][-8:]
+            _fx_store['dates'] = _fx_store['dates'][-95:]
             _fx_store['vals'] = {d: _fx_store['vals'][d] for d in _fx_store['dates']}
             _krw_series = [_fx_store['vals'][d] for d in _fx_store['dates']]
         else:
