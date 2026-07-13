@@ -759,6 +759,42 @@ def kis_get_index(iscd, _token=None):
         return None
 
 
+def kis_futures_basis_proxy():
+    """[V6.1 ①-b] 선물 수급 베이시스 프록시 — KODEX200 ETF vs 코스피200 지수 괴리율.
+    외국인이 '현물만 매도(단기 헷지)'하는지, '현·선물 동반 투매(완전 리스크오프)'인지 구별.
+    선물 차익거래가 KODEX200 ETF 가격에 즉시 반영되므로, ETF가 지수 대비 디스카운트로
+    벌어지면 선물까지 투매(리스크오프), 프리미엄을 지키면 현물성 하락(헷지)으로 근사.
+    ▸ 만기 도래하는 선물 종목코드에 의존하지 않아 상시 조회 가능(검증된 엔드포인트만 사용).
+    ▸ 90초 세션 스로틀(캐시 함수 아님 → 토큰 세션쓰기 안전).
+    반환: {'idx_chg','etf_chg','basis','signal'} 또는 None(데이터 결측=판정 보류)."""
+    import time as _t
+    try:
+        _now = _t.time()
+        _cache = st.session_state.get('_basis_cache')
+        if _cache and (_now - _cache.get('ts', 0) < 90):
+            return _cache.get('val')
+        _val = None
+        _token = kis_get_token()
+        if _token:
+            _idx = kis_get_index("2001", _token)     # 코스피200 현물 지수
+            _etf = kis_get_price("069500")           # KODEX 200 ETF(선물 차익수급 반영)
+            if _idx and _etf:
+                _ic = float(_idx.get('등락', 0) or 0)
+                _ec = float(_etf.get('등락률', 0) or 0)
+                _basis = _ec - _ic                   # ETF등락 - 지수등락 = 선물/차익 프리미엄 프록시
+                _sig = "neutral"
+                if _ic <= -1.0:                       # 지수가 실제 하락 중일 때만 유의미
+                    if _basis <= -0.40:
+                        _sig = "riskoff"              # ETF 디스카운트 → 선물 동반투매
+                    elif _basis >= 0.05:
+                        _sig = "hedge"                # ETF 프리미엄 유지 → 현물성 하락
+                _val = {'idx_chg': _ic, 'etf_chg': _ec, 'basis': _basis, 'signal': _sig}
+        st.session_state['_basis_cache'] = {'ts': _now, 'val': _val}
+        return _val
+    except Exception:
+        return None
+
+
 def _kis_index_probe(iscd="0001"):
     """진단용 — KIS 지수 API 원시 응답(status/rt_cd/msg) 반환. 실패 원인 특정용."""
     try:
@@ -2110,19 +2146,27 @@ def _clamp(x, lo, hi):
 def whipsaw_override(intra_high, intra_low, close, prev_close, atr14_pct=None):
     """[V6.1 Phase2] 장중 휩쏘/Bull Trap 감지 — 종가 무관 즉시 위험전환.
     ⚠️ 배선 대기: KIS 고가(bstp_nmix_hgpr)/저가(lwpr) 정상 수신 확인 후 게이트에 연결.
+    [②동적화] 고정 -4%/5% 상수 → ATR14 연동. 저변동장은 더 민감, 고변동장은 더 관대하게
+    임계값이 시장 변동성에 맞춰 스스로 조정됨. ATR 결측 시에만 V6.1 고정값으로 폴백.
     반환: (triggered:bool, reason:str)."""
     try:
         if not all(isinstance(v, (int, float)) and v > 0 for v in (intra_high, intra_low, close, prev_close)):
             return False, ""
+        # ── 동적 임계값: ATR14×배수 (하한을 둬 초저변동장 과민반응 차단) ──
+        if isinstance(atr14_pct, (int, float)) and atr14_pct > 0:
+            range_thr = max(3.5, atr14_pct * 2.5)   # 진폭 발작: ATR의 2.5배 (최소 3.5%)
+            dd_thr    = -max(2.5, atr14_pct * 1.6)   # 급락 임계: ATR의 1.6배 (최소 -2.5%)
+            _thr_note = f"ATR{atr14_pct:.1f}%연동"
+        else:
+            range_thr, dd_thr = 5.0, -4.0            # ATR 결측 → V6.1 고정 폴백
+            _thr_note = "고정폴백"
         day_range = (intra_high - intra_low) / prev_close * 100      # 장중 진폭
         low_dd    = (intra_low  - prev_close) / prev_close * 100      # 장중 최저 낙폭
         close_chg = (close - prev_close) / prev_close * 100
-        if day_range >= 5.0:
-            return True, f"🚨 장중 진폭 {day_range:.1f}%≥5% — 변동성 발작(위험전환)"
-        if low_dd <= -4.0 and close_chg >= -1.0:
-            return True, f"🚨 장중 {low_dd:.1f}% 급락 후 {close_chg:+.1f}% 반등 — Bull Trap 의심(위험전환)"
-        if atr14_pct and atr14_pct > 0 and day_range >= atr14_pct * 2.0:
-            return True, f"🚨 진폭이 ATR14({atr14_pct:.1f}%)의 2배 초과 — 변동성 체제전환"
+        if day_range >= range_thr:
+            return True, f"🚨 장중 진폭 {day_range:.1f}%≥{range_thr:.1f}%({_thr_note}) — 변동성 발작(위험전환)"
+        if low_dd <= dd_thr and close_chg >= -1.0:
+            return True, f"🚨 장중 {low_dd:.1f}%(임계 {dd_thr:.1f}%,{_thr_note}) 급락 후 {close_chg:+.1f}% 반등 — Bull Trap 의심(위험전환)"
         return False, ""
     except Exception:
         return False, ""
@@ -2158,10 +2202,11 @@ def fx_nonlinear_risk(krw, krw_series=None):
         return 0.0, "unknown", ""
 
 
-def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_series=None):
-    """매크로 레짐 게이트 — 환율(비선형 발작)·유가·외국인수급 종합 신호등.
+def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_series=None, basis_info=None):
+    """매크로 레짐 게이트 — 환율(비선형 발작)·유가·외국인수급·선물베이시스 종합 신호등.
     모든 입력 None/NaN 허용(부분판정). 절대 예외 없이 dict 반환.
     krw_series: 최근 거래일 환율 시계열(속도 항 계산용, 선택).
+    basis_info: kis_futures_basis_proxy() 결과(①-b 선물수급 프록시, 선택).
     반환: light('green'|'amber'|'red'), verdict, risk(int), krw/oil/flow 상태, reasons[]"""
     def _num(x):
         return isinstance(x, (int, float)) and (x == x)   # not None, not NaN
@@ -2193,6 +2238,18 @@ def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_seri
             risk += 1; flow_state = "warn"; reasons.append("외국인 순매도 진행")
         else:
             flow_state = "safe"; reasons.append("외국인 순매수")
+
+    # [V6.1 ①-b] 선물 베이시스 프록시 — 현물성 헷지 vs 완전 리스크오프 구별
+    if isinstance(basis_info, dict) and basis_info.get('signal'):
+        _sig = basis_info['signal']; _b = basis_info.get('basis', 0.0)
+        if _sig == "riskoff":
+            risk += 2
+            if flow_state in ("unknown", "safe"):
+                flow_state = "danger"
+            reasons.append(f"🚨 선물 베이시스 {_b:+.2f}%p — 현·선물 동반투매(리스크오프 확증)")
+        elif _sig == "hedge":
+            risk = max(0, risk - 1)   # 현물성 하락 → 과잉 위험가산 1p 완화(추격 방지, 공포 억제)
+            reasons.append(f"선물 베이시스 {_b:+.2f}%p 방어 — 현물성 하락(헷지 추정, 위험 1p 완화)")
 
     if risk >= 3:
         light, verdict = "red", "🔴 리스크오프 — 신규진입 금지 / 방어 우선"
@@ -3714,7 +3771,15 @@ with st.sidebar:
             _krw_series = [_fx_store['vals'][d] for d in _fx_store['dates']]
         else:
             _krw_series = None
-        _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow, krw_series=_krw_series)
+        # [V6.1 ①-b] 선물 수급 베이시스 프록시 — 국장에서만, 실패 무해(None→게이트 무시)
+        _sb_basis = None
+        if '미장' not in str(st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')):
+            try:
+                _sb_basis = kis_futures_basis_proxy()
+            except Exception:
+                _sb_basis = None
+        _sb_gate  = compute_macro_regime_gate(_sb_krw, _sb_oil, _sb_flow,
+                                              krw_series=_krw_series, basis_info=_sb_basis)
 
         # ── 시장별(국장/미장) 독립 지수 킬스위치 — 메인 라디오(etf_market_sel)와 동기화 ──
         _sb_mkt    = st.session_state.get('etf_market_sel', '🇰🇷 국장 ETF')
