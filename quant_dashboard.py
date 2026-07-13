@@ -2328,7 +2328,8 @@ padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
             if st.button("🔍 분석 탭으로 이동", key=f"pg_target_{_tk}", use_container_width=True):
                 add_ticker(_tk, _nm)
                 st.session_state['scanner_selection'] = _tk
-                st.session_state['b_unified_sel'] = f"{_nm} ({_tk})"
+                # 위젯 key 직접 수정 금지 → 사전선택은 pending 키로 전달(다음 run에서 적용)
+                st.session_state['_pending_unified_sel'] = f"{_nm} ({_tk})"
                 st.toast(f"🔍 {_nm} → 관심종목 추가 · 상단 '분석' 탭에서 확인", icon="🎯")
 
     # 4위 이하 → 서랍 (V9.13 스펙 통일)
@@ -5564,6 +5565,11 @@ with tab_b:
     if not _b1_opts:
         st.warning("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
         st.stop()
+    # 스캐너/연기금 '분석 탭으로 이동' 버튼이 남긴 사전선택값 적용
+    # (위젯 key는 위젯 생성 후 수정 불가 → 반드시 selectbox 생성 전에 세팅)
+    _pend_sel = st.session_state.pop('_pending_unified_sel', None)
+    if _pend_sel and _pend_sel in _b1_opts:
+        st.session_state['b_unified_sel'] = _pend_sel
     if 'analysis_preset' not in st.session_state:
         st.session_state.analysis_preset = 'bounce'
     _pr_map  = {"📉 반등": "bounce", "📈 추세": "trend", "🎯 바닥": "bottom"}
@@ -8006,7 +8012,7 @@ padding:14px 16px;box-shadow:0 0 14px {_gc}25;margin-bottom:6px'>
                         st.session_state['scanner_selection'] = _ttk
                         # 분석 탭 종목 드롭다운(b_unified_sel) 사전 선택
                         _disp = f"{_tnm} ({_ttk})" if str(_ttk).isdigit() else f"{_ttk} ({_tnm})"
-                        st.session_state['b_unified_sel'] = _disp
+                        st.session_state['_pending_unified_sel'] = _disp
                         st.toast(f"🔍 {_tnm} → 관심종목 추가 · 상단 '분석' 탭에서 확인", icon="🎯")
             st.divider()
 
