@@ -624,6 +624,96 @@ def kis_get_investor(ticker):
         pass
     return None
 
+
+# ── 🛰️ 수급 펌프 추적기 — 반도체 대장주 외인·기관 매집 감시 ────────────────────
+_TOP2_SUPPLY_TARGETS = [("005930", "삼성전자"), ("000660", "SK하이닉스")]
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_top2_supply(token):
+    """[수급 펌프 추적기] 삼성전자·SK하이닉스 당일 외국인/기관 누적 순매수(가집계) + 등락률 실시간 조회.
+    ⚠️ token은 호출측(캐시 밖)에서 미리 발급해 주입 — 캐시 함수 내부 session_state 쓰기 회피(오염 차단).
+    네트워크 실패는 종목·항목별로 격리(부분 성공 허용) → 절대 예외 전파/크래시 없음.
+    반환: {ticker: {name, 현재가, 등락률, 외인순매수, 기관순매수, ok}, '_ok': bool}."""
+    import logging as _lg
+    if not token:
+        return {'_ok': False, '_err': '토큰 없음'}
+    _out = {}
+    _any_ok = False
+    _hdr_base = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
+    for _tk, _nm in _TOP2_SUPPLY_TARGETS:
+        _rec = {'name': _nm, '현재가': None, '등락률': None,
+                '외인순매수': None, '기관순매수': None, 'ok': False}
+        # (1) 투자자 수급 — 외인/기관 누적 순매수(주)
+        try:
+            _ri = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-investor",
+                headers={**_hdr_base, "tr_id": "FHKST01010900"},
+                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _tk}, timeout=5)
+            _oi = _ri.json().get("output", [])
+            if isinstance(_oi, list) and _oi and isinstance(_oi[0], dict):
+                _l = _oi[0]
+                _rec['외인순매수'] = int(str(_l.get("frgn_ntby_qty", 0)).replace(",", "") or 0)
+                _rec['기관순매수'] = int(str(_l.get("orgn_ntby_qty", 0)).replace(",", "") or 0)
+        except Exception as _e:
+            _lg.warning("fetch_top2_supply[%s] 투자자 조회 실패: %s: %s", _tk, type(_e).__name__, _e)
+        # (2) 현재가/등락률 — 수급-가격 괴리 판정용
+        try:
+            _rp = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers={**_hdr_base, "tr_id": "FHKST01010100"},
+                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _tk}, timeout=5)
+            _op = _rp.json().get("output", {})
+            if isinstance(_op, dict) and _op:
+                _rec['현재가'] = int(str(_op.get("stck_prpr", 0)).replace(",", "") or 0)
+                _rec['등락률'] = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
+        except Exception as _e:
+            _lg.warning("fetch_top2_supply[%s] 현재가 조회 실패: %s: %s", _tk, type(_e).__name__, _e)
+        _rec['ok'] = (_rec['외인순매수'] is not None) and (_rec['등락률'] is not None)
+        _any_ok = _any_ok or _rec['ok']
+        _out[_tk] = _rec
+    _out['_ok'] = _any_ok
+    return _out
+
+
+def render_top2_supply_widget(supply_data):
+    """[수급 펌프 추적기] 사이드바 렌더 — 삼성전자·SK하이닉스 외인/기관 누적 순매수 표출 +
+    가격↓·순매수↑ '수급 다이버전스'(세력 언더슈팅 기만전술) 매집 경고. 예외 전파 없음."""
+    if not isinstance(supply_data, dict) or not supply_data.get('_ok'):
+        st.caption("🛰️ 수급 펌프 추적기 — 데이터 대기 (장중·KIS 연결 시 60초 갱신)")
+        return
+    st.markdown("**🛰️ 수급 펌프 추적기 (외인·기관 매집)**")
+    _alerts = []
+    for _tk, _nm in _TOP2_SUPPLY_TARGETS:
+        _r = supply_data.get(_tk)
+        if not isinstance(_r, dict) or not _r.get('ok'):
+            st.caption(f"· {_nm}: 데이터 수신 실패")
+            continue
+        _chg = _r['등락률'] or 0.0
+        _frn = _r['외인순매수'] or 0
+        _org = _r['기관순매수'] or 0
+        _px  = _r['현재가'] or 0
+        _cc  = '#ef4444' if _chg < 0 else '#16a34a'
+        st.markdown(
+            f"<div style='font-size:12px;font-weight:800;color:#e2e8f0;margin-top:6px'>"
+            f"{_nm} <span style='color:{_cc}'>{_chg:+.2f}%</span> "
+            f"<span style='color:#64748b'>· {_px:,}원</span></div>", unsafe_allow_html=True)
+        _c1, _c2 = st.columns(2)
+        _c1.metric("외인 누적", f"{_frn:+,}주")
+        _c2.metric("기관 누적", f"{_org:+,}주")
+        # 수급 다이버전스: 가격 하락 중인데 외인/기관 순매수 양(+)전환 → 매집 기만전술
+        if _chg <= -3.0 and (_frn > 0 or _org > 0):
+            _who = " · ".join([w for w, v in [("외인", _frn), ("기관", _org)] if v > 0])
+            _alerts.append((_nm, _who, _chg, True))
+        elif _chg < 0 and (_frn > 0 or _org > 0):
+            _alerts.append((_nm, None, _chg, False))
+    for _nm, _who, _chg, _strong in _alerts:
+        if _strong:
+            st.error(f"🔴 [{_nm}] 세력 언더슈팅 기만전술 포착 — 매집 징후 "
+                     f"(가격 {_chg:+.1f}% 폭락 중 {_who} 순매수 강력 전환)")
+        else:
+            st.caption(f"🟡 [{_nm}] 수급 괴리 관찰 — 하락({_chg:+.1f}%) 중 순매수 유입")
+
 def kis_get_org_net_daily(ticker, days=10):
     """종목별 일별 '기관 순매수 수량' 리스트 — KIS FHKST01010900(외인기관 추정).
     반환: (org_list_oldest_first, foreign_total) 또는 (None, 0).
@@ -864,12 +954,22 @@ def get_index_quotes():
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def check_index_shutdown():
+def check_index_shutdown() -> tuple:
+    """국장 지수 킬스위치 — 코스피/코스닥 당일 -2% 급락 시 신규매수 차단.
+    반환: (is_shutdown: bool, reason: str, kospi_chg: float|None, kosdaq_chg: float|None).
+    ⚠️ [D1] 데이터 수신 실패 시 0.00%(평온)로 기만하지 않고 is_shutdown=True + chg=None 하드블락."""
+    import logging as _lg
     try:
         # 단일 소스(get_index_quotes)에서 코스피/코스닥 등락 참조 (헤더와 값 일치)
         _q = get_index_quotes()
-        _kospi_chg  = round(_q.get("코스피", {}).get("등락", 0), 2)
-        _kosdaq_chg = round(_q.get("코스닥", {}).get("등락", 0), 2)
+        _kp_raw = (_q or {}).get("코스피", {}).get("등락", None)
+        _kq_raw = (_q or {}).get("코스닥", {}).get("등락", None)
+        # 데이터 정합성 검사: 둘 중 하나라도 미수신 → 무음 0% 금지, 명시적 위험전환
+        if not isinstance(_kp_raw, (int, float)) or not isinstance(_kq_raw, (int, float)):
+            _lg.warning("check_index_shutdown: 지수 데이터 수신 실패 (코스피=%r, 코스닥=%r)", _kp_raw, _kq_raw)
+            return True, "🔴 지수 데이터 장애 — 수동 확인 요망 (신규매수 차단)", None, None
+        _kospi_chg  = round(float(_kp_raw), 2)
+        _kosdaq_chg = round(float(_kq_raw), 2)
         if _kospi_chg <= -2.0 or _kosdaq_chg <= -2.0:
             _reason = (
                 f"🚨 지수 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
@@ -878,13 +978,16 @@ def check_index_shutdown():
             return True, _reason, _kospi_chg, _kosdaq_chg
         return False, "", _kospi_chg, _kosdaq_chg
     except Exception as _e:
-        return False, f"지수 조회 오류: {_e}", 0, 0
+        _lg.warning("check_index_shutdown 예외: %s: %s", type(_e).__name__, _e)
+        return True, f"🔴 지수 조회 오류 — 수동 확인 요망 ({type(_e).__name__})", None, None
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def check_index_shutdown_us():
+def check_index_shutdown_us() -> tuple:
     """미장 전용 지수 킬스위치 — S&P500(^GSPC)/나스닥(^IXIC) 당일 -2% 급락 시 신규매수 차단.
-    반환: (is_shutdown, reason, spx_chg, ndx_chg). 국장/미장 투트랙 동기화용."""
+    반환: (is_shutdown: bool, reason: str, spx_chg: float|None, ndx_chg: float|None).
+    ⚠️ [D1] 데이터 수신 실패 시 0.00%(평온)로 기만하지 않고 is_shutdown=True + chg=None 하드블락."""
+    import logging as _lg
     try:
         import yfinance as _yf_us
         _res = {}
@@ -894,18 +997,23 @@ def check_index_shutdown_us():
                 if len(_h) >= 2:
                     _c = float(_h['Close'].iloc[-1]); _p = float(_h['Close'].iloc[-2])
                     if _c > 0 and _p > 0:
-                        _res[_n] = (_c / _p - 1) * 100
-            except Exception:
-                pass
-        _spx = round(_res.get("S&P500", 0), 2)
-        _ndx = round(_res.get("나스닥", 0), 2)
+                        _res[_n] = round((_c / _p - 1) * 100, 2)
+            except Exception as _fe:
+                _lg.warning("check_index_shutdown_us[%s] 페치 실패: %s: %s", _n, type(_fe).__name__, _fe)
+        _spx = _res.get("S&P500", None)
+        _ndx = _res.get("나스닥", None)
+        # 데이터 정합성 검사: 둘 중 하나라도 미수신 → 명시적 위험전환
+        if not isinstance(_spx, (int, float)) or not isinstance(_ndx, (int, float)):
+            _lg.warning("check_index_shutdown_us: 지수 데이터 수신 실패 (spx=%r, ndx=%r)", _spx, _ndx)
+            return True, "🔴 美 지수 데이터 장애 — 수동 확인 요망 (신규매수 차단)", None, None
         if _spx <= -2.0 or _ndx <= -2.0:
             _reason = (f"🚨 美 지수 셧다운 — S&P500 {_spx:+.2f}% / 나스닥 {_ndx:+.2f}% "
                        f"(-2.0% 급락) | 신규 매수 차단")
             return True, _reason, _spx, _ndx
         return False, "", _spx, _ndx
     except Exception as _e:
-        return False, f"美 지수 조회 오류: {_e}", 0, 0
+        _lg.warning("check_index_shutdown_us 예외: %s: %s", type(_e).__name__, _e)
+        return True, f"🔴 美 지수 조회 오류 — 수동 확인 요망 ({type(_e).__name__})", None, None
 
 # ── 전역 손절 비율 상수 ──────────────────────────────────────────────────────
 # 이 두 값만 바꾸면 전체 손절가 로직에 일괄 반영됨
@@ -2100,43 +2208,80 @@ def check_profit_recycling(current_krw_usd_rate, target_rate=1450):
         }
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_usd_krw():
-    """USD/KRW 환율 — 5분 캐시. 실패 시 마지막값(없으면 1350) 폴백, 절대 예외 전파 안 함."""
+def _fetch_usd_krw_raw():
+    """[C2] USD/KRW 순수 네트워크 페치 — session_state 접근 금지(캐시 함수 오염 차단).
+    성공 시 float, 실패/비정상 시 None."""
     try:
         import yfinance as _yf_fx
         _h = _yf_fx.Ticker("USDKRW=X").history(period="5d")
         if _h is None or _h.empty or 'Close' not in _h.columns:
-            return st.session_state.get('_last_usd_krw', 1350.0)
+            return None
         _ser = _h['Close'].dropna()
         if _ser.empty:
-            return st.session_state.get('_last_usd_krw', 1350.0)
+            return None
         _val = float(_ser.iloc[-1])
         if not (_val == _val) or _val <= 0:        # NaN / 비정상 차단
-            return st.session_state.get('_last_usd_krw', 1350.0)
+            return None
+        return _val
+    except Exception:
+        return None
+
+
+def get_usd_krw():
+    """USD/KRW 환율 — 캐시된 순수 페치 + session_state 기록/폴백은 호출측 레이어에서 처리.
+    실패 시 마지막값(없으면 1350) 폴백. 절대 예외 전파 안 함."""
+    _val = _fetch_usd_krw_raw()
+    if isinstance(_val, (int, float)) and _val == _val and _val > 0:
         st.session_state['_last_usd_krw'] = _val
         return _val
-    except (KeyError, IndexError, ValueError, ConnectionError, OSError, Exception):
-        return st.session_state.get('_last_usd_krw', 1350.0)
+    return st.session_state.get('_last_usd_krw', 1350.0)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_current_fx_rate():
+    """[D4] 환율 배너용 실시간 USD/KRW(KRW=X) — 60초 캐시. 리런마다 비캐시 yfinance
+    무한호출로 인한 앱 지연·Rate-limit 병목 제거. 성공 시 float, 실패 시 None."""
+    import logging as _lg
+    try:
+        import yfinance as _yf_fx2
+        _h = _yf_fx2.Ticker("KRW=X").history(period="1d")
+        if _h is None or _h.empty or 'Close' not in _h.columns:
+            return None
+        _v = float(_h['Close'].iloc[-1])
+        return _v if (_v == _v and _v > 0) else None
+    except Exception as _e:
+        _lg.warning("_fetch_current_fx_rate 실패: %s: %s", type(_e).__name__, _e)
+        return None
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_wti_oil():
-    """WTI 유가($/배럴) — 5분 캐시. 실패 시 마지막값(없으면 None) 폴백, 예외 전파 안 함."""
+def _fetch_wti_oil_raw():
+    """[C2] WTI 유가 순수 네트워크 페치 — session_state 접근 금지(캐시 함수 오염 차단).
+    성공 시 float, 실패/비정상 시 None."""
     try:
         import yfinance as _yf_oil
         _h = _yf_oil.Ticker("CL=F").history(period="5d")
         if _h is None or _h.empty or 'Close' not in _h.columns:
-            return st.session_state.get('_last_wti', None)
+            return None
         _ser = _h['Close'].dropna()
         if _ser.empty:
-            return st.session_state.get('_last_wti', None)
+            return None
         _val = float(_ser.iloc[-1])
         if not (_val == _val) or _val <= 0:
-            return st.session_state.get('_last_wti', None)
-        st.session_state['_last_wti'] = _val
+            return None
         return _val
     except Exception:
-        return st.session_state.get('_last_wti', None)
+        return None
+
+
+def get_wti_oil():
+    """WTI 유가($/배럴) — 캐시된 순수 페치 + session_state 기록/폴백은 호출측 레이어에서 처리.
+    실패 시 마지막값(없으면 None) 폴백. 예외 전파 안 함."""
+    _val = _fetch_wti_oil_raw()
+    if isinstance(_val, (int, float)) and _val == _val and _val > 0:
+        st.session_state['_last_wti'] = _val
+        return _val
+    return st.session_state.get('_last_wti', None)
 
 
 def _clamp(x, lo, hi):
@@ -2370,6 +2515,52 @@ def _pg_won_price(tk, fallback):
         return float(fallback)
     except Exception:
         return 0.0
+
+
+def _kis_price_cached(code, ttl=60):
+    """[C3] KIS 정확 원화가 — 60초 세션 캐시. 실패 시 0.
+    ⚠️ 캐시 함수 '밖'에서만 호출(kis_get_token이 세션에 쓰므로). 반복 스캔의 KIS 호출량 억제용."""
+    import time as _t
+    try:
+        _now = _t.time()
+        _store = st.session_state.setdefault('_kis_px_cache', {})
+        _e = _store.get(str(code))
+        if _e and (_now - _e[1] < ttl):
+            return _e[0]
+        _v = _pg_won_price(code, 0)
+        _store[str(code)] = (_v, _now)
+        return _v
+    except Exception:
+        return 0.0
+
+
+def _normalize_kr_etf_prices(rows):
+    """[C3] 국내 ETF 표시가 yfinance KRX 10배 왜곡 보정 — KIS 정확가 대비 ~10배(또는 1/10)
+    벌어지면 절대가격 필드(현재가/MA5가격/전일종가)만 KIS 기준으로 재정규화.
+    지표(ADX/RSI/등락%/점수 등)는 비율기반이라 왜곡 무영향 → 손대지 않음.
+    ⚠️ 반드시 @st.cache_data 함수 '밖'에서 호출. 캐시객체 변형 방지 위해 dict를 복사해 반환."""
+    if not rows:
+        return rows
+    _out = []
+    for _r in rows:
+        _r = dict(_r)   # 캐시 원본 불변 — 사본에만 보정 적용
+        try:
+            _code = str(_r.get('코드', '')).strip()
+            _yf_px = float(_r.get('현재가', 0) or 0)
+            if _code.isdigit() and _yf_px > 0:
+                _kis_px = _kis_price_cached(_code)
+                if _kis_px and _kis_px > 0:
+                    _ratio = _yf_px / _kis_px
+                    if _ratio > 3.0 or _ratio < 0.34:      # ~10배(또는 1/10) 왜곡 구간
+                        _corr = _kis_px / _yf_px
+                        for _k in ('현재가', 'MA5가격', '전일종가'):
+                            if isinstance(_r.get(_k), (int, float)) and _r[_k] > 0:
+                                _r[_k] = round(_r[_k] * _corr, 2)
+                        _r['_px_corrected'] = True
+        except Exception:
+            pass
+        _out.append(_r)
+    return _out
 
 
 def render_pension_results(pg_df, streak_map, streak_locked, mode_label, top_n, n_results):
@@ -3889,6 +4080,15 @@ with st.sidebar:
         _sbm1, _sbm2 = st.columns(2)
         _sbm1.metric("🛢️ WTI", f"${_sb_oil2:.1f}" if isinstance(_sb_oil2,(int,float)) else "—")
         _sbm2.metric("💾 반도체 YoY", f"{_sb_yoy:+.1f}%" if isinstance(_sb_yoy,(int,float)) else "대기")
+        # 🛰️ 수급 펌프 추적기 — 반도체 대장주 외인·기관 매집 감시 (KIS 연결 시, 토큰은 캐시 밖 발급)
+        try:
+            if kis_available():
+                _t2_tok = kis_get_token()
+                if _t2_tok:
+                    render_top2_supply_widget(fetch_top2_supply(_t2_tok))
+        except Exception as _t2e:
+            import logging as _lg2
+            _lg2.warning("수급 펌프 추적기 렌더 실패: %s: %s", type(_t2e).__name__, _t2e)
     except Exception:
         st.caption("⚠️ 상태 패널 일시 비활성 (데이터 지연)")
 
@@ -4986,7 +5186,7 @@ div[data-testid="stExpander"] { margin-bottom:0.5rem; }
         _ai_krw  = get_usd_krw()
         _ai_flow = st.session_state.get('_foreign_net_krw', None)
         try:
-            _ai_tops = _get_home_etf_top(1)
+            _ai_tops = _normalize_kr_etf_prices(_get_home_etf_top(1))   # [C3] 10배 왜곡 보정(캐시 밖)
             _ai_top1 = _ai_tops[0] if _ai_tops else None
         except Exception:
             _ai_top1 = None
@@ -9849,13 +10049,14 @@ with _tab_d1:
     # 내부 DB가 외부 소스보다 항상 우선 (신뢰성 > 편의성)
 
     @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
-    def fetch_kr_etf_data():
+    def fetch_kr_etf_data(etf_universe: tuple):
+        # [D3] etf_universe를 명시적 인자(캐시 키)로 수신 — 전역 _KR_ETF_LIST 의존 제거(캐시 오염 차단)
         results = []
         _mismatch_log = []
         # batch download (rate-limit 회피) — 실패 시 개별 호출로 자동 폴백
-        _kr_syms = [f"{t}.KS" for t, _ in _KR_ETF_LIST]
+        _kr_syms = [f"{t}.KS" for t, _ in etf_universe]
         _kr_batch = _batch_download_ohlcv(_kr_syms)
-        for ticker, name in _KR_ETF_LIST:
+        for ticker, name in etf_universe:
             _sym = f"{ticker}.KS"
             # 마스터 DB 검증
             _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
@@ -9878,12 +10079,13 @@ with _tab_d1:
         return results
 
     @st.cache_data(ttl=60, show_spinner=False)  # 실전 타점용 60초 단축
-    def fetch_us_etf_data():
+    def fetch_us_etf_data(etf_universe: tuple):
+        # [D3] etf_universe를 명시적 인자(캐시 키)로 수신 — 전역 _US_ETF_LIST 의존 제거(캐시 오염 차단)
         results = []
         # batch download (rate-limit 회피) — 56개 1회 요청, 실패 시 개별 폴백
-        _us_syms = [t for t, _ in _US_ETF_LIST]
+        _us_syms = [t for t, _ in etf_universe]
         _us_batch = _batch_download_ohlcv(_us_syms)
-        for ticker, name in _US_ETF_LIST:
+        for ticker, name in etf_universe:
             _v_ok, _v_exp, _v_msg = check_ticker_integrity(ticker, name)
             _ind = _calc_etf_indicators(ticker, prefetch_df=_us_batch.get(ticker))
             if _ind:
@@ -9902,7 +10104,7 @@ with _tab_d1:
         # (새로고침/카테고리는 상단 Control Ribbon으로 통합 이관)
         with st.spinner("국장ETF 데이터 로딩 중..."):
             try:
-                _kr_data = fetch_kr_etf_data()
+                _kr_data = _normalize_kr_etf_prices(fetch_kr_etf_data(tuple(_KR_ETF_LIST)))   # [C3]왜곡보정 [D3]universe주입
             except Exception as _fe:
                 st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
                 st.toast("⏳ API 호출 지연 중", icon="⚠️")
@@ -10029,7 +10231,7 @@ with _tab_d1:
 
         with st.spinner("미장ETF 데이터 로딩 중... (최대 30초)"):
             try:
-                _us_data = fetch_us_etf_data()
+                _us_data = fetch_us_etf_data(tuple(_US_ETF_LIST))   # [D3] universe 주입
             except Exception as _fe:
                 st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
                 st.toast("⏳ API 호출 지연 중", icon="⚠️")
@@ -10098,8 +10300,8 @@ with _tab_d1:
         with st.spinner("국장+미장 ETF 데이터 로딩 중... (최대 60초)"):
             _kr_data_all, _us_data_all = [], []
             try:
-                _kr_data_all = fetch_kr_etf_data()
-                _us_data_all = fetch_us_etf_data()
+                _kr_data_all = _normalize_kr_etf_prices(fetch_kr_etf_data(tuple(_KR_ETF_LIST)))   # [C3]왜곡보정 [D3]universe주입
+                _us_data_all = fetch_us_etf_data(tuple(_US_ETF_LIST))   # [D3] universe 주입
             except Exception as _fe:
                 st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 일부 데이터만 표시될 수 있습니다. [{type(_fe).__name__}]")
                 st.toast("⏳ API 호출 지연 중", icon="⚠️")
@@ -10320,7 +10522,7 @@ with _tab_d1:
 
     with st.spinner("ETF 데이터 로딩 중..."):
         try:
-            _etf_data = fetch_etf_data(tuple(ETF_LIST))
+            _etf_data = _normalize_kr_etf_prices(fetch_etf_data(tuple(ETF_LIST)))   # [C3] 10배 왜곡 보정(캐시 밖)
         except Exception as _fe:
             st.warning(f"⏳ API 호출 지연 중 (Rate Limit 가능성) — 잠시 후 다시 시도하세요. [{type(_fe).__name__}]")
             st.toast("⏳ API 호출 지연 중", icon="⚠️")
@@ -11915,7 +12117,10 @@ with tab_e:
                 unsafe_allow_html=True
             )
 
-            # 위젯 key(buy_memo)로 직접 관리 → 매수 후 초기화가 실제로 반영됨
+            # 위젯 key(buy_memo) 초기화는 위젯 생성 '전'에만 합법 → pending 플래그로 처리
+            # (매수 직후 위젯키를 직접 덮어쓰면 StreamlitAPIException 크래시 — b_unified_sel과 동일 패턴)
+            if st.session_state.pop('_buy_memo_clear', False):
+                st.session_state['buy_memo'] = ''
             _buy_memo = st.text_input("매수 근거 (Why)",
                                        placeholder="예: BB하단 반등, 골든크로스 확인, 5AI +3점", key="buy_memo")
 
@@ -11975,7 +12180,7 @@ with tab_e:
                 save_account(_acc)
                 log_trade(_bt, _bn, "매수", _buy_qty, _buy_price, _net_b,
                           _acc['cash'], _tv_now, ai_score=_ai_score, memo=st.session_state.get('buy_memo',''))
-                st.session_state['buy_memo'] = ''   # 위젯 key 직접 초기화
+                st.session_state['_buy_memo_clear'] = True   # 다음 run(위젯 생성 전)에 초기화 예약
                 st.success(f"✅ {_bn} {_buy_qty}주 @ {_net_b:,.0f}원 체결! (슬리피지+수수료 반영)")
                 st.rerun()
 
@@ -12209,16 +12414,13 @@ with tab_e:
     with _sub_e3:
         st.markdown("### 🌏 시장 지수 & 투자자 동향")
 
-        # ── 환율 경고 배너 ──
-        try:
-            import yfinance as yf
-            _krw = yf.Ticker("KRW=X").history(period="1d")['Close'].iloc[-1]
+        # ── 환율 경고 배너 (D4: 60초 캐시로 리런마다 yfinance 호출 병목 제거) ──
+        _krw = _fetch_current_fx_rate()
+        if isinstance(_krw, (int, float)):
             if _krw >= 1500:
                 st.error(f"🚨 환차손 헷지 경고! 원/달러 환율 {_krw:,.1f}원 — 1,500원 돌파! 미국 주식 신규 진입 자제 및 환헷지 검토 필요")
             elif _krw >= 1450:
                 st.warning(f"⚠️ 환율 주의 — 원/달러 {_krw:,.1f}원 (1,500원 경계 접근 중)")
-        except:
-            pass
 
         @st.cache_data(ttl=60, show_spinner=False)
         def fetch_index_data():
