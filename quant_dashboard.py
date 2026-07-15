@@ -236,100 +236,119 @@ def _fb_ref(path: str):
 import json as _json_tracker
 import os as _os_tracker
 
-_LOCAL_TRACKER_PATH = os.path.join(
+# [V9.28] 시장별 1위 스냅샷 영구 저장 — 국/미장 격리 + 과거 역산 방식
+_LOCAL_TOP1_HISTORY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "rotation_3day_tracker.json"
+    "top1_history.json"
 )
 
 
-def _local_tracker_read() -> dict:
-    """로컬 JSON 백업에서 추적 데이터 읽기. 파일 없거나 파싱 실패 시 {} 반환."""
+def _top1_history_read_local() -> dict:
+    """로컬 top1_history.json 읽기. 없거나 파싱 실패 시 {}."""
     try:
-        with open(_LOCAL_TRACKER_PATH, "r", encoding="utf-8") as _f:
-            return _json_tracker.load(_f)
+        with open(_LOCAL_TOP1_HISTORY_PATH, "r", encoding="utf-8") as _f:
+            _d = _json_tracker.load(_f)
+            return _d if isinstance(_d, dict) else {}
     except (FileNotFoundError, _json_tracker.JSONDecodeError, OSError):
         return {}
 
 
-def _local_tracker_write(data: dict) -> None:
-    """로컬 JSON 백업에 추적 데이터 덮어쓰기. 쓰기 실패는 조용히 무시."""
+def _top1_history_write_local(data: dict) -> None:
+    """로컬 top1_history.json 덮어쓰기. 실패는 조용히 무시."""
     try:
-        with open(_LOCAL_TRACKER_PATH, "w", encoding="utf-8") as _f:
+        with open(_LOCAL_TOP1_HISTORY_PATH, "w", encoding="utf-8") as _f:
             _json_tracker.dump(data, _f, ensure_ascii=False)
     except OSError:
         pass
 
 
-def _get_rotation_day_count(top1_ticker: str) -> dict:
+def _get_rotation_day_count(top1_ticker: str, market: str = "KR") -> dict:
     """
-    오늘의 1위 ETF 티커를 Firebase(1순위) + 로컬 JSON(폴백)에 날짜 단위(1일 1회 Lock)로
-    누적 기록하고, 연속 1위 일차(1~3)를 계산해 반환합니다.
+    [V9.28] 시장별 1위 스냅샷 append + 과거 역산 방식 연속 1위 일차 계산.
 
-    저장소 우선순위:
-      1) Firebase /rotation_3day_tracker  (설정된 경우)
-      2) rotation_3day_tracker.json       (Firebase 미설정 or 오류 시 자동 폴백)
+    세션/캐시 누적 카운터를 전면 폐기 — 대신 매일 시장별 1위 티커·날짜를 영구
+    저장소에 append 하고, 조회 시마다 최근 기록을 '역산'해 연속 일차를 동적 계산.
+    → 세션 초기화·국/미장 전환·서버 재부팅과 무관하게 기록만 있으면 일차가 복원됨.
 
-    쓰기는 양쪽에 항상 동시 수행(듀얼 쓰기) — Firebase 장애 시에도 로컬 JSON이
-    카운트를 보존하므로 휩쏘 방어 로직이 마비되지 않음.
+    저장 포맷 (국장/미장 상태공간 완전 격리):
+      {"KR": [{"date": "YYYY-MM-DD", "ticker": "..."}, ...],
+       "US": [{"date": "YYYY-MM-DD", "ticker": "..."}, ...]}
 
-    반환 dict:
-      count     (int)  : 현재 연속 1위 일차 (1 / 2 / 3)
-      ticker    (str)  : 기록된 1위 티커
-      last_date (str)  : 마지막 기록일 (YYYY-MM-DD, KST)
-      is_locked (bool) : True = 오늘 이미 기록 완료 (날짜 Lock 적용 중)
+    저장소 우선순위: Firebase /top1_history (1순위) → top1_history.json (폴백). 듀얼 라이트.
 
-    날짜 Lock 원칙:
-      - last_date == 오늘 이면 쓰기 없이 저장값 그대로 반환
-        → 장중 버튼 수십 번 눌러도 count 가 올라가지 않음
-      - last_date 가 오늘이 아니고 ticker 동일 + 5 캘린더일 이내 → count + 1 (최대 3)
-      - ticker 가 바뀌었거나 5일 초과 공백 → count = 1 (강제 리셋)
+    날짜 Lock: 해당 시장에 오늘 기록이 이미 있으면 append 없이 그 티커로 역산
+      (장중 순위 flip-flop 방지 — 그날 첫 1위를 확정).
+
+    역산 규칙: 최신(오늘) → 과거로 동일 티커가 연속되는 run 길이를 계산.
+      연속 판정은 인접 기록일 간격이 1~5 캘린더일(주말·공휴일 허용)일 때만 성립.
+      "D-2 == D-1 == D-Day" 모두 일치 시 3일차. count 는 1~3로 클램프.
+
+    반환 dict: count(1~3), ticker(역산 기준 티커), last_date(오늘, KST), is_locked(bool).
     """
     import datetime as _dt
+    _mk = "US" if str(market).upper().startswith("US") else "KR"
     _kst_today = (_dt.datetime.utcnow() + _dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    _top1_ticker = str(top1_ticker)
 
     # ── [하이브리드 READ] Firebase 우선, 실패/비설정 시 로컬 JSON 폴백 ──
-    _ref        = _fb_ref("/rotation_3day_tracker")
-    _fb_data    = _ref.get()          # NullRef.get() → None
-    _use_local  = (_fb_data is None)  # Firebase 미설정 or 네트워크 오류
-    _data       = _fb_data if not _use_local else _local_tracker_read()
+    _ref       = _fb_ref("/top1_history")
+    _fb_data   = _ref.get()            # NullRef.get() → None
+    _use_local = (_fb_data is None)
+    _data      = _fb_data if not _use_local else _top1_history_read_local()
+    if not isinstance(_data, dict):
+        _data = {}
+    _kr_list = _data.get("KR") if isinstance(_data.get("KR"), list) else []
+    _us_list = _data.get("US") if isinstance(_data.get("US"), list) else []
+    _mk_list = _us_list if _mk == "US" else _kr_list
 
-    _stored_ticker = str(_data.get("ticker", ""))
-    _stored_count  = int(_data.get("count", 0))
-    _stored_date   = str(_data.get("last_date", ""))
+    # ── 날짜 Lock: 오늘 기록이 이미 있으면 append 없이 그 티커로 역산 ──
+    _today_entry = next((e for e in _mk_list
+                         if isinstance(e, dict) and e.get("date") == _kst_today), None)
+    _is_locked = _today_entry is not None
+    if _is_locked:
+        _eff_ticker = str(_today_entry.get("ticker", _top1_ticker))
+    else:
+        # 오늘 스냅샷 append 후 듀얼 라이트 (최근 30개만 유지 — 무한증식 방지)
+        _eff_ticker = _top1_ticker
+        _mk_list = _mk_list + [{"date": _kst_today, "ticker": _top1_ticker}]
+        _mk_list = sorted([e for e in _mk_list if isinstance(e, dict) and e.get("date")],
+                          key=lambda e: e["date"])[-30:]
+        if _mk == "US":
+            _data["US"] = _mk_list; _data.setdefault("KR", _kr_list)
+        else:
+            _data["KR"] = _mk_list; _data.setdefault("US", _us_list)
+        _ref.set(_data)                 # NullRef.set() → 조용히 무시
+        _top1_history_write_local(_data)
 
-    # ── 날짜 Lock: 오늘 이미 기록됐으면 쓰기 없이 반환 ──
-    if _stored_date == _kst_today:
-        return {
-            "count": _stored_count,
-            "ticker": _stored_ticker,
-            "last_date": _stored_date,
-            "is_locked": True,
-        }
-
-    # ── 연속성 판단 ──
-    _is_consecutive = False
-    if _stored_date and _stored_ticker == top1_ticker:
-        try:
-            _prev_d  = _dt.datetime.strptime(_stored_date, "%Y-%m-%d").date()
-            _today_d = _dt.datetime.strptime(_kst_today,   "%Y-%m-%d").date()
-            _gap     = (_today_d - _prev_d).days
-            # 1~5 캘린더일 허용 (주말 2일 + 공휴일 최대 3일 포함)
-            _is_consecutive = (1 <= _gap <= 5)
-        except Exception:
-            pass
-
-    _new_count = min(_stored_count + 1, 3) if _is_consecutive else 1
-    _new_data  = {"ticker": top1_ticker, "count": _new_count, "last_date": _kst_today}
-
-    # ── [듀얼 WRITE] Firebase + 로컬 JSON 동시 저장 ──
-    _ref.set(_new_data)               # NullRef.set() → 조용히 무시
-    _local_tracker_write(_new_data)   # 항상 로컬 JSON에도 덮어씀
+    # ── 역산: 날짜별 1위(중복일은 마지막 우선)로 접은 뒤 최신→과거 동일 티커 run 계산 ──
+    _by_date = {}
+    for e in _mk_list:
+        if isinstance(e, dict) and e.get("date"):
+            _by_date[str(e["date"])] = str(e.get("ticker", ""))
+    _dates = sorted(_by_date.keys())
+    _count, _prev_d = 0, None
+    for _d in reversed(_dates):
+        if _by_date[_d] != _eff_ticker:
+            break
+        if _prev_d is not None:
+            try:
+                _gap = (_dt.datetime.strptime(_prev_d, "%Y-%m-%d").date()
+                        - _dt.datetime.strptime(_d, "%Y-%m-%d").date()).days
+                if not (1 <= _gap <= 5):
+                    break
+            except Exception:
+                break
+        _count += 1
+        _prev_d = _d
+        if _count >= 3:
+            break
+    _count = max(1, min(_count, 3))
 
     return {
-        "count": _new_count,
-        "ticker": top1_ticker,
+        "count": _count,
+        "ticker": _eff_ticker,
         "last_date": _kst_today,
-        "is_locked": False,
+        "is_locked": _is_locked,
     }
 
 
@@ -10578,7 +10597,9 @@ with _tab_d1:
         _switch_ok = False # 방어 3조건 통과 여부
         if _top1 is not None:
             try:
-                _day_info = _get_rotation_day_count(str(_top1['종목코드']))
+                _day_info = _get_rotation_day_count(
+                    str(_top1['종목코드']),
+                    "KR" if _etf_market == "🇰🇷 국장 ETF" else "US")   # [V9.28] 국/미장 상태공간 격리
                 _dc = _day_info["count"]
 
                 # ── 🛡️ 신규 진입 절대 방어 조건 (시장 폭락 순위 왜곡 차단) ──
