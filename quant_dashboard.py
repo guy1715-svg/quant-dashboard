@@ -9722,7 +9722,7 @@ with tab_d:
                     f"padding:16px 20px;margin-bottom:12px;{_danger_anim}'>"
                     f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
                     f"<div>"
-                    f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_tk}{_price_warn}</span>"
+                    f"<span style='font-size:16px;font-weight:900;color:#f0f4ff'>{_disp_label}{_price_warn}</span>"
                     f"{_cur_badge}"
                     f"<span style='font-size:11px;color:#64748b;margin-left:10px'>{_qty}주 @ {_unit}{_fmt_p(_avg)}</span>"
                     f"{_trail_badge}"
