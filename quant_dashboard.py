@@ -5663,18 +5663,29 @@ div[data-testid="stExpander"] { margin-bottom:0.5rem; }
         st.markdown("<div style='font-size:11px;color:#64748b;font-weight:700;margin-top:4px;margin-bottom:4px'>ACTIVE TRADES & ORDER BOOK</div>", unsafe_allow_html=True)
         _fb_trades_p4 = _load_trade_log_firebase()
         if _fb_trades_p4:
-            for _tr4 in reversed(_fb_trades_p4[-4:]):
+            # [V10.0] 줄글 나열 → 정돈된 Dataframe (날짜·종목명·수량·단가·액션). height=150 스크롤 제어.
+            _ob_rows = []
+            for _tr4 in reversed(_fb_trades_p4[-12:]):
                 _act4 = _tr4.get('매매', '')
-                _tc4 = "#16a34a" if _act4 in ('BUY','매수') else "#ef4444"
-                st.markdown(
-                    f"<div style='background:#0d1117;border-left:2px solid {_tc4};border-radius:4px;"
-                    f"padding:4px 8px;margin-bottom:2px;font-size:11px;display:flex;justify-content:space-between'>"
-                    f"<span><b style='color:{_tc4}'>{_act4}</b> {_tr4.get('종목명','?')}</span>"
-                    f"<span style='color:#64748b'>{_tr4.get('수량',0)}주 @ {_tr4.get('순체결가',0):,.0f}</span>"
-                    f"<span style='color:#374151'>{_tr4.get('날짜','')}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+                _act_disp = ('🟢 매수' if _act4 in ('BUY', '매수')
+                             else '🔴 매도' if _act4 in ('SELL', '매도') else (_act4 or '-'))
+                try:
+                    _qty4 = f"{int(_tr4.get('수량', 0) or 0):,}주"
+                except Exception:
+                    _qty4 = str(_tr4.get('수량', '-'))
+                try:
+                    _prc4 = f"{float(_tr4.get('순체결가', 0) or 0):,.0f}원"
+                except Exception:
+                    _prc4 = str(_tr4.get('순체결가', '-'))
+                _ob_rows.append({
+                    '날짜':   str(_tr4.get('날짜', '')),
+                    '종목명': str(_tr4.get('종목명', '?')),
+                    '수량':   _qty4,
+                    '단가':   _prc4,
+                    '액션':   _act_disp,
+                })
+            _ob_df = pd.DataFrame(_ob_rows, columns=['날짜', '종목명', '수량', '단가', '액션'])
+            st.dataframe(_ob_df, height=150, use_container_width=True, hide_index=True)
         else:
             st.markdown("<div style='color:#374151;font-size:11px;padding:4px'>거래 기록 없음</div>", unsafe_allow_html=True)
 
