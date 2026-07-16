@@ -6566,9 +6566,27 @@ def render_manju_dolpanti_briefing():
         if not kis_available():
             st.info("🔌 KIS 연결 시 실시간 수급 기반으로 가동됩니다 (앱키/시크릿 필요).")
             return
-        _tok = kis_get_token()
-        if not _tok:
-            st.warning("⚠️ KIS 토큰 조회 실패 — 잠시 후 다시 시도하세요.")
+
+        # ── 분 단위 세션 캐시 — rerun(체크박스 토글 등)마다 KIS 30여회 재호출로 레이트리밋에
+        #    걸려 '토큰 실패'가 뜨던 문제 차단. 같은 분(minute) 안에서는 캐시 재사용. ──
+        _bucket = _now.strftime("%Y%m%d%H%M")
+        _mdc = st.session_state.get('_md_raw_cache')
+        if not (_mdc and _mdc.get('bucket') == _bucket):
+            _raw = {}
+            for _c, _n in _MD_TARGETS:
+                try:
+                    _raw[_c] = {'inv': kis_get_investor(_c), 'pr': kis_get_price(_c)}
+                except Exception as _e:
+                    import logging as _lg_md
+                    _lg_md.warning("만쥬/돌팬티 %s 조회 실패: %s: %s", _c, type(_e).__name__, _e)
+                    _raw[_c] = {'inv': None, 'pr': None}
+            _mdc = {'bucket': _bucket, 'raw': _raw}
+            st.session_state['_md_raw_cache'] = _mdc
+        _raw = _mdc['raw']
+
+        if not any(_v.get('inv') and _v.get('pr') for _v in _raw.values()):
+            st.warning("⚠️ KIS 수급 데이터 수신 실패 — **장중(09:00~15:20)·평일**에 다시 확인하세요. "
+                       "(주말·장마감·일시적 호출제한 시 빈 값이 정상)")
             return
 
         _is_am = _t < _AM
@@ -6583,39 +6601,41 @@ def render_manju_dolpanti_briefing():
             st.error("⏰ 15:15 타임리밋 — 만쥬 포지션 **즉시 청산(EXIT)** 실행하세요.")
         _manju_hit = False
         for _c, _n in _MD_TARGETS:
-            try:
-                _inv = kis_get_investor(_c); _pr = kis_get_price(_c)
-                if not _inv or not _pr:
-                    continue
-                _flow = int(_inv.get('외인순매수', 0)) + int(_inv.get('기관순매수', 0))
-                if _is_am:
-                    _am_store[_c] = _flow; _amflow = _flow; _turn = False
-                else:
-                    _amflow = int(_am_store.get(_c, _flow)); _turn = (_amflow <= 0 and _flow > 0)
-                _chg = _pr.get('등락률', 0.0)
-                _fc = "#e11d48" if _flow > 0 else "#2563eb" if _flow < 0 else "#64748b"
-                _bg = "#3b0d16" if (_turn and not _exit) else "#0d1117"
-                _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환(진입)</span>"
-                        if (_turn and not _exit) else "")
-                st.markdown(
-                    f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
-                    f"font-size:12px;display:flex;justify-content:space-between'>"
-                    f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> {_tag}</span>"
-                    f"<span>오전 {_amflow:+,} → 현재 <b style='color:{_fc}'>{_flow:+,}</b>주 "
-                    f"<span style='color:#64748b'>({_chg:+.2f}%)</span></span></div>",
-                    unsafe_allow_html=True)
-                _manju_hit = _manju_hit or (_turn and not _exit)
-            except Exception as _e:
-                import logging as _lg_md
-                _lg_md.warning("만쥬 %s 실패: %s: %s", _c, type(_e).__name__, _e)
+            _d = _raw.get(_c, {}); _inv = _d.get('inv'); _pr = _d.get('pr')
+            if not _inv or not _pr:
+                continue
+            _flow = int(_inv.get('외인순매수', 0)) + int(_inv.get('기관순매수', 0))
+            _have_am = _c in _am_store
+            if _is_am:
+                _am_store[_c] = _flow; _amflow = _flow; _turn = False; _have_am = True
+            else:
+                _amflow = int(_am_store.get(_c, _flow))
+                _turn = (_have_am and _amflow <= 0 and _flow > 0)   # 오전 스냅샷 있을 때만 판정
+            _chg = _pr.get('등락률', 0.0)
+            _fc = "#e11d48" if _flow > 0 else "#2563eb" if _flow < 0 else "#64748b"
+            _bg = "#3b0d16" if (_turn and not _exit) else "#0d1117"
+            _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환(진입)</span>"
+                    if (_turn and not _exit) else "")
+            _am_txt = f"오전 {_amflow:+,}" if _have_am else "오전 미기록"
+            st.markdown(
+                f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
+                f"font-size:12px;display:flex;justify-content:space-between'>"
+                f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> {_tag}</span>"
+                f"<span style='color:#94a3b8'>{_am_txt} → 현재 <b style='color:{_fc}'>{_flow:+,}</b>주 "
+                f"<span style='color:#64748b'>({_chg:+.2f}%)</span></span></div>",
+                unsafe_allow_html=True)
+            _manju_hit = _manju_hit or (_turn and not _exit)
         if _is_am:
             st.caption("🌅 오전 수급 스냅샷 기록 중 — 11:30 이후 턴어라운드 판정 가동")
+        elif not _am_store:
+            st.caption("ℹ️ 오전 스냅샷 없음 — 오늘 오전(11:30 이전)에 이 화면을 한 번 열어야 "
+                       "'오전→오후 전환' 판정이 가동됩니다. (지금은 현재 수급만 표시)")
         elif not _manju_hit and not _exit:
             st.caption("감시 중 — 오전 순매도→오후 순매수 전환 종목 없음")
 
         st.divider()
 
-        # ── ② 돌팬티식 — 15:00 종가베팅 3필터 ──
+        # ── ② 돌팬티식 — 15:00 종가베팅 3필터 (만쥬와 동일 캐시 재사용, KIS 추가호출 없음) ──
         _force = st.checkbox("🧪 돌팬티 스캐너 강제 가동(15:00 이전 테스트)", value=False, key="md_dp_force")
         st.markdown("**② 돌팬티식 — [오늘의 돌팬티 타겟]** (15:00 가동 · 20MA↑ / 기관 순매수+ / 아래꼬리)")
         if _t < _DP and not _force:
@@ -6623,22 +6643,23 @@ def render_manju_dolpanti_briefing():
             return
         _targets = []
         for _c, _n in _MD_TARGETS:
+            _d = _raw.get(_c, {}); _pr = _d.get('pr'); _inv = _d.get('inv')
+            if not _pr or not _inv:
+                continue
             try:
-                _pr = kis_get_price(_c); _inv = kis_get_investor(_c)
-                if not _pr or not _inv:
-                    continue
-                _ind = calc_indicators(fetch_ohlcv(_c, 60))
+                _ind = calc_indicators(fetch_ohlcv(_c, 60))   # fetch_ohlcv는 @st.cache_data(1800s)
                 _ma20 = float(_ind['MA20'].iloc[-1]); _close = float(_ind['종가'].iloc[-1])
-                _c1 = _close > _ma20 > 0
-                _org = int(_inv.get('기관순매수', 0)); _c2 = _org > 0
-                _c3 = _md_lower_tail(_pr.get('시가'), _pr.get('고가'), _pr.get('저가'), _pr.get('현재가'))
-                if _c1 and _c2 and _c3:
-                    _targets.append((_n, _c, _pr.get('현재가', 0), _ma20, _org))
             except Exception as _e:
                 import logging as _lg_md2
-                _lg_md2.warning("돌팬티 %s 실패: %s: %s", _c, type(_e).__name__, _e)
+                _lg_md2.warning("돌팬티 %s 지표 실패: %s: %s", _c, type(_e).__name__, _e)
+                continue
+            _c1 = _close > _ma20 > 0
+            _org = int(_inv.get('기관순매수', 0)); _c2 = _org > 0
+            _c3 = _md_lower_tail(_pr.get('시가'), _pr.get('고가'), _pr.get('저가'), _pr.get('현재가'))
+            if _c1 and _c2 and _c3:
+                _targets.append((_n, _c, _pr.get('현재가', 0), _ma20, _org))
         if not _targets:
-            st.caption("오늘 3조건 동시충족 종목 없음 — 관망")
+            st.caption("오늘 3조건(20MA↑·기관 순매수+·아래꼬리) 동시충족 종목 없음 — 관망")
         else:
             for _n, _c, _px, _ma20, _org in _targets:
                 st.markdown(
