@@ -9150,9 +9150,10 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
         _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
-        # [V10.3 P3] 무음 0값 방지 — 오류행/가격 0은 '0원'이 아니라 N/A로 표기
+        # [V10.3 P3] 무음 0값 방지 — 가격 0/무효는 '0원'이 아니라 N/A로 표기
+        # (오류행은 위 _is_dead 분기에서 이미 처리됨 → 여기선 활성행 가격 유효성만 검사)
         _cur_val = row.get('현재가', 0)
-        if _is_err or not (isinstance(_cur_val, (int, float)) and _cur_val > 0):
+        if not (isinstance(_cur_val, (int, float)) and _cur_val > 0):
             _price_str = "N/A ⚠️"
         else:
             _price_str = f"{_cur_val:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{_cur_val:,.0f}{currency_symbol}"
