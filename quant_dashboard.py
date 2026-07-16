@@ -6553,6 +6553,90 @@ def _md_lower_tail(_o, _h, _l, _c, _ratio=0.33):
     return bool(_rng > 0 and (min(_o, _c) - _l) >= _rng * _ratio)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_premarket_macro() -> dict:
+    """[매크로 기상도] 프리마켓 글로벌 지표 — yfinance. session_state 미접근(캐시 안전).
+    반환: {vix, vix_chg, krw, krw_chg, ixic_chg, sox_chg} — 실패 항목은 None."""
+    import yfinance as _yf_mw
+    _out = {"vix": None, "vix_chg": None, "krw": None, "krw_chg": None,
+            "ixic_chg": None, "sox_chg": None}
+
+    def _closes(_sym, _period="5d"):
+        try:
+            _h = _yf_mw.Ticker(_sym).history(period=_period)
+            _c = _h["Close"].dropna()
+            return _c if len(_c) >= 2 else None
+        except Exception:
+            return None
+
+    _v = _closes("^VIX")
+    if _v is not None:
+        _out["vix"] = round(float(_v.iloc[-1]), 2)
+        _out["vix_chg"] = round(float(_v.iloc[-1] - _v.iloc[-2]), 2)
+    _k = _closes("KRW=X")
+    if _k is not None:
+        _out["krw"] = round(float(_k.iloc[-1]), 1)
+        _out["krw_chg"] = round((float(_k.iloc[-1]) / float(_k.iloc[-2]) - 1) * 100, 2)
+    for _key, _sym in [("ixic_chg", "^IXIC"), ("sox_chg", "^SOX")]:
+        _s = _closes(_sym)
+        if _s is not None:
+            _out[_key] = round((float(_s.iloc[-1]) / float(_s.iloc[-2]) - 1) * 100, 2)
+    return _out
+
+
+def render_macro_weather():
+    """[🌍 Top-Down 매크로 기상도] 프리마켓 미국발 지표(VIX·환율·나스닥·SOX)를 융합해
+    오늘 국장 레짐을 3단계(🟢/🟡/🔴)로 판독 + 권장 실탄 투입 비중 배너 출력.
+    만쥬/돌팬티 등 KIS 스캐너와 독립 작동(별도 함수·별도 데이터소스)."""
+    st.markdown("#### 🌍 Top-Down 매크로 기상도")
+    _m = _fetch_premarket_macro()
+    _vix, _vchg = _m["vix"], _m["vix_chg"]
+    _kchg = _m["krw_chg"]
+    _ix, _sox = _m["ixic_chg"], _m["sox_chg"]
+    _tech = [_x for _x in (_ix, _sox) if _x is not None]
+
+    if all(_v is None for _v in (_vix, _kchg, _ix, _sox)):
+        st.info("🌐 매크로 지표 수신 대기 — 잠시 후 다시 확인하세요.")
+        return
+
+    # ── 레짐 판정 (강한 단일 리스크는 즉시 🔴) ──
+    _red = ((_vix is not None and _vix >= 30)
+            or (_kchg is not None and _kchg >= 1.5)
+            or (_tech and min(_tech) <= -3.0))
+    _green = ((_vix is not None and _vix < 20)
+              and (_kchg is not None and _kchg <= 0.1)
+              and (bool(_tech) and min(_tech) >= 0.0))
+    _regime = "red" if _red else "green" if _green else "amber"
+
+    # ── 지표 메트릭 행 ──
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("😨 VIX", f"{_vix:.1f}" if _vix is not None else "—",
+               delta=(f"{_vchg:+.1f}" if _vchg is not None else None), delta_color="inverse")
+    _c2.metric("💱 USD/KRW", f"{_m['krw']:,.0f}" if _m["krw"] is not None else "—",
+               delta=(f"{_kchg:+.2f}%" if _kchg is not None else None), delta_color="inverse")
+    _c3.metric("📈 나스닥", f"{_ix:+.2f}%" if _ix is not None else "—")
+    _c4.metric("🔩 반도체(SOX)", f"{_sox:+.2f}%" if _sox is not None else "—")
+
+    # ── 신호등 배너 + 권장 실탄 비중 ──
+    _bits = []
+    if _vix is not None:
+        _bits.append(f"VIX {_vix:.1f}" + ("↑" if (_vchg or 0) > 0 else "↓" if (_vchg or 0) < 0 else ""))
+    if _kchg is not None:
+        _bits.append(f"환율 {_kchg:+.2f}%")
+    if _ix is not None:
+        _bits.append(f"나스닥 {_ix:+.2f}%")
+    if _sox is not None:
+        _bits.append(f"SOX {_sox:+.2f}%")
+    _detail = " · ".join(_bits)
+
+    if _regime == "green":
+        st.success(f"🟢 **리스크 온 / 정상 타격** — 권장 실탄 **100%** 허용\n\n{_detail}")
+    elif _regime == "amber":
+        st.warning(f"🟡 **경계 / 휩쏘 주의** — 보수적 접근, 권장 실탄 **50% 이하**로 축소\n\n{_detail}")
+    else:
+        st.error(f"🔴 **리스크 오프 / 관망** — 신규 진입 **전면 차단**(100% 현금 또는 인버스 헷지만)\n\n{_detail}")
+
+
 def render_manju_dolpanti_briefing():
     """만쥬(장중 수급 턴어라운드+15:15 청산) / 돌팬티(15:00 종가베팅 3필터) 브리핑.
     KIS 실시간 수급·시세 재활용. 오전 스냅샷은 session_state 보존. 예외는 종목별 격리."""
@@ -6672,6 +6756,7 @@ def render_manju_dolpanti_briefing():
 
 with tab_c:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
+    render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독
     render_manju_dolpanti_briefing()
 
     # ── 📖 실전 매뉴얼 (기본 닫힘) ──────────────────────────────────────
