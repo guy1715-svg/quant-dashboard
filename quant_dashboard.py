@@ -520,7 +520,16 @@ def kis_get_token():
         _body = _res.json()
         _token = _body.get("access_token")
         if _token:
-            _KIS_TOKEN_CACHE[_fp] = (_token, _time_kis.time() + 21600)
+            # [V10.3 P4] TTL 동적 파싱 — 서버 expires_in(초) 우선, 60초 안전마진 선차감.
+            #   응답 누락/비정상 시에만 6시간(21600) 폴백. 만료 임박 토큰 재사용으로 인한 401 방지.
+            try:
+                _ttl = int(float(_body.get("expires_in", 21600)))
+            except (TypeError, ValueError):
+                _ttl = 21600
+            if _ttl <= 0:
+                _ttl = 21600
+            _ttl = max(60, _ttl - 60)   # 만료 60초 전 선갱신
+            _KIS_TOKEN_CACHE[_fp] = (_token, _time_kis.time() + _ttl)
             st.session_state.pop('_kis_token_err', None)
             return _token
         # 실패 — KIS 에러 코드/메시지 그대로 보존 (EGW00133=1분1회 제한 등)
@@ -1079,29 +1088,6 @@ def check_global_drawdown_killswitch(current_total: float, prev_total: float) ->
         )
     return True, ""
 
-def check_data_heartbeat(df, max_stale_seconds: int = 60) -> tuple:
-    """
-    시세 데이터 신선도 체크 — 마지막 타임스탬프가 max_stale_seconds 초 초과 시 매매 차단.
-    Returns: (is_fresh: bool, message: str)
-    """
-    try:
-        from datetime import datetime, timezone
-        if df is None or df.empty:
-            return False, "⚠️ 데이터 없음 — 시세 서버 연결 확인 필요"
-        _last_ts = df.index[-1]
-        if hasattr(_last_ts, 'tzinfo') and _last_ts.tzinfo is not None:
-            _now = datetime.now(timezone.utc)
-            _last_ts_cmp = _last_ts.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
-        else:
-            _now = datetime.now()
-            _last_ts_cmp = _last_ts.to_pydatetime() if hasattr(_last_ts, 'to_pydatetime') else _last_ts
-        _stale_sec = (_now - _last_ts_cmp).total_seconds()
-        if _stale_sec > max_stale_seconds:
-            return False, f"⚠️ 시세 {int(_stale_sec)}초 경과 — 실시간 연결 끊김 가능성"
-    except Exception:
-        return True, ""
-    return True, ""
-
 def check_smart_killswitch(ticker, entry_price, current_price):
     if entry_price <= 0:
         return 'SAFE', ""
@@ -1135,55 +1121,6 @@ def check_smart_killswitch(ticker, entry_price, current_price):
             )
         return 'EXECUTE_MARKET_SELL', f"🚨 킬스위치 — {_chg_pct:.2f}% → EXECUTE_MARKET_SELL"
     return 'SAFE', ""
-
-def check_reentry_allowed(ticker, kill_date_str, df=None):
-    """
-    손절 후 재진입 가능 여부 — Gemini T2 모범 답안 3단계 필터
-    1. 쿨링오프: 손절일로부터 3 거래일 경과
-    2. 조건 회복: 종가 > MA20 & 거래량 실린 돌파
-    3. 지표 복원: RSI 40 상향 돌파 또는 이전 저점 위 지지 확인
-    Returns: (can_reenter: bool, reason: str)
-    """
-    from datetime import datetime as _dt_re, timedelta as _td_re
-    import numpy as np
-    try:
-        _kill_dt = _dt_re.strptime(kill_date_str, '%Y-%m-%d')
-        _elapsed = (_dt_re.now() - _kill_dt).days
-        if _elapsed < 3:
-            return False, f"쿨링오프 중 ({_elapsed}일 경과 / 최소 3거래일 필요)"
-
-        if df is None or len(df) < 20:
-            return False, "데이터 부족 — 조건 확인 불가"
-
-        _cl   = df['종가'] if '종가' in df.columns else df['Close']
-        _vol  = df['거래량'] if '거래량' in df.columns else df['Volume']
-        _ma20 = _cl.rolling(20).mean()
-        _cur  = float(_cl.iloc[-1])
-        _m20  = float(_ma20.iloc[-1]) if not np.isnan(_ma20.iloc[-1]) else _cur
-
-        # 조건 회복: 종가 > MA20 + 거래량 > 5일 평균 120%
-        _vol_ratio = float(_vol.iloc[-1]) / float(_vol.tail(5).mean()) if float(_vol.tail(5).mean()) > 0 else 0
-        _above_ma20 = _cur > _m20
-        _vol_ok     = _vol_ratio >= 1.2
-
-        # RSI 복원
-        _d = _cl.diff()
-        _g = _d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-        _l = (-_d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-        _rsi_now  = float(100 - 100 / (1 + _g.iloc[-1] / max(_l.iloc[-1], 1e-9)))
-        _rsi_prev = float(100 - 100 / (1 + _g.iloc[-2] / max(_l.iloc[-2], 1e-9))) if len(_cl) >= 2 else _rsi_now
-        _rsi_cross40 = _rsi_now >= 40 and _rsi_prev < 40
-
-        if _above_ma20 and _vol_ok and (_rsi_cross40 or _rsi_now >= 45):
-            return True, f"재진입 허용 — MA20 돌파 + 거래량 {_vol_ratio*100:.0f}% + RSI {_rsi_now:.1f}"
-        elif _above_ma20 and not _vol_ok:
-            return False, f"MA20 위이나 거래량 부족 ({_vol_ratio*100:.0f}%) — 돌파 확인 대기"
-        elif not _above_ma20:
-            return False, f"MA20({_m20:,.0f}) 미돌파 — 현재가 {_cur:,.0f}"
-        else:
-            return False, f"RSI {_rsi_now:.1f} — 40 상향 돌파 대기"
-    except Exception as _e:
-        return False, f"조건 확인 오류: {_e}"
 
 def run_v891_system_check(ticker="", entry_price=0, current_price=0):
     # 무인수 호출(진입 여부만 체크)은 5분 캐시 재사용
@@ -2355,7 +2292,15 @@ def whipsaw_override(intra_high, intra_low, close, prev_close, atr14_pct=None):
         return False, ""
 
 
-FX_HARD_PANIC = 1550.0   # [V6.1 Phase2] 절대 하드블락 — MA밴드가 아무리 상승해도 이 위는 무조건 danger(적응형 무감각 차단)
+# ══════════════════════════════════════════════════════════════════
+# [V10.3 P6/P7] 매크로 임계값 전역 상수 — FX·수급 판정을 단일 소스로 통일(파편화 제거)
+# ══════════════════════════════════════════════════════════════════
+FX_WARN            = 1450.0   # 경계: 사이드바/배너 경고 시작
+FX_USD_HEDGE       = 1500.0   # 미국주식 환헷지 경고(원화 급등 시 신규진입 자제)
+FX_DANGER          = 1520.0   # 위험: scale-in 차단·브리핑 위험 판정
+FX_HARD_PANIC      = 1550.0   # 절대 하드블락 — MA밴드 상승과 무관하게 무조건 danger(적응형 무감각 차단)
+FX_FALLBACK_ANCHOR = 1510.0   # MA90 표본 부족 시 fx_nonlinear_risk 폴백 앵커
+FOREIGN_SELL_PANIC_KRW = -1_000_000_000_000   # 외국인 -1조 순매도 = 패닉셀(원 단위)
 
 
 def fx_nonlinear_risk(krw, krw_series=None):
@@ -2388,7 +2333,7 @@ def fx_nonlinear_risk(krw, krw_series=None):
             _dyn  = True
         else:
             # [폴백] V6.1 고정 모델 — 표본 부족 시 기존 검증 로직 유지(1,510 하드)
-            _anchor = 1510.0
+            _anchor = FX_FALLBACK_ANCHOR
             base  = _clamp((krw - 1480) / 40.0, 0.0, 1.0)       # 1,480~1,520 선형 warn
             over  = max(0.0, krw - 1500)
             accel = (over / 10.0) ** 1.6                        # 1500:0 · 1510:1.44 · 1520:2.9 · 1550:9.4
@@ -2469,7 +2414,7 @@ def compute_macro_regime_gate(krw=None, oil=None, foreign_net_krw=None, krw_seri
 
     flow_state = "unknown"
     if _num(foreign_net_krw):
-        if foreign_net_krw <= -1_000_000_000_000:      # -1조 이하 = 패닉셀
+        if foreign_net_krw <= FOREIGN_SELL_PANIC_KRW:      # -1조 이하 = 패닉셀
             risk += 2; flow_state = "danger"; reasons.append("외국인 -1조↑ 순매도 (패닉셀)")
         elif foreign_net_krw < 0:
             risk += 1; flow_state = "warn"; reasons.append("외국인 순매도 진행")
@@ -2505,7 +2450,7 @@ def macro_allows_scale_in(krw=None, foreign_net_krw=None):
     데이터 결측 시 보수적으로 False(엣지케이스: 좋은 환율이어도 수급 미확인이면 보류)."""
     def _num(x):
         return isinstance(x, (int, float)) and (x == x)
-    krw_ok  = _num(krw) and 0 < krw <= 1520
+    krw_ok  = _num(krw) and 0 < krw <= FX_DANGER
     flow_ok = _num(foreign_net_krw) and foreign_net_krw > 0
     return bool(krw_ok and flow_ok), {"krw_ok": krw_ok, "flow_ok": flow_ok}
 
@@ -3327,7 +3272,7 @@ def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
         if krw <= 1480:
             l1 = f"1. 환율이 {krw:,.0f}원으로 안정권에 머물며 리스크 오프 압력이 낮습니다."
             s1 = 1
-        elif krw <= 1520:
+        elif krw <= FX_DANGER:
             l1 = f"1. 환율이 {krw:,.0f}원으로 1,520원 아래에서 진정되며 리스크 오프 레짐이 완화 중입니다."
             s1 = 1
         else:
@@ -3342,7 +3287,7 @@ def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
         if foreign_net_krw > 0:
             l2 = "2. 외국인 수급이 순매수로 전환되어 매크로 레짐 게이트가 개방되었습니다."
             s2 = 1
-        elif foreign_net_krw <= -1_000_000_000_000:
+        elif foreign_net_krw <= FOREIGN_SELL_PANIC_KRW:
             l2 = "2. 외국인이 1조원 이상 순매도하며 레짐 게이트가 굳게 닫혀 있습니다."
             s2 = 0
         else:
@@ -4108,7 +4053,7 @@ with st.sidebar:
             st.error(f"🚨 매크로 블랙아웃: {_al[0] if _al else '이벤트 임박'}")
         # 핵심 수치 — 좁은 사이드바에서 2컬럼 대신 수직 배열(위아래로 넓게)
         st.metric("💱 원/달러 환율", f"{_sb_krw:,.0f}원" if isinstance(_sb_krw,(int,float)) else "—",
-                  delta=("⚠️ 1,450 경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=1450 else "안정"),
+                  delta=("⚠️ 1,450 경계" if isinstance(_sb_krw,(int,float)) and _sb_krw>=FX_WARN else "안정"),
                   delta_color="inverse")
         # (🌍 외국인 수급 지표 제거 — 스크래핑/KRX 차단으로 폐기. 게이트는 None 방어)
         # WTI 유가 · 반도체 수출 YoY — 메인 매크로 카드행에서 사이드바로 이관(2열 압축)
@@ -9205,7 +9150,12 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
         _cc     = '#ff4d6d' if row['등락(%)'] > 0 else '#4da6ff'
         _ac     = '#4dff91' if row.get('ADX', 0) >= 25 else '#ff4d6d'
         _tag    = ' <span style="background:#ffd166;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🏆 1위</span>' if _is_top else ''
-        _price_str = f"{row['현재가']:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{row['현재가']:,.0f}{currency_symbol}"
+        # [V10.3 P3] 무음 0값 방지 — 오류행/가격 0은 '0원'이 아니라 N/A로 표기
+        _cur_val = row.get('현재가', 0)
+        if _is_err or not (isinstance(_cur_val, (int, float)) and _cur_val > 0):
+            _price_str = "N/A ⚠️"
+        else:
+            _price_str = f"{_cur_val:,.2f}{currency_symbol}" if currency_symbol == '$' else f"{_cur_val:,.0f}{currency_symbol}"
 
         # ── 검증 배지 (내부 DB 우선: check_ticker_integrity 결과) ──
         _validated = row.get('_validated', True)
@@ -12469,9 +12419,9 @@ with tab_e:
         # ── 환율 경고 배너 (D4: 60초 캐시로 리런마다 yfinance 호출 병목 제거) ──
         _krw = _fetch_current_fx_rate()
         if isinstance(_krw, (int, float)):
-            if _krw >= 1500:
+            if _krw >= FX_USD_HEDGE:
                 st.error(f"🚨 환차손 헷지 경고! 원/달러 환율 {_krw:,.1f}원 — 1,500원 돌파! 미국 주식 신규 진입 자제 및 환헷지 검토 필요")
-            elif _krw >= 1450:
+            elif _krw >= FX_WARN:
                 st.warning(f"⚠️ 환율 주의 — 원/달러 {_krw:,.1f}원 (1,500원 경계 접근 중)")
 
         @st.cache_data(ttl=60, show_spinner=False)
@@ -13377,19 +13327,26 @@ with tab_e:
                 _monthly_est = _annual_div / 12 if '월' in _info['freq'] else _annual_div / 4
             except Exception:
                 _dprice = 0; _dchg = 0; _monthly_est = 0
+            # [V10.3 P3] 무음 0값 방지 — 조회 실패(가격 0/무효)를 $0.00·▼0.00%로 위장하지 않고 N/A 표기
+            _dvalid = isinstance(_dprice, (int, float)) and _dprice > 0
             _dc = _info['color']
-            _chg_c = ("#166534" if _lm_h else "#39ff14") if _dchg >= 0 else ("#991B1B" if _lm_h else "#ff003c")
+            _chg_c = ("#64748b" if not _dvalid
+                      else ("#166534" if _lm_h else "#39ff14") if _dchg >= 0
+                      else ("#991B1B" if _lm_h else "#ff003c"))
+            _price_html   = f"${_dprice:.2f}" if _dvalid else "N/A"
+            _chg_html     = (f"{'▲' if _dchg >= 0 else '▼'}{abs(_dchg):.2f}%" if _dvalid else "⚠️ 확인 필요")
+            _monthly_html = f"月 ${_monthly_est:.2f}/주" if _dvalid else "月 —"
             _div_cols[_di].markdown(
                 f"<div style='background:#0d1117;border:2px solid {_dc}30;border-radius:12px;padding:12px 14px;text-align:center'>"
                 f"<div style='font-size:14px;font-weight:800;color:{_dc}'>{_sym}</div>"
                 f"<div style='font-size:9px;color:#64748b;margin-bottom:8px'>{_info['name'][:12]}</div>"
-                f"<div style='font-size:16px;font-weight:700;color:#f0f4ff'>${_dprice:.2f}</div>"
-                f"<div style='font-size:11px;color:{_chg_c};margin:2px 0'>{'▲' if _dchg>=0 else '▼'}{abs(_dchg):.2f}%</div>"
+                f"<div style='font-size:16px;font-weight:700;color:#f0f4ff'>{_price_html}</div>"
+                f"<div style='font-size:11px;color:{_chg_c};margin:2px 0'>{_chg_html}</div>"
                 f"<div style='border-top:1px solid #1e293b;margin-top:8px;padding-top:8px'>"
                 f"<div style='font-size:9px;color:#64748b'>예상 배당수익률</div>"
                 f"<div style='font-size:13px;font-weight:800;color:#fbbf24'>{_info['yield']:.1f}%</div>"
                 f"<div style='font-size:9px;color:#64748b;margin-top:2px'>{_info['freq']}</div>"
-                f"<div style='font-size:10px;color:#39ff14;margin-top:4px'>月 ${_monthly_est:.2f}/주</div>"
+                f"<div style='font-size:10px;color:#39ff14;margin-top:4px'>{_monthly_html}</div>"
                 f"</div></div>",
                 unsafe_allow_html=True
             )
