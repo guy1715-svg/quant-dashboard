@@ -188,9 +188,14 @@ def _get_firebase_app():
     """Firebase Admin SDK 초기화 — 앱 전체 1회"""
     try:
         if not firebase_admin._apps:
-            _fb_cfg = dict(st.secrets["firebase"])
-            _fb_cred = fb_credentials.Certificate(_fb_cfg)
-            _db_url  = st.secrets["firebase_config"]["database_url"]
+            # [V10.2 P2] 하드 인덱싱 → .get() + 누락 시 graceful degradation(크래시 대신 세션 폴백)
+            _fb_cfg  = st.secrets.get("firebase")
+            _fb_conf = st.secrets.get("firebase_config")
+            if not _fb_cfg or not _fb_conf or not (_fb_conf.get("database_url") if hasattr(_fb_conf, "get") else None):
+                st.warning("⚠️ Firebase 설정 키가 누락되었습니다 — 저장은 세션에 임시 보관됩니다.")
+                return None
+            _fb_cred = fb_credentials.Certificate(dict(_fb_cfg))
+            _db_url  = _fb_conf["database_url"]
             firebase_admin.initialize_app(_fb_cred, {"databaseURL": _db_url})
         return firebase_admin.get_app()
     except Exception as _e:
@@ -567,7 +572,11 @@ def kis_get_balance():
         if not _token: return None
         _key    = _kis_key()
         _secret = _kis_secret()
-        _acc_no = st.secrets["KIS_ACCOUNT_NO"]
+        # [V10.2 P2] 하드 인덱싱 → .get() + 누락 시 graceful degradation(실계좌 잔고만 건너뜀)
+        _acc_no = st.secrets.get("KIS_ACCOUNT_NO")
+        if not _acc_no:
+            st.warning("⚠️ KIS 계좌번호(KIS_ACCOUNT_NO) 설정 키가 누락되었습니다 — 실계좌 잔고 조회를 건너뜁니다.")
+            return None
         _acc_pd = st.secrets.get("KIS_ACCOUNT_PD", "01")
         _url    = _KIS_URL_BALANCE
         _res    = _requests.get(_url, headers={
@@ -1223,13 +1232,23 @@ _GS_SCOPES = [
 
 @st.cache_resource(show_spinner=False)
 def _get_gspread_workbook():
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES
-    )
-    return gspread.authorize(creds).open_by_key(st.secrets["SHEET_ID"])
+    # [V10.2 P2] 하드 인덱싱 → .get() + try/except. 키 누락/오류 시 크래시 대신 None 반환.
+    #   (Sheets는 Firebase의 폴백 계층 — 누락 시 조용히 None 격하, 관리탭 진단 패널에 상태 표시)
+    try:
+        _gcp      = st.secrets.get("gcp_service_account")
+        _sheet_id = st.secrets.get("SHEET_ID")
+        if not _gcp or not _sheet_id:
+            return None
+        creds = Credentials.from_service_account_info(dict(_gcp), scopes=_GS_SCOPES)
+        return gspread.authorize(creds).open_by_key(_sheet_id)
+    except Exception as _e:
+        import logging as _logging
+        _logging.error("Google Sheets 초기화 오류: %s", type(_e).__name__)
+        return None
 
 def get_gsheet():
-    return _get_gspread_workbook().sheet1
+    _wb = _get_gspread_workbook()
+    return _wb.sheet1 if _wb is not None else None
 
 # ══════════════════════════════════════════
 # 페이퍼 트레이딩 백엔드 (Firebase 기반)
@@ -11615,7 +11634,8 @@ with tab_e:
         # Sheets 상태
         _sh_ok = False; _sh_msg = ""
         try:
-            _ws = get_gsheet(); _sh_ok = True; _sh_msg = st.secrets.get("SHEET_ID","")[:16] + "…"
+            _ws = get_gsheet(); _sh_ok = _ws is not None
+            _sh_msg = (st.secrets.get("SHEET_ID","")[:16] + "…") if _sh_ok else "SHEET_ID/gcp 키 누락"
         except Exception as _e: _sh_msg = str(_e)[:40]
         _conn_c1.markdown(
             f"<div style='background:#0d1117;border:2px solid {'#39ff14' if _sh_ok else '#ff003c'};"
@@ -12676,19 +12696,19 @@ with tab_e:
             rs    = gain / loss.replace(0, 1e-9)
             return 100 - 100 / (1 + rs)
 
-        # 하드코딩된 이벤트 마커 (FOMC·금리·매크로 이벤트)
-        _EVENT_DATES = [
-            ("2024-11-07", "FOMC"),
-            ("2024-12-19", "FOMC"),
-            ("2025-01-29", "FOMC"),
-            ("2025-03-19", "FOMC"),
-            ("2025-05-07", "FOMC"),
-            ("2025-06-18", "FOMC"),
-            ("2025-07-30", "FOMC"),
-            ("2025-09-17", "FOMC"),
-            ("2025-10-29", "FOMC"),
-            ("2025-12-10", "FOMC"),
-        ]
+        # [V10.2 P1] 이벤트 마커 — 홈 탭 macro_events(2026 최신)와 일원화. 미로드 시 2026 하반기 폴백.
+        #   → 하드코딩 2024~2025 날짜가 현재(2026) 차트에서 소멸되던 버그 수정.
+        _mev = st.session_state.get('macro_events')
+        if isinstance(_mev, list) and _mev:
+            _EVENT_DATES = [(str(_e.get('date', '')), str(_e.get('name', '이벤트')))
+                            for _e in _mev if isinstance(_e, dict) and _e.get('date')]
+        else:
+            _EVENT_DATES = [
+                ("2026-07-15", "CPI"),   ("2026-07-17", "금통위"), ("2026-07-30", "FOMC"),
+                ("2026-08-07", "NFP"),   ("2026-08-12", "CPI"),   ("2026-08-28", "금통위"),
+                ("2026-09-11", "CPI"),   ("2026-09-17", "FOMC"),  ("2026-10-15", "CPI"),
+                ("2026-10-29", "FOMC"),  ("2026-11-13", "CPI"),   ("2026-12-10", "FOMC"),
+            ]
 
         with st.spinner("차트 데이터 로딩 중..."):
             _cdf = _fetch_chart_df(_sel_sym)
