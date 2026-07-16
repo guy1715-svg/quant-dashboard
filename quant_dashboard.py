@@ -797,13 +797,12 @@ def kis_available():
     """KIS API 사용 가능 여부 — 시세/수급 조회는 App Key+Secret만으로 충분.
     (계좌번호 KIS_ACCOUNT_NO는 주문/잔고 전용 — 여기서 요구하면 시세 조회까지
     '키 미설정'으로 오판되는 버그가 있었음 → 2키만 검사하도록 완화)"""
-    # 1) 사이드바 입력 키
-    if st.session_state.get('_kis_app_key_input') and st.session_state.get('_kis_app_secret_input'):
-        return True
-    # 2) secrets (App Key + Secret 2개만 필수)
+    # 실제 토큰 발급과 '동일한' 감지기(_kis_key/_kis_secret: 사이드바→별칭·섹션→환경변수)를 사용.
+    #   기존엔 exact "KIS_APP_KEY" in st.secrets만 검사 → 별칭/섹션에 키가 있으면 지수·수급은
+    #   되는데 이 판정만 False로 오판하던 버그. 토큰 경로와 일원화해 근본 수정.
     try:
-        return ("KIS_APP_KEY" in st.secrets) and ("KIS_APP_SECRET" in st.secrets)
-    except:
+        return bool(_kis_key() and _kis_secret())
+    except Exception:
         return False
 
 def kis_debug_info():
