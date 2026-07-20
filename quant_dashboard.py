@@ -7224,10 +7224,12 @@ def render_night_strike_mode():
             return
         _r = _fetch_night_radar()
         _nt = _get_night_target()   # [V10.4] 스캔 주도주 동적 연동(하드코딩 제거)
+        # [V10.5] 타이틀+설명 단일 행 슬림 배너(리스크온 배너와 통일된 하이엔드 다크 스타일)
         st.markdown(
-            f"<div style='background:#3b0764;border:2px solid #a855f7;border-radius:10px;padding:8px 14px;"
-            f"margin-bottom:8px;text-align:center'><b style='color:#e9d5ff'>🌙 야간 타격 모드 활성</b> "
-            f"<span style='font-size:11px;color:#d8b4fe'>({_ks} · {_k2s} 폭락 → 익일 반등 선취매)</span></div>",
+            f"<div style='background:#3b0764;border:1px solid #a855f7;border-radius:8px;padding:5px 12px;"
+            f"margin-bottom:6px;font-size:12px;white-space:nowrap;overflow-x:auto'>"
+            f"<b style='color:#e9d5ff'>🌙 야간 타격 모드 활성</b> "
+            f"<span style='color:#d8b4fe'>· ({_ks} · {_k2s} 폭락 → 익일 반등 선취매)</span></div>",
             unsafe_allow_html=True)
 
         def _pf(v):   # 안전 포맷: None → '—'
