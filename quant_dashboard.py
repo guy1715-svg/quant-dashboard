@@ -6568,6 +6568,41 @@ def _md_lower_tail(_o, _h, _l, _c, _ratio=0.33):
     return bool(_rng > 0 and (min(_o, _c) - _l) >= _rng * _ratio)
 
 
+def _md_investor(code):
+    """종목별 외국인/기관 순매수 — KIS(장중·주) 우선, 실패 시 pykrx(전일 누적·원) 폴백.
+    KIS 투자자 API(FHKST01010900)가 장마감/미제공/throttle로 빈 값일 때도 수급을 채움.
+    반환: {'외인': int, '기관': int, 'unit': '주'|'원', 'src': str} 또는 None."""
+    _k = kis_get_investor(code)
+    if _k:
+        return {'외인': int(_k.get('외인순매수', 0)), '기관': int(_k.get('기관순매수', 0)),
+                'unit': '주', 'src': 'KIS'}
+    try:
+        from pykrx import stock as _pk_md
+        import datetime as _dmd
+        _kst = _dmd.datetime.utcnow() + _dmd.timedelta(hours=9)
+        _end = _kst.strftime("%Y%m%d")
+        _start = (_kst - _dmd.timedelta(days=10)).strftime("%Y%m%d")
+        _df = _pk_md.get_market_trading_value_by_investor(_start, _end, code)
+        if _df is None or _df.empty:
+            return None
+        _col = "순매수" if "순매수" in _df.columns else _df.columns[-1]
+
+        def _pick(*_keys):
+            for _kk in _keys:
+                if _kk in _df.index:
+                    _v = float(_df.loc[_kk, _col])
+                    if _v == _v:
+                        return _v
+            return 0.0
+        return {'외인': int(_pick("외국인", "외국인합계")),
+                '기관': int(_pick("기관합계", "기관계", "기관")),
+                'unit': '원', 'src': 'pykrx(전일누적)'}
+    except Exception as _e:
+        import logging as _lg_pk
+        _lg_pk.warning("pykrx 수급 폴백 %s 실패: %s: %s", code, type(_e).__name__, _e)
+        return None
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_premarket_macro() -> dict:
     """[매크로 기상도] 프리마켓 글로벌 지표 — yfinance. session_state 미접근(캐시 안전).
@@ -6674,7 +6709,7 @@ def render_manju_dolpanti_briefing():
             _raw = {}
             for _c, _n in _MD_TARGETS:
                 try:
-                    _raw[_c] = {'inv': kis_get_investor(_c), 'pr': kis_get_price(_c)}
+                    _raw[_c] = {'inv': _md_investor(_c), 'pr': kis_get_price(_c)}
                 except Exception as _e:
                     import logging as _lg_md
                     _lg_md.warning("만쥬/돌팬티 %s 조회 실패: %s: %s", _c, type(_e).__name__, _e)
@@ -6693,10 +6728,10 @@ def render_manju_dolpanti_briefing():
             if _terr:
                 _diag += f" · 토큰오류: {_terr}"
             if _pr_ok > 0:
-                # 시세는 되는데 투자자(수급)만 실패 → 계정 미제공 or 엔드포인트 throttle
-                st.warning("⚠️ KIS **투자자(수급) 데이터**만 수신 실패 — 시세는 정상입니다. "
-                           f"({_diag})\n\n투자자별 매매동향 API(tr_id FHKST01010900) 미제공 계정이거나 "
-                           "일시적 호출제한일 수 있습니다. 장중·평일에 다시 시도하세요.")
+                # 시세는 되는데 투자자(수급)만 실패 → KIS·pykrx 폴백 모두 빈 값
+                st.warning("⚠️ **투자자(수급) 데이터** 수신 실패 — 시세는 정상입니다. "
+                           f"({_diag})\n\nKIS 투자자 API(FHKST01010900)와 pykrx 폴백 모두 빈 값입니다. "
+                           "장 마감 직후 집계 지연이거나 일시적 호출제한일 수 있으니 장중·평일에 다시 시도하세요.")
             else:
                 st.warning("⚠️ KIS 데이터 수신 실패 — 장중(09:00~15:20)·평일에 다시 확인하세요. "
                            f"({_diag})\n\n주말·장마감·호출제한 시 빈 값이 정상입니다.")
@@ -6723,7 +6758,8 @@ def render_manju_dolpanti_briefing():
             _d = _raw.get(_c, {}); _inv = _d.get('inv'); _pr = _d.get('pr')
             if not _inv or not _pr:
                 continue
-            _flow = int(_inv.get('외인순매수', 0)) + int(_inv.get('기관순매수', 0))
+            _flow = int(_inv.get('외인', 0)) + int(_inv.get('기관', 0))
+            _unit = _inv.get('unit', '주')
             _have_am = _c in _am_store
             if _is_am:
                 _am_store[_c] = _flow; _amflow = _flow; _turn = False; _have_am = True
@@ -6736,11 +6772,12 @@ def render_manju_dolpanti_briefing():
             _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환(진입)</span>"
                     if (_turn and not _exit) else "")
             _am_txt = f"오전 {_amflow:+,}" if _have_am else "오전 미기록"
+            _src_tag = "" if _inv.get('src') == 'KIS' else " <span style='color:#64748b;font-size:10px'>(전일)</span>"
             st.markdown(
                 f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
                 f"font-size:12px;display:flex;justify-content:space-between'>"
                 f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> {_tag}</span>"
-                f"<span style='color:#94a3b8'>{_am_txt} → 현재 <b style='color:{_fc}'>{_flow:+,}</b>주 "
+                f"<span style='color:#94a3b8'>{_am_txt} → 현재 <b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag} "
                 f"<span style='color:#64748b'>({_chg:+.2f}%)</span></span></div>",
                 unsafe_allow_html=True)
             _manju_hit = _manju_hit or (_turn and not _exit)
@@ -6773,7 +6810,7 @@ def render_manju_dolpanti_briefing():
                 _lg_md2.warning("돌팬티 %s 지표 실패: %s: %s", _c, type(_e).__name__, _e)
                 continue
             _c1 = _close > _ma20 > 0
-            _org = int(_inv.get('기관순매수', 0)); _c2 = _org > 0
+            _org = int(_inv.get('기관', 0)); _c2 = _org > 0
             _c3 = _md_lower_tail(_pr.get('시가'), _pr.get('고가'), _pr.get('저가'), _pr.get('현재가'))
             if _c1 and _c2 and _c3:
                 _targets.append((_n, _c, _pr.get('현재가', 0), _ma20, _org))
