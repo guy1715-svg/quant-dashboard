@@ -6568,14 +6568,46 @@ def _md_lower_tail(_o, _h, _l, _c, _ratio=0.33):
     return bool(_rng > 0 and (min(_o, _c) - _l) >= _rng * _ratio)
 
 
+def _md_investor_naver(code):
+    """[폴백2] 네이버 종목별 외국인/기관 순매매(전일·주) — item/frgn.naver 표 첫 행.
+    KRX/pykrx가 클라우드에서 차단돼도 네이버는 대개 열림. 반환 dict 또는 None."""
+    import io as _io_nv
+    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"),
+            "Referer": "https://finance.naver.com/"}
+    try:
+        _r = _requests.get(f"https://finance.naver.com/item/frgn.naver?code={code}",
+                           headers=_hdr, timeout=6)
+        _r.encoding = "euc-kr"
+        _tables = pd.read_html(_io_nv.StringIO(_r.text), thousands=",")
+        for _t in _tables:
+            _lvl = [str(_c) for _c in _t.columns.get_level_values(-1)]
+            if any("기관" in _c for _c in _lvl) and any("외국인" in _c for _c in _lvl):
+                _t.columns = [str(_c[-1]) if isinstance(_c, tuple) else str(_c) for _c in _t.columns]
+                _first = _t.dropna(subset=[_t.columns[0]]).iloc[0]
+                _org = pd.to_numeric(_first.get("기관"), errors="coerce")
+                _frn = pd.to_numeric(_first.get("외국인"), errors="coerce")
+                if (_org == _org) or (_frn == _frn):   # 최소 하나 유효(NaN 아님)
+                    return {'외인': int(_frn if _frn == _frn else 0),
+                            '기관': int(_org if _org == _org else 0),
+                            'unit': '주', 'src': 'naver(전일)'}
+    except Exception as _e:
+        import logging as _lg_nv
+        _lg_nv.warning("naver 수급 폴백 %s 실패: %s: %s", code, type(_e).__name__, _e)
+    return None
+
+
 def _md_investor(code):
-    """종목별 외국인/기관 순매수 — KIS(장중·주) 우선, 실패 시 pykrx(전일 누적·원) 폴백.
-    KIS 투자자 API(FHKST01010900)가 장마감/미제공/throttle로 빈 값일 때도 수급을 채움.
+    """종목별 외국인/기관 순매수 — KIS(장중·주) → 네이버(전일·주) → pykrx(전일·원) 순 폴백.
+    KIS 투자자 API(FHKST01010900) 빈 값·pykrx 클라우드 차단에도 수급을 최대한 채움.
     반환: {'외인': int, '기관': int, 'unit': '주'|'원', 'src': str} 또는 None."""
     _k = kis_get_investor(code)
     if _k:
         return {'외인': int(_k.get('외인순매수', 0)), '기관': int(_k.get('기관순매수', 0)),
                 'unit': '주', 'src': 'KIS'}
+    _nv = _md_investor_naver(code)   # 폴백2: 네이버(클라우드 친화)
+    if _nv:
+        return _nv
     try:
         from pykrx import stock as _pk_md
         import datetime as _dmd
@@ -6730,8 +6762,8 @@ def render_manju_dolpanti_briefing():
             if _pr_ok > 0:
                 # 시세는 되는데 투자자(수급)만 실패 → KIS·pykrx 폴백 모두 빈 값
                 st.warning("⚠️ **투자자(수급) 데이터** 수신 실패 — 시세는 정상입니다. "
-                           f"({_diag})\n\nKIS 투자자 API(FHKST01010900)와 pykrx 폴백 모두 빈 값입니다. "
-                           "장 마감 직후 집계 지연이거나 일시적 호출제한일 수 있으니 장중·평일에 다시 시도하세요.")
+                           f"({_diag})\n\nKIS·네이버·pykrx 3중 폴백 모두 빈 값입니다. "
+                           "휴장/장 마감 직후 집계 지연일 수 있으니 **평일 장중**에 다시 시도하세요.")
             else:
                 st.warning("⚠️ KIS 데이터 수신 실패 — 장중(09:00~15:20)·평일에 다시 확인하세요. "
                            f"({_diag})\n\n주말·장마감·호출제한 시 빈 값이 정상입니다.")
