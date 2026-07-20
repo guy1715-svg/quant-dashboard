@@ -726,6 +726,44 @@ def kis_get_investor(ticker):
     return None
 
 
+def _md_investor_naver(code):
+    """[수급 폴백] 네이버 종목별 외국인/기관 순매매(전일·주) — item/frgn.naver 표 첫 행.
+    KRX/pykrx가 클라우드에서 차단돼도 네이버는 대개 열림. 순수 네트워크(캐시 함수 내 안전).
+    반환 {'외인','기관','unit','src'} 또는 None."""
+    import io as _io_nv
+    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"),
+            "Referer": "https://finance.naver.com/"}
+    try:
+        _r = _requests.get(f"https://finance.naver.com/item/frgn.naver?code={code}",
+                           headers=_hdr, timeout=6)
+        _r.encoding = "euc-kr"
+        _tables = pd.read_html(_io_nv.StringIO(_r.text), thousands=",")
+        for _t in _tables:
+            # 2단 헤더(기관/외국인 상위 · 순매매량/보유주수 하위)를 문자열로 합쳐 평탄화
+            _joined = [" ".join(str(_x) for _x in _c) if isinstance(_c, tuple) else str(_c)
+                       for _c in _t.columns]
+            _org_col = next((_j for _j in _joined if "기관" in _j and "순매매" in _j), None)
+            _frn_col = next((_j for _j in _joined if "외국인" in _j and "순매매" in _j), None)
+            if not (_org_col and _frn_col):
+                continue
+            _t2 = _t.copy(); _t2.columns = _joined
+            _t2 = _t2.dropna(subset=[_joined[0]])
+            if _t2.empty:
+                continue
+            _first = _t2.iloc[0]
+            _org = pd.to_numeric(_first[_org_col], errors="coerce")
+            _frn = pd.to_numeric(_first[_frn_col], errors="coerce")
+            if (_org == _org) or (_frn == _frn):
+                return {'외인': int(_frn) if _frn == _frn else 0,
+                        '기관': int(_org) if _org == _org else 0,
+                        'unit': '주', 'src': 'naver(전일)'}
+    except Exception as _e:
+        import logging as _lg_nv
+        _lg_nv.warning("naver 수급 폴백 %s 실패: %s: %s", code, type(_e).__name__, _e)
+    return None
+
+
 # ── 🛰️ 수급 펌프 추적기 — 반도체 대장주 외인·기관 매집 감시 ────────────────────
 _TOP2_SUPPLY_TARGETS = [("005930", "삼성전자"), ("000660", "SK하이닉스")]
 
@@ -758,6 +796,13 @@ def fetch_top2_supply(token):
                 _rec['기관순매수'] = int(str(_l.get("orgn_ntby_qty", 0)).replace(",", "") or 0)
         except Exception as _e:
             _lg.warning("fetch_top2_supply[%s] 투자자 조회 실패: %s: %s", _tk, type(_e).__name__, _e)
+        # KIS 투자자 API가 빈 값(장마감/미제공)이면 네이버 전일 수급으로 폴백(순수 네트워크=캐시 안전)
+        if not _rec['외인순매수'] and not _rec['기관순매수']:
+            _nv = _md_investor_naver(_tk)
+            if _nv:
+                _rec['외인순매수'] = _nv['외인']
+                _rec['기관순매수'] = _nv['기관']
+                _rec['출처'] = _nv['src']
         # (2) 현재가/등락률 — 수급-가격 괴리 판정용
         try:
             _rp = _requests.get(
@@ -794,16 +839,19 @@ def render_top2_supply_widget(supply_data):
         _frn = _r['외인순매수'] or 0
         _org = _r['기관순매수'] or 0
         _px  = _r['현재가'] or 0
+        _stale = '전일' in str(_r.get('출처', ''))   # 네이버 전일 폴백 여부
         _cc  = '#ef4444' if _chg < 0 else '#16a34a'
+        _st_tag = " <span style='color:#64748b;font-size:10px'>(전일수급)</span>" if _stale else ""
         st.markdown(
             f"<div style='font-size:12px;font-weight:800;color:#e2e8f0;margin-top:6px'>"
             f"{_nm} <span style='color:{_cc}'>{_chg:+.2f}%</span> "
-            f"<span style='color:#64748b'>· {_px:,}원</span></div>", unsafe_allow_html=True)
+            f"<span style='color:#64748b'>· {_px:,}원</span>{_st_tag}</div>", unsafe_allow_html=True)
         _c1, _c2 = st.columns(2)
         _c1.metric("외인 누적", f"{_frn:+,}주")
         _c2.metric("기관 누적", f"{_org:+,}주")
-        # 수급 다이버전스: 가격 하락 중인데 외인/기관 순매수 양(+)전환 → 매집 기만전술
-        if _chg <= -3.0 and (_frn > 0 or _org > 0):
+        # 수급 다이버전스: 가격 하락 중 순매수 양(+)전환 → 매집. 단, '전일수급'은 실시간 신호가
+        # 아니므로 강한 '기만전술' 경보를 띄우지 않음(오탐 방지) — 관찰 캡션까지만.
+        if _chg <= -3.0 and (_frn > 0 or _org > 0) and not _stale:
             _who = " · ".join([w for w, v in [("외인", _frn), ("기관", _org)] if v > 0])
             _alerts.append((_nm, _who, _chg, True))
         elif _chg < 0 and (_frn > 0 or _org > 0):
@@ -6615,43 +6663,6 @@ def _md_lower_tail(_o, _h, _l, _c, _ratio=0.33):
         return False
     _rng = _h - _l
     return bool(_rng > 0 and (min(_o, _c) - _l) >= _rng * _ratio)
-
-
-def _md_investor_naver(code):
-    """[폴백2] 네이버 종목별 외국인/기관 순매매(전일·주) — item/frgn.naver 표 첫 행.
-    KRX/pykrx가 클라우드에서 차단돼도 네이버는 대개 열림. 반환 dict 또는 None."""
-    import io as _io_nv
-    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"),
-            "Referer": "https://finance.naver.com/"}
-    try:
-        _r = _requests.get(f"https://finance.naver.com/item/frgn.naver?code={code}",
-                           headers=_hdr, timeout=6)
-        _r.encoding = "euc-kr"
-        _tables = pd.read_html(_io_nv.StringIO(_r.text), thousands=",")
-        for _t in _tables:
-            # 2단 헤더(기관/외국인 상위 · 순매매량/보유주수 하위)를 문자열로 합쳐 평탄화
-            _joined = [" ".join(str(_x) for _x in _c) if isinstance(_c, tuple) else str(_c)
-                       for _c in _t.columns]
-            _org_col = next((_j for _j in _joined if "기관" in _j and "순매매" in _j), None)
-            _frn_col = next((_j for _j in _joined if "외국인" in _j and "순매매" in _j), None)
-            if not (_org_col and _frn_col):
-                continue
-            _t2 = _t.copy(); _t2.columns = _joined
-            _t2 = _t2.dropna(subset=[_joined[0]])          # 첫 컬럼(날짜) 결측행 제거
-            if _t2.empty:
-                continue
-            _first = _t2.iloc[0]
-            _org = pd.to_numeric(_first[_org_col], errors="coerce")
-            _frn = pd.to_numeric(_first[_frn_col], errors="coerce")
-            if (_org == _org) or (_frn == _frn):           # 최소 하나 유효(NaN 아님)
-                return {'외인': int(_frn) if _frn == _frn else 0,
-                        '기관': int(_org) if _org == _org else 0,
-                        'unit': '주', 'src': 'naver(전일)'}
-    except Exception as _e:
-        import logging as _lg_nv
-        _lg_nv.warning("naver 수급 폴백 %s 실패: %s: %s", code, type(_e).__name__, _e)
-    return None
 
 
 def _md_investor(code):
