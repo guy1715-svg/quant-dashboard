@@ -6793,8 +6793,9 @@ def render_manju_dolpanti_briefing():
     import datetime as _dtmd
     _now = _dtmd.datetime.utcnow() + _dtmd.timedelta(hours=9)   # KST
     _today = _now.strftime("%Y-%m-%d"); _t = _now.time()
-    _AM = _dtmd.time(11, 30); _EXIT = _dtmd.time(15, 15)
+    _MOPEN = _dtmd.time(9, 0); _AM = _dtmd.time(11, 30); _EXIT = _dtmd.time(15, 15)
     _CLOSE = _dtmd.time(15, 20); _DP = _dtmd.time(15, 0)
+    _is_weekday = _now.weekday() < 5   # 월~금
 
     with st.expander("⚔️ 만쥬 / 돌팬티 모닝 브리핑 (실시간 수급)", expanded=False):
         if not kis_available():
@@ -6843,7 +6844,9 @@ def render_manju_dolpanti_briefing():
             st.caption("💡 EGW00133은 '토큰 1분당 1회' 제한입니다 — 약 1분 뒤 자동으로 풀립니다.")
             return
 
-        _is_am = _t < _AM
+        # 오전 스냅샷 기록 조건 = 실제 오전 장중(평일 09:00~11:30). 이 창에서만 '오늘 오전' 수급이
+        # 의미 있으므로, 이 시간대에 화면을 열면 소스(KIS/네이버) 무관하게 스냅샷을 남긴다.
+        _is_am = _is_weekday and (_MOPEN <= _t < _AM)
         _exit  = _EXIT <= _t < _CLOSE
         # ── 오전 스냅샷 영속화 — session_state만 쓰면 앱 재부팅(파일 교체 등)마다 소실되어
         #    '오전에 열었는데 미기록' 문제 발생 → Firebase(/manju_am_snapshot)+로컬파일 복원.
@@ -6885,10 +6888,9 @@ def render_manju_dolpanti_briefing():
             _unit = _inv.get('unit', '주')
             _have_am = _c in _am_store
             if _is_am:
-                # 전일 폴백값을 '오전'으로 기록하면 오후 실시간과 비교가 왜곡됨 → KIS 실시간만 기록
-                if _inv.get('src') == 'KIS':
-                    _am_store[_c] = _flow; _am_dirty = True; _have_am = True
-                _amflow = int(_am_store.get(_c, _flow)); _turn = False
+                # 오전 장중 창에서는 소스 무관하게 '오늘 오전' 수급으로 기록(오후 비교 기준선)
+                _am_store[_c] = _flow; _am_dirty = True; _have_am = True
+                _amflow = _flow; _turn = False
             else:
                 _amflow = int(_am_store.get(_c, _flow))
                 _turn = (_have_am and _amflow <= 0 and _flow > 0)   # 오전 스냅샷 있을 때만 판정
@@ -6923,14 +6925,12 @@ def render_manju_dolpanti_briefing():
             except Exception:
                 pass
         if _is_am:
-            _n_rec = len(_am_store)
-            if _n_rec:
-                st.caption(f"🌅 오전 수급 스냅샷 기록 중({_n_rec}종목 저장됨·재부팅 보존) — 11:30 이후 턴어라운드 판정 가동")
-            else:
-                st.caption("🌅 오전 구간 — KIS 실시간 수급 수신 시 스냅샷 기록(전일 폴백값은 기록하지 않음)")
+            st.caption(f"🌅 오전 장중 — {len(_am_store)}종목 스냅샷 저장됨(재부팅에도 보존). 11:30 이후 '오전→오후 전환' 판정 가동")
         elif not _am_store:
-            st.caption("ℹ️ 오늘 오전 KIS 실시간 스냅샷 없음 — 평일 오전 장중(09:00~11:30)에 이 화면을 열어야 "
-                       "'오전→오후 전환' 판정이 가동됩니다. (지금은 현재 수급만 표시)")
+            _why = ("오늘 오전 장중(09:00~11:30)에 이 화면을 아직 안 열었습니다"
+                    if _is_weekday else "오늘은 주말/휴장입니다")
+            st.caption(f"ℹ️ 오전 스냅샷 없음 — {_why}. 평일 오전에 한 번 열면 오후에 '오전→오후 전환'이 표시됩니다. "
+                       "(지금은 현재 수급만 표시)")
         elif not _manju_hit and not _exit:
             st.caption("감시 중 — 오전 순매도→오후 순매수 전환 종목 없음")
 
