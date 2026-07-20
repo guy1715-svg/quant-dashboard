@@ -498,19 +498,32 @@ def _kis_base():
 
 # 토큰 수동 캐시 — st.cache_resource는 실패(None)까지 6시간 캐시하는 버그가 있어
 # 성공만 캐시하고 실패는 즉시 재시도 가능하도록 dict로 직접 관리.
-_KIS_TOKEN_CACHE: dict = {}   # {key_fp: (token, expiry_ts)}
+_KIS_TOKEN_CACHE: dict = {}      # {key_fp: (token, expiry_ts)}
+_KIS_TOKEN_COOLDOWN: dict = {}   # {key_fp: retry_after_ts} — EGW00133(1분1회) 재발급 폭주 차단
 
 def kis_get_token():
-    """KIS API 접근 토큰 — 성공만 6시간 캐시, 실패 사유는 세션에 기록."""
+    """KIS API 접근 토큰 — 성공만 캐시(동적 TTL), 실패는 쿨다운으로 재발급 폭주 차단.
+    ⚠️ KIS 토큰 발급은 '1분당 1회'(EGW00133) 제한. 발급 실패 시 60초 쿨다운을 걸어
+    rerun/다중호출마다 재요청해 계속 막히는 악순환을 방지하고, 만료 캐시 토큰은 유예 재사용."""
     _key    = _kis_key()
     _secret = _kis_secret()
     if not _key or not _secret:
         st.session_state['_kis_token_err'] = "App Key/Secret 미입력"
         return None
     _fp = f"{_key[:8]}|{_kis_mock_mode()}"
+    _now_ts = _time_kis.time()
     _hit = _KIS_TOKEN_CACHE.get(_fp)
-    if _hit and _hit[1] > _time_kis.time():
+    if _hit and _hit[1] > _now_ts:
         return _hit[0]
+    # 쿨다운 중이면 네트워크 재요청 금지(1분1회 제한 보호). 만료 캐시 토큰이 있으면 유예 재사용
+    # (KIS 토큰은 서버측 24h 유효 — 로컬 만료여도 대개 아직 살아있음).
+    _cd = _KIS_TOKEN_COOLDOWN.get(_fp, 0)
+    if _cd > _now_ts:
+        if _hit:
+            return _hit[0]
+        st.session_state['_kis_token_err'] = (
+            f"토큰 재발급 대기(1분 제한) — {int(_cd - _now_ts)}초 후 자동 재시도")
+        return None
     try:
         _res = _requests.post(f"{_kis_base()}/oauth2/tokenP", json={
             "grant_type": "client_credentials",
@@ -521,22 +534,24 @@ def kis_get_token():
         _token = _body.get("access_token")
         if _token:
             # [V10.3 P4] TTL 동적 파싱 — 서버 expires_in(초) 우선, 60초 안전마진 선차감.
-            #   응답 누락/비정상 시에만 6시간(21600) 폴백. 만료 임박 토큰 재사용으로 인한 401 방지.
             try:
                 _ttl = int(float(_body.get("expires_in", 21600)))
             except (TypeError, ValueError):
                 _ttl = 21600
             if _ttl <= 0:
                 _ttl = 21600
-            _ttl = max(60, _ttl - 60)   # 만료 60초 전 선갱신
-            _KIS_TOKEN_CACHE[_fp] = (_token, _time_kis.time() + _ttl)
+            _ttl = max(60, _ttl - 60)
+            _KIS_TOKEN_CACHE[_fp] = (_token, _now_ts + _ttl)
+            _KIS_TOKEN_COOLDOWN.pop(_fp, None)
             st.session_state.pop('_kis_token_err', None)
             return _token
-        # 실패 — KIS 에러 코드/메시지 그대로 보존 (EGW00133=1분1회 제한 등)
+        # 실패 — KIS 에러 코드/메시지 보존 + 쿨다운(EGW00133=1분1회 → 60초)
+        _errc = str(_body.get('error_code', _res.status_code))
+        _KIS_TOKEN_COOLDOWN[_fp] = _now_ts + 60
         st.session_state['_kis_token_err'] = (
-            f"{_body.get('error_code', _res.status_code)}: "
-            f"{_body.get('error_description', str(_body)[:120])}")
+            f"{_errc}: {_body.get('error_description', str(_body)[:120])}")
     except Exception as _e:
+        _KIS_TOKEN_COOLDOWN[_fp] = _now_ts + 30   # 네트워크 오류는 30초 쿨다운
         st.session_state['_kis_token_err'] = f"{type(_e).__name__}: {str(_e)[:100]}"
     return None
 
@@ -6685,11 +6700,12 @@ def render_manju_dolpanti_briefing():
             else:
                 st.warning("⚠️ KIS 데이터 수신 실패 — 장중(09:00~15:20)·평일에 다시 확인하세요. "
                            f"({_diag})\n\n주말·장마감·호출제한 시 빈 값이 정상입니다.")
-            _sync_ok = st.button("🔄 KIS 캐시 비우고 재시도", key="md_retry")
-            if _sync_ok:
+            # ⚠️ 토큰 캐시는 비우지 않음 — 비우면 즉시 재발급 시도로 EGW00133(1분1회) 재유발.
+            #    데이터 분캐시만 비워 다음 rerun에서 (쿨다운 해제 후) 자연 재시도.
+            if st.button("🔄 데이터 캐시만 비우고 재시도", key="md_retry"):
                 st.session_state.pop('_md_raw_cache', None)
-                _KIS_TOKEN_CACHE.clear()
                 st.rerun()
+            st.caption("💡 EGW00133은 '토큰 1분당 1회' 제한입니다 — 약 1분 뒤 자동으로 풀립니다.")
             return
 
         _is_am = _t < _AM
