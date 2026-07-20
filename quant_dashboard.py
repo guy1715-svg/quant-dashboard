@@ -500,6 +500,46 @@ def _kis_base():
 # 성공만 캐시하고 실패는 즉시 재시도 가능하도록 dict로 직접 관리.
 _KIS_TOKEN_CACHE: dict = {}      # {key_fp: (token, expiry_ts)}
 _KIS_TOKEN_COOLDOWN: dict = {}   # {key_fp: retry_after_ts} — EGW00133(1분1회) 재발급 폭주 차단
+_KIS_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kis_token_cache.json")
+
+
+def _kis_token_load_persist(fp):
+    """[영속] Firebase→로컬파일에서 유효 토큰 복원 — 앱 재부팅에도 재사용해 불필요한
+    재발급(EGW00133 1분1회 제한)을 방지. 반환 (token, exp) 또는 None."""
+    _nowp = _time_kis.time()
+    try:
+        _d = _fb_ref("/kis_token").get()          # NullRef.get()→None (토스트 없음)
+        if isinstance(_d, dict) and _d.get('fp') == fp and _d.get('token') and float(_d.get('exp', 0)) > _nowp:
+            return _d['token'], float(_d['exp'])
+    except Exception:
+        pass
+    try:
+        import json as _jkt
+        with open(_KIS_TOKEN_FILE, encoding='utf-8') as _f:
+            _d = _jkt.load(_f)
+        if _d.get('fp') == fp and _d.get('token') and float(_d.get('exp', 0)) > _nowp:
+            return _d['token'], float(_d['exp'])
+    except Exception:
+        pass
+    return None
+
+
+def _kis_token_save_persist(fp, token, exp):
+    """[영속] 발급 성공 토큰을 Firebase(연결 시)+로컬파일에 저장. NullRef 토스트 회피 위해
+    Firebase는 실제 연결 확인 후에만 기록."""
+    _payload = {'fp': fp, 'token': token, 'exp': float(exp)}
+    try:
+        if _get_firebase_app() is not None:
+            _fb_ref("/kis_token").set(_payload)
+    except Exception:
+        pass
+    try:
+        import json as _jkt
+        with open(_KIS_TOKEN_FILE, 'w', encoding='utf-8') as _f:
+            _jkt.dump(_payload, _f)
+    except Exception:
+        pass
+
 
 def kis_get_token():
     """KIS API 접근 토큰 — 성공만 캐시(동적 TTL), 실패는 쿨다운으로 재발급 폭주 차단.
@@ -515,6 +555,14 @@ def kis_get_token():
     _hit = _KIS_TOKEN_CACHE.get(_fp)
     if _hit and _hit[1] > _now_ts:
         return _hit[0]
+    # 영속 저장소(Firebase/파일)에서 유효 토큰 복원 — 재부팅으로 메모리 캐시가 날아가도
+    # 서버측 24h 유효 토큰을 재사용해 EGW00133(재발급 1분1회) 폭주를 원천 방지.
+    _persist = _kis_token_load_persist(_fp)
+    if _persist:
+        _KIS_TOKEN_CACHE[_fp] = _persist
+        _KIS_TOKEN_COOLDOWN.pop(_fp, None)
+        st.session_state.pop('_kis_token_err', None)
+        return _persist[0]
     # 쿨다운 중이면 네트워크 재요청 금지(1분1회 제한 보호). 만료 캐시 토큰이 있으면 유예 재사용
     # (KIS 토큰은 서버측 24h 유효 — 로컬 만료여도 대개 아직 살아있음).
     _cd = _KIS_TOKEN_COOLDOWN.get(_fp, 0)
@@ -543,6 +591,7 @@ def kis_get_token():
             _ttl = max(60, _ttl - 60)
             _KIS_TOKEN_CACHE[_fp] = (_token, _now_ts + _ttl)
             _KIS_TOKEN_COOLDOWN.pop(_fp, None)
+            _kis_token_save_persist(_fp, _token, _now_ts + _ttl)   # 재부팅 재사용용 영속화
             st.session_state.pop('_kis_token_err', None)
             return _token
         # 실패 — KIS 에러 코드/메시지 보존 + 쿨다운(EGW00133=1분1회 → 60초)
