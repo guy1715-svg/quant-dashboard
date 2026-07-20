@@ -6971,24 +6971,37 @@ def render_manju_dolpanti_briefing():
             st.caption("⏳ 15:00 종가베팅 스캐너 대기 중 — 장중 소음 회피(정각 가동)")
             return
         _targets = []
+        _detail = []   # 탈락 근거(투명성): [(종목, c1, c2, c3, org)]
         for _c, _n in _MD_TARGETS:
             _d = _raw.get(_c, {}); _pr = _d.get('pr'); _inv = _d.get('inv')
             if not _pr or not _inv:
-                continue
+                _detail.append((_n, None, None, None, None)); continue
             try:
                 _ind = calc_indicators(fetch_ohlcv(_c, 60))   # fetch_ohlcv는 @st.cache_data(1800s)
                 _ma20 = float(_ind['MA20'].iloc[-1]); _close = float(_ind['종가'].iloc[-1])
             except Exception as _e:
                 import logging as _lg_md2
                 _lg_md2.warning("돌팬티 %s 지표 실패: %s: %s", _c, type(_e).__name__, _e)
-                continue
+                _detail.append((_n, None, None, None, None)); continue
             _c1 = _close > _ma20 > 0
             _org = int(_inv.get('기관', 0)); _c2 = _org > 0
             _c3 = _md_lower_tail(_pr.get('시가'), _pr.get('고가'), _pr.get('저가'), _pr.get('현재가'))
+            _detail.append((_n, _c1, _c2, _c3, _org))
             if _c1 and _c2 and _c3:
                 _targets.append((_n, _c, _pr.get('현재가', 0), _ma20, _org))
         if not _targets:
             st.caption("오늘 3조건(20MA↑·기관 순매수+·아래꼬리) 동시충족 종목 없음 — 관망")
+            # 왜 관망인지 종목별 근거(✅=통과) — '진짜 탈락'인지 데이터오류인지 구분(투명성)
+            def _m(_b):
+                return "✅" if _b else "❌"
+            _rows = ["<div style='font-size:11px;color:#94a3b8;line-height:1.7'><b>탈락 근거</b><br>"]
+            for _dn, _dc1, _dc2, _dc3, _dorg in _detail:
+                if _dc1 is None:
+                    _rows.append(f"· {_dn}: ⚠️ 데이터 조회 실패<br>")
+                else:
+                    _rows.append(f"· {_dn}: 20MA {_m(_dc1)} · 기관순매수 {_m(_dc2)}({_dorg:+,}) · 아래꼬리 {_m(_dc3)}<br>")
+            _rows.append("</div>")
+            st.markdown("".join(_rows), unsafe_allow_html=True)
         else:
             for _n, _c, _px, _ma20, _org in _targets:
                 st.markdown(
