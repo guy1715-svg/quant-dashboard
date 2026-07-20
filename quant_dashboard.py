@@ -7134,7 +7134,25 @@ def render_tactical_mode():
 # ══════════════════════════════════════════════════════════════════
 # 🌙 야간 타격 모드 — 3분할 종가베팅(선취매) 대시보드 (EWY 프록시 + mPOP 딥링크)
 # ══════════════════════════════════════════════════════════════════
-_NIGHT_TARGET = ("000660", "SK하이닉스")
+_NIGHT_TARGET_FALLBACK = ("000660", "SK하이닉스")
+
+
+def _get_night_target():
+    """[V10.4] 야간 타격 타겟 동적 연동 — 스캔된 주도주 1위(활성 랭킹) 우선, 없으면 폴백.
+    반환 (code, name). 하드코딩 제거: 시스템이 스캔한 실시간 타겟과 연동."""
+    try:
+        _key = st.session_state.get('_scanner_ranked_active')
+        _df = st.session_state.get(_key) if _key else None
+        if _df is not None and not _df.empty:
+            _row = _df.iloc[0]
+            _code = str(_row.get('코드') or _row.get('종목코드') or '').strip()
+            _name = str(_row.get('종목명') or _row.get('ETF명') or _row.get('name') or _code).strip()
+            # KR 6자리 종목만 야간 선취매 대상(ETF/미국 제외)
+            if _code.isdigit() and len(_code) == 6 and _name:
+                return _code, _name
+    except Exception:
+        pass
+    return _NIGHT_TARGET_FALLBACK
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -7175,7 +7193,7 @@ def _detect_night_trigger():
         pass
     # 기관 양매도: 야간 타겟 종목 기관 순매도 여부(대표 프록시)
     try:
-        _iv = _md_investor(_NIGHT_TARGET[0])
+        _iv = _md_investor(_get_night_target()[0])
         _info["org_sell"] = (int(_iv.get('기관', 0)) < 0) if _iv else None
     except Exception:
         pass
@@ -7205,6 +7223,7 @@ def render_night_strike_mode():
                 unsafe_allow_html=True)
             return
         _r = _fetch_night_radar()
+        _nt = _get_night_target()   # [V10.4] 스캔 주도주 동적 연동(하드코딩 제거)
         st.markdown(
             f"<div style='background:#3b0764;border:2px solid #a855f7;border-radius:10px;padding:8px 14px;"
             f"margin-bottom:8px;text-align:center'><b style='color:#e9d5ff'>🌙 야간 타격 모드 활성</b> "
@@ -7238,7 +7257,7 @@ def render_night_strike_mode():
                 st.success("🔔 1차 신호 ON — 3불 점등")
             else:
                 st.caption("1차 대기 — 나스닥🟢·유가🔵·피어🟢 정렬 필요")
-            st.link_button("📲 1차 진입(검증 30%) · mPOP", _mpop_link(_NIGHT_TARGET[0]),
+            st.link_button("📲 1차 진입(검증 30%) · mPOP", _mpop_link(_nt[0]),
                            use_container_width=True, disabled=not _sig1)
 
         # ── ② 20:00 수급확정 & 2차 타격 ──
@@ -7257,16 +7276,16 @@ def render_night_strike_mode():
                 st.success("🔔 2차 신호 ON — 18:00 유지+야간 상승+환율 안정")
             else:
                 st.caption("2차 대기 — 1차 유지 + EWY🟢 + 환율 급등아님")
-            st.link_button("📲 2차 진입(본진 50%) · mPOP", _mpop_link(_NIGHT_TARGET[0]),
+            st.link_button("📲 2차 진입(본진 50%) · mPOP", _mpop_link(_nt[0]),
                            use_container_width=True, disabled=not _sig2)
 
         # ── ③ 익일 09:00 정규장 탈출 ──
         with _p3:
-            st.markdown(f"**③ 익일 09:00 탈출 · {_NIGHT_TARGET[1]}**")
+            st.markdown(f"**③ 익일 09:00 탈출 · {_nt[1]}**")
             _px = _sup = _t1 = None
             try:
-                _pr = kis_get_price(_NIGHT_TARGET[0])
-                _ind = calc_indicators(fetch_ohlcv(_NIGHT_TARGET[0], 60))
+                _pr = kis_get_price(_nt[0])
+                _ind = calc_indicators(fetch_ohlcv(_nt[0], 60))
                 if _pr and _pr.get('현재가'):
                     _px = int(_pr['현재가']); _t1 = int(round(_px * 1.035))
                 _sup = int(round(float(_ind['MA20'].iloc[-1])))
