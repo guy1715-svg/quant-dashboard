@@ -6738,7 +6738,6 @@ def render_macro_weather():
     """[🌍 Top-Down 매크로 기상도] 프리마켓 미국발 지표(VIX·환율·나스닥·SOX)를 융합해
     오늘 국장 레짐을 3단계(🟢/🟡/🔴)로 판독 + 권장 실탄 투입 비중 배너 출력.
     만쥬/돌팬티 등 KIS 스캐너와 독립 작동(별도 함수·별도 데이터소스)."""
-    st.markdown("#### 🌍 Top-Down 매크로 기상도")
     _m = _fetch_premarket_macro()
     _vix, _vchg = _m["vix"], _m["vix_chg"]
     _kchg = _m["krw_chg"]
@@ -6746,7 +6745,7 @@ def render_macro_weather():
     _tech = [_x for _x in (_ix, _sox) if _x is not None]
 
     if all(_v is None for _v in (_vix, _kchg, _ix, _sox)):
-        st.info("🌐 매크로 지표 수신 대기 — 잠시 후 다시 확인하세요.")
+        st.caption("🌍 매크로 기상도 — 지표 수신 대기 중")
         return
 
     # ── 레짐 판정 (강한 단일 리스크는 즉시 🔴) ──
@@ -6758,33 +6757,21 @@ def render_macro_weather():
               and (bool(_tech) and min(_tech) >= 0.0))
     _regime = "red" if _red else "green" if _green else "amber"
 
-    # ── 지표 메트릭 행 ──
-    _c1, _c2, _c3, _c4 = st.columns(4)
-    _c1.metric("😨 VIX", f"{_vix:.1f}" if _vix is not None else "—",
-               delta=(f"{_vchg:+.1f}" if _vchg is not None else None), delta_color="inverse")
-    _c2.metric("💱 USD/KRW", f"{_m['krw']:,.0f}" if _m["krw"] is not None else "—",
-               delta=(f"{_kchg:+.2f}%" if _kchg is not None else None), delta_color="inverse")
-    _c3.metric("📈 나스닥", f"{_ix:+.2f}%" if _ix is not None else "—")
-    _c4.metric("🔩 반도체(SOX)", f"{_sox:+.2f}%" if _sox is not None else "—")
+    # ── 지표 인라인(메트릭 행 제거로 세로 압축) ──
+    _pf = lambda v, s="%": f"{v:+.2f}{s}" if isinstance(v, (int, float)) else "—"
+    _vixs = f"VIX {_vix:.1f}{'↑' if (_vchg or 0)>0 else '↓' if (_vchg or 0)<0 else ''}" if _vix is not None else "VIX —"
+    _krws = f"환율 {_m['krw']:,.0f}({_pf(_kchg)})" if _m["krw"] is not None else "환율 —"
+    _detail = f"🌍 {_vixs} · {_krws} · 나스닥 {_pf(_ix)} · SOX {_pf(_sox)}"
 
-    # ── 신호등 배너 + 권장 실탄 비중 ──
-    _bits = []
-    if _vix is not None:
-        _bits.append(f"VIX {_vix:.1f}" + ("↑" if (_vchg or 0) > 0 else "↓" if (_vchg or 0) < 0 else ""))
-    if _kchg is not None:
-        _bits.append(f"환율 {_kchg:+.2f}%")
-    if _ix is not None:
-        _bits.append(f"나스닥 {_ix:+.2f}%")
-    if _sox is not None:
-        _bits.append(f"SOX {_sox:+.2f}%")
-    _detail = " · ".join(_bits)
-
-    if _regime == "green":
-        st.success(f"🟢 **리스크 온 / 정상 타격** — 권장 실탄 **100%** 허용\n\n{_detail}")
-    elif _regime == "amber":
-        st.warning(f"🟡 **경계 / 휩쏘 주의** — 보수적 접근, 권장 실탄 **50% 이하**로 축소\n\n{_detail}")
-    else:
-        st.error(f"🔴 **리스크 오프 / 관망** — 신규 진입 **전면 차단**(100% 현금 또는 인버스 헷지만)\n\n{_detail}")
+    _cfg = {"green": ("#052e16", "#22c55e", "🟢 리스크온 · 실탄 100%"),
+            "amber": ("#422006", "#f59e0b", "🟡 경계 · 실탄 50%↓"),
+            "red":   ("#450a0a", "#ef4444", "🔴 리스크오프 · 신규차단")}
+    _bg, _bd, _lbl = _cfg[_regime]
+    st.markdown(
+        f"<div style='background:{_bg};border:1px solid {_bd};border-radius:8px;padding:5px 12px;"
+        f"margin-bottom:6px;font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
+        f"<b style='color:{_bd}'>{_lbl}</b><span style='color:#94a3b8'>{_detail}</span></div>",
+        unsafe_allow_html=True)
 
 
 def render_manju_dolpanti_briefing():
@@ -7101,10 +7088,10 @@ def render_tactical_mode():
             f"</div>", unsafe_allow_html=True)
     else:
         st.markdown(
-            f"<div style='background:#052e16;border:2px solid #22c55e;border-radius:12px;"
-            f"padding:10px 16px;margin-bottom:10px;text-align:center'>"
-            f"<div style='font-size:15px;font-weight:900;color:#86efac'>🟢 전술 모드: 상승장 개별주 타격</div>"
-            f"<div style='font-size:11px;color:#bbf7d0;margin-top:2px'>{_kchg_s} — 만쥬/돌팬티 개별주 스캐너 가동</div>"
+            f"<div style='background:#052e16;border:1px solid #22c55e;border-radius:8px;"
+            f"padding:5px 12px;margin-bottom:6px;font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
+            f"<b style='color:#86efac'>🟢 전술: 상승장 개별주 타격</b>"
+            f"<span style='color:#bbf7d0'>{_kchg_s} · 만쥬/돌팬티 가동</span>"
             f"</div>", unsafe_allow_html=True)
         return False
 
