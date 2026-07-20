@@ -6934,6 +6934,34 @@ def render_manju_dolpanti_briefing():
         elif not _manju_hit and not _exit:
             st.caption("감시 중 — 오전 순매도→오후 순매수 전환 종목 없음")
 
+        # 📌 수동 기준선 — 원할 때 '현재 수급'을 오전 기준으로 저장(재부팅에도 보존).
+        #    자동 오전기록을 못 잡았거나, 임의 시점부터 변화를 추적하고 싶을 때 사용.
+        if st.button("📌 지금 수급을 '오전 기준선'으로 저장", key="md_set_baseline",
+                     help="현재 외인+기관 순매수를 오전 기준선으로 저장 → 이후 값 변화가 '전환'으로 표시됩니다."):
+            _base = {}
+            for _bc, _bn in _MD_TARGETS:
+                _biv = _raw.get(_bc, {}).get('inv')
+                if _biv:
+                    _base[_bc] = int(_biv.get('외인', 0)) + int(_biv.get('기관', 0))
+            if _base:
+                _am_store.clear(); _am_store.update(_base)
+                _bp = {'date': _today, 'flows': dict(_am_store)}
+                try:
+                    if _get_firebase_app() is not None:
+                        _fb_ref("/manju_am_snapshot").set(_bp)
+                except Exception:
+                    pass
+                try:
+                    import json as _jmb
+                    _spb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manju_am_snapshot.json")
+                    with open(_spb, 'w', encoding='utf-8') as _fb:
+                        _jmb.dump(_bp, _fb, ensure_ascii=False)
+                except Exception:
+                    pass
+                st.session_state.pop('_md_raw_cache', None)
+                st.success(f"✅ {len(_base)}종목 현재 수급을 오전 기준선으로 저장했습니다.")
+                st.rerun()
+
         st.divider()
 
         # ── ② 돌팬티식 — 15:00 종가베팅 3필터 (만쥬와 동일 캐시 재사용, KIS 추가호출 없음) ──
