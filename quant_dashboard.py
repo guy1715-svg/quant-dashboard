@@ -6630,16 +6630,24 @@ def _md_investor_naver(code):
         _r.encoding = "euc-kr"
         _tables = pd.read_html(_io_nv.StringIO(_r.text), thousands=",")
         for _t in _tables:
-            _lvl = [str(_c) for _c in _t.columns.get_level_values(-1)]
-            if any("기관" in _c for _c in _lvl) and any("외국인" in _c for _c in _lvl):
-                _t.columns = [str(_c[-1]) if isinstance(_c, tuple) else str(_c) for _c in _t.columns]
-                _first = _t.dropna(subset=[_t.columns[0]]).iloc[0]
-                _org = pd.to_numeric(_first.get("기관"), errors="coerce")
-                _frn = pd.to_numeric(_first.get("외국인"), errors="coerce")
-                if (_org == _org) or (_frn == _frn):   # 최소 하나 유효(NaN 아님)
-                    return {'외인': int(_frn if _frn == _frn else 0),
-                            '기관': int(_org if _org == _org else 0),
-                            'unit': '주', 'src': 'naver(전일)'}
+            # 2단 헤더(기관/외국인 상위 · 순매매량/보유주수 하위)를 문자열로 합쳐 평탄화
+            _joined = [" ".join(str(_x) for _x in _c) if isinstance(_c, tuple) else str(_c)
+                       for _c in _t.columns]
+            _org_col = next((_j for _j in _joined if "기관" in _j and "순매매" in _j), None)
+            _frn_col = next((_j for _j in _joined if "외국인" in _j and "순매매" in _j), None)
+            if not (_org_col and _frn_col):
+                continue
+            _t2 = _t.copy(); _t2.columns = _joined
+            _t2 = _t2.dropna(subset=[_joined[0]])          # 첫 컬럼(날짜) 결측행 제거
+            if _t2.empty:
+                continue
+            _first = _t2.iloc[0]
+            _org = pd.to_numeric(_first[_org_col], errors="coerce")
+            _frn = pd.to_numeric(_first[_frn_col], errors="coerce")
+            if (_org == _org) or (_frn == _frn):           # 최소 하나 유효(NaN 아님)
+                return {'외인': int(_frn) if _frn == _frn else 0,
+                        '기관': int(_org) if _org == _org else 0,
+                        'unit': '주', 'src': 'naver(전일)'}
     except Exception as _e:
         import logging as _lg_nv
         _lg_nv.warning("naver 수급 폴백 %s 실패: %s: %s", code, type(_e).__name__, _e)
