@@ -7012,10 +7012,315 @@ def render_manju_dolpanti_briefing():
                     f"</div>", unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════
+# 🔴 폭락장 전술 모드 — KODEX 200선물인버스2X(곱버스) 하방 타격 모듈
+# ══════════════════════════════════════════════════════════════════
+_INVERSE_TICKER = "252670"
+_INVERSE_NAME = "KODEX 200선물인버스2X"
+_TACTICAL_AMMO = 8_390_000   # 기동타격대 실탄(839만원)
+
+
+def _inverse_5m_signal(sym="252670.KS"):
+    """5분봉 아래꼬리 + 우상향(최근 15분 상승) 여부. 데이터 없으면 None(확인불가)."""
+    try:
+        import yfinance as _yf_iv
+        _h = _yf_iv.Ticker(sym).history(period="1d", interval="5m").dropna(subset=['Close'])
+        if _h is None or len(_h) < 4:
+            return None
+        _last = _h.iloc[-1]
+        _rng = float(_last['High'] - _last['Low'])
+        _tail = ((min(float(_last['Open']), float(_last['Close'])) - float(_last['Low'])) >= _rng * 0.33) if _rng > 0 else False
+        _uptrend = float(_h['Close'].iloc[-1]) > float(_h['Close'].iloc[-4])   # 최근 15분 우상향
+        return bool(_tail and _uptrend)
+    except Exception:
+        return None
+
+
+def scan_inverse_target():
+    """[하방 타격] 폭락장 판정 + KODEX 200선물인버스2X 단일 집중 진입 시그널.
+    독립 모듈 — 기존 KIS/yfinance 구조 재활용, 예외 전파 없음.
+    반환 dict: {is_crash, kospi_chg, price, ma20, net, c1, c2, c3, signal, entry, qty, t3, t5, stop}."""
+    _out = {'is_crash': False, 'kospi_chg': None, 'price': None, 'ma20': None,
+            'net': None, 'c1': False, 'c2': False, 'c3': None, 'signal': False,
+            'entry': None, 'qty': 0, 't3': None, 't5': None, 'stop': None}
+    # ── 1) 폭락장 레짐 판정 — 코스피 등락률(≤-1.5%) ──
+    try:
+        _q = get_index_quotes()
+        _kchg = (_q or {}).get("코스피", {}).get("등락")
+        _out['kospi_chg'] = _kchg if isinstance(_kchg, (int, float)) else None
+    except Exception:
+        pass
+    _out['is_crash'] = bool(_out['kospi_chg'] is not None and _out['kospi_chg'] <= -1.5)
+
+    # ── 2) 곱버스 진입 3조건 ──
+    try:
+        _pr = kis_get_price(_INVERSE_TICKER)
+        if _pr and _pr.get('현재가'):
+            _out['price'] = int(_pr['현재가'])
+            # (1) 20MA 상향돌파/지지
+            _ind = calc_indicators(fetch_ohlcv(_INVERSE_TICKER, 60))
+            _ma20 = float(_ind['MA20'].iloc[-1])
+            _out['ma20'] = round(_ma20, 1)
+            _out['c1'] = bool(_out['price'] >= _ma20 > 0)
+            # (2) 기관/외인 순매수 유입
+            _iv = _md_investor(_INVERSE_TICKER)
+            if _iv:
+                _out['net'] = int(_iv.get('외인', 0)) + int(_iv.get('기관', 0))
+                _out['c2'] = _out['net'] > 0
+            # (3) 5분봉 아래꼬리+우상향
+            _out['c3'] = _inverse_5m_signal(f"{_INVERSE_TICKER}.KS")
+            # 시그널: (1)(2) 필수 + (3)은 확인불가(None) 시 통과 처리
+            _c3_ok = _out['c3'] if _out['c3'] is not None else True
+            _out['signal'] = bool(_out['c1'] and _out['c2'] and _c3_ok)
+            # 타점 카드
+            _entry = _out['price']
+            _out['entry'] = _entry
+            _out['qty'] = int(_TACTICAL_AMMO // _entry) if _entry > 0 else 0
+            _out['t3'] = int(round(_entry * 1.03))
+            _out['t5'] = int(round(_entry * 1.05))
+            _out['stop'] = int(round(_ma20))
+    except Exception as _e:
+        import logging as _lg_iv
+        _lg_iv.warning("scan_inverse_target 실패: %s: %s", type(_e).__name__, _e)
+    return _out
+
+
+def render_tactical_mode():
+    """전술 모드 배너 렌더 + (폭락장) 곱버스 타격 카드. 반환: is_crash(bool)."""
+    _iv = scan_inverse_target()
+    _crash = _iv['is_crash']
+    _kchg = _iv['kospi_chg']
+    _kchg_s = f"코스피 {_kchg:+.2f}%" if _kchg is not None else "코스피 수신대기"
+
+    if _crash:
+        st.markdown(
+            f"<div style='background:#450a0a;border:2px solid #ef4444;border-radius:12px;"
+            f"padding:12px 16px;margin-bottom:10px;text-align:center'>"
+            f"<div style='font-size:16px;font-weight:900;color:#fca5a5'>🔴 전술 모드: 폭락장 곱버스 타격</div>"
+            f"<div style='font-size:12px;color:#fecaca;margin-top:3px'>{_kchg_s} — 개별주(만쥬/돌팬티) 매수 자동 차단</div>"
+            f"</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f"<div style='background:#052e16;border:2px solid #22c55e;border-radius:12px;"
+            f"padding:10px 16px;margin-bottom:10px;text-align:center'>"
+            f"<div style='font-size:15px;font-weight:900;color:#86efac'>🟢 전술 모드: 상승장 개별주 타격</div>"
+            f"<div style='font-size:11px;color:#bbf7d0;margin-top:2px'>{_kchg_s} — 만쥬/돌팬티 개별주 스캐너 가동</div>"
+            f"</div>", unsafe_allow_html=True)
+        return False
+
+    # ── 폭락장: 곱버스 단일 타격 카드 ──
+    st.markdown(f"**🎯 하방 타격 타겟 — {_INVERSE_NAME} ({_INVERSE_TICKER})**")
+    def _m(_b):
+        return "✅" if _b else ("⚪" if _b is None else "❌")
+    _c3d = "확인불가" if _iv['c3'] is None else ("✅" if _iv['c3'] else "❌")
+    _net_s = f"{_iv['net']:+,}주" if _iv['net'] is not None else "—"
+    st.markdown(
+        f"<div style='font-size:12px;color:#cbd5e1;line-height:1.7'>"
+        f"① 20MA 지지/돌파 {_m(_iv['c1'])} (현재 {_iv['price']:,}원 / 20MA {_iv['ma20']:,}원)<br>"
+        f"② 기관·외인 순매수 유입 {_m(_iv['c2'])} ({_net_s})<br>"
+        f"③ 5분봉 아래꼬리+우상향 {_c3d}</div>", unsafe_allow_html=True)
+
+    if _iv['signal']:
+        st.error(f"🔥 **곱버스 타격 신호 포착** — 3조건 충족, 15:00~15:20 종가 베팅 검토")
+        _e, _q, _t3, _t5, _s = _iv['entry'], _iv['qty'], _iv['t3'], _iv['t5'], _iv['stop']
+        _cc1, _cc2, _cc3 = st.columns(3)
+        _cc1.markdown(
+            f"<div style='background:#0d1117;border:1px solid #3b82f6;border-radius:10px;padding:10px;text-align:center'>"
+            f"<div style='font-size:10px;color:#94a3b8'>권장 진입가</div>"
+            f"<div style='font-size:16px;font-weight:900;color:#f0f4ff'>{_e:,}원</div>"
+            f"<div style='font-size:10px;color:#64748b'>{_q}주 · {_e*_q:,}원</div></div>", unsafe_allow_html=True)
+        _cc2.markdown(
+            f"<div style='background:#0d1117;border:1px solid #22c55e;border-radius:10px;padding:10px;text-align:center'>"
+            f"<div style='font-size:10px;color:#94a3b8'>1차 목표 (+3~5%)</div>"
+            f"<div style='font-size:16px;font-weight:900;color:#22c55e'>{_t3:,}~{_t5:,}원</div>"
+            f"<div style='font-size:10px;color:#64748b'>+{(_t3-_e)*_q:,}~{(_t5-_e)*_q:,}원</div></div>", unsafe_allow_html=True)
+        _cc3.markdown(
+            f"<div style='background:#0d1117;border:1px solid #ef4444;border-radius:10px;padding:10px;text-align:center'>"
+            f"<div style='font-size:10px;color:#94a3b8'>손절가 (20MA 이탈)</div>"
+            f"<div style='font-size:16px;font-weight:900;color:#ef4444'>{_s:,}원</div>"
+            f"<div style='font-size:10px;color:#64748b'>{(_s-_e)*_q:,}원</div></div>", unsafe_allow_html=True)
+    else:
+        st.caption("⏳ 곱버스 진입 대기 — 3조건 미충족(위 체크 참고). 신호 점등 시 타점 카드 표시.")
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌙 야간 타격 모드 — 3분할 종가베팅(선취매) 대시보드 (EWY 프록시 + mPOP 딥링크)
+# ══════════════════════════════════════════════════════════════════
+_NIGHT_TARGET = ("000660", "SK하이닉스")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_night_radar():
+    """[야간 레이더] 나스닥선물·WTI·마이크론·EWY(코스피200 야간 프록시)·환율 — yfinance.
+    session_state 미접근(캐시 안전). 실패 항목 None."""
+    import yfinance as _yf_nr
+    _out = {"nq": None, "wti": None, "mu": None, "ewy": None, "krw": None}
+
+    def _chg(_sym):
+        try:
+            _h = _yf_nr.Ticker(_sym).history(period="5d")["Close"].dropna()
+            return round((float(_h.iloc[-1]) / float(_h.iloc[-2]) - 1) * 100, 2) if len(_h) >= 2 else None
+        except Exception:
+            return None
+    _out["nq"] = _chg("NQ=F")     # 나스닥100 선물
+    _out["wti"] = _chg("CL=F")    # WTI 유가
+    _out["mu"] = _chg("MU")       # 마이크론(반도체 피어)
+    _out["ewy"] = _chg("EWY")     # iShares 한국 ETF = 코스피 야간 방향 프록시
+    _out["krw"] = _chg("KRW=X")   # 달러-원
+    return _out
+
+
+def _detect_night_trigger():
+    """야간 타격 활성화 게이트 — 지수 하락마감 + 기관 양매도 + 코스피200 폭락(프록시).
+    반환 (active:bool, info:dict)."""
+    _info = {"kospi": None, "kosdaq": None, "k200": None, "org_sell": None}
+    try:
+        _q = get_index_quotes()
+        _info["kospi"] = (_q or {}).get("코스피", {}).get("등락")
+        _info["kosdaq"] = (_q or {}).get("코스닥", {}).get("등락")
+    except Exception:
+        pass
+    try:
+        _k2 = kis_get_index("2001")   # 코스피200 = 주간선물 프록시
+        _info["k200"] = _k2.get("등락") if _k2 else None
+    except Exception:
+        pass
+    # 기관 양매도: 야간 타겟 종목 기관 순매도 여부(대표 프록시)
+    try:
+        _iv = _md_investor(_NIGHT_TARGET[0])
+        _info["org_sell"] = (int(_iv.get('기관', 0)) < 0) if _iv else None
+    except Exception:
+        pass
+    _idx_down = (isinstance(_info["kospi"], (int, float)) and _info["kospi"] < 0
+                 and isinstance(_info["kosdaq"], (int, float)) and _info["kosdaq"] < 0)
+    _fut_crash = isinstance(_info["k200"], (int, float)) and _info["k200"] <= -2.0
+    _active = bool(_idx_down and _fut_crash and (_info["org_sell"] in (True, None)))
+    return _active, _info
+
+
+def _mpop_link(code):
+    """삼성증권 mPOP 앱 딥링크(수동 주문용). ⚠️ 스킴은 기기별로 1회 확인 필요."""
+    return f"samsungpop://stock?code={code}"   # 미동작 시 앱스토어/웹 링크로 교체
+
+
+def render_night_strike_mode():
+    """🌙 야간 타격 3분할 대시보드. 활성 조건 미충족 시 관망 안내만."""
+    with st.expander("🌙 야간 타격 모드 (선취매 종가베팅 · 3분할)", expanded=False):
+        _active, _info = _detect_night_trigger()
+        _ks = f"코스피 {_info['kospi']:+.2f}%" if isinstance(_info['kospi'], (int, float)) else "코스피 —"
+        _k2s = f"선물(K200) {_info['k200']:+.2f}%" if isinstance(_info['k200'], (int, float)) else "선물 —"
+        if not _active:
+            st.markdown(
+                f"<div style='background:#1e293b;border:1px solid #475569;border-radius:10px;padding:10px 14px;text-align:center'>"
+                f"<b style='color:#94a3b8'>🌙 야간 타격 조건 미충족 — 오늘은 관망</b>"
+                f"<div style='font-size:11px;color:#64748b;margin-top:3px'>{_ks} · {_k2s} · 발동=지수↓마감+기관양매도+선물≤-2%</div></div>",
+                unsafe_allow_html=True)
+            return
+        _r = _fetch_night_radar()
+        st.markdown(
+            f"<div style='background:#3b0764;border:2px solid #a855f7;border-radius:10px;padding:8px 14px;"
+            f"margin-bottom:8px;text-align:center'><b style='color:#e9d5ff'>🌙 야간 타격 모드 활성</b> "
+            f"<span style='font-size:11px;color:#d8b4fe'>({_ks} · {_k2s} 폭락 → 익일 반등 선취매)</span></div>",
+            unsafe_allow_html=True)
+
+        def _pf(v):   # 안전 포맷: None → '—'
+            return f"{v:+.2f}%" if isinstance(v, (int, float)) else "—"
+
+        def _won(v):
+            return f"{v:,}원" if isinstance(v, (int, float)) else "—"
+
+        _p1, _p2, _p3 = st.columns(3)
+
+        # ── ① 18:00 레이더 & 1차 타격 ──
+        with _p1:
+            st.markdown("**① 18:00 레이더 · 1차 타격**")
+            _nq, _wti, _mu = _r["nq"], _r["wti"], _r["mu"]
+            _dot = lambda v, good_up=True: ("⚪" if not isinstance(v, (int, float))
+                                            else "🟢" if ((v > 0) == good_up) else "🔴")
+            _wti_dot = ("⚪" if not isinstance(_wti, (int, float)) else "🔵" if _wti < 0 else "🔴")
+            st.markdown(
+                f"<div style='font-size:12px;line-height:1.9'>"
+                f"{_dot(_nq)} 나스닥선물 <b>{_pf(_nq)}</b><br>"
+                f"{_wti_dot} WTI유가 <b>{_pf(_wti)}</b><br>"
+                f"{_dot(_mu)} 마이크론(MU) <b>{_pf(_mu)}</b></div>",
+                unsafe_allow_html=True)
+            _sig1 = (isinstance(_nq, (int, float)) and _nq > 0) and (isinstance(_wti, (int, float)) and _wti < 0) \
+                    and (isinstance(_mu, (int, float)) and _mu > 0)
+            if _sig1:
+                st.success("🔔 1차 신호 ON — 3불 점등")
+            else:
+                st.caption("1차 대기 — 나스닥🟢·유가🔵·피어🟢 정렬 필요")
+            st.link_button("📲 1차 진입(검증 30%) · mPOP", _mpop_link(_NIGHT_TARGET[0]),
+                           use_container_width=True, disabled=not _sig1)
+
+        # ── ② 20:00 수급확정 & 2차 타격 ──
+        with _p2:
+            st.markdown("**② 20:00 수급확정 · 2차 타격**")
+            _ewy, _krw = _r["ewy"], _r["krw"]
+            _ewy_dot = ("⚪" if not isinstance(_ewy, (int, float)) else "🟢" if _ewy > 0 else "🔴")
+            _krw_dot = ("⚪" if not isinstance(_krw, (int, float)) else "🟢" if _krw <= 0.5 else "🔴")
+            st.markdown(
+                f"<div style='font-size:12px;line-height:1.9'>"
+                f"{_ewy_dot} EWY(K200 프록시) <b>{_pf(_ewy)}</b><br>"
+                f"{_krw_dot} USD/KRW <b>{_pf(_krw)}</b></div>",
+                unsafe_allow_html=True)
+            _sig2 = _sig1 and (isinstance(_ewy, (int, float)) and _ewy > 0) and (isinstance(_krw, (int, float)) and _krw <= 0.5)
+            if _sig2:
+                st.success("🔔 2차 신호 ON — 18:00 유지+야간 상승+환율 안정")
+            else:
+                st.caption("2차 대기 — 1차 유지 + EWY🟢 + 환율 급등아님")
+            st.link_button("📲 2차 진입(본진 50%) · mPOP", _mpop_link(_NIGHT_TARGET[0]),
+                           use_container_width=True, disabled=not _sig2)
+
+        # ── ③ 익일 09:00 정규장 탈출 ──
+        with _p3:
+            st.markdown(f"**③ 익일 09:00 탈출 · {_NIGHT_TARGET[1]}**")
+            _px = _sup = _t1 = None
+            try:
+                _pr = kis_get_price(_NIGHT_TARGET[0])
+                _ind = calc_indicators(fetch_ohlcv(_NIGHT_TARGET[0], 60))
+                if _pr and _pr.get('현재가'):
+                    _px = int(_pr['현재가']); _t1 = int(round(_px * 1.035))
+                _sup = int(round(float(_ind['MA20'].iloc[-1])))
+            except Exception:
+                pass
+            _gap = ("▲갭상승" if (isinstance(_r["ewy"], (int, float)) and _r["ewy"] > 0)
+                    else "▼갭하락" if isinstance(_r["ewy"], (int, float)) else "—")
+            st.markdown(
+                f"<div style='font-size:12px;line-height:1.9'>"
+                f"미장 EWY 기준 <b>{_gap}</b> 시나리오<br>"
+                f"현재 {_won(_px)} / 지지선(20MA) {_won(_sup)}<br>"
+                f"1차 익절 <b style='color:#22c55e'>{_won(_t1)}(+3.5%)</b></div>",
+                unsafe_allow_html=True)
+            st.caption("자동주문 가이드(mPOP 세팅): 트레일링스탑 −2.5% · 구조이탈(지지선-1%) 손절")
+
+        # ── 🛡️ 안전장치: 오버나잇 절대손실 서킷브레이커 ──
+        st.divider()
+        st.markdown("**🛡️ 오버나잇 절대손실 서킷브레이커**")
+        _sb1, _sb2, _sb3 = st.columns(3)
+        _acct = _sb1.number_input("계좌 규모(만원)", min_value=100, value=5000, step=100, key="night_acct") * 10000
+        _loss_lim = _sb2.number_input("절대손실 한도(%)", min_value=0.5, value=2.0, step=0.5, key="night_lim") / 100
+        _gap_ds = _sb3.number_input("최악 갭하락(%)", min_value=1.0, value=7.0, step=1.0, key="night_gap") / 100
+        _ammo = _TACTICAL_AMMO
+        _worst = _ammo * _gap_ds
+        _cap = _acct * _loss_lim
+        if _worst <= _cap:
+            st.success(f"✅ 진입 허용 — 최대노출 {_ammo:,}원 · 최악갭(-{_gap_ds*100:.0f}%) 손실 -{_worst:,.0f}원 ≤ 한도 {_cap:,.0f}원")
+        else:
+            st.error(f"🚫 진입 차단 — 최악손실 -{_worst:,.0f}원 > 한도 {_cap:,.0f}원. **비중을 {_cap/_gap_ds:,.0f}원 이하로 축소**하세요.")
+
+
 with tab_c:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
     render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독
-    render_manju_dolpanti_briefing()
+    render_night_strike_mode()        # 🌙 야간 타격 3분할(조건 충족 시 활성)
+    _crash_mode = render_tactical_mode()   # 🔴/🟢 전술 모드 배너 + 곱버스 타격
+    if _crash_mode:
+        st.info("🔴 폭락장 전술 모드 — 개별주(만쥬/돌팬티) 매수 스캐너는 자동 차단되었습니다. "
+                "하방 타격(곱버스)에 집중하세요.")
+    else:
+        render_manju_dolpanti_briefing()
 
     # ── 📖 실전 매뉴얼 (기본 닫힘) ──────────────────────────────────────
     with st.expander("📖 관제탑 실전 매뉴얼 및 운용 수칙 (필독)", expanded=False):
