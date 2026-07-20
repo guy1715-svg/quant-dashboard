@@ -6845,8 +6845,31 @@ def render_manju_dolpanti_briefing():
 
         _is_am = _t < _AM
         _exit  = _EXIT <= _t < _CLOSE
-        _snap  = st.session_state.setdefault('_manju_am_snapshot', {})
+        # ── 오전 스냅샷 영속화 — session_state만 쓰면 앱 재부팅(파일 교체 등)마다 소실되어
+        #    '오전에 열었는데 미기록' 문제 발생 → Firebase(/manju_am_snapshot)+로컬파일 복원.
+        _snap = st.session_state.get('_manju_am_snapshot')
+        if not isinstance(_snap, dict) or _today not in _snap:
+            _restored = {}
+            try:
+                _fb_d = _fb_ref("/manju_am_snapshot").get()   # NullRef→None(토스트 없음)
+                if isinstance(_fb_d, dict) and _fb_d.get('date') == _today:
+                    _restored = {str(k): int(v) for k, v in (_fb_d.get('flows') or {}).items()}
+            except Exception:
+                pass
+            if not _restored:
+                try:
+                    import json as _jms
+                    _sp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manju_am_snapshot.json")
+                    with open(_sp, encoding='utf-8') as _f:
+                        _fd = _jms.load(_f)
+                    if _fd.get('date') == _today:
+                        _restored = {str(k): int(v) for k, v in (_fd.get('flows') or {}).items()}
+                except Exception:
+                    pass
+            _snap = st.session_state.setdefault('_manju_am_snapshot', {})
+            _snap.setdefault(_today, {}).update(_restored)
         _am_store = _snap.setdefault(_today, {})
+        _am_dirty = False   # 이번 run에서 새 오전 기록 발생 시 영속 저장
 
         # ── ① 만쥬식 — 장중 수급 턴어라운드 ──
         st.markdown("**① 만쥬식 — 장중 수급 턴어라운드**"
@@ -6862,7 +6885,10 @@ def render_manju_dolpanti_briefing():
             _unit = _inv.get('unit', '주')
             _have_am = _c in _am_store
             if _is_am:
-                _am_store[_c] = _flow; _amflow = _flow; _turn = False; _have_am = True
+                # 전일 폴백값을 '오전'으로 기록하면 오후 실시간과 비교가 왜곡됨 → KIS 실시간만 기록
+                if _inv.get('src') == 'KIS':
+                    _am_store[_c] = _flow; _am_dirty = True; _have_am = True
+                _amflow = int(_am_store.get(_c, _flow)); _turn = False
             else:
                 _amflow = int(_am_store.get(_c, _flow))
                 _turn = (_have_am and _amflow <= 0 and _flow > 0)   # 오전 스냅샷 있을 때만 판정
@@ -6881,10 +6907,29 @@ def render_manju_dolpanti_briefing():
                 f"<span style='color:#64748b'>({_chg:+.2f}%)</span></span></div>",
                 unsafe_allow_html=True)
             _manju_hit = _manju_hit or (_turn and not _exit)
+        # 새 오전 기록 발생 시 Firebase+로컬파일 영속 저장(재부팅에도 보존)
+        if _am_dirty and _am_store:
+            _payload = {'date': _today, 'flows': dict(_am_store)}
+            try:
+                if _get_firebase_app() is not None:
+                    _fb_ref("/manju_am_snapshot").set(_payload)
+            except Exception:
+                pass
+            try:
+                import json as _jms2
+                _sp2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manju_am_snapshot.json")
+                with open(_sp2, 'w', encoding='utf-8') as _f2:
+                    _jms2.dump(_payload, _f2, ensure_ascii=False)
+            except Exception:
+                pass
         if _is_am:
-            st.caption("🌅 오전 수급 스냅샷 기록 중 — 11:30 이후 턴어라운드 판정 가동")
+            _n_rec = len(_am_store)
+            if _n_rec:
+                st.caption(f"🌅 오전 수급 스냅샷 기록 중({_n_rec}종목 저장됨·재부팅 보존) — 11:30 이후 턴어라운드 판정 가동")
+            else:
+                st.caption("🌅 오전 구간 — KIS 실시간 수급 수신 시 스냅샷 기록(전일 폴백값은 기록하지 않음)")
         elif not _am_store:
-            st.caption("ℹ️ 오전 스냅샷 없음 — 오늘 오전(11:30 이전)에 이 화면을 한 번 열어야 "
+            st.caption("ℹ️ 오늘 오전 KIS 실시간 스냅샷 없음 — 평일 오전 장중(09:00~11:30)에 이 화면을 열어야 "
                        "'오전→오후 전환' 판정이 가동됩니다. (지금은 현재 수급만 표시)")
         elif not _manju_hit and not _exit:
             st.caption("감시 중 — 오전 순매도→오후 순매수 전환 종목 없음")
