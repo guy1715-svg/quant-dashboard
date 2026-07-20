@@ -6668,9 +6668,28 @@ def render_manju_dolpanti_briefing():
             st.session_state['_md_raw_cache'] = _mdc
         _raw = _mdc['raw']
 
-        if not any(_v.get('inv') and _v.get('pr') for _v in _raw.values()):
-            st.warning("⚠️ KIS 수급 데이터 수신 실패 — **장중(09:00~15:20)·평일**에 다시 확인하세요. "
-                       "(주말·장마감·일시적 호출제한 시 빈 값이 정상)")
+        # ── 수신 진단 — 실패 원인(토큰/투자자엔드포인트/시세)을 표면화 ──
+        _n = len(_MD_TARGETS)
+        _inv_ok = sum(1 for _v in _raw.values() if _v.get('inv'))
+        _pr_ok  = sum(1 for _v in _raw.values() if _v.get('pr'))
+        if _inv_ok == 0:
+            _terr = st.session_state.get('_kis_token_err')
+            _diag = f"수급 {_inv_ok}/{_n} · 시세 {_pr_ok}/{_n} 수신"
+            if _terr:
+                _diag += f" · 토큰오류: {_terr}"
+            if _pr_ok > 0:
+                # 시세는 되는데 투자자(수급)만 실패 → 계정 미제공 or 엔드포인트 throttle
+                st.warning("⚠️ KIS **투자자(수급) 데이터**만 수신 실패 — 시세는 정상입니다. "
+                           f"({_diag})\n\n투자자별 매매동향 API(tr_id FHKST01010900) 미제공 계정이거나 "
+                           "일시적 호출제한일 수 있습니다. 장중·평일에 다시 시도하세요.")
+            else:
+                st.warning("⚠️ KIS 데이터 수신 실패 — 장중(09:00~15:20)·평일에 다시 확인하세요. "
+                           f"({_diag})\n\n주말·장마감·호출제한 시 빈 값이 정상입니다.")
+            _sync_ok = st.button("🔄 KIS 캐시 비우고 재시도", key="md_retry")
+            if _sync_ok:
+                st.session_state.pop('_md_raw_cache', None)
+                _KIS_TOKEN_CACHE.clear()
+                st.rerun()
             return
 
         _is_am = _t < _AM
