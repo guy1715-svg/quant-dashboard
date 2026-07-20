@@ -7300,9 +7300,13 @@ def render_night_strike_mode():
 
 with tab_c:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
-    render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독
-    render_night_strike_mode()        # 🌙 야간 타격 3분할(조건 충족 시 활성)
-    _crash_mode = render_tactical_mode()   # 🔴/🟢 전술 모드 배너 + 곱버스 타격
+    render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독(1줄 배너)
+    # 🌙 야간 타격 · 🔴 전술 모드를 가로 2분할로 콤팩트 배치
+    _tcol1, _tcol2 = st.columns(2)
+    with _tcol1:
+        render_night_strike_mode()
+    with _tcol2:
+        _crash_mode = render_tactical_mode()
     if _crash_mode:
         st.info("🔴 폭락장 전술 모드 — 개별주(만쥬/돌팬티) 매수 스캐너는 자동 차단되었습니다. "
                 "하방 타격(곱버스)에 집중하세요.")
@@ -7310,7 +7314,7 @@ with tab_c:
         render_manju_dolpanti_briefing()
 
     # ── 📖 실전 매뉴얼 (기본 닫힘) ──────────────────────────────────────
-    with st.expander("📖 관제탑 실전 매뉴얼 및 운용 수칙 (필독)", expanded=False):
+    with st.expander("📖 [필독] V9.1 스캐너 운용 수칙 및 매뉴얼", expanded=False):
         st.markdown("""
 ### 🦅 [V9.1 스나이퍼 스캐너 운용 수칙]
 
@@ -7336,35 +7340,24 @@ with tab_c:
 3. **최종 타격:** 다음 날 장중 스캔 시 **🟢 3일 연속** 배지가 점등되면 09:30 이후 방아쇠를 당깁니다.
 """)
 
-    # ── 진입 금지 대형 배너 ──────────────────────────────────────────────
+    # ── 진입 금지 통합 배너(단일화) — 대형 카드+중복 경고 제거, 1줄로 압축 ──
     _v891_c = run_v891_system_check()
     from datetime import datetime as _dt_tc
     _kh_c = (_dt_tc.utcnow().hour + 9) % 24
     _km_c = _dt_tc.utcnow().minute
     _tblock_c = (9 <= _kh_c < 10) or (_kh_c == 10 and _km_c <= 30)
     if not _v891_c['can_enter'] or _tblock_c:
-        _bc_msg   = _v891_c['alerts'][0] if not _v891_c['can_enter'] else "09:00~10:30 변동성 과다"
-        _bc_title = "현재 매매 불가: " + ("FOMC 대기 모드" if _v891_c.get('blackout') else "진입 금지 구간")
-        st.markdown(f"""
-<div style='background:linear-gradient(135deg,#1a0000,#2d0a0a);border:2px solid #ef4444;
-border-radius:16px;padding:20px 24px;margin-bottom:14px;text-align:center'>
-  <div style='font-size:36px;margin-bottom:6px'>🚫</div>
-  <div style='font-size:20px;font-weight:900;color:#ef4444;margin-bottom:6px'>{_bc_title}</div>
-  <div style='font-size:13px;color:#fca5a5'>{_bc_msg}</div>
-  <div style='font-size:11px;color:#7f1d1d;margin-top:8px'>스캔 결과 확인은 가능 — 실제 주문은 금지 구간 해제 후</div>
-</div>""", unsafe_allow_html=True)
+        _bc_msg = (_v891_c['alerts'][0] if not _v891_c['can_enter']
+                   else "09:00~10:30 변동성 과다 구간")
+        _bc_ttl = ("FOMC 대기" if _v891_c.get('blackout')
+                   else "진입 금지 구간" if not _v891_c['can_enter'] else "장초 변동성")
+        st.markdown(
+            f"<div style='background:#2d0a0a;border:1px solid #ef4444;border-radius:8px;"
+            f"padding:6px 12px;margin-bottom:6px;font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
+            f"<b style='color:#ef4444'>🚫 {_bc_ttl} — 주문 금지</b>"
+            f"<span style='color:#fca5a5'>{_bc_msg} · 스캔/복기만 가능</span></div>",
+            unsafe_allow_html=True)
     st.caption("하드필터(시총·ATR) + 스코어링(재무·수급·모멘텀·눌림목) — 70점 이상 종목만 포착")
-    # 진입 금지 배너
-    _v891_c = run_v891_system_check()
-    if not _v891_c['can_enter']:
-        for _ca in _v891_c['alerts']:
-            st.warning(f"⚠️ {_ca} — 스캔은 가능하나 결과 종목 오늘 진입 불가")
-    else:
-        from datetime import datetime as _dt_tc
-        _kh_c = (_dt_tc.utcnow().hour + 9) % 24
-        _km_c = _dt_tc.utcnow().minute
-        if (9 <= _kh_c < 10) or (_kh_c == 10 and _km_c <= 30):
-            st.warning("🔒 09:00~10:30 진입 금지 구간 — 스캔 결과는 내일 진입 검토용으로 활용하세요")
 
 
     # ══════════════════════════════════════════
