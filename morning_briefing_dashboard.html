@@ -148,8 +148,9 @@ async function loadDashboard(){
     const box = document.getElementById("peerList");
     box.innerHTML = (j.zone2||[]).map(p=>{
       const ok = p.status==="OK";
+      const src = p.src && p.src!=="N/A" ? `<span style="color:${p.src==='KIS'?'#22c55e':'#8b93a7'};font-size:9px"> ·${p.src}</span>` : "";
       return `<div class="peer">
-        <div class="nm"><b>${p.name}</b><small>${p.symbol}</small></div>
+        <div class="nm"><b>${p.name}</b><small>${p.symbol}${src}</small></div>
         <div class="pr">
           <div class="p">${ok?fmt(p.value):"N/A"}</div>
           <div class="c ${ok?cls(p.change):"flat"}">${ok?pct(p.change):"수신불가"}</div>

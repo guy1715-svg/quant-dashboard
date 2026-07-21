@@ -42,6 +42,84 @@ _UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 _NA = lambda: {"value": None, "change": None, "status": "N/A"}
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# KIS(한국투자증권) 정밀 시세 — 국내/해외. 키는 환경변수에서 (없으면 yfinance 폴백).
+#   export KIS_APP_KEY=...   export KIS_APP_SECRET=...
+# 토큰: 인메모리 캐시 + 발급 1분1회(EGW00133) 쿨다운 보호.
+# ═════════════════════════════════════════════════════════════════════════════
+import os as _os
+import time as _time
+
+_KIS_BASE = "https://openapi.koreainvestment.com:9443"
+_KIS_KEY = _os.environ.get("KIS_APP_KEY", "")
+_KIS_SECRET = _os.environ.get("KIS_APP_SECRET", "")
+_KIS_TOKEN = {"tok": None, "exp": 0.0, "cooldown": 0.0}
+
+
+def _kis_enabled():
+    return bool(_KIS_KEY and _KIS_SECRET)
+
+
+def _kis_token():
+    if not _kis_enabled():
+        return None
+    _now = _time.time()
+    if _KIS_TOKEN["tok"] and _KIS_TOKEN["exp"] > _now:
+        return _KIS_TOKEN["tok"]
+    if _KIS_TOKEN["cooldown"] > _now:      # 발급 제한 보호(재요청 폭주 방지)
+        return None
+    try:
+        r = requests.post(f"{_KIS_BASE}/oauth2/tokenP", timeout=8, json={
+            "grant_type": "client_credentials", "appkey": _KIS_KEY, "appsecret": _KIS_SECRET})
+        j = r.json()
+        _tok = j.get("access_token")
+        if _tok:
+            _ttl = int(float(j.get("expires_in", 86400))) - 60
+            _KIS_TOKEN.update(tok=_tok, exp=_now + max(60, _ttl), cooldown=0.0)
+            return _tok
+        _KIS_TOKEN["cooldown"] = _now + 60   # EGW00133 등 → 60초 대기
+    except Exception:
+        _KIS_TOKEN["cooldown"] = _now + 30
+    return None
+
+
+def _kis_headers(tr_id):
+    return {"authorization": f"Bearer {_kis_token()}", "appkey": _KIS_KEY,
+            "appsecret": _KIS_SECRET, "tr_id": tr_id, "custtype": "P"}
+
+
+def kis_domestic(code):
+    """국내주식 현재가(삼성증권/거래소 기준 정확). 실패 시 None."""
+    if not _kis_token():
+        return None
+    try:
+        r = requests.get(f"{_KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers=_kis_headers("FHKST01010100"),
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=5)
+        o = r.json().get("output", {})
+        _p = float(str(o.get("stck_prpr", 0)).replace(",", "") or 0)
+        _c = float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0)
+        return _ok(round(_p, 2), round(_c, 2)) if _p > 0 else None
+    except Exception:
+        return None
+
+
+def kis_overseas(excd, symb):
+    """해외주식 현재가(NAS/NYS). 실패 시 None."""
+    if not _kis_token():
+        return None
+    try:
+        r = requests.get(f"{_KIS_BASE}/uapi/overseas-price/v1/quotations/price",
+                         headers=_kis_headers("HHDFS00000300"),
+                         params={"AUTH": "", "EXCD": excd, "SYMB": symb}, timeout=5)
+        o = r.json().get("output", {})
+        _p = float(str(o.get("last", 0)).replace(",", "") or 0)
+        _c = float(str(o.get("rate", 0)).replace(",", "") or 0)   # 등락률
+        return _ok(round(_p, 2), round(_c, 2)) if _p > 0 else None
+    except Exception:
+        return None
+
+
 def _ok(value, change=None):
     return {"value": value, "change": change, "status": "OK"}
 
@@ -106,9 +184,15 @@ def naver_news(n=5):
         return []
 
 
-# ── 병렬 취합(각 항목 격리) ──────────────────────────────────────────────────
-_PEERS = [("SK하이닉스", "000660.KS"), ("마이크론", "MU"), ("TSMC", "TSM"),
-          ("AMD", "AMD"), ("인텔", "INTC"), ("샌디스크", "SNDK")]
+# ── 피어그룹: (표시명, yfinance심볼, KIS국내코드 or (해외거래소,심볼)) ──────────
+_PEERS = [
+    ("SK하이닉스", "000660.KS", ("KR", "000660")),
+    ("마이크론",   "MU",        ("NAS", "MU")),
+    ("TSMC",      "TSM",       ("NYS", "TSM")),   # TSMC ADR = NYSE
+    ("AMD",       "AMD",       ("NAS", "AMD")),
+    ("인텔",       "INTC",      ("NAS", "INTC")),
+    ("샌디스크",    "SNDK",      ("NAS", "SNDK")),
+]
 
 
 def _safe(fn, *a):
@@ -116,6 +200,18 @@ def _safe(fn, *a):
         return fn(*a)
     except Exception:
         return _NA()
+
+
+def peer_quote(yf_sym, kis_hint):
+    """KIS 우선(정확·삼성증권 기준) → 실패 시 yfinance 폴백."""
+    _mkt, _sym = kis_hint
+    _r = kis_domestic(_sym) if _mkt == "KR" else kis_overseas(_mkt, _sym)
+    if _r:
+        _r["src"] = "KIS"
+        return _r
+    _y = yf_quote(yf_sym)
+    _y["src"] = "yfinance" if _y.get("status") == "OK" else "N/A"
+    return _y
 
 
 @app.get("/api/dashboard")
@@ -127,21 +223,24 @@ def dashboard():
         f_wti = ex.submit(_safe, yf_quote, "CL=F")    # WTI
         f_k200 = ex.submit(_safe, yf_quote, "069500.KS")  # KOSPI200 야간선물 프록시(KODEX200)
         f_news = ex.submit(naver_news, 5)
-        f_peer = {nm: ex.submit(_safe, yf_quote, sym) for nm, sym in _PEERS}
+        f_peer = {nm: ex.submit(_safe, peer_quote, ysym, khint)
+                  for nm, ysym, khint in _PEERS}
 
         zone1 = {
             "usdkrw":  f_krw.result(),
             "nasdaq_fut": f_nq.result(),
             "wti":     f_wti.result(),
-            "kospi200_fut": f_k200.result(),   # ⚠️ KODEX200 프록시(정식 야간선물은 KIS TR 필요)
+            "kospi200_fut": f_k200.result(),   # ⚠️ KODEX200 프록시(정식 야간선물은 KIS 야간선물 TR 필요)
         }
-        zone2 = [{"name": nm, "symbol": sym, **f_peer[nm].result()}
-                 for nm, sym in _PEERS]
+        zone2 = [{"name": nm, "symbol": ysym, **f_peer[nm].result()}
+                 for nm, ysym, khint in _PEERS]
         zone3 = f_news.result() or []
 
-    return {"zone1": zone1, "zone2": zone2, "zone3": zone3}
+    return {"zone1": zone1, "zone2": zone2, "zone3": zone3,
+            "kis": _kis_enabled()}
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "yfinance": yf is not None, "bs4": BeautifulSoup is not None}
+    return {"ok": True, "yfinance": yf is not None, "bs4": BeautifulSoup is not None,
+            "kis_enabled": _kis_enabled(), "kis_token": bool(_kis_token())}
