@@ -5142,7 +5142,76 @@ def _get_home_etf_top(n=6):
     return rows[:n]
 
 
-tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs(["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리"])
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_briefing_us_peers():
+    """🌅 브리핑 — 미국 반도체 피어(yfinance). session_state 미접근(캐시 안전)."""
+    import yfinance as _yf_b
+    _out = []
+    for _nm, _sym in [("마이크론", "MU"), ("TSMC", "TSM"), ("AMD", "AMD"),
+                      ("인텔", "INTC"), ("샌디스크", "SNDK")]:
+        _d = {"name": _nm, "symbol": _sym, "price": None, "chg": None}
+        try:
+            _fi = _yf_b.Ticker(_sym).fast_info
+            _l = float(_fi.last_price); _p = float(_fi.previous_close)
+            if _l > 0 and _p > 0:
+                _d["price"] = round(_l, 2); _d["chg"] = round((_l / _p - 1) * 100, 2)
+        except Exception:
+            pass
+        _out.append(_d)
+    return _out
+
+
+def render_morning_briefing_tab():
+    """🌅 모닝 브리핑 탭 — 밤사이 글로벌 선행지표 + 3개 사이트 실제 임베드.
+    별도 서버 불필요(앱 내장 KIS/yfinance 재활용)."""
+    import streamlit.components.v1 as _components
+    st.markdown("### 🌅 모닝 브리핑 — 밤사이 글로벌 선행지표")
+
+    # ── 매크로 요약(환율/유가) ──
+    _krw = get_usd_krw(); _wti = get_wti_oil()
+    _krw_s = f"{_krw:,.0f}원" if isinstance(_krw, (int, float)) else "—"
+    _wti_s = f"${_wti:.1f}" if isinstance(_wti, (int, float)) else "—"
+    st.markdown(
+        f"<div style='background:#1a1a1e;border:1px solid #2a2a33;border-radius:8px;padding:6px 14px;"
+        f"margin-bottom:8px;font-size:13px'>💱 USD/KRW <b>{_krw_s}</b> &nbsp;·&nbsp; 🛢️ WTI <b>{_wti_s}</b> "
+        f"<span style='color:#8b93a7'>· 아래 사이트 탭에서 나스닥선물·야간선물 확인</span></div>",
+        unsafe_allow_html=True)
+
+    # ── 반도체 피어(SK하이닉스=KIS 정확값 + 미국=yfinance) ──
+    st.markdown("**🌐 글로벌 반도체 피어그룹**")
+    _rows = []
+    try:
+        _pr = kis_get_price("000660")
+        if _pr and _pr.get('현재가'):
+            _rows.append({"종목": "SK하이닉스", "현재가": f"{int(_pr['현재가']):,}",
+                          "등락률": f"{_pr.get('등락률', 0):+.2f}%", "출처": "KIS"})
+    except Exception:
+        pass
+    for _p in _fetch_briefing_us_peers():
+        _rows.append({"종목": _p["name"],
+                      "현재가": (f"{_p['price']:,}" if _p['price'] else "—"),
+                      "등락률": (f"{_p['chg']:+.2f}%" if _p['chg'] is not None else "—"),
+                      "출처": "yfinance"})
+    if _rows:
+        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+
+    # ── 실제 사이트 임베드(원하신 3개 사이트 그대로) ──
+    st.markdown("#### 📊 실시간 사이트 뷰어")
+    _bt1, _bt2, _bt3 = st.tabs(["🌐 글로벌 마켓(LongShortNow)", "🔮 야간선물(eSignal)", "📰 속보(saveticker)"])
+    with _bt1:
+        _components.iframe("https://longshortnow.com/global-market", height=680, scrolling=True)
+    with _bt2:
+        _components.iframe("https://esignal.co.kr/kospi200-futures/", height=680, scrolling=True)
+    with _bt3:
+        _components.iframe("https://www.saveticker.com/news", height=680, scrolling=True)
+    st.caption("※ 사이트가 임베드를 차단하면 빈 화면이 될 수 있습니다 — 그럴 땐 새 창에서 직접 열어 확인하세요.")
+
+
+tab_a, tab_b, tab_c, tab_d, tab_e, tab_f = st.tabs(
+    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑"])
+
+with tab_f:
+    render_morning_briefing_tab()
 
 
 with tab_a:
