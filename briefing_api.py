@@ -164,6 +164,26 @@ def yf_quote(sym):
     return _NA()
 
 
+# ── 소스 2-b: 네이버 증권 해외주식(키 불필요·안정적) ────────────────────────
+def naver_worldstock(reuters):
+    """네이버 해외주식 현재가. reuters 예: 'MU.O'(나스닥)/'TSM.N'(뉴욕). 실패 시 None."""
+    try:
+        r = requests.get(f"https://api.stock.naver.com/stock/{reuters}/basic",
+                         headers=_UA, timeout=4)
+        j = r.json()
+        _p = float(str(j.get("closePrice", "")).replace(",", "") or 0)
+        _rat = j.get("fluctuationsRatio")
+        _chg = float(str(_rat).replace(",", "").replace("%", "")) if _rat not in (None, "") else None
+        # 부호: 전일대비 값 or 등락코드(4=하한,5=하락)로 하락 판정
+        _cmp = str(j.get("compareToPreviousClosePrice", ""))
+        _code = str((j.get("compareToPreviousPrice") or {}).get("code", ""))
+        if _chg is not None and (_cmp.startswith("-") or _code in ("4", "5")):
+            _chg = -abs(_chg)
+        return _ok(round(_p, 2), _chg) if _p > 0 else None
+    except Exception:
+        return None
+
+
 # ── 소스 3: 네이버 증권 속보 헤드라인 ────────────────────────────────────────
 def naver_news(n=5):
     if BeautifulSoup is None:
@@ -184,14 +204,16 @@ def naver_news(n=5):
         return []
 
 
-# ── 피어그룹: (표시명, yfinance심볼, KIS국내코드 or (해외거래소,심볼)) ──────────
+# ── 피어그룹: (표시명, yfinance심볼, KIS힌트, 네이버reuters) ──────────────────
+#   KIS힌트: ("KR", 국내코드) or (해외거래소 NAS/NYS, 심볼)
+#   네이버 reuters: 나스닥=.O / 뉴욕=.N / 국내=None(KIS 사용)
 _PEERS = [
-    ("SK하이닉스", "000660.KS", ("KR", "000660")),
-    ("마이크론",   "MU",        ("NAS", "MU")),
-    ("TSMC",      "TSM",       ("NYS", "TSM")),   # TSMC ADR = NYSE
-    ("AMD",       "AMD",       ("NAS", "AMD")),
-    ("인텔",       "INTC",      ("NAS", "INTC")),
-    ("샌디스크",    "SNDK",      ("NAS", "SNDK")),
+    ("SK하이닉스", "000660.KS", ("KR", "000660"), None),
+    ("마이크론",   "MU",        ("NAS", "MU"),   "MU.O"),
+    ("TSMC",      "TSM",       ("NYS", "TSM"),  "TSM.N"),   # TSMC ADR = NYSE
+    ("AMD",       "AMD",       ("NAS", "AMD"),  "AMD.O"),
+    ("인텔",       "INTC",      ("NAS", "INTC"), "INTC.O"),
+    ("샌디스크",    "SNDK",      ("NAS", "SNDK"), "SNDK.O"),
 ]
 
 
@@ -202,13 +224,21 @@ def _safe(fn, *a):
         return _NA()
 
 
-def peer_quote(yf_sym, kis_hint):
-    """KIS 우선(정확·삼성증권 기준) → 실패 시 yfinance 폴백."""
+def peer_quote(yf_sym, kis_hint, naver_reuters):
+    """정확도 우선 3중 폴백: KIS(삼성증권 기준) → 네이버 해외주식 → yfinance."""
     _mkt, _sym = kis_hint
+    # 1) KIS
     _r = kis_domestic(_sym) if _mkt == "KR" else kis_overseas(_mkt, _sym)
     if _r:
         _r["src"] = "KIS"
         return _r
+    # 2) 네이버(해외만)
+    if naver_reuters:
+        _n = naver_worldstock(naver_reuters)
+        if _n:
+            _n["src"] = "naver"
+            return _n
+    # 3) yfinance
     _y = yf_quote(yf_sym)
     _y["src"] = "yfinance" if _y.get("status") == "OK" else "N/A"
     return _y
@@ -223,8 +253,8 @@ def dashboard():
         f_wti = ex.submit(_safe, yf_quote, "CL=F")    # WTI
         f_k200 = ex.submit(_safe, yf_quote, "069500.KS")  # KOSPI200 야간선물 프록시(KODEX200)
         f_news = ex.submit(naver_news, 5)
-        f_peer = {nm: ex.submit(_safe, peer_quote, ysym, khint)
-                  for nm, ysym, khint in _PEERS}
+        f_peer = {nm: ex.submit(_safe, peer_quote, ysym, khint, nrt)
+                  for nm, ysym, khint, nrt in _PEERS}
 
         zone1 = {
             "usdkrw":  f_krw.result(),
@@ -233,7 +263,7 @@ def dashboard():
             "kospi200_fut": f_k200.result(),   # ⚠️ KODEX200 프록시(정식 야간선물은 KIS 야간선물 TR 필요)
         }
         zone2 = [{"name": nm, "symbol": ysym, **f_peer[nm].result()}
-                 for nm, ysym, khint in _PEERS]
+                 for nm, ysym, khint, nrt in _PEERS]
         zone3 = f_news.result() or []
 
     return {"zone1": zone1, "zone2": zone2, "zone3": zone3,
@@ -244,3 +274,17 @@ def dashboard():
 def health():
     return {"ok": True, "yfinance": yf is not None, "bs4": BeautifulSoup is not None,
             "kis_enabled": _kis_enabled(), "kis_token": bool(_kis_token())}
+
+
+# ── 대시보드 HTML을 같은 서버에서 서빙 → file:// / CORS 문제 원천 차단 ──────────
+from fastapi.responses import FileResponse, HTMLResponse   # noqa: E402
+
+
+@app.get("/")
+def index():
+    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                       "morning_briefing_dashboard.html")
+    if _os.path.exists(_p):
+        return FileResponse(_p)
+    return HTMLResponse("<h3 style='color:#fff;background:#111;padding:20px'>"
+                        "morning_briefing_dashboard.html 을 briefing_api.py와 같은 폴더에 두세요.</h3>")
