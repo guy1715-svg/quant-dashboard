@@ -6889,16 +6889,20 @@ def render_manju_dolpanti_briefing():
             _bg = "#3b0d16" if (_turn and not _exit) else "#0d1117"
             _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환</span>"
                     if (_turn and not _exit) else "")
-            _am_txt = f"오전 {_amflow:+,}" if _have_am else "오전 미기록"
             _src_tag = "" if _inv.get('src') == 'KIS' else " <span style='color:#64748b;font-size:10px'>(전일)</span>"
-            # 좌: 종목명·코드·현재가(원)·등락률(%)  |  우: 수급변동(주수) — 가격/수량 완전 분리
+            # 수급 표기: 오전 대비 '변화'가 있을 때만 오전→현재 전환식, 동일(전일)이면 현재값만 간결히
+            if _have_am and _amflow != _flow:
+                _sup_txt = (f"수급 오전 {_amflow:+,} → "
+                            f"<b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}")
+            else:
+                _sup_txt = f"수급 <b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}"
+            # 좌: 종목명·코드·현재가(원)·등락률(%)  |  우: 수급(주수) — 가격/수량 완전 분리
             st.markdown(
                 f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
                 f"font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
                 f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> · "
                 f"<b style='color:#f0f4ff'>{_pxs}</b> <span style='color:{_chgc}'>({_chg:+.2f}%)</span>{_tag}</span>"
-                f"<span style='color:#94a3b8;font-size:11px'>수급 {_am_txt} → "
-                f"<b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}</span></div>",
+                f"<span style='color:#94a3b8;font-size:11px'>{_sup_txt}</span></div>",
                 unsafe_allow_html=True)
             _manju_hit = _manju_hit or (_turn and not _exit)
         # 새 오전 기록 발생 시 Firebase+로컬파일 영속 저장(재부팅에도 보존)
@@ -7208,17 +7212,15 @@ def _mpop_link(code):
 
 
 def render_night_strike_mode():
-    """🌙 야간 타격 3분할 대시보드. 활성 조건 미충족 시 관망 안내만."""
-    with st.expander("🌙 야간 타격 모드 (선취매 종가베팅 · 3분할)", expanded=False):
-        _active, _info = _detect_night_trigger()
-        _ks = f"코스피 {_info['kospi']:+.2f}%" if isinstance(_info['kospi'], (int, float)) else "코스피 —"
-        _k2s = f"선물(K200) {_info['k200']:+.2f}%" if isinstance(_info['k200'], (int, float)) else "선물 —"
+    """🌙 야간 타격 3분할 대시보드. 활성 조건 미충족 시 관망 안내만.
+    [V10.7] expander 라벨을 상태 반영으로 동적화(닫힘 요약 슬림) + 활성 시 자동 펼침."""
+    _active, _info = _detect_night_trigger()   # 라벨 결정 위해 expander 밖에서 먼저 판정
+    _ks = f"코스피 {_info['kospi']:+.2f}%" if isinstance(_info['kospi'], (int, float)) else "코스피 —"
+    _k2s = f"선물(K200) {_info['k200']:+.2f}%" if isinstance(_info['k200'], (int, float)) else "선물 —"
+    _label = "🌙 야간 타격 모드 — 🔥 활성" if _active else "🌙 야간 타격 모드 — 대기(관망)"
+    with st.expander(_label, expanded=_active):
         if not _active:
-            st.markdown(
-                f"<div style='background:#1e293b;border:1px solid #475569;border-radius:10px;padding:10px 14px;text-align:center'>"
-                f"<b style='color:#94a3b8'>🌙 야간 타격 조건 미충족 — 오늘은 관망</b>"
-                f"<div style='font-size:11px;color:#64748b;margin-top:3px'>{_ks} · {_k2s} · 발동=지수↓마감+기관양매도+선물≤-2%</div></div>",
-                unsafe_allow_html=True)
+            st.caption(f"조건 대기 중 — {_ks} · {_k2s} · 발동=지수↓마감 + 기관양매도 + 선물≤-2%")
             return
         _r = _fetch_night_radar()
         _nt = _get_night_target()   # [V10.4] 스캔 주도주 동적 연동(하드코딩 제거)
@@ -7323,9 +7325,13 @@ def render_day_strike_mode():
     _OPEN = _dtd.time(9, 0); _CLOSE = _dtd.time(15, 30)
     _in_session = (_now.weekday() < 5) and (_OPEN <= _t < _CLOSE)
 
-    with st.expander("☀️ 주간 실시간 타점 모드 (정규장 09:00~15:30)", expanded=_in_session):
+    # [V10.7] 라벨 상태 반영 + 장 마감/시간외엔 자동 접힘(포커스가 야간 모드로 이동)
+    _label = "☀️ 주간 실시간 타점 — 정규장 가동" if _in_session else "☀️ 주간 타점 — 장 시간 외(대기)"
+    with st.expander(_label, expanded=_in_session):
         if not _in_session:
-            st.caption("☀️ 평일 정규장(09:00~15:30)에 자동 활성화 — 현재는 장 시간 외")
+            _after = _t >= _CLOSE and _now.weekday() < 5
+            st.caption("☀️ 장 마감 — 저녁엔 아래 🌙 야간 타격 모드로 전환하세요."
+                       if _after else "☀️ 평일 정규장(09:00~15:30)에 자동 활성화 — 현재는 장 시간 외")
             return
         _pf = lambda v, s="%": f"{v:+.2f}{s}" if isinstance(v, (int, float)) else "—"
 
