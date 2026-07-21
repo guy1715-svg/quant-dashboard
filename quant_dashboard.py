@@ -6882,18 +6882,23 @@ def render_manju_dolpanti_briefing():
                 _amflow = int(_am_store.get(_c, _flow))
                 _turn = (_have_am and _amflow <= 0 and _flow > 0)   # 오전 스냅샷 있을 때만 판정
             _chg = _pr.get('등락률', 0.0)
-            _fc = "#e11d48" if _flow > 0 else "#2563eb" if _flow < 0 else "#64748b"
+            _px = _pr.get('현재가')
+            _pxs = f"{int(_px):,}원" if isinstance(_px, (int, float)) and _px > 0 else "—"
+            _chgc = "#e11d48" if _chg > 0 else "#2563eb" if _chg < 0 else "#64748b"   # 가격 등락 색
+            _fc = "#e11d48" if _flow > 0 else "#2563eb" if _flow < 0 else "#64748b"   # 수급 색
             _bg = "#3b0d16" if (_turn and not _exit) else "#0d1117"
-            _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환(진입)</span>"
+            _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환</span>"
                     if (_turn and not _exit) else "")
             _am_txt = f"오전 {_amflow:+,}" if _have_am else "오전 미기록"
             _src_tag = "" if _inv.get('src') == 'KIS' else " <span style='color:#64748b;font-size:10px'>(전일)</span>"
+            # 좌: 종목명·코드·현재가(원)·등락률(%)  |  우: 수급변동(주수) — 가격/수량 완전 분리
             st.markdown(
                 f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
-                f"font-size:12px;display:flex;justify-content:space-between'>"
-                f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> {_tag}</span>"
-                f"<span style='color:#94a3b8'>{_am_txt} → 현재 <b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag} "
-                f"<span style='color:#64748b'>({_chg:+.2f}%)</span></span></div>",
+                f"font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
+                f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> · "
+                f"<b style='color:#f0f4ff'>{_pxs}</b> <span style='color:{_chgc}'>({_chg:+.2f}%)</span>{_tag}</span>"
+                f"<span style='color:#94a3b8;font-size:11px'>수급 {_am_txt} → "
+                f"<b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}</span></div>",
                 unsafe_allow_html=True)
             _manju_hit = _manju_hit or (_turn and not _exit)
         # 새 오전 기록 발생 시 Firebase+로컬파일 영속 저장(재부팅에도 보존)
