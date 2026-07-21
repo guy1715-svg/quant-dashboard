@@ -5177,23 +5177,53 @@ def render_morning_briefing_tab():
         f"<span style='color:#8b93a7'>· 아래 사이트 탭에서 나스닥선물·야간선물 확인</span></div>",
         unsafe_allow_html=True)
 
-    # ── 반도체 피어(SK하이닉스=KIS 정확값 + 미국=yfinance) ──
-    st.markdown("**🌐 글로벌 반도체 피어그룹**")
-    _rows = []
+    # ── 반도체 피어(SK하이닉스=KIS 실시간 + 미국=yfinance 전일종가) ──
+    import datetime as _dtmb
+    _now_kst = (_dtmb.datetime.utcnow() + _dtmb.timedelta(hours=9)).strftime("%H:%M:%S")
+    _hcol1, _hcol2 = st.columns([3, 1], vertical_alignment="bottom")
+    _hcol1.markdown("**🌐 글로벌 반도체 피어그룹**")
+    _hcol2.markdown(f"<div style='text-align:right;color:#8b93a7;font-size:11px'>🕒 {_now_kst} KST 동기화</div>",
+                    unsafe_allow_html=True)
+    st.caption("※ 🇺🇸 미국주식: 전일 정규장 마감 종가 기준 · 🇰🇷 국내주식: 실시간 시세")
+
+    _prows = []   # (종목, 현재가, 등락률(float|None), 국기, 출처)
     try:
         _pr = kis_get_price("000660")
         if _pr and _pr.get('현재가'):
-            _rows.append({"종목": "SK하이닉스", "현재가": f"{int(_pr['현재가']):,}",
-                          "등락률": f"{_pr.get('등락률', 0):+.2f}%", "출처": "KIS"})
+            _prows.append(("SK하이닉스", int(_pr['현재가']), float(_pr.get('등락률', 0)), "🇰🇷", "KIS API"))
     except Exception:
         pass
     for _p in _fetch_briefing_us_peers():
-        _rows.append({"종목": _p["name"],
-                      "현재가": (f"{_p['price']:,}" if _p['price'] else "—"),
-                      "등락률": (f"{_p['chg']:+.2f}%" if _p['chg'] is not None else "—"),
-                      "출처": "yfinance"})
-    if _rows:
-        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+        _prows.append((_p["name"], _p["price"], _p["chg"], "🇺🇸", "yfinance"))
+
+    # 하이엔드 HTML 테이블 — 등락률 색상 + 출처 국기 배지
+    _trs = []
+    for _nm, _px, _ch, _flag, _src in _prows:
+        _pxs = f"{_px:,}원" if isinstance(_px, (int, float)) and _px > 0 else "—"
+        if isinstance(_ch, (int, float)):
+            _cc = "#e94560" if _ch > 0 else "#3b82f6" if _ch < 0 else "#94a3b8"
+            _ar = "▲" if _ch > 0 else "▼" if _ch < 0 else "·"
+            _chs = f"<span style='color:{_cc};font-weight:700'>{_ar} {_ch:+.2f}%</span>"
+        else:
+            _chs = "<span style='color:#94a3b8'>—</span>"
+        _badge = (f"<span style='background:#202027;border:1px solid #2a2a33;border-radius:6px;"
+                  f"padding:1px 8px;font-size:11px;color:#cbd5e1'>{_flag} {_src}</span>")
+        _trs.append(
+            f"<tr style='border-bottom:1px solid #1e2530'>"
+            f"<td style='padding:7px 10px'><b>{_nm}</b></td>"
+            f"<td style='padding:7px 10px;text-align:right;color:#f0f4ff'>{_pxs}</td>"
+            f"<td style='padding:7px 10px;text-align:right'>{_chs}</td>"
+            f"<td style='padding:7px 10px;text-align:center'>{_badge}</td></tr>")
+    st.markdown(
+        "<table style='width:100%;border-collapse:collapse;font-size:13px;"
+        "background:#14161b;border:1px solid #2a2a33;border-radius:8px;overflow:hidden'>"
+        "<thead><tr style='color:#8b93a7;font-size:11px;background:#1a1a1e'>"
+        "<th style='text-align:left;padding:6px 10px'>종목</th>"
+        "<th style='text-align:right;padding:6px 10px'>현재가</th>"
+        "<th style='text-align:right;padding:6px 10px'>등락률</th>"
+        "<th style='text-align:center;padding:6px 10px'>출처</th></tr></thead>"
+        "<tbody>" + "".join(_trs) + "</tbody></table>",
+        unsafe_allow_html=True)
 
     # ── 실제 사이트 임베드(원하신 3개 사이트 그대로) ──
     st.markdown("#### 📊 실시간 사이트 뷰어")
