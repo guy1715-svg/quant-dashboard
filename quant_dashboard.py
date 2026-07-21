@@ -6867,6 +6867,7 @@ def render_manju_dolpanti_briefing():
         if _exit:
             st.error("⏰ 15:15 타임리밋 — 만쥬 포지션 **즉시 청산(EXIT)** 실행하세요.")
         _manju_hit = False
+        _manju_rows = []   # [V10.8] 정렬 테이블용 행 수집
         for _c, _n in _MD_TARGETS:
             _d = _raw.get(_c, {}); _inv = _d.get('inv'); _pr = _d.get('pr')
             if not _inv or not _pr:
@@ -6883,28 +6884,19 @@ def render_manju_dolpanti_briefing():
                 _turn = (_have_am and _amflow <= 0 and _flow > 0)   # 오전 스냅샷 있을 때만 판정
             _chg = _pr.get('등락률', 0.0)
             _px = _pr.get('현재가')
-            _pxs = f"{int(_px):,}원" if isinstance(_px, (int, float)) and _px > 0 else "—"
-            _chgc = "#e11d48" if _chg > 0 else "#2563eb" if _chg < 0 else "#64748b"   # 가격 등락 색
-            _fc = "#e11d48" if _flow > 0 else "#2563eb" if _flow < 0 else "#64748b"   # 수급 색
-            _bg = "#3b0d16" if (_turn and not _exit) else "#0d1117"
-            _tag = (" <span style='color:#f43f5e;font-weight:800'>🔴 매수전환</span>"
-                    if (_turn and not _exit) else "")
-            _src_tag = "" if _inv.get('src') == 'KIS' else " <span style='color:#64748b;font-size:10px'>(전일)</span>"
-            # 수급 표기: 오전 대비 '변화'가 있을 때만 오전→현재 전환식, 동일(전일)이면 현재값만 간결히
-            if _have_am and _amflow != _flow:
-                _sup_txt = (f"수급 오전 {_amflow:+,} → "
-                            f"<b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}")
-            else:
-                _sup_txt = f"수급 <b style='color:{_fc}'>{_flow:+,}</b>{_unit}{_src_tag}"
-            # 좌: 종목명·코드·현재가(원)·등락률(%)  |  우: 수급(주수) — 가격/수량 완전 분리
-            st.markdown(
-                f"<div style='background:{_bg};border-radius:6px;padding:5px 10px;margin-bottom:3px;"
-                f"font-size:12px;display:flex;justify-content:space-between;align-items:center'>"
-                f"<span><b>{_n}</b> <span style='color:#64748b'>{_c}</span> · "
-                f"<b style='color:#f0f4ff'>{_pxs}</b> <span style='color:{_chgc}'>({_chg:+.2f}%)</span>{_tag}</span>"
-                f"<span style='color:#94a3b8;font-size:11px'>{_sup_txt}</span></div>",
-                unsafe_allow_html=True)
+            _pxs = f"{int(_px):,}" if isinstance(_px, (int, float)) and _px > 0 else "—"
+            _src = "(전일)" if _inv.get('src') != 'KIS' else ""
+            _status = ("⏰ EXIT" if _exit else "🔴 매수전환" if _turn else "감시")
+            _manju_rows.append({
+                "종목명(코드)": f"{_n} ({_c})",
+                "현재가(등락률)": f"{_pxs} ({_chg:+.2f}%)",
+                "오전 수급": (f"{_amflow:+,}" if _have_am else "—"),
+                "현재 수급": f"{_flow:+,}{_unit}{_src}",
+                "상태": _status,
+            })
             _manju_hit = _manju_hit or (_turn and not _exit)
+        if _manju_rows:
+            st.dataframe(pd.DataFrame(_manju_rows), hide_index=True, use_container_width=True)
         # 새 오전 기록 발생 시 Firebase+로컬파일 영속 저장(재부팅에도 보존)
         if _am_dirty and _am_store:
             _payload = {'date': _today, 'flows': dict(_am_store)}
@@ -6985,27 +6977,25 @@ def render_manju_dolpanti_briefing():
             _detail.append((_n, _c1, _c2, _c3, _org))
             if _c1 and _c2 and _c3:
                 _targets.append((_n, _c, _pr.get('현재가', 0), _ma20, _org))
+        # [V10.8] 3조건 비교를 엑셀식 정렬 테이블로 — 종목명 | 20MA돌파 | 기관순매수 | 아래꼬리 | 최종판정
+        _dp_rows = []
+        for _dn, _dc1, _dc2, _dc3, _dorg in _detail:
+            if _dc1 is None:
+                _dp_rows.append({"종목명": _dn, "20MA 돌파": "⚠️", "기관 순매수": "⚠️",
+                                 "아래꼬리": "⚠️", "최종 판정": "데이터오류"})
+            else:
+                _pass = _dc1 and _dc2 and _dc3
+                _dp_rows.append({
+                    "종목명": _dn,
+                    "20MA 돌파": "✅" if _dc1 else "❌",
+                    "기관 순매수": ("✅" if _dc2 else "❌") + f" ({_dorg:+,})",
+                    "아래꼬리": "✅" if _dc3 else "❌",
+                    "최종 판정": "🎯 TARGET" if _pass else "관망",
+                })
+        if _dp_rows:
+            st.dataframe(pd.DataFrame(_dp_rows), hide_index=True, use_container_width=True)
         if not _targets:
-            st.caption("오늘 3조건(20MA↑·기관 순매수+·아래꼬리) 동시충족 종목 없음 — 관망")
-            # 왜 관망인지 종목별 근거(✅=통과) — '진짜 탈락'인지 데이터오류인지 구분(투명성)
-            def _m(_b):
-                return "✅" if _b else "❌"
-            _rows = ["<div style='font-size:11px;color:#94a3b8;line-height:1.7'><b>탈락 근거</b><br>"]
-            for _dn, _dc1, _dc2, _dc3, _dorg in _detail:
-                if _dc1 is None:
-                    _rows.append(f"· {_dn}: ⚠️ 데이터 조회 실패<br>")
-                else:
-                    _rows.append(f"· {_dn}: 20MA {_m(_dc1)} · 기관순매수 {_m(_dc2)}({_dorg:+,}) · 아래꼬리 {_m(_dc3)}<br>")
-            _rows.append("</div>")
-            st.markdown("".join(_rows), unsafe_allow_html=True)
-        else:
-            for _n, _c, _px, _ma20, _org in _targets:
-                st.markdown(
-                    f"<div style='background:#2e1065;border-radius:8px;padding:8px 12px;margin-bottom:4px;"
-                    f"font-size:13px;display:flex;justify-content:space-between'>"
-                    f"<span>🎯 <b>{_n}</b> <span style='color:#a78bfa'>{_c}</span></span>"
-                    f"<span>{_px:,}원 · 20MA {_ma20:,.0f} · 기관 <b style='color:#e11d48'>{_org:+,}</b>주</span>"
-                    f"</div>", unsafe_allow_html=True)
+            st.caption("오늘 3조건(20MA↑·기관 순매수+·아래꼬리) 동시충족(🎯 TARGET) 종목 없음 — 관망")
 
 
 # ══════════════════════════════════════════════════════════════════
