@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>🌅 Morning Briefing Dashboard</title>
+<style>
+  :root{
+    --bg:#121212; --panel:#1a1a1e; --panel2:#202027; --border:#2a2a33;
+    --txt:#e6e8ee; --muted:#8b93a7; --up:#e94560; --down:#3b82f6; --flat:#8b93a7;
+    --accent:#a855f7; --gap:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:-apple-system,"Malgun Gothic","Segoe UI",Roboto,sans-serif;
+    font-size:13px; overflow:hidden;
+  }
+  /* ── 레이아웃: 헤더 + 3열(peers | viewer | news) ── */
+  .app{
+    height:100vh; display:grid; gap:var(--gap); padding:var(--gap);
+    grid-template-columns: 340px minmax(0,1fr);
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "header header"
+      "peers  news";
+  }
+  @media (max-width:680px){
+    .app{grid-template-columns:1fr; grid-template-rows:auto auto 1fr;
+      grid-template-areas:"header" "peers" "news"; overflow:auto; height:auto; min-height:100vh;}
+    body{overflow:auto}
+  }
+  .newsItem{padding:9px 12px; border-bottom:1px solid var(--border); font-size:13px; line-height:1.4}
+  .newsItem:hover{background:var(--panel2)}
+  .panel{background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; min-height:0}
+  .panel h2{font-size:11px; letter-spacing:.5px; color:var(--muted); text-transform:uppercase;
+    padding:8px 12px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center}
+  .panel .body{flex:1; min-height:0; overflow:auto}
+
+  /* ── Zone1 헤더 요약 바 ── */
+  header{grid-area:header; background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    display:flex; align-items:center; gap:6px; padding:8px 12px; flex-wrap:wrap}
+  header .title{font-weight:800; font-size:15px; margin-right:8px}
+  header .clock{color:var(--muted); font-size:12px; margin-right:auto}
+  .kpi{display:flex; flex-direction:column; background:var(--panel2); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; min-width:118px}
+  .kpi .k{font-size:10px; color:var(--muted)}
+  .kpi .v{font-size:15px; font-weight:800}
+  .kpi .d{font-size:11px; font-weight:700}
+
+  /* ── Zone2 반도체 피어 ── */
+  #peers{grid-area:peers}
+  .peer{display:flex; justify-content:space-between; align-items:center; padding:9px 12px; border-bottom:1px solid var(--border)}
+  .peer:last-child{border-bottom:0}
+  .peer .nm{display:flex; flex-direction:column}
+  .peer .nm b{font-size:13px}
+  .peer .nm small{color:var(--muted); font-size:10px}
+  .peer .pr{text-align:right}
+  .peer .pr .p{font-size:14px; font-weight:800}
+  .peer .pr .c{font-size:11px; font-weight:700}
+
+  /* ── Zone3 뷰어(탭) ── */
+  #viewer{grid-area:viewer}
+  .tabs{display:flex; gap:4px}
+  .tabs button{background:var(--panel2); color:var(--muted); border:1px solid var(--border);
+    border-radius:6px; padding:3px 10px; font-size:11px; cursor:pointer}
+  .tabs button.on{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .frameWrap{position:relative; width:100%; height:100%}
+  .frameWrap iframe{width:100%; height:100%; border:0; background:#0c0c0f}
+  .frameWrap .fallback{position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; color:var(--muted); text-align:center; padding:20px}
+  .frameWrap.err .fallback{display:flex}
+  .openbtn{color:#fff; background:var(--accent); text-decoration:none; padding:6px 14px; border-radius:8px; font-size:12px}
+
+  /* ── Zone4 뉴스 ── */
+  #news{grid-area:news}
+
+  .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--flat)}
+  .refresh{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;
+    font-size:10px;padding:2px 8px;cursor:pointer}
+  .refresh:hover{color:var(--txt)}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#33333d;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Zone 1: 헤더 요약 바 -->
+  <header>
+    <span class="title">🌅 Morning Briefing</span>
+    <span class="clock" id="clock">--:--:--</span>
+    <div class="kpi"><span class="k">KOSPI200 야간선물</span><span class="v" id="kpi-k200v">—</span><span class="d" id="kpi-k200d">—</span></div>
+    <div class="kpi"><span class="k">USD/KRW</span><span class="v" id="kpi-krwv">—</span><span class="d" id="kpi-krwd">—</span></div>
+    <div class="kpi"><span class="k">나스닥 선물</span><span class="v" id="kpi-nqv">—</span><span class="d" id="kpi-nqd">—</span></div>
+    <div class="kpi"><span class="k">WTI</span><span class="v" id="kpi-wtiv">—</span><span class="d" id="kpi-wtid">—</span></div>
+    <button class="refresh" onclick="refreshAll()">↻ 새로고침</button>
+  </header>
+
+  <!-- Zone 2: 반도체 피어그룹 -->
+  <section class="panel" id="peers">
+    <h2>🌐 글로벌 반도체 피어그룹 <button class="refresh" onclick="loadPeers()">↻</button></h2>
+    <div class="body" id="peerList"></div>
+  </section>
+
+  <!-- Zone 3: 실시간 속보(백엔드 파싱 텍스트) -->
+  <section class="panel" id="news">
+    <h2>📰 실시간 속보 (네이버 증권 파싱) <button class="refresh" onclick="loadDashboard()">↻</button></h2>
+    <div class="body" id="newsFeed">
+      <div class="newsItem" style="color:var(--muted)">백엔드 연결 대기…</div>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   자체 백엔드(briefing_api.py) 연동 — Stooq/프록시 전면 폐기
+   실행: uvicorn briefing_api:app --port 8000  →  GET /api/dashboard
+   ───────────────────────────────────────────────────────────── */
+const API_BASE = "http://localhost:8000";   // 백엔드 주소(포트 바꾸면 여기만 수정)
+
+const cls = v => (v>0?"up":v<0?"down":"flat");
+const arr = v => (v>0?"▲":v<0?"▼":"·");
+const fmt = v => (typeof v==="number" ? v.toLocaleString() : "—");
+const pct = v => (typeof v==="number" ? `${arr(v)} ${v.toFixed(2)}%` : "—");
+
+function paintKpi(el, item){
+  const ve=document.getElementById(`kpi-${el}v`), de=document.getElementById(`kpi-${el}d`);
+  const ok = item && item.status==="OK";
+  ve.textContent = ok ? fmt(item.value) : "N/A";
+  de.className = "d " + (ok ? cls(item.change) : "flat");
+  de.textContent = ok ? pct(item.change) : "—";
+}
+
+async function loadDashboard(){
+  try{
+    const r = await fetch(`${API_BASE}/api/dashboard`, {cache:"no-store"});
+    const j = await r.json();
+
+    // Zone1 헤더 KPI
+    paintKpi("k200", j.zone1?.kospi200_fut);
+    paintKpi("krw",  j.zone1?.usdkrw);
+    paintKpi("nq",   j.zone1?.nasdaq_fut);
+    paintKpi("wti",  j.zone1?.wti);
+
+    // Zone2 반도체 피어
+    const box = document.getElementById("peerList");
+    box.innerHTML = (j.zone2||[]).map(p=>{
+      const ok = p.status==="OK";
+      return `<div class="peer">
+        <div class="nm"><b>${p.name}</b><small>${p.symbol}</small></div>
+        <div class="pr">
+          <div class="p">${ok?fmt(p.value):"N/A"}</div>
+          <div class="c ${ok?cls(p.change):"flat"}">${ok?pct(p.change):"수신불가"}</div>
+        </div></div>`;
+    }).join("");
+
+    // Zone4 뉴스(백엔드 파싱본으로 대체 렌더 — 아래 newsFeed)
+    const nf = document.getElementById("newsFeed");
+    if(nf){
+      const items = j.zone3||[];
+      nf.innerHTML = items.length
+        ? items.map(t=>`<div class="newsItem">📰 ${t}</div>`).join("")
+        : `<div class="newsItem" style="color:var(--muted)">뉴스 수신 대기…</div>`;
+    }
+  }catch(e){
+    // 백엔드 미기동 시 안내
+    document.getElementById("peerList").innerHTML =
+      `<div class="peer"><div class="nm"><b>백엔드 연결 실패</b>`+
+      `<small>uvicorn briefing_api:app --port 8000 실행 필요</small></div></div>`;
+  }
+}
+const loadPeers = loadDashboard, loadKpis = loadDashboard;
+
+function clock(){ document.getElementById("clock").textContent = new Date().toLocaleString("ko-KR",{hour12:false}); }
+function refreshAll(){ loadDashboard(); }
+
+clock(); setInterval(clock,1000);
+loadDashboard();
+setInterval(loadDashboard, 30000);   // 30초 자동 갱신(백엔드 JSON)
+</script>
+</body>
+</html>
