@@ -7283,10 +7283,102 @@ def render_night_strike_mode():
                 st.error(f"🚫 진입 차단 — -{_worst:,.0f}원 > 한도 {_cap:,.0f}원 · 비중 {_cap/_gap_ds:,.0f}원↓로 축소")
 
 
+# ══════════════════════════════════════════════════════════════════
+# ☀️ 주간 타격 모드 — 정규장 09:00~15:30 실시간 3대 선행지표 타점
+# ══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_day_indicators():
+    """[주간 지표] 달러-원 1분봉(꺾임)·니케이·상해 — yfinance. session_state 미접근(캐시 안전)."""
+    import yfinance as _yf_day
+    _out = {"krw_last": None, "krw_peak": None, "krw_turn": False, "nikkei": None, "shanghai": None}
+    try:
+        _h = _yf_day.Ticker("KRW=X").history(period="1d", interval="1m")["Close"].dropna()
+        if len(_h) >= 5:
+            _last = float(_h.iloc[-1]); _peak = float(_h.max())
+            _out["krw_last"] = round(_last, 1); _out["krw_peak"] = round(_peak, 1)
+            # 고점 찍고 꺾임: 당일 고점 대비 하락 전환 + 최근 3틱 하락
+            _out["krw_turn"] = bool(_last < _peak * 0.999 and _last < float(_h.iloc[-3]))
+    except Exception:
+        pass
+    for _k, _sym in [("nikkei", "^N225"), ("shanghai", "000001.SS")]:
+        try:
+            _hh = _yf_day.Ticker(_sym).history(period="5d")["Close"].dropna()
+            _out[_k] = round((float(_hh.iloc[-1]) / float(_hh.iloc[-2]) - 1) * 100, 2) if len(_hh) >= 2 else None
+        except Exception:
+            pass
+    return _out
+
+
+def render_day_strike_mode():
+    """☀️ 주간 실시간 타점 모드 — 정규장(평일 09:00~15:30) 자동 활성.
+    3대 선행지표: ①프로그램/차익수급 턴어라운드 ②환율 1분봉 꺾임 ③아시아 증시 방어력."""
+    import datetime as _dtd
+    _now = _dtd.datetime.utcnow() + _dtd.timedelta(hours=9)
+    _t = _now.time(); _today = _now.strftime("%Y-%m-%d")
+    _OPEN = _dtd.time(9, 0); _CLOSE = _dtd.time(15, 30)
+    _in_session = (_now.weekday() < 5) and (_OPEN <= _t < _CLOSE)
+
+    with st.expander("☀️ 주간 실시간 타점 모드 (정규장 09:00~15:30)", expanded=_in_session):
+        if not _in_session:
+            st.caption("☀️ 평일 정규장(09:00~15:30)에 자동 활성화 — 현재는 장 시간 외")
+            return
+        _pf = lambda v, s="%": f"{v:+.2f}{s}" if isinstance(v, (int, float)) else "—"
+
+        # ── ① 프로그램/차익 수급 턴어라운드(선물 베이시스 프록시, -→+ 전환) ──
+        _basis = None
+        try:
+            _bp = kis_futures_basis_proxy()
+            _basis = _bp.get('basis') if _bp else None
+        except Exception:
+            pass
+        _store = st.session_state.setdefault('_day_prog_base', {})
+        _c1 = False; _prog_txt = "—"
+        if isinstance(_basis, (int, float)):
+            _lo = min(_store.get(_today, _basis), _basis); _store[_today] = _lo
+            _c1 = (_lo < 0 and _basis > 0)   # 장중 마이너스 → 플러스 전환
+            _prog_txt = f"{_basis:+.2f}%p (당일저점 {_lo:+.2f})"
+        _d1 = "🟢" if _c1 else ("🔴" if isinstance(_basis, (int, float)) and _basis < 0 else "⚪")
+
+        # ── ② 환율 1분봉 꺾임 / ③ 아시아 증시 ──
+        _di = _fetch_day_indicators()
+        _c2 = bool(_di["krw_turn"])
+        _d2 = "🟢" if _c2 else ("🔴" if _di["krw_last"] is not None else "⚪")
+        _nk, _sh = _di["nikkei"], _di["shanghai"]
+        _c3 = (isinstance(_nk, (int, float)) and _nk >= 0) or (isinstance(_sh, (int, float)) and _sh >= 0)
+        _d3 = "🟢" if _c3 else ("🔴" if (_nk is not None or _sh is not None) else "⚪")
+
+        _HD = "font-size:12px;font-weight:800;color:#fbbf24;margin-top:4px"
+        _BD = "font-size:11px;color:#cbd5e1;margin:1px 0 4px 0"
+        st.markdown(
+            f"<div style='{_HD}'>① 프로그램/차익 수급 {_d1}</div>"
+            f"<div style='{_BD}'>베이시스 {_prog_txt} · -→+ 전환 시 점등</div>"
+            f"<div style='{_HD}'>② 달러-원 1분봉 꺾임 {_d2}</div>"
+            f"<div style='{_BD}'>현재 {(_di['krw_last'] or '—')} · 당일고점 {(_di['krw_peak'] or '—')} · 고점후 하락전환 시 점등</div>"
+            f"<div style='{_HD}'>③ 아시아 증시 방어 {_d3}</div>"
+            f"<div style='{_BD}'>니케이 <b>{_pf(_nk)}</b> · 상해 <b>{_pf(_sh)}</b></div>",
+            unsafe_allow_html=True)
+
+        # ── 핵심 조건: ①프로그램 턴 + ②환율 꺾임 (③은 방어 확인 보조) ──
+        _core = _c1 and _c2
+        _nt = _get_night_target()
+        if _core:
+            st.error(f"🎯 **정규장 1차 바닥 타격 신호** — 프로그램 매수전환 + 환율 꺾임"
+                     + (" · 아시아 방어 ✅" if _c3 else " · ⚠️아시아 약세 주의"))
+        else:
+            _need = []
+            if not _c1: _need.append("프로그램 +전환")
+            if not _c2: _need.append("환율 꺾임")
+            st.caption("대기 — 핵심조건 미충족: " + " · ".join(_need))
+        st.link_button(f"📲 정규장 1차 바닥 타격 · {_nt[1]} · mPOP", _mpop_link(_nt[0]),
+                       use_container_width=True, disabled=not _core)
+
+
 with tab_c:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
     render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독(1줄 배너)
     # 🌙 야간 타격 · 🔴 전술 모드를 가로 2분할로 콤팩트 배치
+    with st.container(border=True):
+        render_day_strike_mode()          # ☀️ 정규장 09:00~15:30 실시간 타점(자동 활성)
     _tcol1, _tcol2 = st.columns(2, gap="medium")
     with _tcol1:
         with st.container(border=True):
