@@ -695,8 +695,34 @@ def kis_get_balance():
     except Exception as _e:
         return None
 
+def kis_get_investor_intraday(ticker):
+    """[V10.11] 종목별 외국인/기관 '장중 추정 가집계' 순매수(당일 T) — HHPTJ04160200.
+    일별 API(FHKST01010900)는 장중에 전일치만 주므로, 실시간 턴어라운드용은 이 추정가집계 사용.
+    반환: {'외인순매수','기관순매수'} 또는 None."""
+    try:
+        _token = kis_get_token()
+        if not _token:
+            return None
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+            headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "HHPTJ04160200", "custtype": "P"},
+            params={"MKSC_SHRN_ISCD": ticker}, timeout=5)
+        _o2 = _res.json().get("output2", [])
+        if isinstance(_o2, list) and _o2:
+            # 시간대별 누적 추정 — 가장 최근(마지막) 항목 = 현재 장중 추정
+            _last = _o2[-1] if isinstance(_o2[-1], dict) else _o2[0]
+            _frn = int(str(_last.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+            _org = int(str(_last.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+            if _frn or _org:
+                return {"외인순매수": _frn, "기관순매수": _org}
+    except Exception:
+        pass
+    return None
+
+
 def kis_get_investor(ticker):
-    """외인/기관 순매수 조회"""
+    """외인/기관 순매수 조회(일별 FHKST01010900 — 장중엔 전일치)"""
     try:
         _token  = kis_get_token()
         if not _token: return None
@@ -783,20 +809,22 @@ def fetch_top2_supply(token):
     for _tk, _nm in _TOP2_SUPPLY_TARGETS:
         _rec = {'name': _nm, '현재가': None, '등락률': None,
                 '외인순매수': None, '기관순매수': None, 'ok': False}
-        # (1) 투자자 수급 — 외인/기관 누적 순매수(주)
+        # (1) 투자자 수급 — [V10.11] 당일 T 장중 추정가집계(HHPTJ04160200) 우선
         try:
-            _ri = _requests.get(
-                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-investor",
-                headers={**_hdr_base, "tr_id": "FHKST01010900"},
-                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _tk}, timeout=5)
-            _oi = _ri.json().get("output", [])
-            if isinstance(_oi, list) and _oi and isinstance(_oi[0], dict):
-                _l = _oi[0]
-                _rec['외인순매수'] = int(str(_l.get("frgn_ntby_qty", 0)).replace(",", "") or 0)
-                _rec['기관순매수'] = int(str(_l.get("orgn_ntby_qty", 0)).replace(",", "") or 0)
+            _re = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                headers={**_hdr_base, "tr_id": "HHPTJ04160200"},
+                params={"MKSC_SHRN_ISCD": _tk}, timeout=5)
+            _o2 = _re.json().get("output2", [])
+            if isinstance(_o2, list) and _o2:
+                _le = _o2[-1] if isinstance(_o2[-1], dict) else _o2[0]
+                _f = int(str(_le.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+                _o = int(str(_le.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+                if _f or _o:
+                    _rec['외인순매수'] = _f; _rec['기관순매수'] = _o; _rec['출처'] = 'KIS실시간'
         except Exception as _e:
-            _lg.warning("fetch_top2_supply[%s] 투자자 조회 실패: %s: %s", _tk, type(_e).__name__, _e)
-        # KIS 투자자 API가 빈 값(장마감/미제공)이면 네이버 전일 수급으로 폴백(순수 네트워크=캐시 안전)
+            _lg.warning("fetch_top2_supply[%s] 추정가집계 실패: %s: %s", _tk, type(_e).__name__, _e)
+        # 실시간 추정이 비면 네이버 전일 수급으로 폴백(순수 네트워크=캐시 안전)
         if not _rec['외인순매수'] and not _rec['기관순매수']:
             _nv = _md_investor_naver(_tk)
             if _nv:
@@ -6765,14 +6793,18 @@ def _md_lower_tail(_o, _h, _l, _c, _ratio=0.33):
 
 
 def _md_investor(code):
-    """종목별 외국인/기관 순매수 — KIS(장중·주) → 네이버(전일·주) → pykrx(전일·원) 순 폴백.
-    KIS 투자자 API(FHKST01010900) 빈 값·pykrx 클라우드 차단에도 수급을 최대한 채움.
-    반환: {'외인': int, '기관': int, 'unit': '주'|'원', 'src': str} 또는 None."""
-    _k = kis_get_investor(code)
+    """종목별 외국인/기관 순매수 — [V10.11] KIS 장중 추정가집계(당일 실시간) → KIS 일별(전일)
+    → 네이버(전일) → pykrx(전일) 순 폴백. 반환 {'외인','기관','unit','src'} 또는 None.
+    src: 'KIS실시간'(당일 T) / 'KIS(전일)' / 'naver(전일)' / 'pykrx(전일)'."""
+    _iv = kis_get_investor_intraday(code)   # 1순위: 당일 T 장중 추정(실시간)
+    if _iv:
+        return {'외인': int(_iv.get('외인순매수', 0)), '기관': int(_iv.get('기관순매수', 0)),
+                'unit': '주', 'src': 'KIS실시간'}
+    _k = kis_get_investor(code)             # 2순위: KIS 일별(장중엔 전일)
     if _k:
         return {'외인': int(_k.get('외인순매수', 0)), '기관': int(_k.get('기관순매수', 0)),
-                'unit': '주', 'src': 'KIS'}
-    _nv = _md_investor_naver(code)   # 폴백2: 네이버(클라우드 친화)
+                'unit': '주', 'src': 'KIS(전일)'}
+    _nv = _md_investor_naver(code)          # 3순위: 네이버(전일)
     if _nv:
         return _nv
     try:
@@ -6984,7 +7016,7 @@ def render_manju_dolpanti_briefing():
             _chg = _pr.get('등락률', 0.0)
             _px = _pr.get('현재가')
             _pxs = f"{int(_px):,}" if isinstance(_px, (int, float)) and _px > 0 else "—"
-            _src = "(전일)" if _inv.get('src') != 'KIS' else ""
+            _src = "" if _inv.get('src') == 'KIS실시간' else "(전일)"
             _status = ("⏰ EXIT" if _exit else "🔴 매수전환" if _turn else "감시")
             _manju_rows.append({
                 "종목명(코드)": f"{_n} ({_c})",
