@@ -1108,6 +1108,38 @@ def render_manju_scalp_monitor(targets=None):
 #   - W1 시간 게이트(15:00~15:30 정규막판 / 18:00~20:00 NXT야간) 곱셈 오버라이드
 #   - 하드 오버라이드: 현금30% 미만→전면 Mute, 레짐 급감→가중치×0.5, 익절/손절 알림
 # ══════════════════════════════════════════════════════════════════════════
+# ⚠️ 위젯은 탭 렌더(파일 상단부 실행) 시점에 호출되므로, 그 시점에 아직 정의되지 않은
+#    후반부 심볼(_MD_TARGETS/_md_investor/_md_lower_tail 등)에 의존하면 NameError.
+#    → 아래 자체 타겟/헬퍼로 격리(앞쪽 정의 함수만 사용).
+_DOL_DEFAULT_TARGETS = [
+    ("005930", "삼성전자"), ("000660", "SK하이닉스"), ("042700", "한미반도체"),
+    ("196170", "알테오젠"), ("247540", "에코프로비엠"), ("035420", "NAVER"),
+]
+
+
+def _dol_lower_tail(_o, _h, _l, _c, _ratio=0.33):
+    """당일 캔들 아래꼬리 판정 — (min(시,종)-저) ≥ 전체범위×ratio. (self-contained)"""
+    if not all(isinstance(_v, (int, float)) and _v > 0 for _v in (_o, _h, _l, _c)):
+        return False
+    _rng = _h - _l
+    return bool(_rng > 0 and (min(_o, _c) - _l) >= _rng * _ratio)
+
+
+def _dol_investor(code):
+    """외인·기관 순매수 — KIS 실시간 추정(당일) → KIS 일별(전일) → 네이버(전일) 순 폴백.
+    파일 앞쪽 정의 함수만 사용(탭 렌더 시점 안전). 반환 {'외인','기관','src'} 또는 None."""
+    _iv = kis_get_investor_intraday(code)
+    if _iv:
+        return {"외인": int(_iv.get("외인순매수", 0)), "기관": int(_iv.get("기관순매수", 0)), "src": "KIS실시간"}
+    _k = kis_get_investor(code)
+    if _k:
+        return {"외인": int(_k.get("외인순매수", 0)), "기관": int(_k.get("기관순매수", 0)), "src": "KIS(전일)"}
+    _nv = _md_investor_naver(code)
+    if _nv:
+        return {"외인": int(_nv.get("외인", 0)), "기관": int(_nv.get("기관", 0)), "src": _nv.get("src", "naver")}
+    return None
+
+
 _DOL_WEIGHTS = {"W2": 35, "W3": 25, "W4": 20, "W5": 10, "W6": 10}
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
@@ -1167,8 +1199,8 @@ def _dolpanty_score(rec, gate_open, regime_halve):
 def render_dolpanty_swing_monitor(targets=None):
     """[돌팬티式 종가 베팅 감시 위젯] 3대 코어 패널 렌더 — 타이밍/엔트리 시그널/리스크·자금.
     W1 시간 게이트·가중치 총점·등급 매핑·하드 오버라이드(현금30%·레짐·익절/손절) 반영.
-    기존 헬퍼(fetch_ohlcv·calc_indicators·_md_lower_tail·_md_investor) 재사용. 예외 전파 없음."""
-    _tg = targets or _MD_TARGETS
+    헬퍼(fetch_ohlcv·calc_indicators·_dol_lower_tail·_dol_investor) 사용 — 탭 렌더 시점 안전. 예외 전파 없음."""
+    _tg = targets or _DOL_DEFAULT_TARGETS
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _gate, _glabel = _dolpanty_gate_open(_now)
     _badge = ("<span style='background:#16a34a;color:#fff;padding:2px 8px;border-radius:8px;"
@@ -1225,7 +1257,7 @@ def render_dolpanty_swing_monitor(targets=None):
         except Exception:
             pass
         try:
-            _iv = _md_investor(_c)
+            _iv = _dol_investor(_c)
             if _iv:
                 _r["기관"] = int(_iv.get("기관", 0)); _r["외인"] = int(_iv.get("외인", 0))
                 _r["src"] = _iv.get("src")
@@ -1247,7 +1279,7 @@ def render_dolpanty_swing_monitor(targets=None):
     with _c1:
         st.markdown("**① 타이밍·셋업 (아래꼬리/20MA)**")
         for r in _recs:
-            _tail = _md_lower_tail(r["시가"], r["고가"], r["저가"], r["현재가"])
+            _tail = _dol_lower_tail(r["시가"], r["고가"], r["저가"], r["현재가"])
             _ma_ok = bool(r["MA20"] and r["현재가"] and r["현재가"] > r["MA20"])
             _cc = "#ef4444" if (r["등락률"] or 0) < 0 else "#16a34a"
             st.markdown(
