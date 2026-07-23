@@ -1025,6 +1025,9 @@ def render_manju_scalp_monitor(targets=None):
         except Exception: pass
         st.rerun()
     _rc2.caption(f"⏱ 수급 45초 캐시 · 시세 실시간 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
+    _mv = st.session_state.get("_macro_verdict") or {}
+    if _mv.get("block"):
+        st.warning(f"🌐 매크로 교차검증: {_mv.get('text','')} — 신규 진입 보류 권고")
     if not _gate:
         st.caption("⛔ 제로아워(09:00~10:00) 밖 — 신규 진입 mute · 감시/리스크는 계속 작동")
     if not kis_available():
@@ -1289,6 +1292,9 @@ def render_dolpanty_swing_monitor(targets=None):
         except Exception: pass
         st.rerun()
     _rc2.caption(f"⏱ 시세·수급 실시간 · 20MA 30분 캐시 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
+    _mv = st.session_state.get("_macro_verdict") or {}
+    if _mv.get("block"):
+        st.warning(f"🌐 매크로 교차검증: {_mv.get('text','')} — 신규 종가베팅 보류 권고")
     if not _gate:
         st.caption(f"⛔ 게이트 밖({_glabel}) — 신규 진입 mute · 감시/리스크는 계속 작동")
     if not kis_available():
@@ -2921,6 +2927,162 @@ def get_wti_oil():
         st.session_state['_last_wti'] = _val
         return _val
     return st.session_state.get('_last_wti', None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🌐 매크로 3대 트리거 (5AI 교차검증) — 나스닥선물·반도체동조·WTI리스크
+#   Gemini 지시 V6.1: 핵심종목 진입/오버나잇 결정 시 상시 교차검증
+#   ① NQ선물 08:00 기준 대비 -0.2%↓ 차단 / +0.5%↑ 긍정  ② SOX+빅테크 동조상승
+#   ③ WTI +2%↑ 급등 시 리스크오프  · SK하이닉스 ADR 고프리미엄 구조 기본변수 참고
+# ══════════════════════════════════════════════════════════════════════════
+_MACRO_NQ_BLOCK  = -0.2    # 나스닥선물 차단 임계(%)
+_MACRO_NQ_GO     =  0.5    # 나스닥선물 긍정 진입 임계(%)
+_MACRO_WTI_RISK  =  2.0    # WTI 급등 리스크오프 임계(%)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_macro_triggers():
+    """매크로 3대 트리거 원천 데이터 — NQ선물(08:00 KST 기준 대비)·SOX+반도체 빅테크·WTI.
+    yfinance 순수 페치(session_state 미접근). 실패는 항목별 격리."""
+    import yfinance as _yf
+    import datetime as _dmt
+    _out = {"ok": False}
+    # ① 나스닥 선물 — 08:00 KST 기준점 대비 현재 등락(%)
+    try:
+        _t = _yf.Ticker("NQ=F")
+        _cur = None
+        try:
+            _cur = float(_t.fast_info.last_price)
+        except Exception:
+            pass
+        _ref, _refsrc = None, "전일종가"
+        try:
+            _hi = _t.history(period="2d", interval="15m")
+            if _hi is not None and not _hi.empty:
+                _idx = _hi.index
+                try:
+                    _idx = _idx.tz_convert("Asia/Seoul")
+                except Exception:
+                    _idx = _idx.tz_localize("UTC").tz_convert("Asia/Seoul")
+                _now = _dmt.datetime.utcnow() + _dmt.timedelta(hours=9)
+                _today = _now.date()
+                _cands = [float(_hi["Close"].iloc[_i]) for _i, _ts in enumerate(_idx)
+                          if _ts.date() == _today and _ts.hour == 8]
+                if _cands:
+                    _ref, _refsrc = _cands[0], "08:00 KST"
+                if _cur is None:
+                    _cur = float(_hi["Close"].dropna().iloc[-1])
+        except Exception:
+            pass
+        if _ref is None:
+            try:
+                _hd = _t.history(period="5d", interval="1d")
+                _ref = float(_hd["Close"].dropna().iloc[-1])
+            except Exception:
+                pass
+        if _cur and _ref:
+            _out["nq_pct"] = (_cur / _ref - 1) * 100
+            _out["nq_ref_src"] = _refsrc
+    except Exception:
+        pass
+    # ② 반도체 섹터 동조화 — 필라델피아 반도체 + 빅테크 프리마켓 추세
+    _semi = {}
+    for _nm, _sym in [("SOX", "^SOX"), ("NVDA", "NVDA"), ("AVGO", "AVGO"), ("MU", "MU")]:
+        try:
+            _fi = _yf.Ticker(_sym).fast_info
+            _l = float(_fi.last_price); _p = float(_fi.previous_close)
+            if _l > 0 and _p > 0:
+                _semi[_nm] = (_l / _p - 1) * 100
+        except Exception:
+            pass
+    _out["semi"] = _semi
+    # ③ WTI 원유 — 전일 대비 급등(%)
+    try:
+        _h = _yf.Ticker("CL=F").history(period="5d")
+        _c = _h["Close"].dropna()
+        if len(_c) >= 2:
+            _out["wti_pct"] = (float(_c.iloc[-1]) / float(_c.iloc[-2]) - 1) * 100
+            _out["wti"] = float(_c.iloc[-1])
+    except Exception:
+        pass
+    _out["ok"] = ("nq_pct" in _out) or bool(_semi) or ("wti_pct" in _out)
+    return _out
+
+
+def _macro_verdict(d):
+    """3대 트리거 종합 판정 → (verdict_text, color, block_bool). block_bool=True면 신규매수 차단."""
+    _nq = d.get("nq_pct")
+    _wti = d.get("wti_pct")
+    _semi = d.get("semi", {}) or {}
+    _sox = _semi.get("SOX")
+    _peers = [v for k, v in _semi.items() if k != "SOX"]
+    _ups = sum(1 for v in _peers if v > 0)
+    _semi_sync = (_sox is not None and _sox > 0) and (len(_peers) > 0 and _ups >= max(1, round(len(_peers) * 0.6)))
+    _riskoff = (_wti is not None and _wti >= _MACRO_WTI_RISK)
+    _nq_block = (_nq is not None and _nq <= _MACRO_NQ_BLOCK)
+    _nq_go = (_nq is not None and _nq >= _MACRO_NQ_GO)
+    if _riskoff or _nq_block:
+        return ("🔴 리스크오프 · 신규매수 차단(현금 방어)", "#ef4444", True)
+    if _nq_go and _semi_sync:
+        return ("🟢 진입 허용 (매크로 3대 양호)", "#22c55e", False)
+    return ("🟡 중립 · 선별 진입 (트리거 미충족)", "#f59e0b", False)
+
+
+def render_macro_triggers_panel():
+    """🌐 매크로 3대 트리거 교차검증 패널 — 실전 관제탑 상단 상시 표시. 예외 전파 없음."""
+    _d = fetch_macro_triggers()
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _verd, _vc, _block = _macro_verdict(_d)
+    st.session_state["_macro_verdict"] = {"text": _verd, "block": _block}
+    # 종합 배너
+    st.markdown(
+        f"<div style='background:{_vc}22;border:1px solid {_vc};border-radius:8px;"
+        f"padding:6px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center'>"
+        f"<span style='font-weight:900;color:{_vc};font-size:14px'>🌐 매크로 종합: {_verd}</span>"
+        f"<span style='color:#8b93a7;font-size:11px'>{_now.strftime('%H:%M:%S')} KST · 120초 캐시</span></div>",
+        unsafe_allow_html=True)
+    if not _d.get("ok"):
+        st.caption("매크로 데이터 수신 대기 (yfinance) — 잠시 후 갱신")
+        return
+    _nq = _d.get("nq_pct"); _wti = _d.get("wti_pct"); _semi = _d.get("semi", {}) or {}
+    _sox = _semi.get("SOX")
+    # 3행 트리거 테이블
+    def _c(v):  # 등락 색상
+        return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
+    def _f(v):
+        return f"{v:+.2f}%" if isinstance(v, (int, float)) else "—"
+    # ① NQ
+    if _nq is None:      _nq_st = "<span style='color:#94a3b8'>데이터 대기</span>"
+    elif _nq <= _MACRO_NQ_BLOCK: _nq_st = "<b style='color:#ef4444'>🔴 차단 (−0.2%↓)</b>"
+    elif _nq >= _MACRO_NQ_GO:    _nq_st = "<b style='color:#22c55e'>🟢 긍정 (+0.5%↑)</b>"
+    else:                _nq_st = "<span style='color:#f59e0b'>🟡 중립</span>"
+    # ② 반도체 동조
+    _peers = [v for k, v in _semi.items() if k != "SOX"]; _ups = sum(1 for v in _peers if v > 0)
+    _sync = (_sox is not None and _sox > 0) and (len(_peers) > 0 and _ups >= max(1, round(len(_peers)*0.6)))
+    _semi_st = ("<b style='color:#22c55e'>🟢 동반 상승</b>" if _sync
+                else "<span style='color:#f59e0b'>🟡 동조 미확인</span>" if _semi
+                else "<span style='color:#94a3b8'>데이터 대기</span>")
+    _semi_detail = " · ".join(f"{k} <span style='color:{_c(v)}'>{_f(v)}</span>" for k, v in _semi.items()) or "—"
+    # ③ WTI
+    if _wti is None:     _wti_st = "<span style='color:#94a3b8'>데이터 대기</span>"
+    elif _wti >= _MACRO_WTI_RISK: _wti_st = "<b style='color:#ef4444'>🔴 급등 리스크오프</b>"
+    else:                _wti_st = "<span style='color:#16a34a'>🟢 안정</span>"
+    _rows = [
+        ("① 나스닥 선물", f"{_f(_nq)} <span style='color:#64748b'>({_d.get('nq_ref_src','기준')} 대비)</span>", _nq_st),
+        ("② 반도체 동조", _semi_detail, _semi_st),
+        ("③ WTI 원유", f"{_f(_wti)}" + (f" <span style='color:#64748b'>(${_d.get('wti'):.1f})</span>" if _d.get('wti') else ""), _wti_st),
+    ]
+    _tr = "".join(
+        f"<tr style='background:{'#0f172a' if _i%2==0 else '#111c33'}'>"
+        f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_a}</td>"
+        f"<td style='padding:5px 8px;color:#cbd5e1;font-size:11px'>{_b}</td>"
+        f"<td style='padding:5px 8px'>{_c2}</td></tr>"
+        for _i, (_a, _b, _c2) in enumerate(_rows))
+    st.markdown(
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        f"border:1px solid #1e293b;border-radius:8px'><tbody>{_tr}</tbody></table></div>",
+        unsafe_allow_html=True)
+    st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속 구조 (매크로 기본변수)")
 
 
 def _clamp(x, lo, hi):
@@ -5816,6 +5978,12 @@ with tab_f:
     render_morning_briefing_tab()
 
 with tab_g:
+    try:
+        render_macro_triggers_panel()
+    except Exception as _mce:
+        import logging as _lg_mc
+        _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
+        st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
     _mj_sub, _dp_sub = st.tabs(["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)"])
     with _mj_sub:
         try:
