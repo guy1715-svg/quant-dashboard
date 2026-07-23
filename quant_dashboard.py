@@ -5691,27 +5691,27 @@ def render_morning_briefing_tab():
 
 
 tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g = st.tabs(
-    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "⚡ 만쥬式"])
+    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "🎯 실전 관제탑"])
 
 with tab_f:
     render_morning_briefing_tab()
 
 with tab_g:
-    _mj_sub, _dp_sub = st.tabs(["⚡ 만쥬式(오전 초단타)", "🌒 돌팬티式(종가 베팅)"])
+    _mj_sub, _dp_sub = st.tabs(["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)"])
     with _mj_sub:
         try:
             render_manju_scalp_monitor()
         except Exception as _mje:
-            import logging as _lg_mj
-            _lg_mj.warning("만쥬式 위젯 렌더 실패: %s: %s", type(_mje).__name__, _mje)
-            st.caption("⚠️ 만쥬式 위젯 일시 비활성 (데이터 지연)")
+            import traceback as _tbmj
+            st.error(f"⚠️ 만쥬式 위젯 오류 — {type(_mje).__name__}: {_mje}")
+            st.caption(_tbmj.format_exc().splitlines()[-1])
     with _dp_sub:
         try:
             render_dolpanty_swing_monitor()
         except Exception as _dpe:
-            import logging as _lg_dp
-            _lg_dp.warning("돌팬티式 위젯 렌더 실패: %s: %s", type(_dpe).__name__, _dpe)
-            st.caption("⚠️ 돌팬티式 위젯 일시 비활성 (데이터 지연)")
+            import traceback as _tbdp
+            st.error(f"⚠️ 돌팬티式 위젯 오류 — {type(_dpe).__name__}: {_dpe}")
+            st.caption(_tbdp.format_exc().splitlines()[-1])
 
 
 with tab_a:
