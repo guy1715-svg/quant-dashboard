@@ -1018,10 +1018,16 @@ def render_manju_scalp_monitor(targets=None):
         f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
         f"09:00~10:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
+    _rc1, _rc2 = st.columns([1, 4])
+    if _rc1.button("🔄 새로고침", key="_manju_refresh", use_container_width=True):
+        try: fetch_manju_scalp_data.clear()
+        except Exception: pass
+        st.rerun()
+    _rc2.caption(f"⏱ 수급 45초 캐시 · 시세 실시간 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
     if not _gate:
-        st.info("⛔ 제로아워(09:00~10:00) 밖 — 신규 진입 시그널 mute(관망). 감시·리스크 패널은 계속 작동합니다.")
+        st.caption("⛔ 제로아워(09:00~10:00) 밖 — 신규 진입 mute · 감시/리스크는 계속 작동")
     if not kis_available():
-        st.warning("⚠️ KIS 미연결 — 실시간 시세/수급 없이 게이트만 표시됩니다.")
+        st.warning("⚠️ KIS 미연결 — 게이트만 표시")
         return
     _tok = kis_get_token()
     if not _tok:
@@ -1238,6 +1244,12 @@ def render_dolpanty_swing_monitor(targets=None):
         f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
         f"15:00~15:30 · 18:00~20:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
+    _rc1, _rc2 = st.columns([1, 4])
+    if _rc1.button("🔄 새로고침", key="_dol_refresh", use_container_width=True):
+        try: fetch_ohlcv.clear()
+        except Exception: pass
+        st.rerun()
+    _rc2.caption(f"⏱ 시세·수급 실시간 · 20MA 30분 캐시 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
     if not _gate:
         st.caption(f"⛔ 게이트 밖({_glabel}) — 신규 진입 mute · 감시/리스크는 계속 작동")
     if not kis_available():
