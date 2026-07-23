@@ -3147,8 +3147,9 @@ def fetch_sector_moneyflow(token, sectors):
     _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
     for _sname, _stocks in sectors:
         _net, _cnt, _src = 0, 0, None
+        _detail = []   # 종목별 세부(드릴다운용)
         for _code, _nm in _stocks:
-            _v = None
+            _v, _vsrc = None, None
             try:
                 _re = _requests.get(
                     f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
@@ -3162,17 +3163,18 @@ def fetch_sector_moneyflow(token, sectors):
                             _le = _row; break
                     if _le:
                         _v = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
-                        _src = "KIS실시간"
+                        _vsrc = "KIS실시간"
             except Exception:
                 pass
             if _v is None:  # 실시간 0/빈값 → 네이버 전일 실측
                 _nv = _md_investor_naver(_code)
                 if _inv_valid(_nv):
                     _v = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
-                    _src = _src or "naver(전일)"
+                    _vsrc = "naver(전일)"
+            _detail.append({"code": _code, "name": _nm, "net": _v, "src": _vsrc})
             if _v is not None:
-                _net += _v; _cnt += 1
-        _out[_sname] = {"net": _net, "cnt": _cnt, "src": _src}
+                _net += _v; _cnt += 1; _src = _src or _vsrc
+        _out[_sname] = {"net": _net, "cnt": _cnt, "src": _src, "stocks": _detail}
     return {"_ok": bool(_out), "sectors": _out}
 
 
@@ -3208,10 +3210,17 @@ def render_money_tour_panel():
     _hist = st.session_state.setdefault("_moneytour_hist", [])
     _stamp = _now.strftime("%H:%M")
     _cur = {_s: _secs[_s].get("net", 0) for _s in _secs}
+    # 종목별 스냅샷(드릴다운 Δ용)
+    _csnet = {}
+    for _s in _secs:
+        for _st in _secs[_s].get("stocks", []):
+            if _st.get("net") is not None:
+                _csnet[_st["code"]] = _st["net"]
     if not _hist or _hist[-1].get("t") != _stamp:
-        _hist.append({"t": _stamp, "net": _cur})
+        _hist.append({"t": _stamp, "net": _cur, "snet": _csnet})
         del _hist[:-12]   # 최근 12개(분)만 유지
     _prev = _hist[-2]["net"] if len(_hist) >= 2 else {}
+    _prev_snet = _hist[-2].get("snet", {}) if len(_hist) >= 2 else {}
     # 섹터별 판정
     _rows = []
     for _s, _info in _secs.items():
@@ -3276,6 +3285,64 @@ def render_money_tour_panel():
         f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
     st.caption("💡 순매수=외인+기관 합산 · Δ=직전 스냅샷 대비 증감(연속 꺾임/유입 추적) · "
                "매크로 정상 + 이탈원→유입처 동시 성립 시 🚀 전조 시그널")
+
+    # ── 종목 드릴다운 렌더러 ──────────────────────────────────────────────
+    def _stock_rows_html(_sector_name):
+        _stocks = (_secs.get(_sector_name) or {}).get("stocks", [])
+        _sr = sorted(_stocks, key=lambda s: (s.get("net") if s.get("net") is not None else -1e18), reverse=True)
+        _out_html = []
+        for _j, _sst in enumerate(_sr):
+            _snet = _sst.get("net")
+            _spv = _prev_snet.get(_sst["code"])
+            _sdl = (_snet - _spv) if (isinstance(_snet, (int, float)) and isinstance(_spv, (int, float))) else None
+            # 수급 강도(누적 순매수 절대량 기준)
+            if _snet is None:      _stg = "<span style='color:#94a3b8'>· 수급 대기</span>"
+            elif abs(_snet) >= 100000: _stg = ("<b style='color:#22c55e'>🟢🟢🟢 강</b>" if _snet > 0 else "<b style='color:#ef4444'>🔴🔴🔴 강</b>")
+            elif abs(_snet) >= 30000:  _stg = ("<span style='color:#16a34a'>🟢🟢 중</span>" if _snet > 0 else "<span style='color:#ef4444'>🔴🔴 중</span>")
+            else:                  _stg = ("<span style='color:#16a34a'>🟢 약</span>" if _snet > 0 else "<span style='color:#ef4444'>🔴 약</span>" if _snet < 0 else "⚪")
+            _sc2 = _c(_snet)
+            _sdc = _c(_sdl)
+            _sarrow = ("▲" if (_sdl is not None and _sdl > 0) else "▼" if (_sdl is not None and _sdl < 0) else "—")
+            _sdtxt = (f"{_sarrow} {_sdl:+,}" if _sdl is not None else "· 수집중")
+            _nettxt = (f"{_snet:+,}" if _snet is not None else "—")
+            _bg2 = "#0f172a" if _j % 2 == 0 else "#111c33"
+            _out_html.append(
+                f"<tr style='background:{_bg2}'>"
+                f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_sst['name']}"
+                f" <span style='color:#475569;font-size:10px'>{_sst['code']}</span></td>"
+                f"<td style='padding:5px 8px;text-align:right;color:{_sc2};font-weight:700'>{_nettxt}</td>"
+                f"<td style='padding:5px 8px;text-align:right;color:{_sdc}'>{_sdtxt}</td>"
+                f"<td style='padding:5px 8px;text-align:center'>{_stg}</td></tr>")
+        return (
+            "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+            "border:1px solid #1e293b;border-radius:6px'><thead>"
+            "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+            "<th style='padding:5px 8px;text-align:left'>종목명</th>"
+            "<th style='padding:5px 8px;text-align:right'>개별 순매수(주)</th>"
+            "<th style='padding:5px 8px;text-align:right'>직전대비 Δ</th>"
+            "<th style='padding:5px 8px;text-align:center'>수급 강도</th></tr></thead>"
+            f"<tbody>{''.join(_out_html)}</tbody></table></div>")
+
+    # ── 이탈원 ➔ 유입처 핵심 주도주 매칭(자금 이동 실체 증명) ──────────────
+    if _inflow["sector"] != _outflow["sector"]:
+        st.markdown(f"**🔀 자금 이동 실체: <span style='color:#ef4444'>{_outflow['sector']}</span> "
+                    f"➔ <span style='color:#22c55e'>{_inflow['sector']}</span> 주도주 매칭**",
+                    unsafe_allow_html=True)
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            st.caption(f"🔴 이탈원 · {_outflow['sector']} (매도 주도주)")
+            st.markdown(_stock_rows_html(_outflow["sector"]), unsafe_allow_html=True)
+        with _mc2:
+            st.caption(f"🟢 유입처 · {_inflow['sector']} (매수 주도주)")
+            st.markdown(_stock_rows_html(_inflow["sector"]), unsafe_allow_html=True)
+
+    # ── 전체 섹터 드릴다운(확장) ──────────────────────────────────────────
+    st.markdown("**🔎 섹터별 종목 드릴다운**")
+    for r in _rows:
+        _s = r["sector"]; _net = r["net"]
+        _flag = ("🔴이탈" if _net < 0 else "🟢유입" if _net > 0 else "⚪중립")
+        with st.expander(f"{_flag}  {_s}  ·  누적 {_net:+,}주  ({r['cnt']}종목)", expanded=False):
+            st.markdown(_stock_rows_html(_s), unsafe_allow_html=True)
 
 
 def _clamp(x, lo, hi):
