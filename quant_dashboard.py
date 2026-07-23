@@ -638,8 +638,8 @@ def kis_get_price(ticker):
         pass
     return None
 
-def kis_get_balance():
-    """KIS API 실제 잔고 조회"""
+def kis_get_balance(silent=False):
+    """KIS API 실제 잔고 조회. silent=True면 계좌번호 누락 경고를 띄우지 않고 None 반환."""
     try:
         _token  = kis_get_token()
         if not _token: return None
@@ -648,7 +648,8 @@ def kis_get_balance():
         # [V10.2 P2] 하드 인덱싱 → .get() + 누락 시 graceful degradation(실계좌 잔고만 건너뜀)
         _acc_no = st.secrets.get("KIS_ACCOUNT_NO")
         if not _acc_no:
-            st.warning("⚠️ KIS 계좌번호(KIS_ACCOUNT_NO) 설정 키가 누락되었습니다 — 실계좌 잔고 조회를 건너뜁니다.")
+            if not silent:
+                st.warning("⚠️ KIS 계좌번호(KIS_ACCOUNT_NO) 설정 키가 누락되었습니다 — 실계좌 잔고 조회를 건너뜁니다.")
             return None
         _acc_pd = st.secrets.get("KIS_ACCOUNT_PD", "01")
         _url    = _KIS_URL_BALANCE
@@ -1058,20 +1059,58 @@ def render_manju_scalp_monitor(targets=None):
         _R = st.number_input("R 손실허용금액(원)", min_value=10000, step=10000,
                              key="_manju_R_won", help="금액 기준 손절(%비율 아님) — 1R = 손실 허용 금액")
     with _gp2:
-        # 하드 오버라이드 ②: -1R 도달 → 강제청산(KIS 잔고 보유종목 손실금액 기준)
+        # 하드 오버라이드 ②: -1R 도달 → 강제청산
+        #  (a) KIS 실계좌 연동 시 자동  (b) 미연동(삼성증권 등) 시 수동 포지션 기준
+        _hit, _src = [], "미설정"
+        _bal = None
         try:
-            _bal = kis_get_balance()
-            _hit = []
-            if _bal:
-                for _h in _bal.get("holdings", []):
-                    if int(_h.get("평가손익", 0)) <= -int(_R):
-                        _hit.append(f"{_h['종목명']} ({int(_h['평가손익']):+,}원)")
-            if _hit:
-                st.error(f"🛑 -1R(-{int(_R):,}원) 손실 도달 → 강제청산: {', '.join(_hit)}")
-            else:
-                st.caption(f"🛡️ 글로벌: -1R = -{int(_R):,}원 · 💰 수익금 격리 · 슬럼프 시 시드 축소")
+            _bal = kis_get_balance(silent=True)
         except Exception:
-            st.caption(f"🛡️ 글로벌: -1R = -{int(_R):,}원 · 💰 수익금 격리 · 슬럼프 시 시드 축소")
+            _bal = None
+        if _bal and _bal.get("holdings"):
+            _src = "KIS 실계좌"
+            for _h in _bal.get("holdings", []):
+                if int(_h.get("평가손익", 0)) <= -int(_R):
+                    _hit.append(f"{_h['종목명']} ({int(_h['평가손익']):+,}원)")
+        else:
+            _src = "수동 포지션"
+            for _p in st.session_state.get("_manju_positions", []):
+                try:
+                    _tk = str(_p.get("종목코드", "")).strip().zfill(6)
+                    _avg = float(_p.get("평단", 0) or 0); _qty = int(_p.get("수량", 0) or 0)
+                    if not _tk or _avg <= 0 or _qty <= 0:
+                        continue
+                    _pr = kis_get_price(_tk) or {}
+                    _cur = _pr.get("현재가") or 0
+                    if _cur:
+                        _loss = int((_cur - _avg) * _qty)
+                        if _loss <= -int(_R):
+                            _nm = _p.get("종목명") or _tk
+                            _hit.append(f"{_nm} ({_loss:+,}원)")
+                except Exception:
+                    continue
+        if _hit:
+            st.error(f"🛑 -1R(-{int(_R):,}원) 손실 도달 → 강제청산: {', '.join(_hit)}")
+        else:
+            st.caption(f"🛡️ 글로벌({_src}): -1R = -{int(_R):,}원 · 💰 수익금 격리 · 슬럼프 시 시드 축소")
+    # 수동 포지션 입력(삼성증권 등 API 미연동 계좌용) — 접힌 서랍
+    if not (_bal and _bal.get("holdings")):
+        with st.expander("✍️ 보유 포지션 수동입력 (삼성증권 등 · -1R 감시용)", expanded=False):
+            st.caption("종목코드(6자리)·평단·수량 입력 → 현재가(KIS 실시간) 대비 손실이 -1R 도달 시 위 강제청산 알림")
+            _seed = st.session_state.get("_manju_positions") or [
+                {"종목코드": "", "종목명": "", "평단": 0, "수량": 0}]
+            _edited = st.data_editor(
+                pd.DataFrame(_seed), num_rows="dynamic", use_container_width=True,
+                key="_manju_pos_editor",
+                column_config={
+                    "종목코드": st.column_config.TextColumn("종목코드", help="6자리 (예: 005930)"),
+                    "종목명": st.column_config.TextColumn("종목명(선택)"),
+                    "평단": st.column_config.NumberColumn("평단가", min_value=0, step=100),
+                    "수량": st.column_config.NumberColumn("수량", min_value=0, step=1)})
+            try:
+                st.session_state["_manju_positions"] = _edited.to_dict("records")
+            except Exception:
+                pass
 
     # ── 통합 원-라인 테이블 (역할·시세·점수·시그널·액션 한 줄 정렬) ──────────────
     _dd = (-(_lhi - _lpx) / _lhi * 100) if (_leader_broken and _lhi) else 0.0
@@ -1261,7 +1300,7 @@ def render_dolpanty_swing_monitor(targets=None):
     # ── 현금 30% 룰(하드 오버라이드): 현금비중 < 30% → 전면 Mute ──
     _cash_mute, _cash_ratio = False, None
     try:
-        _bal = kis_get_balance()
+        _bal = kis_get_balance(silent=True)
         if _bal:
             _tot = int(_bal.get("총평가", 0)) or 0
             _cash = int(_bal.get("현금", 0)) or 0
