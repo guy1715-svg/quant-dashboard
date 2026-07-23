@@ -1044,46 +1044,14 @@ def render_manju_scalp_monitor(targets=None):
         r["_is_leader"] = (r is _leader)
     _valid.sort(key=lambda r: r["_score"], reverse=True)
 
-    _c1, _c2, _c3 = st.columns(3)
-    # ── ① 유니버스
-    with _c1:
-        st.markdown("**① 유니버스 (주도섹터·대장/후속)**")
-        st.caption(f"🥇 대장주: {_leader['name']} ({_leader_chg:+.2f}%)")
-        for r in _valid:
-            _role = "🥇대장" if r["_is_leader"] else "🥈후속"
-            _cc = "#ef4444" if (r["등락률"] or 0) < 0 else "#16a34a"
-            st.markdown(
-                f"<div style='font-size:12px'>{_role} <b>{r['name']}</b> "
-                f"<span style='color:{_cc}'>{r['등락률']:+.2f}%</span> "
-                f"<span style='color:#64748b'>· {(r['현재가'] or 0):,}원</span></div>",
-                unsafe_allow_html=True)
-    # ── ② 엔트리 시그널(가중치 총점/등급)
-    with _c2:
-        st.markdown("**② 엔트리 시그널 (가중치 총점)**")
-        for r in _valid:
-            _muted = "" if _gate else " · <span style='color:#64748b'>mute</span>"
-            _bar = int(max(0, min(r["_score"], 100)))
-            _bc = "#ef4444" if r["_score"] >= 80 else "#f59e0b" if r["_score"] >= 60 else "#64748b"
-            st.markdown(
-                f"<div style='font-size:12px;font-weight:800'>{r['name']} "
-                f"{r['_grade']} <span style='color:#8b93a7'>{r['_score']:.0f}점</span>{_muted}</div>"
-                f"<div style='background:#1e293b;border-radius:4px;height:6px;margin:2px 0 6px'>"
-                f"<div style='background:{_bc};width:{_bar}%;height:6px;border-radius:4px'></div></div>",
-                unsafe_allow_html=True)
-        st.caption("🎯 융단폭격(35)·신고가(20)·체결(15)·호가(12)·짝꿍(10)·거래대금(8)")
-    # ── ③ 리스크/자금
-    with _c3:
-        st.markdown("**③ 리스크 / 자금관리**")
-        if "_manju_R_won" not in st.session_state:
-            st.session_state["_manju_R_won"] = 300000
+    # ── 🛡️ 글로벌 통제 패널 (테이블과 분리: R 입력·계좌 경고·강제청산) ──────────
+    if "_manju_R_won" not in st.session_state:
+        st.session_state["_manju_R_won"] = 300000
+    _gp1, _gp2 = st.columns([1, 2])
+    with _gp1:
         _R = st.number_input("R 손실허용금액(원)", min_value=10000, step=10000,
                              key="_manju_R_won", help="금액 기준 손절(%비율 아님) — 1R = 손실 허용 금액")
-        # 하드 오버라이드 ①: 대장주 꺾임 → 후속주 즉시 시장가 손절
-        if _leader_broken:
-            _foll = [r["name"] for r in _valid if not r["_is_leader"]]
-            st.error(f"🚨 대장주({_leader['name']}) 꺾임 감지 "
-                     f"(고점대비 {-(_lhi-_lpx)/_lhi*100:.1f}%) — 후속주 즉시 시장가 손절: "
-                     f"{', '.join(_foll) or '없음'}")
+    with _gp2:
         # 하드 오버라이드 ②: -1R 도달 → 강제청산(KIS 잔고 보유종목 손실금액 기준)
         try:
             _bal = kis_get_balance()
@@ -1095,10 +1063,67 @@ def render_manju_scalp_monitor(targets=None):
             if _hit:
                 st.error(f"🛑 -1R(-{int(_R):,}원) 손실 도달 → 강제청산: {', '.join(_hit)}")
             else:
-                st.caption(f"손실 컷 기준: -1R = -{int(_R):,}원 (금액 R:R)")
+                st.caption(f"🛡️ 글로벌: -1R = -{int(_R):,}원 · 💰 수익금 격리 · 슬럼프 시 시드 축소")
         except Exception:
-            st.caption(f"손실 컷 기준: -1R = -{int(_R):,}원 (금액 R:R)")
-        st.caption("💰 수익금 물리적 격리 · 슬럼프 시 시드 축소 원칙 준수")
+            st.caption(f"🛡️ 글로벌: -1R = -{int(_R):,}원 · 💰 수익금 격리 · 슬럼프 시 시드 축소")
+
+    # ── 통합 원-라인 테이블 (역할·시세·점수·시그널·액션 한 줄 정렬) ──────────────
+    _dd = (-(_lhi - _lpx) / _lhi * 100) if (_leader_broken and _lhi) else 0.0
+    _rows_html = []
+    for _i, r in enumerate(_valid):
+        _chg = r["등락률"] or 0.0
+        _px  = r["현재가"] or 0
+        _sc  = r["_score"]
+        _is_leader = r["_is_leader"]
+        _role = ("<b style='color:#fbbf24'>🥇대장</b>" if _is_leader
+                 else "<span style='color:#94a3b8'>🥈후속</span>")
+        _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+        _sc_dot = "🟢" if _sc >= 60 else "🟡" if _sc >= 40 else "🔴"
+        _sc_c   = "#22c55e" if _sc >= 60 else "#f59e0b" if _sc >= 40 else "#ef4444"
+        # 시그널 상태
+        if not _gate:      _sig = "<span style='color:#64748b'>⏸ mute (제로아워 밖)</span>"
+        elif _sc >= 80:    _sig = "<b style='color:#22c55e'>🟢 즉시타격</b>"
+        elif _sc >= 60:    _sig = "<b style='color:#22c55e'>🟢 진입 준비</b>"
+        elif _sc >= 40:    _sig = "<span style='color:#f59e0b'>🟡 관찰</span>"
+        else:              _sig = "<span style='color:#ef4444'>🔴 조건 미달</span>"
+        # 개별 액션/리스크
+        if _leader_broken and _is_leader:
+            _act = f"<b style='color:#ef4444'>🚨 대장 꺾임 (고점대비 {_dd:.1f}%)</b>"
+        elif _leader_broken and not _is_leader:
+            _act = "<b style='color:#ef4444'>🚨 즉시 시장가 손절 (대장 꺾임)</b>"
+        elif not _gate:
+            _act = "<span style='color:#64748b'>⏸ 관망</span>"
+        elif _sc >= 80:
+            _act = "<b style='color:#22c55e'>🟢 돌파 매수 승부</b>"
+        elif _sc >= 60:
+            _act = "<b style='color:#22c55e'>🟢 진입 대기</b>"
+        else:
+            _act = "<span style='color:#ef4444'>🔴 관망</span>"
+        _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
+        _rows_html.append(
+            f"<tr style='background:{_bg}'>"
+            f"<td style='padding:6px 8px;text-align:center'>{_role}</td>"
+            f"<td style='padding:6px 8px;font-weight:800;color:#e2e8f0'>{r['name']}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:#cbd5e1'>{_px:,}"
+            f" <span style='color:{_chg_c}'>({_chg:+.2f}%)</span></td>"
+            f"<td style='padding:6px 8px;text-align:center;color:{_sc_c};font-weight:800'>"
+            f"{_sc_dot} {_sc:.0f}</td>"
+            f"<td style='padding:6px 8px'>{_sig}</td>"
+            f"<td style='padding:6px 8px'>{_act}</td></tr>")
+    _table = (
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;"
+        "font-size:12px;border:1px solid #1e293b;border-radius:8px'>"
+        "<thead><tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:6px 8px'>역할</th>"
+        "<th style='padding:6px 8px;text-align:left'>종목</th>"
+        "<th style='padding:6px 8px;text-align:right'>현재가 (등락률)</th>"
+        "<th style='padding:6px 8px;text-align:center'>엔트리 점수</th>"
+        "<th style='padding:6px 8px;text-align:left'>시그널 상태</th>"
+        "<th style='padding:6px 8px;text-align:left'>개별 액션·리스크</th></tr></thead>"
+        f"<tbody>{''.join(_rows_html)}</tbody></table></div>")
+    st.markdown(_table, unsafe_allow_html=True)
+    st.caption("🎯 가중치: 융단폭격(35)·신고가(20)·체결(15)·호가(12)·짝꿍(10)·거래대금(8) "
+               "· 🟢진입 🟡관찰 🔴미달 · 🥇대장주=당일 등락률 최고")
 
 
 # ══════════════════════════════════════════════════════════════════════════
