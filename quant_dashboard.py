@@ -891,6 +891,216 @@ def render_top2_supply_widget(supply_data):
         else:
             st.caption(f"🟡 [{_nm}] 수급 괴리 관찰 — 하락({_chg:+.1f}%) 중 순매수 유입")
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⚡ 만쥬式 초단타 감시 위젯 (3대 코어: 유니버스·엔트리 시그널·리스크/자금)
+#   - fetch_top2_supply / render_top2_supply_widget 와 완전 호환(같은 KIS 엔드포인트 재사용)
+#   - W1 제로아워 게이트(KST 09:00~10:00) 곱셈 오버라이드 · 가중치 총점(0~100) · 등급 매핑
+#   - 하드 오버라이드: 대장주 꺾임→후속주 손절, -1R 도달→강제청산
+# ══════════════════════════════════════════════════════════════════════════
+# 유니버스 기본값(반도체 주도 대장·후속주 예시). 필요 시 targets 인자로 교체.
+_MANJU_DEFAULT_TARGETS = [
+    ("005930", "삼성전자"), ("000660", "SK하이닉스"),
+    ("042700", "한미반도체"), ("000990", "DB하이텍"),
+]
+# 시그널 가중치 테이블(2-A). W1은 곱셈 게이트(제로아워 밖=0) → total = W1 × Σ(Wi·fi).
+_MANJU_WEIGHTS      = {"W2": 35, "W3": 20, "W4": 15, "W5": 12, "W6": 10, "W7": 8}
+_MANJU_PROG_REF     = 200000       # 외인·기관 추정 순매수(프로그램 프록시) 정규화 기준(주)
+_MANJU_VOL_REF      = 3_000_000    # 거래량(거래대금 프록시) 정규화 기준(주)
+_MANJU_NEARHI_TOL   = 0.010        # 신고가/저항 근접 허용치 1.0%
+_MANJU_LEADER_BREAK = 0.015        # 대장주 꺾임 감지 임계(당일 고점 대비 -1.5%)
+
+
+def _manju_gate_open(now_kst=None):
+    """W1 제로아워 게이트: KST 09:00~10:00 이면 True(열림), 그 외 False(관망 강제)."""
+    _n = now_kst or (datetime.utcnow() + timedelta(hours=9))
+    _mins = _n.hour * 60 + _n.minute
+    return (9 * 60) <= _mins <= (10 * 60)
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def fetch_manju_scalp_data(token, targets):
+    """[만쥬式] 유니버스 종목별 현재가/등락률/고가/거래량 + 당일 외인·기관 추정 순매수.
+    ⚠️ token은 캐시 밖에서 발급해 주입 — 캐시 함수 내 session_state 미접근(오염 차단).
+    네트워크 실패는 종목·항목별 격리(부분 성공 허용) → 예외 전파/크래시 없음.
+    반환: {'_ok':bool, 'rows':[{ticker,name,현재가,등락률,고가,거래량,프로그램순매수,ok}...]}"""
+    import logging as _lg
+    if not token:
+        return {"_ok": False, "_err": "토큰 없음", "rows": []}
+    _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
+    _rows, _any = [], False
+    for _tk, _nm in targets:
+        _r = {"ticker": _tk, "name": _nm, "현재가": None, "등락률": None,
+              "고가": None, "거래량": None, "프로그램순매수": None, "출처": None, "ok": False}
+        # (1) 현재가/등락률/고가/거래량 — inquire-price(FHKST01010100)
+        try:
+            _rp = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers={**_hdr, "tr_id": "FHKST01010100"},
+                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _tk}, timeout=5)
+            _op = _rp.json().get("output", {})
+            if isinstance(_op, dict) and _op:
+                _r["현재가"] = int(str(_op.get("stck_prpr", 0)).replace(",", "") or 0)
+                _r["등락률"] = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
+                _r["고가"]  = int(str(_op.get("stck_hgpr", 0)).replace(",", "") or 0)
+                _r["거래량"] = int(str(_op.get("acml_vol", 0)).replace(",", "") or 0)
+        except Exception as _e:
+            _lg.warning("manju[%s] 현재가 실패: %s: %s", _tk, type(_e).__name__, _e)
+        # (2) 외인·기관 추정 순매수(프로그램 융단폭격 프록시) — HHPTJ04160200(당일 T)
+        try:
+            _re = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                headers={**_hdr, "tr_id": "HHPTJ04160200"},
+                params={"MKSC_SHRN_ISCD": _tk}, timeout=5)
+            _o2 = _re.json().get("output2", [])
+            if isinstance(_o2, list) and _o2:
+                _le = _o2[-1] if isinstance(_o2[-1], dict) else _o2[0]
+                _f = int(str(_le.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+                _o = int(str(_le.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+                _r["프로그램순매수"] = _f + _o
+                _r["출처"] = "KIS실시간"
+        except Exception as _e:
+            _lg.warning("manju[%s] 수급 실패: %s: %s", _tk, type(_e).__name__, _e)
+        _r["ok"] = _r["등락률"] is not None
+        _any = _any or _r["ok"]
+        _rows.append(_r)
+    return {"_ok": _any, "rows": _rows}
+
+
+def _manju_score(rec, leader_chg, gate_open):
+    """시그널 우선순위 총점(0~100) 산출 — 가중치 W1~W7(2-A) 이식.
+    total = W1_gate × Σ(Wi·fi), 각 fi는 0~1 정규화.
+    반환 (total, grade, tag, factors). gate_open=False → total 강제 0(mute)."""
+    _px   = rec.get("현재가") or 0
+    _chg  = rec.get("등락률") or 0.0
+    _hi   = rec.get("고가") or 0
+    _vol  = rec.get("거래량") or 0
+    _prog = rec.get("프로그램순매수")
+    # f2 프로그램 융단폭격(외인·기관 추정 순매수 크기)
+    _f2 = min(_prog / _MANJU_PROG_REF, 1.0) if (_prog is not None and _prog > 0) else 0.0
+    # f3 신고가/저항 근접(당일 고가를 전고 프록시로) — 현재가가 고가에 붙을수록 ↑
+    _f3 = 0.0
+    if _px > 0 and _hi > 0:
+        _f3 = max(1.0 - max((_hi - _px) / _px, 0.0) / _MANJU_NEARHI_TOL, 0.0)
+    # f4 체결강도(프록시: 당일 상승 모멘텀) — inquire-price 체결강도 미제공분 대체
+    _f4 = min(max(_chg, 0.0) / 5.0, 1.0)
+    # f5 호가 매수우위(프록시: 상승 & 순매수 동반)
+    _f5 = 1.0 if (_chg > 0 and (_prog or 0) > 0) else 0.0
+    # f6 짝꿍 갭(후속주 저평가: 대장 대비 덜 오른 정도)
+    _f6 = min(max(1.0 - (_chg / leader_chg), 0.0), 1.0) if (leader_chg and leader_chg > 0) else 0.0
+    # f7 거래량(거래대금 프록시)
+    _f7 = min(_vol / _MANJU_VOL_REF, 1.0) if _vol > 0 else 0.0
+    _w = _MANJU_WEIGHTS
+    _raw = (_w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 +
+            _w["W5"]*_f5 + _w["W6"]*_f6 + _w["W7"]*_f7)
+    _total = round((1 if gate_open else 0) * _raw, 1)
+    if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
+    elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
+    elif _total >= 40: _grade, _tag = "🟡 관찰",     "WATCH"
+    else:              _grade, _tag = "⚪ 제외",     "SKIP"
+    return _total, _grade, _tag, {"프로그램": _f2, "신고가근접": _f3, "체결강도": _f4,
+                                   "호가우위": _f5, "짝꿍갭": _f6, "거래량": _f7}
+
+
+def render_manju_scalp_monitor(targets=None):
+    """[만쥬式 초단타 감시 위젯] 3대 코어 패널 렌더 — 유니버스/엔트리 시그널/리스크·자금.
+    W1 제로아워 게이트·가중치 총점·등급 매핑·하드 오버라이드(대장 꺾임·-1R) 반영. 예외 전파 없음."""
+    _tg   = targets or _MANJU_DEFAULT_TARGETS
+    _now  = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _gate = _manju_gate_open(_now)
+    # ── 헤더 + 제로아워 게이트 배지
+    _badge = ("<span style='background:#16a34a;color:#fff;padding:2px 8px;border-radius:8px;"
+              "font-size:11px;font-weight:800'>🟢 ZERO-HOUR ACTIVE</span>" if _gate else
+              "<span style='background:#64748b;color:#fff;padding:2px 8px;border-radius:8px;"
+              "font-size:11px;font-weight:800'>🔴 관망 (제로아워 밖)</span>")
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
+        f"<div style='font-size:18px;font-weight:900;color:#e2e8f0'>⚡ 만쥬式 초단타 관제판</div>"
+        f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
+        f"09:00~10:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
+        unsafe_allow_html=True)
+    if not _gate:
+        st.info("⛔ 제로아워(09:00~10:00) 밖 — 신규 진입 시그널 mute(관망). 감시·리스크 패널은 계속 작동합니다.")
+    if not kis_available():
+        st.warning("⚠️ KIS 미연결 — 실시간 시세/수급 없이 게이트만 표시됩니다.")
+        return
+    _tok = kis_get_token()
+    if not _tok:
+        st.warning("⚠️ KIS 토큰 발급 실패 — 잠시 후 재시도.")
+        return
+    _data  = fetch_manju_scalp_data(_tok, tuple(_tg))
+    _rows  = _data.get("rows", []) if isinstance(_data, dict) else []
+    _valid = [r for r in _rows if r.get("ok")]
+    if not _valid:
+        st.caption("데이터 수신 대기 — 장중·KIS 연결 시 45초 갱신")
+        return
+    # 대장주 = 당일 등락률 최고(주도) · 대장주 꺾임(당일 고점 대비 반락) 감지
+    _leader     = max(_valid, key=lambda r: r.get("등락률") or -999)
+    _leader_chg = _leader.get("등락률") or 0.0
+    _lpx, _lhi  = _leader.get("현재가") or 0, _leader.get("고가") or 0
+    _leader_broken = (_lhi > 0 and _lpx > 0 and _leader_chg > 0
+                      and (_lhi - _lpx) / _lhi >= _MANJU_LEADER_BREAK)
+    for r in _valid:
+        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _manju_score(r, _leader_chg, _gate)
+        r["_is_leader"] = (r is _leader)
+    _valid.sort(key=lambda r: r["_score"], reverse=True)
+
+    _c1, _c2, _c3 = st.columns(3)
+    # ── ① 유니버스
+    with _c1:
+        st.markdown("**① 유니버스 (주도섹터·대장/후속)**")
+        st.caption(f"🥇 대장주: {_leader['name']} ({_leader_chg:+.2f}%)")
+        for r in _valid:
+            _role = "🥇대장" if r["_is_leader"] else "🥈후속"
+            _cc = "#ef4444" if (r["등락률"] or 0) < 0 else "#16a34a"
+            st.markdown(
+                f"<div style='font-size:12px'>{_role} <b>{r['name']}</b> "
+                f"<span style='color:{_cc}'>{r['등락률']:+.2f}%</span> "
+                f"<span style='color:#64748b'>· {(r['현재가'] or 0):,}원</span></div>",
+                unsafe_allow_html=True)
+    # ── ② 엔트리 시그널(가중치 총점/등급)
+    with _c2:
+        st.markdown("**② 엔트리 시그널 (가중치 총점)**")
+        for r in _valid:
+            _muted = "" if _gate else " · <span style='color:#64748b'>mute</span>"
+            _bar = int(max(0, min(r["_score"], 100)))
+            _bc = "#ef4444" if r["_score"] >= 80 else "#f59e0b" if r["_score"] >= 60 else "#64748b"
+            st.markdown(
+                f"<div style='font-size:12px;font-weight:800'>{r['name']} "
+                f"{r['_grade']} <span style='color:#8b93a7'>{r['_score']:.0f}점</span>{_muted}</div>"
+                f"<div style='background:#1e293b;border-radius:4px;height:6px;margin:2px 0 6px'>"
+                f"<div style='background:{_bc};width:{_bar}%;height:6px;border-radius:4px'></div></div>",
+                unsafe_allow_html=True)
+        st.caption("🎯 융단폭격(35)·신고가(20)·체결(15)·호가(12)·짝꿍(10)·거래대금(8)")
+    # ── ③ 리스크/자금
+    with _c3:
+        st.markdown("**③ 리스크 / 자금관리**")
+        if "_manju_R_won" not in st.session_state:
+            st.session_state["_manju_R_won"] = 300000
+        _R = st.number_input("R 손실허용금액(원)", min_value=10000, step=10000,
+                             key="_manju_R_won", help="금액 기준 손절(%비율 아님) — 1R = 손실 허용 금액")
+        # 하드 오버라이드 ①: 대장주 꺾임 → 후속주 즉시 시장가 손절
+        if _leader_broken:
+            _foll = [r["name"] for r in _valid if not r["_is_leader"]]
+            st.error(f"🚨 대장주({_leader['name']}) 꺾임 감지 "
+                     f"(고점대비 {-(_lhi-_lpx)/_lhi*100:.1f}%) — 후속주 즉시 시장가 손절: "
+                     f"{', '.join(_foll) or '없음'}")
+        # 하드 오버라이드 ②: -1R 도달 → 강제청산(KIS 잔고 보유종목 손실금액 기준)
+        try:
+            _bal = kis_get_balance()
+            _hit = []
+            if _bal:
+                for _h in _bal.get("holdings", []):
+                    if int(_h.get("평가손익", 0)) <= -int(_R):
+                        _hit.append(f"{_h['종목명']} ({int(_h['평가손익']):+,}원)")
+            if _hit:
+                st.error(f"🛑 -1R(-{int(_R):,}원) 손실 도달 → 강제청산: {', '.join(_hit)}")
+            else:
+                st.caption(f"손실 컷 기준: -1R = -{int(_R):,}원 (금액 R:R)")
+        except Exception:
+            st.caption(f"손실 컷 기준: -1R = -{int(_R):,}원 (금액 R:R)")
+        st.caption("💰 수익금 물리적 격리 · 슬럼프 시 시드 축소 원칙 준수")
+
+
 def kis_get_org_net_daily(ticker, days=10):
     """종목별 일별 '기관 순매수 수량' 리스트 — KIS FHKST01010900(외인기관 추정).
     반환: (org_list_oldest_first, foreign_total) 또는 (None, 0).
@@ -5170,13 +5380,29 @@ def _get_home_etf_top(n=6):
     return rows[:n]
 
 
+# [V10.12] 브리핑 업종별 구성 — 국내(KIS 실시간) + 미국(yfinance)
+_BRIEF_SECTORS = {
+    "반도체": {"kr": [("000660", "SK하이닉스"), ("005930", "삼성전자"), ("042700", "한미반도체")],
+             "us": [("엔비디아", "NVDA"), ("마이크론", "MU"), ("TSMC", "TSM"), ("AMD", "AMD"), ("브로드컴", "AVGO")]},
+    "2차전지": {"kr": [("373220", "LG에너지솔루션"), ("006400", "삼성SDI"), ("247540", "에코프로비엠")],
+              "us": [("테슬라", "TSLA"), ("앨버말", "ALB"), ("퀀텀스케이프", "QS")]},
+    "바이오": {"kr": [("207940", "삼성바이오로직스"), ("068270", "셀트리온"), ("196170", "알테오젠")],
+             "us": [("일라이릴리", "LLY"), ("모더나", "MRNA"), ("암젠", "AMGN")]},
+    "방산/우주": {"kr": [("012450", "한화에어로스페이스"), ("047810", "한국항공우주"), ("272210", "한화시스템")],
+               "us": [("록히드마틴", "LMT"), ("RTX", "RTX"), ("노스롭", "NOC")]},
+    "원전/우라늄": {"kr": [("034020", "두산에너빌리티"), ("052690", "한전기술"), ("051600", "한전KPS")],
+                "us": [("콘스텔레이션", "CEG"), ("비스트라", "VST"), ("뉴스케일", "SMR"), ("카메코", "CCJ"), ("오클로", "OKLO")]},
+    "인터넷/빅테크": {"kr": [("035420", "NAVER"), ("035720", "카카오")],
+                 "us": [("애플", "AAPL"), ("구글", "GOOGL"), ("메타", "META"), ("아마존", "AMZN"), ("MS", "MSFT")]},
+}
+
+
 @st.cache_data(ttl=60, show_spinner=False)
-def _fetch_briefing_us_peers():
-    """🌅 브리핑 — 미국 반도체 피어(yfinance). session_state 미접근(캐시 안전)."""
+def _fetch_briefing_us(symbols):
+    """🌅 브리핑 미국 종목(yfinance). symbols=((표시명,티커),...) 튜플. session_state 미접근."""
     import yfinance as _yf_b
     _out = []
-    for _nm, _sym in [("마이크론", "MU"), ("TSMC", "TSM"), ("AMD", "AMD"),
-                      ("인텔", "INTC"), ("샌디스크", "SNDK")]:
+    for _nm, _sym in symbols:
         _d = {"name": _nm, "symbol": _sym, "price": None, "chg": None}
         try:
             _fi = _yf_b.Ticker(_sym).fast_info
@@ -5205,23 +5431,26 @@ def render_morning_briefing_tab():
         f"<span style='color:#8b93a7'>· 아래 사이트 탭에서 나스닥선물·야간선물 확인</span></div>",
         unsafe_allow_html=True)
 
-    # ── 반도체 피어(SK하이닉스=KIS 실시간 + 미국=yfinance 전일종가) ──
+    # ── 업종별 피어(국내=KIS 실시간 + 미국=yfinance 전일종가) ──
     import datetime as _dtmb
     _now_kst = (_dtmb.datetime.utcnow() + _dtmb.timedelta(hours=9)).strftime("%H:%M:%S")
     _hcol1, _hcol2 = st.columns([3, 1], vertical_alignment="bottom")
-    _hcol1.markdown("**🌐 글로벌 반도체 피어그룹**")
+    _hcol1.markdown("**🌐 업종별 종목 (🇰🇷국장 + 🇺🇸미장)**")
     _hcol2.markdown(f"<div style='text-align:right;color:#8b93a7;font-size:11px'>🕒 {_now_kst} KST 동기화</div>",
                     unsafe_allow_html=True)
+    _sec = st.radio("업종", list(_BRIEF_SECTORS.keys()), horizontal=True,
+                    key="brief_sector", label_visibility="collapsed")
     st.caption("※ 🇺🇸 미국주식: 전일 정규장 마감 종가 기준 · 🇰🇷 국내주식: 실시간 시세")
 
     _prows = []   # (종목, 현재가, 등락률(float|None), 국기, 출처)
-    try:
-        _pr = kis_get_price("000660")
-        if _pr and _pr.get('현재가'):
-            _prows.append(("SK하이닉스", int(_pr['현재가']), float(_pr.get('등락률', 0)), "🇰🇷", "KIS API"))
-    except Exception:
-        pass
-    for _p in _fetch_briefing_us_peers():
+    for _code, _name in _BRIEF_SECTORS[_sec]["kr"]:
+        try:
+            _pr = kis_get_price(_code)
+            if _pr and _pr.get('현재가'):
+                _prows.append((_name, int(_pr['현재가']), float(_pr.get('등락률', 0)), "🇰🇷", "KIS API"))
+        except Exception:
+            pass
+    for _p in _fetch_briefing_us(tuple(_BRIEF_SECTORS[_sec]["us"])):
         _prows.append((_p["name"], _p["price"], _p["chg"], "🇺🇸", "yfinance"))
 
     # 하이엔드 HTML 테이블 — 등락률 색상 + 출처 국기 배지
@@ -5265,11 +5494,19 @@ def render_morning_briefing_tab():
     st.caption("※ 사이트가 임베드를 차단하면 빈 화면이 될 수 있습니다 — 그럴 땐 새 창에서 직접 열어 확인하세요.")
 
 
-tab_a, tab_b, tab_c, tab_d, tab_e, tab_f = st.tabs(
-    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑"])
+tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g = st.tabs(
+    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "⚡ 만쥬式"])
 
 with tab_f:
     render_morning_briefing_tab()
+
+with tab_g:
+    try:
+        render_manju_scalp_monitor()
+    except Exception as _mje:
+        import logging as _lg_mj
+        _lg_mj.warning("만쥬式 위젯 렌더 실패: %s: %s", type(_mje).__name__, _mje)
+        st.caption("⚠️ 만쥬式 위젯 일시 비활성 (데이터 지연)")
 
 
 with tab_a:
