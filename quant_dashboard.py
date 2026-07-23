@@ -696,6 +696,28 @@ def kis_get_balance(silent=False):
     except Exception as _e:
         return None
 
+
+def _to_int(v, default=0):
+    """콤마·+부호·공백·빈문자·None을 안전하게 int로 — KIS/naver 수급 파싱 통일."""
+    try:
+        if v is None:
+            return default
+        _s = str(v).replace(",", "").replace("+", "").strip()
+        if _s in ("", "-", "N/A", "None"):
+            return default
+        return int(float(_s))
+    except Exception:
+        return default
+
+
+def _inv_valid(d):
+    """수급 딕셔너리가 '실제 데이터'인지 — 외인·기관이 모두 0이면 무효(미확정/폴백 유도)."""
+    if not isinstance(d, dict):
+        return False
+    return bool(_to_int(d.get("외인", d.get("외인순매수", 0))) or
+                _to_int(d.get("기관", d.get("기관순매수", 0))))
+
+
 def kis_get_investor_intraday(ticker):
     """[V10.11] 종목별 외국인/기관 '장중 추정 가집계' 순매수(당일 T) — HHPTJ04160200.
     일별 API(FHKST01010900)는 장중에 전일치만 주므로, 실시간 턴어라운드용은 이 추정가집계 사용.
@@ -741,12 +763,19 @@ def kis_get_investor(ticker):
         }, timeout=5)
         _out = _res.json().get("output", [])
         if _out and isinstance(_out, list) and len(_out) > 0:
-            _latest = _out[0]
+            # 당일(T) 행은 미확정(0)일 수 있어, 0이 아닌 최신 행을 우선 선택
+            _latest = None
+            for _row in _out:
+                if isinstance(_row, dict) and (_to_int(_row.get("frgn_ntby_qty")) or _to_int(_row.get("orgn_ntby_qty"))):
+                    _latest = _row
+                    break
+            if _latest is None and isinstance(_out[0], dict):
+                _latest = _out[0]
             if isinstance(_latest, dict):
                 return {
-                    "외인순매수":  int(_latest.get("frgn_ntby_qty", 0)),
-                    "기관순매수":  int(_latest.get("orgn_ntby_qty", 0)),
-                    "개인순매수":  int(_latest.get("prsn_ntby_qty", 0)),
+                    "외인순매수":  _to_int(_latest.get("frgn_ntby_qty")),
+                    "기관순매수":  _to_int(_latest.get("orgn_ntby_qty")),
+                    "개인순매수":  _to_int(_latest.get("prsn_ntby_qty")),
                 }
     except Exception:
         pass
@@ -954,11 +983,24 @@ def fetch_manju_scalp_data(token, targets):
                 params={"MKSC_SHRN_ISCD": _tk}, timeout=5)
             _o2 = _re.json().get("output2", [])
             if isinstance(_o2, list) and _o2:
-                _le = _o2[-1] if isinstance(_o2[-1], dict) else _o2[0]
-                _f = int(str(_le.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0)
-                _o = int(str(_le.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)
-                _r["프로그램순매수"] = _f + _o
-                _r["출처"] = "KIS실시간"
+                # 마지막 행이 빈/0일 수 있어 → 0이 아닌 최신 행 우선 선택
+                _le = None
+                for _row in reversed(_o2):
+                    if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
+                        _le = _row; break
+                if _le is None and isinstance(_o2[-1], dict):
+                    _le = _o2[-1]
+                _f = _to_int(_le.get("frgn_fake_ntby_qty")) if isinstance(_le, dict) else 0
+                _o = _to_int(_le.get("orgn_fake_ntby_qty")) if isinstance(_le, dict) else 0
+                if _f or _o:
+                    _r["프로그램순매수"] = _f + _o
+                    _r["출처"] = "KIS실시간"
+            # 추정이 0/빈값이면 네이버 전일 수급으로 폴백(순수 네트워크=캐시 안전)
+            if not _r["프로그램순매수"]:
+                _nvm = _md_investor_naver(_tk)
+                if _inv_valid(_nvm):
+                    _r["프로그램순매수"] = _to_int(_nvm.get("외인")) + _to_int(_nvm.get("기관"))
+                    _r["출처"] = _nvm.get("src", "naver(전일)")
         except Exception as _e:
             _lg.warning("manju[%s] 수급 실패: %s: %s", _tk, type(_e).__name__, _e)
         _r["ok"] = _r["등락률"] is not None
@@ -1020,9 +1062,10 @@ def render_manju_scalp_monitor(targets=None):
         f"09:00~10:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
     _rc1, _rc2 = st.columns([1, 4])
-    if _rc1.button("🔄 새로고침", key="_manju_refresh", use_container_width=True):
-        try: fetch_manju_scalp_data.clear()
-        except Exception: pass
+    if _rc1.button("🔄 강제 새로고침", key="_manju_refresh", use_container_width=True):
+        for _fn in (fetch_manju_scalp_data, fetch_macro_triggers):
+            try: _fn.clear()
+            except Exception: pass
         st.rerun()
     _rc2.caption(f"⏱ 수급 45초 캐시 · 시세 실시간 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
     _mv = st.session_state.get("_macro_verdict") or {}
@@ -1199,17 +1242,18 @@ def _dol_lower_tail(_o, _h, _l, _c, _ratio=0.33):
 
 
 def _dol_investor(code):
-    """외인·기관 순매수 — KIS 실시간 추정(당일) → KIS 일별(전일) → 네이버(전일) 순 폴백.
-    파일 앞쪽 정의 함수만 사용(탭 렌더 시점 안전). 반환 {'외인','기관','src'} 또는 None."""
+    """외인·기관 순매수 — KIS 실시간 추정(당일) → KIS 일별 → 네이버 → pykrx 순 폴백.
+    ⚠️ 각 소스는 '외인·기관 모두 0'이면 무효(미확정)로 보고 다음 폴백으로 진행 → +0 고정 버그 차단.
+    반환 {'외인','기관','src'} 또는 None."""
     _iv = kis_get_investor_intraday(code)
-    if _iv:
-        return {"외인": int(_iv.get("외인순매수", 0)), "기관": int(_iv.get("기관순매수", 0)), "src": "KIS실시간"}
+    if _inv_valid(_iv):
+        return {"외인": _to_int(_iv.get("외인순매수")), "기관": _to_int(_iv.get("기관순매수")), "src": "KIS실시간"}
     _k = kis_get_investor(code)
-    if _k:
-        return {"외인": int(_k.get("외인순매수", 0)), "기관": int(_k.get("기관순매수", 0)), "src": "KIS(전일)"}
+    if _inv_valid(_k):
+        return {"외인": _to_int(_k.get("외인순매수")), "기관": _to_int(_k.get("기관순매수")), "src": "KIS(전일)"}
     _nv = _md_investor_naver(code)
-    if _nv:
-        return {"외인": int(_nv.get("외인", 0)), "기관": int(_nv.get("기관", 0)), "src": _nv.get("src", "naver")}
+    if _inv_valid(_nv):
+        return {"외인": _to_int(_nv.get("외인")), "기관": _to_int(_nv.get("기관")), "src": _nv.get("src", "naver")}
     return None
 
 
@@ -1287,9 +1331,10 @@ def render_dolpanty_swing_monitor(targets=None):
         f"15:00~15:30 · 18:00~20:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
     _rc1, _rc2 = st.columns([1, 4])
-    if _rc1.button("🔄 새로고침", key="_dol_refresh", use_container_width=True):
-        try: fetch_ohlcv.clear()
-        except Exception: pass
+    if _rc1.button("🔄 강제 새로고침", key="_dol_refresh", use_container_width=True):
+        for _fn in (fetch_ohlcv, fetch_macro_triggers):
+            try: _fn.clear()
+            except Exception: pass
         st.rerun()
     _rc2.caption(f"⏱ 시세·수급 실시간 · 20MA 30분 캐시 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
     _mv = st.session_state.get("_macro_verdict") or {}
@@ -3083,6 +3128,154 @@ def render_macro_triggers_panel():
         f"border:1px solid #1e293b;border-radius:8px'><tbody>{_tr}</tbody></table></div>",
         unsafe_allow_html=True)
     st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속 구조 (매크로 기본변수)")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🌀 수급 머니투어 추적 (5AI/Gemini 지시 V6.1) — 섹터 간 자금 대이동 사전 포착
+#   ① 주도섹터(반도체) 외인·기관 누적 순매수 꺾임/마이너스 전환 → 자금 이탈 경보
+#   ② 이탈 자금이 어느 신흥섹터(바이오 등)로 옮겨 붙는지 역추적(Money Tour)
+#   ③ 매크로(유가·나스닥) + 섹터 수급 대이동 결합 → '폭등 전 전조 시그널'
+# ══════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=90, show_spinner=False)
+def fetch_sector_moneyflow(token, sectors):
+    """섹터별 외인+기관 누적 순매수 합산(당일 KIS실시간 추정 → 네이버 전일 폴백).
+    ⚠️ token 캐시 밖 주입(session_state 미접근). sectors=((섹터명,((코드,명),...)),...) 튜플.
+    반환 {'_ok':bool, 'sectors':{섹터명:{'net':int,'cnt':int,'src':str}}}."""
+    _out = {}
+    if not token:
+        return {"_ok": False, "sectors": _out}
+    _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
+    for _sname, _stocks in sectors:
+        _net, _cnt, _src = 0, 0, None
+        for _code, _nm in _stocks:
+            _v = None
+            try:
+                _re = _requests.get(
+                    f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                    headers={**_hdr, "tr_id": "HHPTJ04160200"},
+                    params={"MKSC_SHRN_ISCD": _code}, timeout=5)
+                _o2 = _re.json().get("output2", [])
+                if isinstance(_o2, list) and _o2:
+                    _le = None
+                    for _row in reversed(_o2):
+                        if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
+                            _le = _row; break
+                    if _le:
+                        _v = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
+                        _src = "KIS실시간"
+            except Exception:
+                pass
+            if _v is None:  # 실시간 0/빈값 → 네이버 전일 실측
+                _nv = _md_investor_naver(_code)
+                if _inv_valid(_nv):
+                    _v = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
+                    _src = _src or "naver(전일)"
+            if _v is not None:
+                _net += _v; _cnt += 1
+        _out[_sname] = {"net": _net, "cnt": _cnt, "src": _src}
+    return {"_ok": bool(_out), "sectors": _out}
+
+
+def render_money_tour_panel():
+    """🌀 수급 머니투어 — 섹터 자금 이탈/유입 역추적 + 전조 시그널. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    st.markdown(
+        "<div style='font-size:16px;font-weight:900;color:#e2e8f0;margin-bottom:2px'>"
+        "🌀 수급 머니투어 — 섹터 간 자금 대이동 추적</div>", unsafe_allow_html=True)
+    _r1, _r2 = st.columns([1, 4])
+    if _r1.button("🔄 강제 새로고침", key="_mt_refresh", use_container_width=True):
+        try: fetch_sector_moneyflow.clear()
+        except Exception: pass
+        st.rerun()
+    _r2.caption(f"⏱ 90초 캐시 · {_now.strftime('%H:%M:%S')} KST · 외인+기관 누적 순매수(주) 합산")
+    if not kis_available():
+        st.warning("⚠️ KIS 미연결 — 머니투어 추적 불가")
+        return
+    _tok = kis_get_token()
+    if not _tok:
+        st.warning("⚠️ KIS 토큰 발급 실패 — 잠시 후 재시도")
+        return
+    try:
+        _sectors = tuple((_s, tuple(_v.get("kr", []))) for _s, _v in _BRIEF_SECTORS.items())
+    except Exception:
+        st.caption("섹터 정의 로드 실패"); return
+    _data = fetch_sector_moneyflow(_tok, _sectors)
+    _secs = _data.get("sectors", {}) if isinstance(_data, dict) else {}
+    if not _secs:
+        st.caption("데이터 수신 대기 — 강제 새로고침 또는 장중 재시도")
+        return
+    # 히스토리(세션, 분 단위 스냅샷 — 연속 꺾임/유입 추적용)
+    _hist = st.session_state.setdefault("_moneytour_hist", [])
+    _stamp = _now.strftime("%H:%M")
+    _cur = {_s: _secs[_s].get("net", 0) for _s in _secs}
+    if not _hist or _hist[-1].get("t") != _stamp:
+        _hist.append({"t": _stamp, "net": _cur})
+        del _hist[:-12]   # 최근 12개(분)만 유지
+    _prev = _hist[-2]["net"] if len(_hist) >= 2 else {}
+    # 섹터별 판정
+    _rows = []
+    for _s, _info in _secs.items():
+        _net = _info.get("net", 0)
+        _pv = _prev.get(_s)
+        _delta = (_net - _pv) if isinstance(_pv, (int, float)) else None
+        _rows.append({"sector": _s, "net": _net, "delta": _delta,
+                      "cnt": _info.get("cnt", 0), "src": _info.get("src")})
+    _rows.sort(key=lambda r: r["net"], reverse=True)
+    # 머니투어: 유입처(net 최대·delta 최대) ← 이탈원(net 최소·delta 최소)
+    _inflow = max(_rows, key=lambda r: (r["delta"] if r["delta"] is not None else r["net"]))
+    _outflow = min(_rows, key=lambda r: (r["delta"] if r["delta"] is not None else r["net"]))
+    _mv = st.session_state.get("_macro_verdict") or {}
+    _riskoff = _mv.get("block")
+    # 전조 시그널: 유입처 delta>0(또는 net>0 최상위) & 이탈원 delta<0 & 매크로 정상
+    if (_inflow["sector"] != _outflow["sector"]
+            and (_inflow["delta"] is None or _inflow["delta"] > 0)
+            and (_outflow["delta"] is None or _outflow["delta"] < 0)):
+        if _riskoff:
+            _sig = (f"⚠️ 자금이 <b>{_outflow['sector']}</b>→<b>{_inflow['sector']}</b> 이동 중이나 "
+                    f"매크로 리스크오프 — 전조 신뢰도 낮음(관망)")
+            _sc = "#f59e0b"
+        else:
+            _sig = (f"🚀 <b>전조 시그널</b>: 자금 <b>{_outflow['sector']}</b> 이탈 → "
+                    f"<b>{_inflow['sector']}</b> 유입 (폭등 前 선취 후보)")
+            _sc = "#22c55e"
+    else:
+        _sig = "🟡 뚜렷한 섹터 대이동 미포착 — 관망"
+        _sc = "#64748b"
+    st.markdown(
+        f"<div style='background:{_sc}22;border:1px solid {_sc};border-radius:8px;"
+        f"padding:6px 12px;margin:6px 0;font-weight:800;color:{_sc};font-size:13px'>{_sig}</div>",
+        unsafe_allow_html=True)
+    # 섹터 테이블
+    def _c(v): return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
+    _tr = []
+    for _i, r in enumerate(_rows):
+        _net = r["net"]; _dl = r["delta"]
+        _flag = ("🔴 이탈" if _net < 0 else "🟢 유입" if _net > 0 else "⚪ 중립")
+        _arrow = ("▲" if (_dl is not None and _dl > 0) else "▼" if (_dl is not None and _dl < 0) else "—")
+        _dtxt = (f"{_arrow} {_dl:+,}" if _dl is not None else "· (기준 수집중)")
+        _tag = ""
+        if r["sector"] == _inflow["sector"]: _tag = " <span style='color:#22c55e;font-size:10px'>◀유입처</span>"
+        elif r["sector"] == _outflow["sector"]: _tag = " <span style='color:#ef4444;font-size:10px'>◀이탈원</span>"
+        _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
+        _tr.append(
+            f"<tr style='background:{_bg}'>"
+            f"<td style='padding:6px 8px;font-weight:800;color:#e2e8f0'>{r['sector']}{_tag}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:{_c(_net)};font-weight:700'>{_net:+,}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:{_c(_dl)}'>{_dtxt}</td>"
+            f"<td style='padding:6px 8px;text-align:center'>{_flag}</td>"
+            f"<td style='padding:6px 8px;text-align:center;color:#64748b;font-size:11px'>{r['cnt']}종목·{r['src'] or '—'}</td></tr>")
+    st.markdown(
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:6px 8px;text-align:left'>섹터</th>"
+        "<th style='padding:6px 8px;text-align:right'>누적 순매수(주)</th>"
+        "<th style='padding:6px 8px;text-align:right'>직전대비 Δ</th>"
+        "<th style='padding:6px 8px;text-align:center'>판정</th>"
+        "<th style='padding:6px 8px;text-align:center'>수집</th></tr></thead>"
+        f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
+    st.caption("💡 순매수=외인+기관 합산 · Δ=직전 스냅샷 대비 증감(연속 꺾임/유입 추적) · "
+               "매크로 정상 + 이탈원→유입처 동시 성립 시 🚀 전조 시그널")
 
 
 def _clamp(x, lo, hi):
@@ -5984,7 +6177,8 @@ with tab_g:
         import logging as _lg_mc
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
-    _mj_sub, _dp_sub = st.tabs(["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)"])
+    _mj_sub, _dp_sub, _mt_sub = st.tabs(
+        ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)", "🌀 머니투어 (섹터 자금이동)"])
     with _mj_sub:
         try:
             render_manju_scalp_monitor()
@@ -5999,6 +6193,13 @@ with tab_g:
             import traceback as _tbdp
             st.error(f"⚠️ 돌팬티式 위젯 오류 — {type(_dpe).__name__}: {_dpe}")
             st.caption(_tbdp.format_exc().splitlines()[-1])
+    with _mt_sub:
+        try:
+            render_money_tour_panel()
+        except Exception as _mte:
+            import traceback as _tbmt
+            st.error(f"⚠️ 머니투어 패널 오류 — {type(_mte).__name__}: {_mte}")
+            st.caption(_tbmt.format_exc().splitlines()[-1])
 
 
 with tab_a:
@@ -7526,15 +7727,15 @@ def _md_investor(code):
     → 네이버(전일) → pykrx(전일) 순 폴백. 반환 {'외인','기관','unit','src'} 또는 None.
     src: 'KIS실시간'(당일 T) / 'KIS(전일)' / 'naver(전일)' / 'pykrx(전일)'."""
     _iv = kis_get_investor_intraday(code)   # 1순위: 당일 T 장중 추정(실시간)
-    if _iv:
-        return {'외인': int(_iv.get('외인순매수', 0)), '기관': int(_iv.get('기관순매수', 0)),
+    if _inv_valid(_iv):                      # 0/0(미확정)이면 다음 폴백으로
+        return {'외인': _to_int(_iv.get('외인순매수')), '기관': _to_int(_iv.get('기관순매수')),
                 'unit': '주', 'src': 'KIS실시간'}
     _k = kis_get_investor(code)             # 2순위: KIS 일별(장중엔 전일)
-    if _k:
-        return {'외인': int(_k.get('외인순매수', 0)), '기관': int(_k.get('기관순매수', 0)),
+    if _inv_valid(_k):
+        return {'외인': _to_int(_k.get('외인순매수')), '기관': _to_int(_k.get('기관순매수')),
                 'unit': '주', 'src': 'KIS(전일)'}
     _nv = _md_investor_naver(code)          # 3순위: 네이버(전일)
-    if _nv:
+    if _inv_valid(_nv):
         return _nv
     try:
         from pykrx import stock as _pk_md
