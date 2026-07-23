@@ -3286,8 +3286,8 @@ def render_money_tour_panel():
     st.caption("💡 순매수=외인+기관 합산 · Δ=직전 스냅샷 대비 증감(연속 꺾임/유입 추적) · "
                "매크로 정상 + 이탈원→유입처 동시 성립 시 🚀 전조 시그널")
 
-    # ── 종목 드릴다운 렌더러 ──────────────────────────────────────────────
-    def _stock_rows_html(_sector_name):
+    # ── 종목 드릴다운 렌더러 (with_triggers=True면 뉴스 시그널 태그 컬럼 추가) ──────
+    def _stock_rows_html(_sector_name, with_triggers=False):
         _stocks = (_secs.get(_sector_name) or {}).get("stocks", [])
         _sr = sorted(_stocks, key=lambda s: (s.get("net") if s.get("net") is not None else -1e18), reverse=True)
         _out_html = []
@@ -3306,13 +3306,25 @@ def render_money_tour_panel():
             _sdtxt = (f"{_sarrow} {_sdl:+,}" if _sdl is not None else "· 수집중")
             _nettxt = (f"{_snet:+,}" if _snet is not None else "—")
             _bg2 = "#0f172a" if _j % 2 == 0 else "#111c33"
+            _trig_td = ""
+            if with_triggers:
+                _tg = []
+                try:
+                    _tg = fetch_stock_triggers(_sst["code"], _sst["name"])
+                except Exception:
+                    _tg = []
+                _tg_html = " ".join(
+                    f"<span style='background:#1e293b;color:#93c5fd;padding:1px 5px;border-radius:6px;font-size:10px'>{_t}</span>"
+                    for _t in _tg) or "<span style='color:#475569;font-size:10px'>—</span>"
+                _trig_td = f"<td style='padding:5px 8px'>{_tg_html}</td>"
             _out_html.append(
                 f"<tr style='background:{_bg2}'>"
                 f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_sst['name']}"
                 f" <span style='color:#475569;font-size:10px'>{_sst['code']}</span></td>"
                 f"<td style='padding:5px 8px;text-align:right;color:{_sc2};font-weight:700'>{_nettxt}</td>"
                 f"<td style='padding:5px 8px;text-align:right;color:{_sdc}'>{_sdtxt}</td>"
-                f"<td style='padding:5px 8px;text-align:center'>{_stg}</td></tr>")
+                f"<td style='padding:5px 8px;text-align:center'>{_stg}</td>{_trig_td}</tr>")
+        _trig_th = "<th style='padding:5px 8px;text-align:left'>변동 사유(시그널)</th>" if with_triggers else ""
         return (
             "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
             "border:1px solid #1e293b;border-radius:6px'><thead>"
@@ -3320,7 +3332,7 @@ def render_money_tour_panel():
             "<th style='padding:5px 8px;text-align:left'>종목명</th>"
             "<th style='padding:5px 8px;text-align:right'>개별 순매수(주)</th>"
             "<th style='padding:5px 8px;text-align:right'>직전대비 Δ</th>"
-            "<th style='padding:5px 8px;text-align:center'>수급 강도</th></tr></thead>"
+            f"<th style='padding:5px 8px;text-align:center'>수급 강도</th>{_trig_th}</tr></thead>"
             f"<tbody>{''.join(_out_html)}</tbody></table></div>")
 
     # ── 이탈원 ➔ 유입처 핵심 주도주 매칭(자금 이동 실체 증명) ──────────────
@@ -3331,10 +3343,10 @@ def render_money_tour_panel():
         _mc1, _mc2 = st.columns(2)
         with _mc1:
             st.caption(f"🔴 이탈원 · {_outflow['sector']} (매도 주도주)")
-            st.markdown(_stock_rows_html(_outflow["sector"]), unsafe_allow_html=True)
+            st.markdown(_stock_rows_html(_outflow["sector"], with_triggers=True), unsafe_allow_html=True)
         with _mc2:
             st.caption(f"🟢 유입처 · {_inflow['sector']} (매수 주도주)")
-            st.markdown(_stock_rows_html(_inflow["sector"]), unsafe_allow_html=True)
+            st.markdown(_stock_rows_html(_inflow["sector"], with_triggers=True), unsafe_allow_html=True)
 
     # ── 전체 섹터 드릴다운(확장) ──────────────────────────────────────────
     st.markdown("**🔎 섹터별 종목 드릴다운**")
@@ -3606,6 +3618,155 @@ def render_pension_tracker_tab():
                 "<th style='padding:4px 8px;text-align:right'>종가</th><th style='padding:4px 8px;text-align:right'>수익률</th>"
                 "<th style='padding:4px 8px;text-align:center'>연기금 수급</th></tr></thead>"
                 f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🏷️ 종목 시그널(Trigger) 태그 — 뉴스 키워드 파싱으로 '변동 사유' 자동 태깅
+# ══════════════════════════════════════════════════════════════════════════
+#  (키워드 → 태그) 우선순위 순. 뉴스 제목에 키워드 포함 시 해당 태그 부여(최대 3개).
+_TRIGGER_MAP = [
+    (("어닝 서프라이즈", "예상 상회", "컨센", "상회", "서프라이즈"), "📈 실적 예상상회"),
+    (("실적", "영업이익", "순이익", "호실적", "흑자전환", "역대 최대"), "💰 실적 호조"),
+    (("가이던스", "목표주가 상향", "목표가 상향", "투자의견 상향", "목표주가 올", "상향"), "🎯 목표가 상향"),
+    (("수주", "계약 체결", "공급 계약", "납품", "수출 계약", "대형 계약"), "🤝 수주·계약"),
+    (("HBM", "엔비디아", "AI 반도체", "AI칩", "온디바이스", "TSMC"), "🤖 AI·반도체 테마"),
+    (("유가", "원유", "WTI", "중동", "지정학", "감산"), "🛢️ 유가·지정학"),
+    (("외국인", "기관", "순매수", "수급", "연기금", "매집"), "💹 수급 유입"),
+    (("신고가", "52주 최고", "급등", "강세", "上", "질주"), "🚀 신고가·급등"),
+    (("수출", "무역흑자", "선적"), "🚢 수출 호조"),
+    (("배당", "자사주", "주주환원", "소각"), "🎁 주주환원"),
+    (("임상", "FDA", "허가", "승인", "기술수출", "라이선스"), "🧬 신약·임상"),
+    (("증설", "설비투자", "capex", "공장"), "🏭 증설·투자"),
+]
+
+
+def _collect_titles(obj, out, depth=0):
+    """네이버 뉴스 JSON에서 'title' 문자열 재귀 수집(깊이 제한)."""
+    if depth > 6 or len(out) >= 30:
+        return
+    if isinstance(obj, dict):
+        for _k, _v in obj.items():
+            if _k in ("title", "titleFormatted", "officeName") and isinstance(_v, str):
+                out.append(_v)
+            else:
+                _collect_titles(_v, out, depth + 1)
+    elif isinstance(obj, list):
+        for _it in obj:
+            _collect_titles(_it, out, depth + 1)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_stock_triggers(code, name=""):
+    """종목 뉴스 제목 키워드 파싱 → 변동 사유 태그 리스트(최대 3). 순수 네트워크(캐시 안전)."""
+    import re as _re_t
+    _titles = []
+    _hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"}
+    # 1) 네이버 모바일 뉴스 JSON API
+    for _url in (f"https://m.stock.naver.com/api/news/stock/{code}?pageSize=15&page=1",):
+        try:
+            _r = _requests.get(_url, headers=_hdr, timeout=5)
+            _collect_titles(_r.json(), _titles)
+        except Exception:
+            pass
+    # 2) 폴백: finance 종목뉴스 HTML 제목
+    if not _titles:
+        try:
+            _r = _requests.get(f"https://finance.naver.com/item/news_news.naver?code={code}&page=1",
+                               headers=_hdr, timeout=6)
+            _r.encoding = "euc-kr"
+            _titles = _re_t.findall(r'class="tit[^"]*"[^>]*>\s*([^<]{4,80})', _r.text)
+        except Exception:
+            pass
+    if not _titles:
+        return []
+    _text = " ".join(t.strip() for t in _titles)
+    _tags = []
+    for _kws, _tag in _TRIGGER_MAP:
+        if _tag in _tags:
+            continue
+        if any(_k in _text for _k in _kws):
+            _tags.append(_tag)
+        if len(_tags) >= 3:
+            break
+    return _tags
+
+
+def render_ace_picks():
+    """🎯 A급 원톱 — 머니투어 '유입처' × 연기금 '포착' 겹침 종목을 시그널 사유와 함께 최상단 카드.
+    예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    st.markdown("<div style='font-size:17px;font-weight:900;color:#e2e8f0;margin-bottom:2px'>"
+                "🎯 A급 원톱 — 자금 유입 × 연기금 포착 교집합</div>", unsafe_allow_html=True)
+    if not kis_available():
+        st.caption("⚠️ KIS 미연결 — A급 종목 산출 불가"); return
+    _tok = kis_get_token()
+    if not _tok:
+        st.caption("⚠️ KIS 토큰 발급 실패"); return
+    try:
+        _sectors = tuple((_s, tuple(_v.get("kr", []))) for _s, _v in _BRIEF_SECTORS.items())
+    except Exception:
+        return
+    _data = fetch_sector_moneyflow(_tok, _sectors)
+    _secs = _data.get("sectors", {}) if isinstance(_data, dict) else {}
+    if not _secs:
+        st.caption("데이터 수신 대기 — 머니투어 탭에서 강제 새로고침"); return
+    # 유입 섹터(net>0)의 순매수 양(+) 종목 취합
+    _pos = []
+    for _s, _info in _secs.items():
+        if _info.get("net", 0) <= 0:
+            continue
+        for _st in _info.get("stocks", []):
+            if _st.get("net") and _st["net"] > 0:
+                _pos.append({**_st, "sector": _s})
+    _pos.sort(key=lambda x: x["net"], reverse=True)
+    # 연기금 포착 로그(코드→레코드)
+    try:
+        _pen = {r["code"]: r for r in _pension_load().get("records", [])}
+    except Exception:
+        _pen = {}
+    _ace = [x for x in _pos if x["code"] in _pen]      # 교집합 = A급
+    _picks = _ace if _ace else _pos[:5]                 # 겹침 없으면 유입 상위 후보
+    if not _picks:
+        st.caption("현재 유입 섹터 내 매수 우위 종목 없음 — 관망"); return
+    _grade = "A급 (유입×연기금)" if _ace else "후보 (유입 상위)"
+    st.caption(f"등급: {_grade} · {_now.strftime('%H:%M')} KST · '왜 사야 하는지' 뉴스 시그널 자동 태깅")
+    _cards = []
+    for _p in _picks[:6]:
+        _code = _p["code"]; _name = _p["name"]
+        _pr = {}
+        try:
+            _pr = kis_get_price(_code) or {}
+        except Exception:
+            pass
+        _px = _pr.get("현재가") or 0; _chg = _pr.get("등락률") or 0.0
+        _tags = []
+        try:
+            _tags = fetch_stock_triggers(_code, _name)
+        except Exception:
+            pass
+        _rec = _pen.get(_code)
+        _pen_badge = (f"<span style='background:#7c3aed;color:#fff;padding:1px 6px;border-radius:6px;"
+                      f"font-size:10px'>🏦 연기금 {_rec.get('org_streak','?')}일</span>" if _rec else "")
+        _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+        _tag_html = " ".join(
+            f"<span style='background:#1e293b;color:#93c5fd;padding:2px 7px;border-radius:8px;"
+            f"font-size:11px;margin-right:3px'>{_t}</span>" for _t in _tags) or \
+            "<span style='color:#64748b;font-size:11px'>· 뉴스 시그널 없음(수급 주도)</span>"
+        _is_ace = _code in _pen
+        _bord = "#22c55e" if _is_ace else "#334155"
+        _cards.append(
+            f"<div style='border:1.5px solid {_bord};border-radius:10px;padding:10px 12px;margin-bottom:8px;"
+            f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
+            f"<div style='font-size:14px;font-weight:900;color:#e2e8f0'>"
+            f"{'🥇 ' if _is_ace else ''}{_name} <span style='color:#64748b;font-size:11px'>{_code}·{_p['sector']}</span></div>"
+            f"<div style='font-size:13px;font-weight:800;color:#cbd5e1'>{_px:,} "
+            f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
+            f"<div style='margin-bottom:5px'>{_tag_html} {_pen_badge}</div>"
+            f"<div style='font-size:11px;color:#94a3b8'>💹 섹터 자금유입 순매수 <b style='color:#16a34a'>+{_p['net']:,}주</b>"
+            f"{' · 🏦 연기금 연속 매수 겹침(강력)' if _is_ace else ''}</div></div>")
+    st.markdown("".join(_cards), unsafe_allow_html=True)
+    st.caption("💡 A급 = 섹터 자금 유입처 + 연기금 포착 동시 충족 → '왜(뉴스 사유)·수급(자금 유입)·연속성(연기금)' 3중 확인")
 
 
 def _clamp(x, lo, hi):
@@ -6507,6 +6668,14 @@ with tab_g:
         import logging as _lg_mc
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
+    st.divider()
+    try:
+        render_ace_picks()
+    except Exception as _ace_e:
+        import logging as _lg_ace
+        _lg_ace.warning("A급 원톱 패널 실패: %s: %s", type(_ace_e).__name__, _ace_e)
+        st.caption("⚠️ A급 원톱 패널 일시 비활성 (데이터 지연)")
+    st.divider()
     _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
         ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
          "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
