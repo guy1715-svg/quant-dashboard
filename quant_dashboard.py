@@ -1213,14 +1213,14 @@ def render_dolpanty_swing_monitor(targets=None):
         f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
         f"15:00~15:30 · 18:00~20:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
-    # 시장 레짐 토글(거래대금 급감 시 가중치 50% 축소)
-    _regime = st.checkbox("📉 하락장/소외장(거래대금 급감) — 베팅 가중치 50% 축소",
-                          value=False, key="_dol_regime_halve")
     if not _gate:
-        st.info(f"⛔ 시간 게이트({_glabel}) — 신규 종가베팅 시그널 mute(관망). 감시·리스크 패널은 계속 작동합니다.")
+        st.caption(f"⛔ 게이트 밖({_glabel}) — 신규 진입 mute · 감시/리스크는 계속 작동")
     if not kis_available():
-        st.warning("⚠️ KIS 미연결 — 실시간 시세/수급 없이 게이트만 표시됩니다.")
+        st.warning("⚠️ KIS 미연결 — 게이트만 표시")
         return
+    # 시장 레짐 토글(거래대금 급감 시 가중치 50% 축소) — 얇게
+    _regime = st.checkbox("📉 하락장 레짐 (거래대금 급감 시 가중치 50%↓)",
+                          value=False, key="_dol_regime_halve")
     # ── 현금 30% 룰(하드 오버라이드): 현금비중 < 30% → 전면 Mute ──
     _cash_mute, _cash_ratio = False, None
     try:
@@ -1234,8 +1234,9 @@ def render_dolpanty_swing_monitor(targets=None):
     except Exception:
         pass
     if _cash_mute:
-        st.error(f"🛑 현금 30% 룰 발동 — 현금비중 {_cash_ratio*100:.0f}% (<30%). "
-                 f"신규 종가베팅 진입 전면 Mute(차단).")
+        st.error(f"🛑 현금 30% 룰 발동 — 현금비중 {_cash_ratio*100:.0f}%(<30%) · 신규 진입 전면 Mute")
+    elif _cash_ratio is not None:
+        st.caption(f"💵 현금비중 {_cash_ratio*100:.0f}% (기준 30% 이상 · 정상)")
 
     # ── 종목별 데이터 수집(기존 캐시 헬퍼 재사용, 세션 안전) ──
     _recs = []
@@ -1274,59 +1275,69 @@ def render_dolpanty_swing_monitor(targets=None):
         r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime)
     _recs.sort(key=lambda r: r["_score"], reverse=True)
 
-    _c1, _c2, _c3 = st.columns(3)
-    # ── ① 타이밍/셋업(아래꼬리·20MA)
-    with _c1:
-        st.markdown("**① 타이밍·셋업 (아래꼬리/20MA)**")
-        for r in _recs:
-            _tail = _dol_lower_tail(r["시가"], r["고가"], r["저가"], r["현재가"])
-            _ma_ok = bool(r["MA20"] and r["현재가"] and r["현재가"] > r["MA20"])
-            _cc = "#ef4444" if (r["등락률"] or 0) < 0 else "#16a34a"
-            st.markdown(
-                f"<div style='font-size:12px'><b>{r['name']}</b> "
-                f"<span style='color:{_cc}'>{(r['등락률'] or 0):+.2f}%</span> "
-                f"{'🪝아래꼬리' if _tail else ''} {'📈20MA↑' if _ma_ok else '📉20MA↓'}</div>",
-                unsafe_allow_html=True)
-    # ── ② 엔트리 시그널(가중치 총점)
-    with _c2:
-        st.markdown("**② 엔트리 시그널 (가중치 총점)**")
-        for r in _recs:
-            _muted = "" if _eff_gate else " · <span style='color:#64748b'>mute</span>"
-            _bar = int(max(0, min(r["_score"], 100)))
-            _bc = "#ef4444" if r["_score"] >= 80 else "#f59e0b" if r["_score"] >= 60 else "#64748b"
-            _org = r["기관"] or 0
-            st.markdown(
-                f"<div style='font-size:12px;font-weight:800'>{r['name']} "
-                f"{r['_grade']} <span style='color:#8b93a7'>{r['_score']:.0f}점</span>{_muted}</div>"
-                f"<div style='background:#1e293b;border-radius:4px;height:6px;margin:2px 0 2px'>"
-                f"<div style='background:{_bc};width:{_bar}%;height:6px;border-radius:4px'></div></div>"
-                f"<div style='font-size:10px;color:#64748b;margin-bottom:5px'>기관 {_org:+,}주"
-                f"{' ('+str(r['src'])+')' if r['src'] else ''}</div>",
-                unsafe_allow_html=True)
-        _rg = " · <span style='color:#f59e0b'>레짐 ×0.5</span>" if _regime else ""
-        st.caption("🎯 기관(35)·20MA(25)·아래꼬리(20)·외인(10)·거래대금(10)")
-        if _regime:
-            st.caption("⚠️ 하락장 레짐 — 전 종목 가중치 50% 축소 적용 중")
-    # ── ③ 리스크/자금
-    with _c3:
-        st.markdown("**③ 리스크 / 자금관리**")
-        if _cash_ratio is not None:
-            _cn = "#ef4444" if _cash_mute else "#16a34a"
-            st.markdown(f"<div style='font-size:12px'>💵 현금비중 "
-                        f"<b style='color:{_cn}'>{_cash_ratio*100:.0f}%</b> "
-                        f"<span style='color:#64748b'>(기준 30%)</span></div>", unsafe_allow_html=True)
-        # 기계적 익절/손절 알림 (보유 여부 무관, 셋업 기준 시그널)
-        for r in _recs:
-            _chg = r["등락률"] or 0
-            _ma_break = bool(r["MA20"] and r["현재가"] and r["현재가"] < r["MA20"])
-            _org_sell = (r["기관"] is not None and r["기관"] < 0)
-            if _DOL_TP_GAP[0] <= _chg <= _DOL_TP_GAP[1] + 3:  # +1% 이상 갭 → 익절 관찰
-                if _chg >= _DOL_TP_GAP[0]:
-                    st.caption(f"💰 [{r['name']}] +{_chg:.1f}% 갭 — 기계적 익절 구간")
-            if _ma_break or _org_sell:
-                _why = " · ".join([w for w, v in [("20MA 이탈", _ma_break), ("기관 순매도", _org_sell)] if v])
-                st.error(f"🚨 [{r['name']}] 칼손절 — {_why} (시장가 즉시)")
-        st.caption("💰 +1~2% 갭 익절 · 20MA 이탈/수급이탈 시 즉시 손절 원칙")
+    # ── 통합 원-라인 테이블 (종목당 전 상태 한 줄 정렬) ──────────────────────
+    _rows_html = []
+    for _i, r in enumerate(_recs):
+        _chg = r["등락률"] or 0.0
+        _px  = r["현재가"] or 0
+        _org = r["기관"]
+        _tail   = _dol_lower_tail(r["시가"], r["고가"], r["저가"], r["현재가"])
+        _ma_ok  = bool(r["MA20"] and r["현재가"] and r["현재가"] > r["MA20"])
+        _ma_break = bool(r["MA20"] and r["현재가"] and r["현재가"] < r["MA20"])
+        _org_sell = (_org is not None and _org < 0)
+        _sc = r["_score"]
+        # 색상
+        _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+        _org_c = "#ef4444" if (_org or 0) < 0 else "#16a34a" if (_org or 0) > 0 else "#94a3b8"
+        _sc_dot = "🟢" if _sc >= 60 else "🟡" if _sc >= 40 else "🔴"
+        _sc_c   = "#22c55e" if _sc >= 60 else "#f59e0b" if _sc >= 40 else "#ef4444"
+        # 셋업 배지
+        _ma_badge   = (f"<span style='color:#16a34a'>📈20MA</span>" if _ma_ok
+                       else f"<span style='color:#ef4444'>📉20MA</span>")
+        _tail_badge = ("🪝꼬리" if _tail else "<span style='color:#475569'>–</span>")
+        # 기관 수급
+        _org_txt = (f"<span style='color:{_org_c};font-weight:700'>{_org:+,}</span>"
+                    if _org is not None else "<span style='color:#475569'>–</span>")
+        # 리스크·액션 (우선순위: 손절 > mute > 진입 > 익절 > 미달)
+        if _ma_break or _org_sell:
+            _why = "·".join([w for w, v in [("20MA이탈", _ma_break), ("수급이탈", _org_sell)] if v])
+            _act = f"<b style='color:#ef4444'>🚨 {_why} 칼손절</b>"
+        elif not _eff_gate:
+            _act = "<span style='color:#64748b'>⏸ 관망 (mute)</span>"
+        elif _sc >= 80:
+            _act = "<b style='color:#22c55e'>🟢 즉시타격</b>"
+        elif _sc >= 60:
+            _act = "<b style='color:#22c55e'>🟢 진입 준비</b>"
+        elif _chg >= _DOL_TP_GAP[0]:
+            _act = f"<b style='color:#f59e0b'>💰 +{_chg:.1f}% 익절 구간</b>"
+        else:
+            _act = "<span style='color:#ef4444'>🔴 조건 미달</span>"
+        _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
+        _rows_html.append(
+            f"<tr style='background:{_bg}'>"
+            f"<td style='padding:6px 8px;font-weight:800;color:#e2e8f0'>{r['name']}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:#cbd5e1'>{_px:,}"
+            f" <span style='color:{_chg_c}'>({_chg:+.2f}%)</span></td>"
+            f"<td style='padding:6px 8px;text-align:center;font-size:11px'>{_ma_badge} {_tail_badge}</td>"
+            f"<td style='padding:6px 8px;text-align:right'>{_org_txt}</td>"
+            f"<td style='padding:6px 8px;text-align:center;color:{_sc_c};font-weight:800'>"
+            f"{_sc_dot} {_sc:.0f}</td>"
+            f"<td style='padding:6px 8px'>{_act}</td></tr>")
+    _table = (
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;"
+        "font-size:12px;border:1px solid #1e293b;border-radius:8px'>"
+        "<thead><tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:6px 8px;text-align:left'>종목</th>"
+        "<th style='padding:6px 8px;text-align:right'>현재가 (등락률)</th>"
+        "<th style='padding:6px 8px;text-align:center'>셋업 (20MA·꼬리)</th>"
+        "<th style='padding:6px 8px;text-align:right'>기관</th>"
+        "<th style='padding:6px 8px;text-align:center'>종합점수</th>"
+        "<th style='padding:6px 8px;text-align:left'>리스크·액션</th></tr></thead>"
+        f"<tbody>{''.join(_rows_html)}</tbody></table></div>")
+    st.markdown(_table, unsafe_allow_html=True)
+    _rg = " · 📉레짐 ×0.5 적용중" if _regime else ""
+    st.caption(f"🎯 가중치: 기관(35)·20MA(25)·아래꼬리(20)·외인(10)·거래대금(10){_rg} "
+               f"· 🟢진입 🟡관찰 🔴미달 · 💰+1~2%갭 익절 · 🚨20MA이탈/수급이탈 칼손절")
 
 
 def kis_get_org_net_daily(ticker, days=10):
