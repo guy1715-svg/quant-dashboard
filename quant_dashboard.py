@@ -3345,6 +3345,269 @@ def render_money_tour_panel():
             st.markdown(_stock_rows_html(_s), unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 🏦 연기금 포착 종목 히스토리 추적 로깅 시스템 (Snapshot Log + 시계열 성과)
+#   ① 포착 시점 박제: [코드/명/T/포착가/연기금연속일수/점수/진입·손절] JSON 저장
+#   ② 시계열 성과(T+1~T+N): 일별 OHLC 변동률 + 기관(연기금 포함) 수급 유지 여부
+#   ③ 통계 DB 기반: '연속 N일↑ & 점수 X↑ → 3거래일 내 평균 수익률' 산출 구조
+# ══════════════════════════════════════════════════════════════════════════
+_PENSION_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pension_track_log.json")
+
+
+def _pension_load():
+    """추적 로그 로드 — {'records':[...]} (파일 없으면 빈 구조)."""
+    import json as _json
+    try:
+        if os.path.exists(_PENSION_LOG_FILE):
+            with open(_PENSION_LOG_FILE, "r", encoding="utf-8") as _f:
+                _d = _json.load(_f)
+            if isinstance(_d, dict) and isinstance(_d.get("records"), list):
+                return _d
+    except Exception:
+        pass
+    return {"records": []}
+
+
+def _pension_save(data):
+    import json as _json
+    try:
+        with open(_PENSION_LOG_FILE, "w", encoding="utf-8") as _f:
+            _json.dump(data, _f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def _org_streak(org_list):
+    """기관(연기금 포함) 순매수 '연속 매수일수' — oldest→latest 리스트의 끝에서 연속 양(+) 카운트."""
+    if not org_list:
+        return 0
+    _s = 0
+    for _v in reversed(org_list):
+        if _v > 0:
+            _s += 1
+        else:
+            break
+    return _s
+
+
+def pension_capture_snapshot(universe, today):
+    """연기금 연속 매수/신규 종목 포착 → 스냅샷 박제(코드+T 중복 방지). 반환 신규 저장 수."""
+    _data = _pension_load()
+    _recs = _data["records"]
+    _exist = {(r.get("code"), r.get("T")) for r in _recs}
+    _added = 0
+    for _code, _name in universe:
+        try:
+            _org, _ftot = kis_get_org_net_daily(_code, 10)
+            _streak = _org_streak(_org or [])
+            if _streak < 1:                     # 연기금(기관) 연속 매수 아님 → 제외
+                continue
+            if (_code, today) in _exist:        # 당일 이미 박제됨
+                continue
+            _pr = kis_get_price(_code) or {}
+            _px = _pr.get("현재가") or 0
+            if not _px:
+                continue
+            _fpos = bool(_ftot and _ftot > 0)
+            _score = min(_streak * 20, 60) + (25 if _fpos else 0) + (15 if _streak >= 3 else 0)
+            _score = min(_score, 100)
+            _recs.append({
+                "code": _code, "name": _name, "T": today, "capture_price": int(_px),
+                "org_streak": _streak, "foreign_pos": _fpos, "score": _score,
+                "entry": int(_px), "stop": int(_px * 0.97),
+                "status": "open", "snapshots": {},
+            })
+            _exist.add((_code, today))
+            _added += 1
+        except Exception:
+            continue
+    _pension_save(_data)
+    return _added
+
+
+def pension_update_timeseries():
+    """포착 종목 시계열 성과 갱신 — T 이후 일별 OHLC 변동률 + 기관 수급 유지 여부 기록.
+    반환 (갱신 레코드 수). 기존 스냅샷은 덮어써 최신화."""
+    _data = _pension_load()
+    _recs = _data["records"]
+    _upd = 0
+    for _r in _recs:
+        try:
+            import datetime as _dt2
+            _Tdate = _dt2.datetime.strptime(_r["T"], "%Y-%m-%d").date()
+            _cap = _r.get("capture_price") or 0
+            _df = fetch_ohlcv(_r["code"], 120)
+            if _df is None or _df.empty or not _cap:
+                continue
+            # 기관(연기금) 현재 수급 유지 여부
+            _hold = None
+            try:
+                _iv = _dol_investor(_r["code"])
+                if _iv is not None:
+                    _hold = _to_int(_iv.get("기관")) > 0
+            except Exception:
+                _hold = None
+            _snaps = {}
+            _n = 0
+            for _ts, _row in _df.iterrows():
+                try:
+                    _d = _ts.date()
+                except Exception:
+                    continue
+                if _d <= _Tdate:
+                    continue
+                _n += 1
+                _close = float(_row["종가"])
+                _snaps[_d.strftime("%Y-%m-%d")] = {
+                    "n": _n,                                   # T+n
+                    "open": int(float(_row["시가"])), "high": int(float(_row["고가"])),
+                    "low": int(float(_row["저가"])), "close": int(_close),
+                    "ret_pct": round((_close / _cap - 1) * 100, 2),
+                    "org_hold": _hold,
+                }
+            if _snaps:
+                _r["snapshots"] = _snaps
+                _r["last_ret"] = list(_snaps.values())[-1]["ret_pct"]
+                _r["status"] = "open" if len(_snaps) < 3 else "tracked"
+                _upd += 1
+        except Exception:
+            continue
+    _pension_save(_data)
+    return _upd
+
+
+def pension_stats(records, min_streak=1, min_score=0, horizon=3):
+    """통계 — 필터(연속≥min_streak & 점수≥min_score) 종목의 3거래일 내 성과 집계.
+    반환 {n, avg_ret_TN, avg_max_ret, win_rate, hold_rate}."""
+    _sel = [r for r in records
+            if r.get("org_streak", 0) >= min_streak and r.get("score", 0) >= min_score
+            and r.get("snapshots")]
+    if not _sel:
+        return {"n": 0}
+    _tn, _mx, _win, _hold, _cnt = [], [], 0, 0, 0
+    for r in _sel:
+        _snaps = sorted(r["snapshots"].values(), key=lambda s: s.get("n", 0))
+        _within = [s for s in _snaps if s.get("n", 0) <= horizon]
+        if not _within:
+            continue
+        _cnt += 1
+        _rets = [s["ret_pct"] for s in _within]
+        _tnv = _within[-1]["ret_pct"]           # horizon일차(또는 그 이내 최종)
+        _tn.append(_tnv)
+        _mx.append(max(_rets))
+        if _tnv > 0:
+            _win += 1
+        if _within[-1].get("org_hold") is True:
+            _hold += 1
+    if not _cnt:
+        return {"n": 0}
+    return {
+        "n": _cnt,
+        "avg_ret_TN": round(sum(_tn) / _cnt, 2),
+        "avg_max_ret": round(sum(_mx) / _cnt, 2),
+        "win_rate": round(_win / _cnt * 100, 1),
+        "hold_rate": round(_hold / _cnt * 100, 1),
+    }
+
+
+def render_pension_tracker_tab():
+    """🏦 연기금 추적 — 포착 스냅샷 저장/시계열 성과/승률 통계. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _today = _now.strftime("%Y-%m-%d")
+    st.markdown("<div style='font-size:16px;font-weight:900;color:#e2e8f0'>"
+                "🏦 연기금 포착 추적 로깅 — 스냅샷·시계열 성과·승률 통계</div>", unsafe_allow_html=True)
+    st.caption("연기금(기관) 연속 순매수 종목을 포착 시점부터 박제 → T+N 주가/수급 지속성 추적")
+    _b1, _b2, _b3 = st.columns([1.3, 1.2, 2])
+    _cap_msg = None
+    if _b1.button("📌 지금 포착 스냅샷 저장", key="_pension_capture", use_container_width=True):
+        if not kis_available():
+            _cap_msg = ("warn", "KIS 미연결 — 포착 불가")
+        else:
+            try:
+                _uni, _seen = [], set()
+                for _s, _v in _BRIEF_SECTORS.items():
+                    for _cd, _nm in _v.get("kr", []):
+                        if _cd not in _seen:
+                            _uni.append((_cd, _nm)); _seen.add(_cd)
+                _n = pension_capture_snapshot(_uni, _today)
+                _cap_msg = ("ok", f"{_n}개 종목 신규 포착·박제 (연기금 연속 매수 기준)")
+            except Exception as _e:
+                _cap_msg = ("warn", f"포착 실패: {type(_e).__name__}")
+    if _b2.button("🔄 시계열 성과 갱신", key="_pension_update", use_container_width=True):
+        try:
+            _u = pension_update_timeseries()
+            _cap_msg = ("ok", f"{_u}개 레코드 시계열 갱신(T+N OHLC·수급)")
+        except Exception as _e:
+            _cap_msg = ("warn", f"갱신 실패: {type(_e).__name__}")
+    if _cap_msg:
+        (st.success if _cap_msg[0] == "ok" else st.warning)(
+            ("✅ " if _cap_msg[0] == "ok" else "⚠️ ") + _cap_msg[1])
+    _b3.caption(f"⏱ {_now.strftime('%H:%M:%S')} KST · 로그: pension_track_log.json (재시작해도 보존)")
+
+    _data = _pension_load()
+    _recs = _data.get("records", [])
+    if not _recs:
+        st.info("아직 포착된 종목이 없습니다 — [📌 지금 포착 스냅샷 저장]으로 시작하세요 (연기금 연속 매수 종목 자동 선별).")
+        return
+
+    # ── 통계 요약(필터) ──
+    st.markdown("**📊 승률 통계 (3거래일 기준)**")
+    _fc1, _fc2 = st.columns(2)
+    _mstreak = _fc1.slider("연기금 최소 연속일수", 1, 5, 2, key="_pen_ms")
+    _mscore = _fc2.slider("최소 종합점수", 0, 100, 60, step=5, key="_pen_sc")
+    _stt = pension_stats(_recs, _mstreak, _mscore, horizon=3)
+    if _stt.get("n"):
+        _m1, _m2, _m3, _m4 = st.columns(4)
+        _m1.metric("표본(종목)", f"{_stt['n']}개")
+        _m2.metric("3거래일 평균수익", f"{_stt['avg_ret_TN']:+.2f}%")
+        _m3.metric("승률", f"{_stt['win_rate']:.0f}%")
+        _m4.metric("수급 유지율", f"{_stt['hold_rate']:.0f}%")
+        st.caption(f"💡 조건(연속 {_mstreak}일↑·점수 {_mscore}↑) 충족 종목의 포착 후 3거래일 내 "
+                   f"최대 평균수익 {_stt['avg_max_ret']:+.2f}% · 최종 {_stt['avg_ret_TN']:+.2f}%")
+    else:
+        st.caption("통계 표본 부족 — 시계열 갱신(🔄) 후 T+1 이상 경과 필요")
+
+    # ── 포착 종목 리스트 + 시계열 드릴다운 ──
+    st.markdown("**📋 포착 종목 (최근순)**")
+    def _c(v): return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
+    for _r in sorted(_recs, key=lambda r: r.get("T", ""), reverse=True):
+        _lr = _r.get("last_ret")
+        _lr_txt = (f"<span style='color:{_c(_lr)}'>{_lr:+.2f}%</span>" if isinstance(_lr, (int, float)) else "<span style='color:#94a3b8'>T+0</span>")
+        _hd = (f"{_r['name']} ({_r['code']}) · 포착 {_r['T']} · 연기금 {_r.get('org_streak',0)}일 "
+               f"· 점수 {_r.get('score',0)}")
+        with st.expander(f"🏦 {_hd}", expanded=False):
+            st.markdown(
+                f"<div style='font-size:12px;color:#cbd5e1'>포착가 <b>{_r.get('capture_price',0):,}</b> · "
+                f"진입 {_r.get('entry',0):,} · 손절 {_r.get('stop',0):,} · "
+                f"외인동반 {'🟢' if _r.get('foreign_pos') else '⚪'} · 현재 {_lr_txt}</div>",
+                unsafe_allow_html=True)
+            _snaps = _r.get("snapshots") or {}
+            if not _snaps:
+                st.caption("시계열 미수집 — [🔄 시계열 성과 갱신] 눌러 T+N 데이터 채우기")
+                continue
+            _tr = []
+            for _dk in sorted(_snaps.keys()):
+                _s = _snaps[_dk]
+                _rp = _s.get("ret_pct")
+                _hold = _s.get("org_hold")
+                _hicon = "🟢유지" if _hold is True else "🔴이탈" if _hold is False else "—"
+                _tr.append(
+                    f"<tr><td style='padding:4px 8px;color:#94a3b8'>T+{_s.get('n','?')}</td>"
+                    f"<td style='padding:4px 8px;color:#64748b'>{_dk}</td>"
+                    f"<td style='padding:4px 8px;text-align:right;color:#cbd5e1'>{_s.get('close',0):,}</td>"
+                    f"<td style='padding:4px 8px;text-align:right;color:{_c(_rp)};font-weight:700'>{_rp:+.2f}%</td>"
+                    f"<td style='padding:4px 8px;text-align:center'>{_hicon}</td></tr>")
+            st.markdown(
+                "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+                "border:1px solid #1e293b;border-radius:6px'><thead>"
+                "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+                "<th style='padding:4px 8px;text-align:left'>경과</th><th style='padding:4px 8px;text-align:left'>일자</th>"
+                "<th style='padding:4px 8px;text-align:right'>종가</th><th style='padding:4px 8px;text-align:right'>수익률</th>"
+                "<th style='padding:4px 8px;text-align:center'>연기금 수급</th></tr></thead>"
+                f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
+
+
 def _clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
@@ -6244,8 +6507,9 @@ with tab_g:
         import logging as _lg_mc
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
-    _mj_sub, _dp_sub, _mt_sub = st.tabs(
-        ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)", "🌀 머니투어 (섹터 자금이동)"])
+    _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
+        ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
+         "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
     with _mj_sub:
         try:
             render_manju_scalp_monitor()
@@ -6267,6 +6531,13 @@ with tab_g:
             import traceback as _tbmt
             st.error(f"⚠️ 머니투어 패널 오류 — {type(_mte).__name__}: {_mte}")
             st.caption(_tbmt.format_exc().splitlines()[-1])
+    with _pn_sub:
+        try:
+            render_pension_tracker_tab()
+        except Exception as _pne:
+            import traceback as _tbpn
+            st.error(f"⚠️ 연기금 추적 오류 — {type(_pne).__name__}: {_pne}")
+            st.caption(_tbpn.format_exc().splitlines()[-1])
 
 
 with tab_a:
