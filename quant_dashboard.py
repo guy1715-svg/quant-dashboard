@@ -1101,6 +1101,202 @@ def render_manju_scalp_monitor(targets=None):
         st.caption("💰 수익금 물리적 격리 · 슬럼프 시 시드 축소 원칙 준수")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 🌒 돌팬티式 종가 베팅 감시 위젯 (3대 코어: 타이밍·엔트리 시그널·리스크/자금)
+#   - 기존 헬퍼 재사용: _md_lower_tail(아래꼬리)·fetch_ohlcv/calc_indicators(20MA)
+#     ·_md_investor(외인·기관 수급, KIS 실시간)·kis_get_balance(현금30% 룰)·_MD_TARGETS
+#   - W1 시간 게이트(15:00~15:30 정규막판 / 18:00~20:00 NXT야간) 곱셈 오버라이드
+#   - 하드 오버라이드: 현금30% 미만→전면 Mute, 레짐 급감→가중치×0.5, 익절/손절 알림
+# ══════════════════════════════════════════════════════════════════════════
+_DOL_WEIGHTS = {"W2": 35, "W3": 25, "W4": 20, "W5": 10, "W6": 10}
+_DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
+_DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
+_DOL_VOL_REF = 3_000_000    # 거래량(거래대금 프록시) 정규화 기준(주)
+_DOL_CASH_MIN = 0.30        # 현금 30% 룰
+_DOL_TP_GAP = (1.0, 2.0)    # 기계적 익절 갭 구간(%)
+
+
+def _dolpanty_gate_open(now_kst=None):
+    """W1 시간 게이트: KST 15:00~15:30(정규막판) 또는 18:00~20:00(NXT야간)이면 True.
+    반환 (open:bool, label:str)."""
+    _n = now_kst or (datetime.utcnow() + timedelta(hours=9))
+    _m = _n.hour * 60 + _n.minute
+    if (15 * 60) <= _m <= (15 * 60 + 30):
+        return True, "정규장 막판(15:00~15:30)"
+    if (18 * 60) <= _m <= (20 * 60):
+        return True, "NXT 야간장(18:00~20:00)"
+    return False, "게이트 밖"
+
+
+def _dolpanty_score(rec, gate_open, regime_halve):
+    """돌팬티式 종가 베팅 총점(0~100) — 가중치 W1~W6 이식.
+    total = W1_gate × (regime? 0.5:1) × Σ(Wi·fi). 반환 (total, grade, tag, factors)."""
+    _close = rec.get("현재가") or 0
+    _ma20  = rec.get("MA20") or 0
+    _org   = rec.get("기관") or 0
+    _frn   = rec.get("외인") or 0
+    _vol   = rec.get("거래량") or 0
+    _o, _h, _l = rec.get("시가") or 0, rec.get("고가") or 0, rec.get("저가") or 0
+    # f2 스마트머니(기관 순매수 +)
+    _f2 = min(_org / _DOL_ORG_REF, 1.0) if _org > 0 else 0.0
+    # f3 20MA 돌파/지지 — 종가>20MA 전제, 눌림목 근접(지지)일수록 ↑
+    _f3 = 0.0
+    if _close > 0 and _ma20 > 0 and _close > _ma20:
+        _disp = _close / _ma20 - 1.0
+        if   _disp <= 0.03: _f3 = 1.0     # 눌림목/지지 근접(최적)
+        elif _disp <= 0.07: _f3 = 0.7     # 돌파 유지
+        else:               _f3 = 0.4     # 과열(추격 부담)
+    # f4 아래꼬리 강도(꼬리비율/0.33)
+    _f4 = 0.0
+    if _h > _l > 0:
+        _f4 = min(max((min(_o, _close) - _l), 0.0) / (_h - _l) / 0.33, 1.0)
+    # f5 외인 동반(+)
+    _f5 = min(_frn / _DOL_FRN_REF, 1.0) if _frn > 0 else 0.0
+    # f6 거래량(거래대금 프록시)
+    _f6 = min(_vol / _DOL_VOL_REF, 1.0) if _vol > 0 else 0.0
+    _w = _DOL_WEIGHTS
+    _raw = _w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 + _w["W5"]*_f5 + _w["W6"]*_f6
+    _total = round((1 if gate_open else 0) * (0.5 if regime_halve else 1.0) * _raw, 1)
+    if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
+    elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
+    elif _total >= 40: _grade, _tag = "🟡 관찰",     "WATCH"
+    else:              _grade, _tag = "⚪ 제외",     "SKIP"
+    return _total, _grade, _tag, {"기관": _f2, "20MA": _f3, "아래꼬리": _f4, "외인": _f5, "거래량": _f6}
+
+
+def render_dolpanty_swing_monitor(targets=None):
+    """[돌팬티式 종가 베팅 감시 위젯] 3대 코어 패널 렌더 — 타이밍/엔트리 시그널/리스크·자금.
+    W1 시간 게이트·가중치 총점·등급 매핑·하드 오버라이드(현금30%·레짐·익절/손절) 반영.
+    기존 헬퍼(fetch_ohlcv·calc_indicators·_md_lower_tail·_md_investor) 재사용. 예외 전파 없음."""
+    _tg = targets or _MD_TARGETS
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _gate, _glabel = _dolpanty_gate_open(_now)
+    _badge = ("<span style='background:#16a34a;color:#fff;padding:2px 8px;border-radius:8px;"
+              f"font-size:11px;font-weight:800'>🟢 GATE ACTIVE · {_glabel}</span>" if _gate else
+              "<span style='background:#64748b;color:#fff;padding:2px 8px;border-radius:8px;"
+              "font-size:11px;font-weight:800'>🔴 관망 (게이트 밖)</span>")
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
+        f"<div style='font-size:18px;font-weight:900;color:#e2e8f0'>🌒 돌팬티式 종가 베팅 관제판</div>"
+        f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
+        f"15:00~15:30 · 18:00~20:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
+        unsafe_allow_html=True)
+    # 시장 레짐 토글(거래대금 급감 시 가중치 50% 축소)
+    _regime = st.checkbox("📉 하락장/소외장(거래대금 급감) — 베팅 가중치 50% 축소",
+                          value=False, key="_dol_regime_halve")
+    if not _gate:
+        st.info(f"⛔ 시간 게이트({_glabel}) — 신규 종가베팅 시그널 mute(관망). 감시·리스크 패널은 계속 작동합니다.")
+    if not kis_available():
+        st.warning("⚠️ KIS 미연결 — 실시간 시세/수급 없이 게이트만 표시됩니다.")
+        return
+    # ── 현금 30% 룰(하드 오버라이드): 현금비중 < 30% → 전면 Mute ──
+    _cash_mute, _cash_ratio = False, None
+    try:
+        _bal = kis_get_balance()
+        if _bal:
+            _tot = int(_bal.get("총평가", 0)) or 0
+            _cash = int(_bal.get("현금", 0)) or 0
+            if _tot > 0:
+                _cash_ratio = _cash / _tot
+                _cash_mute = _cash_ratio < _DOL_CASH_MIN
+    except Exception:
+        pass
+    if _cash_mute:
+        st.error(f"🛑 현금 30% 룰 발동 — 현금비중 {_cash_ratio*100:.0f}% (<30%). "
+                 f"신규 종가베팅 진입 전면 Mute(차단).")
+
+    # ── 종목별 데이터 수집(기존 캐시 헬퍼 재사용, 세션 안전) ──
+    _recs = []
+    for _c, _n in _tg:
+        _r = {"ticker": _c, "name": _n, "현재가": None, "등락률": None,
+              "시가": None, "고가": None, "저가": None, "거래량": None,
+              "MA20": None, "기관": None, "외인": None, "src": None}
+        try:
+            _pr = kis_get_price(_c)
+            if _pr:
+                _r["현재가"] = _pr.get("현재가"); _r["등락률"] = _pr.get("등락률")
+                _r["시가"] = _pr.get("시가"); _r["고가"] = _pr.get("고가")
+                _r["저가"] = _pr.get("저가"); _r["거래량"] = _pr.get("거래량")
+        except Exception:
+            pass
+        try:
+            _ind = calc_indicators(fetch_ohlcv(_c, 60))
+            _r["MA20"] = float(_ind["MA20"].iloc[-1])
+        except Exception:
+            pass
+        try:
+            _iv = _md_investor(_c)
+            if _iv:
+                _r["기관"] = int(_iv.get("기관", 0)); _r["외인"] = int(_iv.get("외인", 0))
+                _r["src"] = _iv.get("src")
+        except Exception:
+            pass
+        if _r["현재가"]:
+            _recs.append(_r)
+    if not _recs:
+        st.caption("데이터 수신 대기 — 장중·KIS 연결 시 갱신")
+        return
+    # 점수 산출(현금30% 발동 시 게이트 강제 차단)
+    _eff_gate = _gate and not _cash_mute
+    for r in _recs:
+        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime)
+    _recs.sort(key=lambda r: r["_score"], reverse=True)
+
+    _c1, _c2, _c3 = st.columns(3)
+    # ── ① 타이밍/셋업(아래꼬리·20MA)
+    with _c1:
+        st.markdown("**① 타이밍·셋업 (아래꼬리/20MA)**")
+        for r in _recs:
+            _tail = _md_lower_tail(r["시가"], r["고가"], r["저가"], r["현재가"])
+            _ma_ok = bool(r["MA20"] and r["현재가"] and r["현재가"] > r["MA20"])
+            _cc = "#ef4444" if (r["등락률"] or 0) < 0 else "#16a34a"
+            st.markdown(
+                f"<div style='font-size:12px'><b>{r['name']}</b> "
+                f"<span style='color:{_cc}'>{(r['등락률'] or 0):+.2f}%</span> "
+                f"{'🪝아래꼬리' if _tail else ''} {'📈20MA↑' if _ma_ok else '📉20MA↓'}</div>",
+                unsafe_allow_html=True)
+    # ── ② 엔트리 시그널(가중치 총점)
+    with _c2:
+        st.markdown("**② 엔트리 시그널 (가중치 총점)**")
+        for r in _recs:
+            _muted = "" if _eff_gate else " · <span style='color:#64748b'>mute</span>"
+            _bar = int(max(0, min(r["_score"], 100)))
+            _bc = "#ef4444" if r["_score"] >= 80 else "#f59e0b" if r["_score"] >= 60 else "#64748b"
+            _org = r["기관"] or 0
+            st.markdown(
+                f"<div style='font-size:12px;font-weight:800'>{r['name']} "
+                f"{r['_grade']} <span style='color:#8b93a7'>{r['_score']:.0f}점</span>{_muted}</div>"
+                f"<div style='background:#1e293b;border-radius:4px;height:6px;margin:2px 0 2px'>"
+                f"<div style='background:{_bc};width:{_bar}%;height:6px;border-radius:4px'></div></div>"
+                f"<div style='font-size:10px;color:#64748b;margin-bottom:5px'>기관 {_org:+,}주"
+                f"{' ('+str(r['src'])+')' if r['src'] else ''}</div>",
+                unsafe_allow_html=True)
+        _rg = " · <span style='color:#f59e0b'>레짐 ×0.5</span>" if _regime else ""
+        st.caption("🎯 기관(35)·20MA(25)·아래꼬리(20)·외인(10)·거래대금(10)")
+        if _regime:
+            st.caption("⚠️ 하락장 레짐 — 전 종목 가중치 50% 축소 적용 중")
+    # ── ③ 리스크/자금
+    with _c3:
+        st.markdown("**③ 리스크 / 자금관리**")
+        if _cash_ratio is not None:
+            _cn = "#ef4444" if _cash_mute else "#16a34a"
+            st.markdown(f"<div style='font-size:12px'>💵 현금비중 "
+                        f"<b style='color:{_cn}'>{_cash_ratio*100:.0f}%</b> "
+                        f"<span style='color:#64748b'>(기준 30%)</span></div>", unsafe_allow_html=True)
+        # 기계적 익절/손절 알림 (보유 여부 무관, 셋업 기준 시그널)
+        for r in _recs:
+            _chg = r["등락률"] or 0
+            _ma_break = bool(r["MA20"] and r["현재가"] and r["현재가"] < r["MA20"])
+            _org_sell = (r["기관"] is not None and r["기관"] < 0)
+            if _DOL_TP_GAP[0] <= _chg <= _DOL_TP_GAP[1] + 3:  # +1% 이상 갭 → 익절 관찰
+                if _chg >= _DOL_TP_GAP[0]:
+                    st.caption(f"💰 [{r['name']}] +{_chg:.1f}% 갭 — 기계적 익절 구간")
+            if _ma_break or _org_sell:
+                _why = " · ".join([w for w, v in [("20MA 이탈", _ma_break), ("기관 순매도", _org_sell)] if v])
+                st.error(f"🚨 [{r['name']}] 칼손절 — {_why} (시장가 즉시)")
+        st.caption("💰 +1~2% 갭 익절 · 20MA 이탈/수급이탈 시 즉시 손절 원칙")
+
+
 def kis_get_org_net_daily(ticker, days=10):
     """종목별 일별 '기관 순매수 수량' 리스트 — KIS FHKST01010900(외인기관 추정).
     반환: (org_list_oldest_first, foreign_total) 또는 (None, 0).
@@ -5501,12 +5697,21 @@ with tab_f:
     render_morning_briefing_tab()
 
 with tab_g:
-    try:
-        render_manju_scalp_monitor()
-    except Exception as _mje:
-        import logging as _lg_mj
-        _lg_mj.warning("만쥬式 위젯 렌더 실패: %s: %s", type(_mje).__name__, _mje)
-        st.caption("⚠️ 만쥬式 위젯 일시 비활성 (데이터 지연)")
+    _mj_sub, _dp_sub = st.tabs(["⚡ 만쥬式(오전 초단타)", "🌒 돌팬티式(종가 베팅)"])
+    with _mj_sub:
+        try:
+            render_manju_scalp_monitor()
+        except Exception as _mje:
+            import logging as _lg_mj
+            _lg_mj.warning("만쥬式 위젯 렌더 실패: %s: %s", type(_mje).__name__, _mje)
+            st.caption("⚠️ 만쥬式 위젯 일시 비활성 (데이터 지연)")
+    with _dp_sub:
+        try:
+            render_dolpanty_swing_monitor()
+        except Exception as _dpe:
+            import logging as _lg_dp
+            _lg_dp.warning("돌팬티式 위젯 렌더 실패: %s: %s", type(_dpe).__name__, _dpe)
+            st.caption("⚠️ 돌팬티式 위젯 일시 비활성 (데이터 지연)")
 
 
 with tab_a:
