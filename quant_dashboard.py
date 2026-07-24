@@ -3102,10 +3102,39 @@ def _macro_state_save(d):
         pass
 
 
+_TG_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_config.json")
+
+
+def _tg_file_load():
+    """telegram_config.json에서 저장된 토큰·chat_id 로드(고정용). (token, chat)."""
+    import json as _j
+    try:
+        if os.path.exists(_TG_CONFIG_FILE):
+            _d = _j.load(open(_TG_CONFIG_FILE, encoding="utf-8"))
+            return str(_d.get("token", "")).strip(), str(_d.get("chat_id", "")).strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+def _tg_file_save(token, chat):
+    import json as _j
+    try:
+        with open(_TG_CONFIG_FILE, "w", encoding="utf-8") as _f:
+            _j.dump({"token": token, "chat_id": chat}, _f, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
 def _tg_creds():
-    """텔레그램 토큰·chat_id — 화면 입력(session) 우선 → secrets.toml. (token, chat_id) or ('','')."""
+    """텔레그램 토큰·chat_id — 화면 입력(session) → 저장파일 → secrets.toml. (token, chat_id)."""
     _tok = st.session_state.get("_tg_token_input", "") or ""
     _cid = st.session_state.get("_tg_chat_input", "") or ""
+    if not _tok or not _cid:
+        _ft, _fc = _tg_file_load()
+        _tok = _tok or _ft
+        _cid = _cid or _fc
     if not _tok:
         try: _tok = st.secrets.get("TELEGRAM_BOT_TOKEN", "") or ""
         except Exception: _tok = ""
@@ -3193,20 +3222,30 @@ def render_macro_triggers_panel():
             f"- **③ WTI 원유** {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "") + f" → {_wti_st}")
         st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
         st.divider()
-        st.markdown("**📱 텔레그램 알람** — 봇 토큰·chat_id를 여기 입력(KIS처럼 화면 입력, 파일 불필요)")
+        st.markdown("**📱 텔레그램 알람** — 봇 토큰·chat_id 입력 후 💾저장하면 계속 고정(재시작해도 유지)")
+        # 저장파일에서 자동 채우기(세션 비었을 때만)
+        _sf_tok, _sf_cid = _tg_file_load()
+        if _sf_tok and not st.session_state.get("_tg_token_input"):
+            st.session_state["_tg_token_input"] = _sf_tok
+        if _sf_cid and not st.session_state.get("_tg_chat_input"):
+            st.session_state["_tg_chat_input"] = _sf_cid
         _tgc1, _tgc2 = st.columns(2)
         _tgc1.text_input("봇 토큰", key="_tg_token_input", type="password",
                          placeholder="예: 8215476952:AAF...", help="BotFather가 준 토큰")
         _tgc2.text_input("chat_id", key="_tg_chat_input", placeholder="예: 1781972453")
         _tok_now, _cid_now = _tg_creds()
         _tg_ok = bool(_tok_now and _cid_now)
-        _ac1, _ac2 = st.columns([1.4, 1])
+        _ac1, _ac2, _ac3 = st.columns([1.4, 1, 1])
         _ac1.checkbox("🔴→🟢 국면 개선 시 폰 푸시", key="_macro_alarm_on", disabled=not _tg_ok,
                       help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램 즉시 알림")
-        if _ac2.button("✈️ 테스트 전송", key="_tg_test", disabled=not _tg_ok, use_container_width=True):
+        if _ac2.button("💾 저장(고정)", key="_tg_save", disabled=not _tg_ok, use_container_width=True):
+            _ok = _tg_file_save(st.session_state.get("_tg_token_input", ""), st.session_state.get("_tg_chat_input", ""))
+            st.toast("저장됨 — 이제 재시작해도 유지 ✅" if _ok else "저장 실패")
+        if _ac3.button("✈️ 테스트 전송", key="_tg_test", disabled=not _tg_ok, use_container_width=True):
             st.toast("전송됨 ✅" if send_telegram("✅ 대시보드 텔레그램 알람 테스트 — 연결 정상") else "전송 실패(토큰/chat_id 확인)")
-        st.caption(("🟢 입력 완료 — 체크 + 🔁자동 새로고침 켜두면 알림 작동" if _tg_ok
-                    else "위 두 칸 입력하면 활성화 · 🔁자동 새로고침 켜둬야 감지됨")
+        _saved = "💾 저장됨(고정)" if (_sf_tok and _sf_cid) else "미저장"
+        st.caption((f"🟢 입력 완료 · {_saved} — 체크 + 🔁자동 새로고침 켜두면 알림 작동" if _tg_ok
+                    else "위 두 칸 입력 후 💾저장 · 🔁자동 새로고침 켜둬야 감지됨")
                    + " · (검은 창 watcher를 쓰면 대시보드 안 켜도 알림 옴)")
 
 
