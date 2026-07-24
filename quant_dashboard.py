@@ -3102,12 +3102,23 @@ def _macro_state_save(d):
         pass
 
 
+def _tg_creds():
+    """텔레그램 토큰·chat_id — 화면 입력(session) 우선 → secrets.toml. (token, chat_id) or ('','')."""
+    _tok = st.session_state.get("_tg_token_input", "") or ""
+    _cid = st.session_state.get("_tg_chat_input", "") or ""
+    if not _tok:
+        try: _tok = st.secrets.get("TELEGRAM_BOT_TOKEN", "") or ""
+        except Exception: _tok = ""
+    if not _cid:
+        try: _cid = st.secrets.get("TELEGRAM_CHAT_ID", "") or ""
+        except Exception: _cid = ""
+    return str(_tok).strip(), str(_cid).strip()
+
+
 def send_telegram(text):
-    """텔레그램 봇으로 메시지 전송 — st.secrets의 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 사용.
-    설정 없으면 False. 예외 전파 없음."""
+    """텔레그램 봇 전송 — 화면 입력(session) 또는 secrets 사용. 설정 없으면 False. 예외 전파 없음."""
     try:
-        _tok = st.secrets.get("TELEGRAM_BOT_TOKEN")
-        _cid = st.secrets.get("TELEGRAM_CHAT_ID")
+        _tok, _cid = _tg_creds()
         if not _tok or not _cid:
             return False
         _requests.get(f"https://api.telegram.org/bot{_tok}/sendMessage",
@@ -3182,16 +3193,21 @@ def render_macro_triggers_panel():
             f"- **③ WTI 원유** {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "") + f" → {_wti_st}")
         st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
         st.divider()
-        _tg_ok = bool(st.secrets.get("TELEGRAM_BOT_TOKEN") and st.secrets.get("TELEGRAM_CHAT_ID"))
-        st.checkbox("📱 텔레그램 알람 (🔴→🟢 국면 개선 시 폰 푸시)", key="_macro_alarm_on",
-                    disabled=not _tg_ok,
-                    help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램으로 즉시 알림")
-        if not _tg_ok:
-            st.caption("⚠️ 알람 쓰려면 `.streamlit/secrets.toml`에 TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID 필요 "
-                       "(아래 안내 참고) · 🔁자동 새로고침 켜둬야 감지됨")
-        else:
-            if st.button("✈️ 테스트 알림 보내기", key="_tg_test"):
-                st.toast("전송됨" if send_telegram("✅ 대시보드 텔레그램 알람 테스트 — 연결 정상") else "전송 실패(토큰 확인)")
+        st.markdown("**📱 텔레그램 알람** — 봇 토큰·chat_id를 여기 입력(KIS처럼 화면 입력, 파일 불필요)")
+        _tgc1, _tgc2 = st.columns(2)
+        _tgc1.text_input("봇 토큰", key="_tg_token_input", type="password",
+                         placeholder="예: 8215476952:AAF...", help="BotFather가 준 토큰")
+        _tgc2.text_input("chat_id", key="_tg_chat_input", placeholder="예: 1781972453")
+        _tok_now, _cid_now = _tg_creds()
+        _tg_ok = bool(_tok_now and _cid_now)
+        _ac1, _ac2 = st.columns([1.4, 1])
+        _ac1.checkbox("🔴→🟢 국면 개선 시 폰 푸시", key="_macro_alarm_on", disabled=not _tg_ok,
+                      help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램 즉시 알림")
+        if _ac2.button("✈️ 테스트 전송", key="_tg_test", disabled=not _tg_ok, use_container_width=True):
+            st.toast("전송됨 ✅" if send_telegram("✅ 대시보드 텔레그램 알람 테스트 — 연결 정상") else "전송 실패(토큰/chat_id 확인)")
+        st.caption(("🟢 입력 완료 — 체크 + 🔁자동 새로고침 켜두면 알림 작동" if _tg_ok
+                    else "위 두 칸 입력하면 활성화 · 🔁자동 새로고침 켜둬야 감지됨")
+                   + " · (검은 창 watcher를 쓰면 대시보드 안 켜도 알림 옴)")
 
 
 # ══════════════════════════════════════════════════════════════════════════
