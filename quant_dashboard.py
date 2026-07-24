@@ -1044,6 +1044,20 @@ def _manju_score(rec, leader_chg, gate_open):
                                    "호가우위": _f5, "짝꿍갭": _f6, "거래량": _f7}
 
 
+def _action_pill(kind):
+    """리스크·액션 컬러 버튼(pill) — kind: cut/watch/enter/take/skip."""
+    _m = {
+        "cut":   ("#ef4444", "#ffffff", "✂️ 칼손절"),
+        "watch": ("#334155", "#cbd5e1", "⏸️ 관망"),
+        "enter": ("#16a34a", "#ffffff", "⚡ 진입"),
+        "take":  ("#f59e0b", "#1a1505", "💰 익절"),
+        "skip":  ("#111c33", "#475569", "· 대기"),
+    }
+    _bg, _fg, _lb = _m.get(kind, _m["skip"])
+    return (f"<span style='background:{_bg};color:{_fg};padding:2px 10px;border-radius:12px;"
+            f"font-weight:800;font-size:11px;white-space:nowrap'>{_lb}</span>")
+
+
 def render_manju_scalp_monitor(targets=None):
     """[만쥬式 초단타 감시 위젯] 3대 코어 패널 렌더 — 유니버스/엔트리 시그널/리스크·자금.
     W1 제로아워 게이트·가중치 총점·등급 매핑·하드 오버라이드(대장 꺾임·-1R) 반영. 예외 전파 없음."""
@@ -1169,27 +1183,23 @@ def render_manju_scalp_monitor(targets=None):
         _role = ("<b style='color:#fbbf24'>🥇대장</b>" if _is_leader
                  else "<span style='color:#94a3b8'>🥈후속</span>")
         _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
-        _sc_dot = "🟢" if _sc >= 60 else "🟡" if _sc >= 40 else "🔴"
-        _sc_c   = "#22c55e" if _sc >= 60 else "#f59e0b" if _sc >= 40 else "#ef4444"
+        # 점수 — 0/무의미값은 흐리게(노이즈 감소)
+        if _sc <= 0:       _sc_dot, _sc_c = "⚪", "#475569"
+        elif _sc >= 60:    _sc_dot, _sc_c = "🟢", "#22c55e"
+        elif _sc >= 40:    _sc_dot, _sc_c = "🟡", "#f59e0b"
+        else:              _sc_dot, _sc_c = "🔴", "#ef4444"
         # 시그널 상태
-        if not _gate:      _sig = "<span style='color:#64748b'>⏸ mute (제로아워 밖)</span>"
+        if not _gate:      _sig = "<span style='color:#475569'>⏸ mute (제로아워 밖)</span>"
         elif _sc >= 80:    _sig = "<b style='color:#22c55e'>🟢 즉시타격</b>"
         elif _sc >= 60:    _sig = "<b style='color:#22c55e'>🟢 진입 준비</b>"
         elif _sc >= 40:    _sig = "<span style='color:#f59e0b'>🟡 관찰</span>"
+        elif _sc <= 0:     _sig = "<span style='color:#475569'>· 대기</span>"
         else:              _sig = "<span style='color:#ef4444'>🔴 조건 미달</span>"
-        # 개별 액션/리스크
-        if _leader_broken and _is_leader:
-            _act = f"<b style='color:#ef4444'>🚨 대장 꺾임 (고점대비 {_dd:.1f}%)</b>"
-        elif _leader_broken and not _is_leader:
-            _act = "<b style='color:#ef4444'>🚨 즉시 시장가 손절 (대장 꺾임)</b>"
-        elif not _gate:
-            _act = "<span style='color:#64748b'>⏸ 관망</span>"
-        elif _sc >= 80:
-            _act = "<b style='color:#22c55e'>🟢 돌파 매수 승부</b>"
-        elif _sc >= 60:
-            _act = "<b style='color:#22c55e'>🟢 진입 대기</b>"
-        else:
-            _act = "<span style='color:#ef4444'>🔴 관망</span>"
+        # 개별 액션/리스크 → 컬러 버튼(pill)
+        if _leader_broken:              _act = _action_pill("cut")
+        elif not _gate:                 _act = _action_pill("watch")
+        elif _sc >= 60:                 _act = _action_pill("enter")
+        else:                           _act = _action_pill("skip")
         _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
         _rows_html.append(
             f"<tr style='background:{_bg}'>"
@@ -1416,29 +1426,24 @@ def render_dolpanty_swing_monitor(targets=None):
         # 색상
         _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
         _org_c = "#ef4444" if (_org or 0) < 0 else "#16a34a" if (_org or 0) > 0 else "#94a3b8"
-        _sc_dot = "🟢" if _sc >= 60 else "🟡" if _sc >= 40 else "🔴"
-        _sc_c   = "#22c55e" if _sc >= 60 else "#f59e0b" if _sc >= 40 else "#ef4444"
+        # 점수 — 0/무의미값은 흐리게(노이즈 감소)
+        if _sc <= 0:       _sc_dot, _sc_c = "⚪", "#475569"
+        elif _sc >= 60:    _sc_dot, _sc_c = "🟢", "#22c55e"
+        elif _sc >= 40:    _sc_dot, _sc_c = "🟡", "#f59e0b"
+        else:              _sc_dot, _sc_c = "🔴", "#ef4444"
         # 셋업 배지
         _ma_badge   = (f"<span style='color:#16a34a'>📈20MA</span>" if _ma_ok
                        else f"<span style='color:#ef4444'>📉20MA</span>")
         _tail_badge = ("🪝꼬리" if _tail else "<span style='color:#475569'>–</span>")
-        # 기관 수급
+        # 기관 수급 — 0/None은 흐리게
         _org_txt = (f"<span style='color:{_org_c};font-weight:700'>{_org:+,}</span>"
-                    if _org is not None else "<span style='color:#475569'>–</span>")
-        # 리스크·액션 (우선순위: 손절 > mute > 진입 > 익절 > 미달)
-        if _ma_break or _org_sell:
-            _why = "·".join([w for w, v in [("20MA이탈", _ma_break), ("수급이탈", _org_sell)] if v])
-            _act = f"<b style='color:#ef4444'>🚨 {_why} 칼손절</b>"
-        elif not _eff_gate:
-            _act = "<span style='color:#64748b'>⏸ 관망 (mute)</span>"
-        elif _sc >= 80:
-            _act = "<b style='color:#22c55e'>🟢 즉시타격</b>"
-        elif _sc >= 60:
-            _act = "<b style='color:#22c55e'>🟢 진입 준비</b>"
-        elif _chg >= _DOL_TP_GAP[0]:
-            _act = f"<b style='color:#f59e0b'>💰 +{_chg:.1f}% 익절 구간</b>"
-        else:
-            _act = "<span style='color:#ef4444'>🔴 조건 미달</span>"
+                    if (_org is not None and _org != 0) else "<span style='color:#475569'>–</span>")
+        # 리스크·액션 → 컬러 버튼(pill)
+        if _ma_break or _org_sell:      _act = _action_pill("cut")
+        elif not _eff_gate:             _act = _action_pill("watch")
+        elif _sc >= 60:                 _act = _action_pill("enter")
+        elif _chg >= _DOL_TP_GAP[0]:    _act = _action_pill("take")
+        else:                           _act = _action_pill("skip")
         _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
         _rows_html.append(
             f"<tr style='background:{_bg}'>"
@@ -3079,55 +3084,49 @@ def render_macro_triggers_panel():
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _verd, _vc, _block = _macro_verdict(_d)
     st.session_state["_macro_verdict"] = {"text": _verd, "block": _block}
-    # 종합 배너
-    st.markdown(
-        f"<div style='background:{_vc}22;border:1px solid {_vc};border-radius:8px;"
-        f"padding:6px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center'>"
-        f"<span style='font-weight:900;color:{_vc};font-size:14px'>🌐 매크로 종합: {_verd}</span>"
-        f"<span style='color:#8b93a7;font-size:11px'>{_now.strftime('%H:%M:%S')} KST · 120초 캐시</span></div>",
-        unsafe_allow_html=True)
-    if not _d.get("ok"):
-        st.caption("매크로 데이터 수신 대기 (yfinance) — 잠시 후 갱신")
-        return
-    _nq = _d.get("nq_pct"); _wti = _d.get("wti_pct"); _semi = _d.get("semi", {}) or {}
-    _sox = _semi.get("SOX")
-    # 3행 트리거 테이블
-    def _c(v):  # 등락 색상
+
+    def _c(v):
         return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
     def _f(v):
         return f"{v:+.2f}%" if isinstance(v, (int, float)) else "—"
-    # ① NQ
-    if _nq is None:      _nq_st = "<span style='color:#94a3b8'>데이터 대기</span>"
-    elif _nq <= _MACRO_NQ_BLOCK: _nq_st = "<b style='color:#ef4444'>🔴 차단 (−0.2%↓)</b>"
-    elif _nq >= _MACRO_NQ_GO:    _nq_st = "<b style='color:#22c55e'>🟢 긍정 (+0.5%↑)</b>"
-    else:                _nq_st = "<span style='color:#f59e0b'>🟡 중립</span>"
-    # ② 반도체 동조
-    _peers = [v for k, v in _semi.items() if k != "SOX"]; _ups = sum(1 for v in _peers if v > 0)
-    _sync = (_sox is not None and _sox > 0) and (len(_peers) > 0 and _ups >= max(1, round(len(_peers)*0.6)))
-    _semi_st = ("<b style='color:#22c55e'>🟢 동반 상승</b>" if _sync
-                else "<span style='color:#f59e0b'>🟡 동조 미확인</span>" if _semi
-                else "<span style='color:#94a3b8'>데이터 대기</span>")
-    _semi_detail = " · ".join(f"{k} <span style='color:{_c(v)}'>{_f(v)}</span>" for k, v in _semi.items()) or "—"
-    # ③ WTI
-    if _wti is None:     _wti_st = "<span style='color:#94a3b8'>데이터 대기</span>"
-    elif _wti >= _MACRO_WTI_RISK: _wti_st = "<b style='color:#ef4444'>🔴 급등 리스크오프</b>"
-    else:                _wti_st = "<span style='color:#16a34a'>🟢 안정</span>"
-    _rows = [
-        ("① 나스닥 선물", f"{_f(_nq)} <span style='color:#64748b'>({_d.get('nq_ref_src','기준')} 대비)</span>", _nq_st),
-        ("② 반도체 동조", _semi_detail, _semi_st),
-        ("③ WTI 원유", f"{_f(_wti)}" + (f" <span style='color:#64748b'>(${_d.get('wti'):.1f})</span>" if _d.get('wti') else ""), _wti_st),
-    ]
-    _tr = "".join(
-        f"<tr style='background:{'#0f172a' if _i%2==0 else '#111c33'}'>"
-        f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_a}</td>"
-        f"<td style='padding:5px 8px;color:#cbd5e1;font-size:11px'>{_b}</td>"
-        f"<td style='padding:5px 8px'>{_c2}</td></tr>"
-        for _i, (_a, _b, _c2) in enumerate(_rows))
+    _nq = _d.get("nq_pct"); _wti = _d.get("wti_pct"); _semi = _d.get("semi", {}) or {}
+    _sox = _semi.get("SOX")
+    _wti_tag = " (급등)" if (_wti is not None and _wti >= _MACRO_WTI_RISK) else ""
+    # ── 슬림 1줄 띠 배너(핵심만) + hover 상세 툴팁 ──
+    _semi_detail_txt = " · ".join(f"{k} {_f(v)}" for k, v in _semi.items()) or "데이터 대기"
+    _tip = (f"반도체 동조: {_semi_detail_txt}  |  나스닥선물 {_f(_nq)}({_d.get('nq_ref_src','기준')} 대비)  |  "
+            f"WTI {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "")).replace("'", "")
+    _line = (f"<b style='color:{_vc}'>{_verd}</b>"
+             f"<span style='color:#475569'>&nbsp;|&nbsp;</span>"
+             f"<span style='color:#cbd5e1'>나스닥 <span style='color:{_c(_nq)}'>{_f(_nq)}</span></span>"
+             f"<span style='color:#475569'>&nbsp;|&nbsp;</span>"
+             f"<span style='color:#cbd5e1'>WTI <span style='color:{_c(_wti)}'>{_f(_wti)}{_wti_tag}</span></span>")
     st.markdown(
-        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
-        f"border:1px solid #1e293b;border-radius:8px'><tbody>{_tr}</tbody></table></div>",
+        f"<div title=\"{_tip}\" style='position:sticky;top:0;z-index:5;background:{_vc}1f;"
+        f"border:1px solid {_vc};border-radius:8px;padding:5px 12px;margin-bottom:4px;"
+        f"display:flex;justify-content:space-between;align-items:center;font-size:13px;"
+        f"white-space:nowrap;overflow-x:auto;cursor:help'>"
+        f"<span>🌐 {_line}</span>"
+        f"<span style='color:#64748b;font-size:10px;flex-shrink:0'>{_now.strftime('%H:%M')} ⓘ</span></div>",
         unsafe_allow_html=True)
-    st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속 구조 (매크로 기본변수)")
+    if not _d.get("ok"):
+        st.caption("매크로 데이터 수신 대기 (yfinance)")
+        return
+    # 상세는 접힌 드롭다운(hover 어려운 모바일 대비)
+    with st.expander("🌐 매크로 3대 트리거 상세", expanded=False):
+        _peers = [v for k, v in _semi.items() if k != "SOX"]; _ups = sum(1 for v in _peers if v > 0)
+        _sync = (_sox is not None and _sox > 0) and (len(_peers) > 0 and _ups >= max(1, round(len(_peers)*0.6)))
+        _nq_st = ("🔴 차단(−0.2%↓)" if (_nq is not None and _nq <= _MACRO_NQ_BLOCK)
+                  else "🟢 긍정(+0.5%↑)" if (_nq is not None and _nq >= _MACRO_NQ_GO)
+                  else "🟡 중립" if _nq is not None else "데이터 대기")
+        _semi_st = ("🟢 동반 상승" if _sync else "🟡 동조 미확인" if _semi else "데이터 대기")
+        _wti_st = ("🔴 급등 리스크오프" if (_wti is not None and _wti >= _MACRO_WTI_RISK)
+                   else "🟢 안정" if _wti is not None else "데이터 대기")
+        st.markdown(
+            f"- **① 나스닥 선물** {_f(_nq)} ({_d.get('nq_ref_src','기준')} 대비) → {_nq_st}\n"
+            f"- **② 반도체 동조** {_semi_detail_txt} → {_semi_st}\n"
+            f"- **③ WTI 원유** {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "") + f" → {_wti_st}")
+        st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3348,12 +3347,17 @@ def render_money_tour_panel():
             st.caption(f"🟢 유입처 · {_inflow['sector']} (매수 주도주)")
             st.markdown(_stock_rows_html(_inflow["sector"], with_triggers=True), unsafe_allow_html=True)
 
-    # ── 전체 섹터 드릴다운(확장) ──────────────────────────────────────────
-    st.markdown("**🔎 섹터별 종목 드릴다운**")
+    # ── 전체 섹터 드릴다운 — 유입 1·2위는 기본 펼침, 이탈은 닫기(클릭 최소화) ──────
+    st.markdown("**🔎 섹터별 종목 드릴다운** <span style='color:#64748b;font-size:11px'>(유입 1·2위 자동 펼침)</span>",
+                unsafe_allow_html=True)
+    _inflow_seen = 0
     for r in _rows:
         _s = r["sector"]; _net = r["net"]
         _flag = ("🔴이탈" if _net < 0 else "🟢유입" if _net > 0 else "⚪중립")
-        with st.expander(f"{_flag}  {_s}  ·  누적 {_net:+,}주  ({r['cnt']}종목)", expanded=False):
+        _exp = False
+        if _net > 0 and _inflow_seen < 2:
+            _exp = True; _inflow_seen += 1
+        with st.expander(f"{_flag}  {_s}  ·  누적 {_net:+,}주  ({r['cnt']}종목)", expanded=_exp):
             st.markdown(_stock_rows_html(_s), unsafe_allow_html=True)
 
 
@@ -3753,13 +3757,18 @@ def render_ace_picks():
             f"font-size:11px;margin-right:3px'>{_t}</span>" for _t in _tags) or \
             "<span style='color:#64748b;font-size:11px'>· 뉴스 시그널 없음(수급 주도)</span>"
         _is_ace = _code in _pen
-        _bord = "#22c55e" if _is_ace else "#334155"
+        _is_top = (_code == st.session_state.get("_today_pick_code"))
+        _bord = "#fbbf24" if _is_top else "#22c55e" if _is_ace else "#334155"
+        _bgg = ("linear-gradient(180deg,#1a1505,#111c33)" if _is_top
+                else "linear-gradient(180deg,#0f172a,#111c33)")
+        _crown = ("<span style='background:#fbbf24;color:#1a1505;padding:1px 6px;border-radius:6px;"
+                  "font-size:10px;font-weight:900;margin-right:4px'>👑 오늘의 대장</span>" if _is_top else "")
         _cards.append(
             f"<div style='border:1.5px solid {_bord};border-radius:10px;padding:10px 12px;margin-bottom:8px;"
-            f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+            f"background:{_bgg}'>"
             f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
             f"<div style='font-size:14px;font-weight:900;color:#e2e8f0'>"
-            f"{'🥇 ' if _is_ace else ''}{_name} <span style='color:#64748b;font-size:11px'>{_code}·{_p['sector']}</span></div>"
+            f"{_crown}{'🥇 ' if (_is_ace and not _is_top) else ''}{_name} <span style='color:#64748b;font-size:11px'>{_code}·{_p['sector']}</span></div>"
             f"<div style='font-size:13px;font-weight:800;color:#cbd5e1'>{_px:,} "
             f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
             f"<div style='margin-bottom:5px'>{_tag_html} {_pen_badge}</div>"
@@ -3811,6 +3820,7 @@ def render_manju_morning_pick():
     _cands.sort(key=lambda c: (1 if c["pension"] else 0, c["net"], -_lead_rank.get(c["sector"], 99)),
                 reverse=True)
     _pick = _cands[0] if _cands else None
+    st.session_state["_today_pick_code"] = _pick["code"] if _pick else None
 
     _hdr = ("<div style='display:flex;justify-content:space-between;align-items:center'>"
             "<span style='font-size:17px;font-weight:900;color:#fbbf24'>⚡ 오늘의 만쥬식 단타 픽</span>"
@@ -3846,16 +3856,17 @@ def render_manju_morning_pick():
         for _t in _tags)
     _grade = "🥇 A급 (유입×연기금)" if _pick["pension"] else "🟢 유입 주도"
     st.markdown(
-        f"<div style='border:2px solid #fbbf24;border-radius:12px;padding:14px 16px;"
-        f"background:linear-gradient(180deg,#1a1505,#111c33)'>"
-        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-        f"<div style='font-size:20px;font-weight:900;color:#fde68a'>{_name} "
-        f"<span style='font-size:12px;color:#94a3b8'>{_code}·{_sec}</span></div>"
-        f"<div style='font-size:16px;font-weight:800;color:#e2e8f0'>{_px:,} "
+        f"<div style='border:2px solid #fbbf24;border-radius:12px;padding:10px 14px;"
+        f"background:linear-gradient(180deg,#1a1505,#111c33);"
+        f"box-shadow:0 6px 22px rgba(251,191,36,0.28)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px'>"
+        f"<div style='font-size:19px;font-weight:900;color:#fde68a'>👑 {_name} "
+        f"<span style='font-size:11px;color:#94a3b8'>{_code}·{_sec}</span></div>"
+        f"<div style='font-size:15px;font-weight:800;color:#e2e8f0'>{_px:,} "
         f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
-        f"<div style='margin:6px 0'>{_tag_html}</div>"
-        f"<div style='font-size:12px;color:#cbd5e1'><b style='color:#fbbf24'>{_grade}</b> · "
-        f"선정 근거: {_basis}</div></div>", unsafe_allow_html=True)
+        f"<div style='margin:4px 0 3px'>{_tag_html}</div>"
+        f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#fbbf24'>{_grade}</b> · {_basis}</div></div>",
+        unsafe_allow_html=True)
     if not _after_830:
         st.caption("⏳ 08:30 동시호가 시작 前 — 예비 픽(장 시작 후 실시간 수급으로 확정 재산출)")
     st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 자동 교차검증")
