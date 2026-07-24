@@ -4463,6 +4463,129 @@ def render_v93_trading_tab():
         st.toast("복기 일지 저장됨 ✅")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 🌐 V12.0 전역 Sticky 헤더 — 킬스위치 신호등 + 매크로지표 + 수급펌프
+# ══════════════════════════════════════════════════════════════════════════
+def render_global_header():
+    """전 탭 상단 고정 헤더. 환율≥1450 / 코스피·코스닥 ≤−2% / 매크로 리스크오프 시 🔴 점멸·신규매수 차단."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    try: _krw = get_usd_krw()
+    except Exception: _krw = None
+    try: _wti = get_wti_oil()
+    except Exception: _wti = None
+    try:
+        _me = fetch_motie_exports(); _yoy = _me.get("semi_yoy") if _me else None
+    except Exception: _yoy = None
+    _ks = _kq = None
+    try:
+        _idx = get_index_quotes()
+        _ks = (_idx.get("코스피") or {}).get("등락"); _kq = (_idx.get("코스닥") or {}).get("등락")
+    except Exception: pass
+    _mv = st.session_state.get("_macro_verdict") or {}
+    _fx_danger = isinstance(_krw, (int, float)) and _krw >= 1450
+    _idx_danger = (isinstance(_ks, (int, float)) and _ks <= -2.0) or (isinstance(_kq, (int, float)) and _kq <= -2.0)
+    _danger = bool(_fx_danger or _idx_danger or _mv.get("block"))
+    st.session_state["_killswitch"] = _danger
+    # 수급펌프(삼성/하이닉스 외인·기관 누적)
+    _pump = "—"
+    try:
+        if kis_available():
+            _tok = kis_get_token()
+            if _tok:
+                _sd = fetch_top2_supply(_tok)
+                _pp = []
+                for _tk, _nm in _TOP2_SUPPLY_TARGETS:
+                    _rr = _sd.get(_tk)
+                    if isinstance(_rr, dict) and _rr.get("ok"):
+                        _f = _rr.get("외인순매수") or 0; _o = _rr.get("기관순매수") or 0
+                        _pp.append(f"{_nm[:4]} <span style='color:{'#16a34a' if _f>=0 else '#ef4444'}'>외{_f:+,}</span>"
+                                   f"/<span style='color:{'#16a34a' if _o>=0 else '#ef4444'}'>기{_o:+,}</span>")
+                if _pp: _pump = " · ".join(_pp)
+    except Exception:
+        pass
+
+    def _pc(v): return "#ef4444" if (isinstance(v, (int, float)) and v < 0) else "#16a34a" if (isinstance(v, (int, float)) and v > 0) else "#94a3b8"
+    def _fp(v): return f"{v:+.2f}%" if isinstance(v, (int, float)) else "—"
+    _sig = ("🔴 리스크오프 · 신규매수 차단" if _danger
+            else ("🟡 중립" if "중립" in _mv.get("text", "") else "🟢 양호"))
+    _reason = []
+    if _fx_danger: _reason.append(f"환율 {_krw:,.0f}≥1450")
+    if _idx_danger: _reason.append("지수 −2%↓")
+    if _mv.get("block") and not _reason: _reason.append("매크로")
+    _reason_txt = (" (" + "·".join(_reason) + ")") if _reason else ""
+    _bg = "#7f1d1d" if _danger else "#0b1220"
+    _bc = "#ef4444" if _danger else "#1e293b"
+    _sc = "#fca5a5" if _danger else ("#fde68a" if "중립" in _mv.get("text", "") else "#86efac")
+    _flash = "kh-blink" if _danger else ""
+    st.markdown(f"""<style>
+@keyframes khblink {{0%,100%{{box-shadow:0 0 0 0 rgba(239,68,68,0);}}50%{{box-shadow:0 0 16px 3px rgba(239,68,68,0.8);}}}}
+.kh-blink{{animation:khblink 1.1s infinite;}}
+.kh-wrap{{position:sticky;top:0;z-index:100;border-radius:10px;padding:7px 14px;margin-bottom:8px;
+  border:1px solid {_bc};background:{_bg};overflow-x:auto}}
+</style>
+<div class="kh-wrap {_flash}">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;white-space:nowrap">
+  <span style="font-weight:900;color:{_sc};font-size:13px">🚨 {_sig}{_reason_txt}</span>
+  <span style="color:#cbd5e1">💱 <b>{(f'{_krw:,.0f}' if isinstance(_krw,(int,float)) else '—')}</b>
+    · 🛢️ <b>{(f'${_wti:.1f}' if isinstance(_wti,(int,float)) else '—')}</b>
+    · 💾 YoY <b style="color:{_pc(_yoy)}">{(f'{_yoy:+.1f}%' if isinstance(_yoy,(int,float)) else '—')}</b>
+    · 코스피 <b style="color:{_pc(_ks)}">{_fp(_ks)}</b>
+    · 코스닥 <b style="color:{_pc(_kq)}">{_fp(_kq)}</b></span>
+  <span style="color:#94a3b8">🛰️ {_pump}</span>
+</div></div>""", unsafe_allow_html=True)
+
+
+def render_holdings_risk():
+    """🛡️ 보유 종목 리스크 관리 — KIS 잔고 종목만. 목표/손절 표시 + −3% 칼손절 텔레그램."""
+    st.markdown("#### 🛡️ 보유 종목 리스크 관리 (ACTIVE PORTFOLIO)")
+    _bal = None
+    try:
+        _bal = kis_get_balance(silent=True)
+    except Exception:
+        _bal = None
+    _holds = (_bal or {}).get("holdings", []) if isinstance(_bal, dict) else []
+    if not _holds:
+        st.caption("보유 종목 없음 (KIS 계좌번호 미설정이면 잔고 조회 불가) — 신규 진입은 아래 ⚔️ 대기열 참고")
+        return
+    def _c(v): return "#ef4444" if v < 0 else "#16a34a" if v > 0 else "#94a3b8"
+    _tr = []
+    for _h in _holds:
+        _nm = _h.get("종목명", ""); _cd = _h.get("종목코드", "")
+        _avg = int(_h.get("평단가", 0)); _cur = int(_h.get("현재가", 0)); _rt = float(_h.get("수익률", 0))
+        _qty = int(_h.get("수량", 0)); _pl = int(_h.get("평가손익", 0))
+        _tgt = int(_avg * 1.05); _stop = int(_avg * 0.97)
+        # −3% 칼손절 텔레그램(중복 방지)
+        if _rt <= -3.0:
+            _k = f"_cut_alert_{_cd}"
+            if not st.session_state.get(_k):
+                if send_telegram(f"🚨 칼손절! {_nm} {_rt:+.1f}% (현재 {_cur:,}/평단 {_avg:,})\n−3% 도달 — 즉시 손절"):
+                    st.session_state[_k] = True
+        _stt = ("<b style='color:#ef4444'>🚨 −3% 손절</b>" if _rt <= -3
+                else "<span style='color:#f59e0b'>🟠 −2% 주의</span>" if _rt <= -2
+                else "<b style='color:#16a34a'>🎯 목표 근접</b>" if _rt >= 4
+                else "<span style='color:#94a3b8'>보유</span>")
+        _tr.append(
+            f"<tr style='border-bottom:1px solid #1e293b'>"
+            f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_nm}<span style='color:#475569;font-size:10px'> {_cd}</span></td>"
+            f"<td style='padding:5px 8px;text-align:right;color:#cbd5e1'>{_avg:,} → {_cur:,}</td>"
+            f"<td style='padding:5px 8px;text-align:right;color:{_c(_rt)};font-weight:800'>{_rt:+.2f}%<br>"
+            f"<span style='font-size:10px'>{_pl:+,}원</span></td>"
+            f"<td style='padding:5px 8px;text-align:right;font-size:11px'>"
+            f"<span style='color:#16a34a'>익 {_tgt:,}</span><br><span style='color:#ef4444'>손 {_stop:,}</span></td>"
+            f"<td style='padding:5px 8px;text-align:center'>{_stt}</td></tr>")
+    st.markdown(
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:5px 8px;text-align:left'>종목</th>"
+        "<th style='padding:5px 8px;text-align:right'>평단→현재</th>"
+        "<th style='padding:5px 8px;text-align:right'>수익률</th>"
+        "<th style='padding:5px 8px;text-align:right'>익절/손절가</th>"
+        "<th style='padding:5px 8px;text-align:center'>상태</th></tr></thead>"
+        f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
+    st.caption("💡 −3% 도달 시 텔레그램 칼손절 알림 자동 발송 · 익절 평단+5% / 손절 평단−3% 기준(조정 가능)")
+
+
 def _clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
@@ -7349,8 +7472,29 @@ def render_morning_briefing_tab():
     st.caption("※ 사이트가 임베드를 차단하면 빈 화면이 될 수 있습니다 — 그럴 땐 새 창에서 직접 열어 확인하세요.")
 
 
-tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g, tab_h = st.tabs(
-    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "🎯 실전 관제탑", "🛡️ 실전매매"])
+# ── 🌐 V12.0 전역 Sticky 헤더 (모든 탭 상단 고정) ──
+try:
+    render_global_header()
+except Exception as _ghe:
+    import logging as _lg_gh
+    _lg_gh.warning("전역 헤더 실패: %s: %s", type(_ghe).__name__, _ghe)
+
+# ── V12.0 4대 핵심 탭 구조조정 (8→4) ──
+#   🌅 장전 브리핑 · 🎯 실전 관제탑(+실전매매) · 📡 딥 스캐너(스윙+홈+분석+전략) · ⚙️ 시스템 설정
+#   기존 with tab_X 블록은 그대로 두고, 컨테이너만 재바인딩해 내용 100% 보존.
+_t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
+    ["🌅 장전 브리핑", "🎯 실전 관제탑", "📡 딥 스캐너", "⚙️ 시스템 설정"])
+with _t_scanner:
+    _s_scan, _s_home, _s_anal, _s_strat = st.tabs(
+        ["📡 스윙 스캐너", "🏠 홈 요약", "🔍 종목 분석", "🔄 전략 로테이션"])
+with _t_command:
+    _c_main, _c_v93 = st.tabs(["🎯 관제(장중 매매/리스크)", "🛡️ 실전매매 모듈"])
+# 기존 변수명 → 새 컨테이너로 재바인딩 (아래 with tab_X 블록들이 여기로 렌더됨)
+tab_a, tab_b, tab_c, tab_d = _s_home, _s_anal, _s_scan, _s_strat
+tab_e = _t_settings
+tab_f = _t_brief
+tab_g = _c_main
+tab_h = _c_v93
 
 with tab_f:
     render_morning_briefing_tab()
@@ -7412,6 +7556,17 @@ with tab_g:
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
     st.divider()
+    # ═══ 상단: 🛡️ 보유 종목 리스크 관리 (잔고 기반) — 신규와 물리적 분리 ═══
+    try:
+        render_holdings_risk()
+    except Exception as _hre:
+        import logging as _lg_hr
+        _lg_hr.warning("보유종목 리스크 실패: %s: %s", type(_hre).__name__, _hre)
+        st.caption("⚠️ 보유 종목 패널 일시 비활성")
+    st.divider()
+    # ═══ 하단: ⚔️ 신규 타격 대기열 (픽 — 잔고 무관, 익절/손절 단어 미사용) ═══
+    st.markdown("#### ⚔️ 신규 타격 대기열 (NEW ENTRY QUEUE)")
+    st.caption("아래는 '신규 진입 후보'입니다 — 관망/급등(추격금지)로만 판단하세요. 익절·손절은 위 보유 종목 전용.")
     _pk1, _pk2 = st.columns(2)
     with _pk1:
         try:
