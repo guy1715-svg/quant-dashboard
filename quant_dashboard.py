@@ -4535,6 +4535,27 @@ def render_global_header():
 </div></div>""", unsafe_allow_html=True)
 
 
+def render_account_summary():
+    """💰 계좌 요약 — 가용현금·총자산·평가손익·수익률 (홈 탭 잔고요약 이관, 보유종목 위 배치)."""
+    _bal = None
+    try:
+        _bal = kis_get_balance(silent=True)
+    except Exception:
+        _bal = None
+    if not isinstance(_bal, dict):
+        st.caption("💰 계좌 요약 — KIS 계좌번호(KIS_ACCOUNT_NO) 설정 시 실계좌 현황 표시")
+        return
+    _cash = int(_bal.get("현금", 0)); _tot = int(_bal.get("총평가", 0))
+    _pl = int(_bal.get("총손익", 0)); _rt = float(_bal.get("수익률", 0))
+    _cash_ratio = (_cash / _tot * 100) if _tot else 0
+    _plc = "#ef4444" if _pl < 0 else "#16a34a" if _pl > 0 else "#94a3b8"
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _m1.metric("💵 가용현금", f"{_cash:,}", f"{_cash_ratio:.0f}% 비중")
+    _m2.metric("🏦 총자산", f"{_tot:,}")
+    _m3.metric("📊 평가손익", f"{_pl:+,}")
+    _m4.metric("📈 수익률", f"{_rt:+.2f}%")
+
+
 def render_holdings_risk():
     """🛡️ 보유 종목 리스크 관리 — KIS 잔고 종목만. 목표/손절 표시 + −3% 칼손절 텔레그램."""
     st.markdown("#### 🛡️ 보유 종목 리스크 관리 (ACTIVE PORTFOLIO)")
@@ -7484,17 +7505,24 @@ except Exception as _ghe:
 #   기존 with tab_X 블록은 그대로 두고, 컨테이너만 재바인딩해 내용 100% 보존.
 _t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
     ["🌅 장전 브리핑", "🎯 실전 관제탑", "📡 딥 스캐너", "⚙️ 시스템 설정"])
-with _t_scanner:
-    _s_scan, _s_home, _s_anal, _s_strat = st.tabs(
-        ["📡 스윙 스캐너", "🏠 홈 요약", "🔍 종목 분석", "🔄 전략 로테이션"])
+# V12.0 1.5단계 기능 이관 매핑:
+#   홈 → 실전 관제탑(계좌현황) · 분석 → 딥 스캐너(종목분석) · 전략 → 장전 브리핑(레짐/로테이션)
+with _t_brief:
+    _b_brief, _b_strat = st.tabs(["🌅 브리핑", "🔄 전략·레짐 로테이션"])
 with _t_command:
-    _c_main, _c_v93 = st.tabs(["🎯 관제(장중 매매/리스크)", "🛡️ 실전매매 모듈"])
-# 기존 변수명 → 새 컨테이너로 재바인딩 (아래 with tab_X 블록들이 여기로 렌더됨)
-tab_a, tab_b, tab_c, tab_d = _s_home, _s_anal, _s_scan, _s_strat
-tab_e = _t_settings
-tab_f = _t_brief
-tab_g = _c_main
-tab_h = _c_v93
+    _c_main, _c_v93, _c_home = st.tabs(
+        ["🎯 관제 (장중 매매/리스크)", "🛡️ 실전매매 모듈", "🏦 계좌 현황(홈)"])
+with _t_scanner:
+    _s_scan, _s_anal = st.tabs(["📡 스윙 스캐너", "🔍 종목 정밀분석(드릴다운)"])
+# 기존 변수명 → 새 컨테이너 재바인딩 (아래 with tab_X 블록 내용 100% 보존)
+tab_a = _c_home     # 🏠 홈 → 실전 관제탑 서브탭(계좌 현황)
+tab_b = _s_anal     # 🔍 분석 → 딥 스캐너 서브탭(종목 정밀분석)
+tab_c = _s_scan     # 📡 스캐너 → 딥 스캐너 서브탭(스윙 스캐너)
+tab_d = _b_strat    # 🔄 전략 → 장전 브리핑 서브탭(레짐/로테이션)
+tab_e = _t_settings # ⚙️ 관리 → 시스템 설정
+tab_f = _b_brief    # 🌅 브리핑 → 장전 브리핑 서브탭
+tab_g = _c_main     # 🎯 관제
+tab_h = _c_v93      # 🛡️ 실전매매
 
 with tab_f:
     render_morning_briefing_tab()
@@ -7556,7 +7584,11 @@ with tab_g:
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
     st.divider()
-    # ═══ 상단: 🛡️ 보유 종목 리스크 관리 (잔고 기반) — 신규와 물리적 분리 ═══
+    # ═══ 상단: 💰 계좌 요약 + 🛡️ 보유 종목 리스크 관리 (잔고 기반) — 신규와 물리적 분리 ═══
+    try:
+        render_account_summary()
+    except Exception:
+        pass
     try:
         render_holdings_risk()
     except Exception as _hre:
