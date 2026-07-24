@@ -4219,6 +4219,227 @@ def render_command_usage_guide():
 """, unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 🛡️ V9.3 실전 매매 모듈 — 칼손절·갭트래커·종배스캐너·실적락·복기일지
+# ══════════════════════════════════════════════════════════════════════════
+def _v93_load(name, default):
+    import json as _j
+    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    try:
+        if os.path.exists(_p):
+            return _j.load(open(_p, encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+
+def _v93_save(name, data):
+    import json as _j
+    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    try:
+        _j.dump(data, open(_p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def render_v93_trading_tab():
+    """🛡️ V9.3 실전 매매 — 5대 모듈. 예외는 모듈별 격리."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _mins = _now.hour * 60 + _now.minute
+    _mv = st.session_state.get("_macro_verdict") or {}
+    # 매크로 판정이 아직 없으면 직접 산출
+    if not _mv:
+        try:
+            _mv_d = fetch_macro_triggers(); _t, _c, _b = _macro_verdict(_mv_d)
+            _mv = {"text": _t, "block": _b}
+        except Exception:
+            _mv = {"text": "판정 대기", "block": False}
+    _block = _mv.get("block")
+
+    # ── 시황 연동 현금비중 신호등(배경 배너) ──
+    if _block:
+        _sig_bg, _sig_txt, _sig_c = "#7f1d1d", "🔴 경고 — 권장 현금비중 50%+ · 미수/신용 절대금지 · 무포지션 권장", "#fca5a5"
+    elif "중립" in _mv.get("text", ""):
+        _sig_bg, _sig_txt, _sig_c = "#78350f", "🟡 주의 — 현금비중 30%+ · 선별 진입, 분할 대응", "#fde68a"
+    else:
+        _sig_bg, _sig_txt, _sig_c = "#14532d", "🟢 양호 — 정상 대응 가능 (원칙 매매 유지)", "#86efac"
+    st.markdown(
+        f"<div style='background:{_sig_bg};border-radius:10px;padding:10px 14px;margin-bottom:10px;"
+        f"font-size:14px;font-weight:800;color:{_sig_c}'>🚦 시황 현금비중 신호등: {_sig_txt}</div>",
+        unsafe_allow_html=True)
+
+    # ═══ 모듈 1: 기계적 칼손절 & 무포지션 알림 ═══
+    st.markdown("### 🚨 ① 기계적 칼손절 (2~3% 도마뱀 꼬리 자르기)")
+    _c1, _c2, _c3 = st.columns([1, 1, 1])
+    _cut_code = _c1.text_input("종목코드", key="_v93_cut_code", placeholder="005930")
+    _cut_avg = _c2.number_input("매수단가", min_value=0, step=100, key="_v93_cut_avg")
+    _cut_alarm = _c3.checkbox("📱 손절 텔레그램 알림", key="_v93_cut_alarm")
+    if _cut_code and _cut_avg > 0:
+        _cur = 0
+        try:
+            _cur = (kis_get_price(_cut_code.strip()) or {}).get("현재가") or 0
+        except Exception:
+            pass
+        if _cur:
+            _pl = (_cur - _cut_avg) / _cut_avg * 100
+            _l2 = int(_cut_avg * 0.98); _l3 = int(_cut_avg * 0.97)
+            _plc = "#ef4444" if _pl < 0 else "#16a34a"
+            st.markdown(
+                f"<div style='font-size:13px'>현재가 <b>{_cur:,}</b> · 손익 "
+                f"<b style='color:{_plc}'>{_pl:+.2f}%</b> · "
+                f"<span style='color:#f59e0b'>−2%선 {_l2:,}</span> · "
+                f"<span style='color:#ef4444'>−3%선 {_l3:,}</span></div>", unsafe_allow_html=True)
+            if _pl <= -3.0:
+                st.error("🚨 −3% 도달 — 대응의 영역입니다. **즉시 손절하십시오.**")
+                if _cut_alarm and st.session_state.get("_v93_cut_last") != _cut_code:
+                    if send_telegram(f"🚨 칼손절! {_cut_code} {_pl:.1f}% (현재 {_cur:,}/매수 {_cut_avg:,})\n대응의 영역 — 즉시 손절"):
+                        st.session_state["_v93_cut_last"] = _cut_code
+            elif _pl <= -2.0:
+                st.warning("🟠 −2% 이탈 — 손절 준비. −3% 도달 시 기계적 청산.")
+            else:
+                st.caption("🟢 손절선 위 — 원칙 유지, 이탈 시 즉시 대응")
+        else:
+            st.caption("현재가 수신 대기 (KIS 연결·장중 확인)")
+
+    st.divider()
+    # ═══ 모듈 2: 나스닥 선물 연동 갭 트래커 ═══
+    st.markdown("### 🌙 ② 매크로 스프레드 보드 (국장 낙폭 ↔ 나스닥선물 반등)")
+    try:
+        _idx = get_index_quotes()
+    except Exception:
+        _idx = {}
+    _nq = None
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        pass
+    _g1, _g2, _g3 = st.columns(3)
+    _kospi = (_idx.get("코스피") or {}).get("등락")
+    _kosdaq = (_idx.get("코스닥") or {}).get("등락")
+    _g1.metric("코스피", f"{_kospi:+.2f}%" if isinstance(_kospi, (int, float)) else "—")
+    _g2.metric("코스닥", f"{_kosdaq:+.2f}%" if isinstance(_kosdaq, (int, float)) else "—")
+    _g3.metric("나스닥 선물", f"{_nq:+.2f}%" if isinstance(_nq, (int, float)) else "—",
+               help="08:00 기준 대비 (프리마켓)")
+    if isinstance(_kospi, (int, float)) and isinstance(_nq, (int, float)):
+        if _kospi < -1.0 and _nq > 0.3:
+            st.info("🌙 국장 낙폭과대 + 나스닥선물 반등 → NXT 낙폭과대 반등 노려볼 구간 (대형주 한정)")
+        elif _kospi < -1.0 and _nq < 0:
+            st.warning("⚠️ 국장 하락 + 나스닥선물도 약세 → 반등 근거 약함, 관망 우선")
+    # 대형주 NXT 필터: 낙폭과대 + 수급 이탈 없음
+    if _mins >= (15 * 60 + 30):   # NXT 시간대
+        with st.expander("🌙 대형주 NXT 필터 (낙폭과대 + 수급 이탈 없음)", expanded=True):
+            _big = []
+            for _s, _v in _BRIEF_SECTORS.items():
+                for _cd, _nm in _v.get("kr", [])[:2]:   # 섹터별 상위 2(대형주)
+                    try:
+                        _pr = kis_get_price(_cd) or {}
+                        _chg = _pr.get("등락률")
+                        _iv = _dol_investor(_cd) or {}
+                        _org = _to_int(_iv.get("기관"))
+                        if isinstance(_chg, (int, float)) and _chg <= -2.0 and _org >= 0:
+                            _big.append((_nm, _cd, _s, _chg, _org))
+                    except Exception:
+                        continue
+            if _big:
+                _rows = "".join(
+                    f"<tr><td style='padding:5px 8px;font-weight:700'>{n}<span style='color:#475569;font-size:10px'> {c}·{s}</span></td>"
+                    f"<td style='padding:5px 8px;text-align:right;color:#ef4444'>{ch:+.2f}%</td>"
+                    f"<td style='padding:5px 8px;text-align:right;color:{'#16a34a' if o>=0 else '#ef4444'}'>기관 {o:+,}</td></tr>"
+                    for n, c, s, ch, o in _big)
+                st.markdown(f"<table style='width:100%;border-collapse:collapse;font-size:12px'>{_rows}</table>",
+                            unsafe_allow_html=True)
+                st.caption("💡 낙폭 −2%↓ + 기관 순매도 아님(이탈 없음) 대형주만 — 중소형주 제외(호가왜곡 차단)")
+            else:
+                st.caption("조건(낙폭과대+수급유지) 충족 대형주 없음")
+    else:
+        st.caption("🌙 대형주 NXT 필터는 15:30 이후(대체거래소) 활성화됩니다")
+
+    st.divider()
+    # ═══ 모듈 3: 종배 3박자 팩트체크 스캐너 (14:30~15:20) ═══
+    st.markdown("### 🎯 ③ 종가배팅 3박자 팩트체크 스캐너")
+    _cb_on = (14 * 60 + 30) <= _mins <= (15 * 60 + 20)
+    if not _cb_on:
+        st.caption("⏰ 종배 레이더는 14:30~15:20에만 활성화됩니다 (지금은 참고용 수동 체크 가능)")
+    _cbcode = st.text_input("종배 후보 종목코드", key="_v93_cb_code", placeholder="예: 042700")
+    _auto = {"거래대금": False, "수급": False, "차트": False}
+    if _cbcode:
+        try:
+            _pr = kis_get_price(_cbcode.strip()) or {}
+            _px = _pr.get("현재가") or 0; _vol = _pr.get("거래량") or 0
+            _auto["거래대금"] = (_px * _vol) >= 100_000_000_000   # 1,000억
+            _iv = _dol_investor(_cbcode.strip()) or {}
+            _auto["수급"] = (_to_int(_iv.get("기관")) > 0) or (_to_int(_iv.get("외인")) > 0)
+            _ind = calc_indicators(fetch_ohlcv(_cbcode.strip(), 60))
+            _ma5 = float(_ind["MA5"].iloc[-1]) if "MA5" in _ind else 0
+            _auto["차트"] = bool(_ma5 and _px and _px > _ma5)
+        except Exception:
+            pass
+    _k1 = st.checkbox("① 당일 거래대금 1,000억 이상", value=_auto["거래대금"], key="_v93_k1")
+    _k2 = st.checkbox("② 외국인/기관 양매수(강한 한쪽 수급)", value=_auto["수급"], key="_v93_k2")
+    _k3 = st.checkbox("③ 5일선/전고점 돌파 차트", value=_auto["차트"], key="_v93_k3")
+    _k4 = st.checkbox("④ 강력한 재료(뉴스) 존재", value=False, key="_v93_k4",
+                      help="뉴스 시그널 태그 자동참고: " +
+                           (", ".join(fetch_stock_triggers(_cbcode.strip())) if _cbcode else "종목 입력 시"))
+    if _k1 and _k2 and _k3 and _k4:
+        st.success("✅ 종배 승인 — 4박자 모두 충족! 익일 오전 8:01~8:02 전량 매도(익절) 세팅 권장.")
+        if st.button("⏰ 익일 8시 매도 알람 예약", key="_v93_sellalarm"):
+            _amsg = f"⏰ 종배 익절 알람 예약: {_cbcode} — 내일 08:01~08:02 전량 매도(익절) 잊지 마세요"
+            st.toast("예약 알림 전송" if send_telegram(_amsg) else "텔레그램 미설정")
+    else:
+        _need = [n for n, v in [("거래대금", _k1), ("수급", _k2), ("차트", _k3), ("재료", _k4)] if not v]
+        st.caption(f"미충족: {', '.join(_need)} — 4박자 모두 True일 때만 종배 승인")
+
+    st.divider()
+    # ═══ 모듈 4: 실적 시즌 홀짝 방지 락 ═══
+    st.markdown("### 📅 ④ 실적 발표 락(Lock) — 홀짝 배팅 방지")
+    _earn = _v93_load("v93_earnings.json", [])
+    _edf = pd.DataFrame(_earn if _earn else [{"종목명": "", "종목코드": "", "실적발표일": ""}])
+    _ed = st.data_editor(_edf, num_rows="dynamic", use_container_width=True, key="_v93_earn_editor",
+                         column_config={"실적발표일": st.column_config.TextColumn("실적발표일(YYYY-MM-DD)")})
+    try:
+        _recs = [r for r in _ed.to_dict("records") if str(r.get("종목명", "")).strip()]
+        _v93_save("v93_earnings.json", _recs)
+    except Exception:
+        _recs = _earn
+    _today_d = _now.date()
+    for _r in _recs:
+        try:
+            import datetime as _dtl
+            _ed_date = _dtl.datetime.strptime(str(_r.get("실적발표일", "")).strip(), "%Y-%m-%d").date()
+            _dday = (_ed_date - _today_d).days
+            if -0 <= _dday <= 1 or _dday == 0:
+                pass
+            if 0 <= _dday <= 1:
+                st.error(f"🔒 {_r['종목명']} — 실적 D-{_dday} · **홀짝 배팅 주의! 매수 금지(Lock)**. 발표 후 목표가 상향+수급 확인 시에만 진입.")
+            elif _dday < 0:
+                st.caption(f"🔓 {_r['종목명']} — 실적 발표 완료(D+{-_dday}). 리포트·수급 확인 후 진입 가능.")
+            else:
+                st.caption(f"📅 {_r['종목명']} — 실적 D-{_dday} (아직 여유)")
+        except Exception:
+            continue
+
+    st.divider()
+    # ═══ 모듈 5: 100만원 실전 복기 일지 ═══
+    st.markdown("### 🧠 ⑤ 100만원 실전 복기 일지 (100만원 = 1억 마인드)")
+    _jkey = _now.strftime("%Y-%m-%d")
+    _journal = _v93_load("v93_journal.json", {})
+    _jtoday = _journal.get(_jkey, {})
+    _jc1, _jc2 = st.columns([1, 1])
+    _target = _jc1.number_input("오늘 목표 수익(원)", min_value=0, step=5000, value=int(_jtoday.get("target", 20000)), key="_v93_target")
+    _realized = _jc2.number_input("현재 실현손익(원)", step=5000, value=int(_jtoday.get("realized", 0)), key="_v93_realized")
+    _rate = (_realized / _target * 100) if _target else 0
+    st.progress(max(0.0, min(_rate / 100, 1.0)), text=f"목표 달성률 {_rate:.0f}% ({_realized:,} / {_target:,}원)")
+    _principled = st.radio("오늘 원칙 매매(손절/익절)를 수행했나요?", ["아직", "✅ 잘 지켰다", "❌ 못 지켰다"],
+                           horizontal=True, index=["아직", "✅ 잘 지켰다", "❌ 못 지켰다"].index(_jtoday.get("principled", "아직")) if _jtoday.get("principled") in ["아직", "✅ 잘 지켰다", "❌ 못 지켰다"] else 0,
+                           key="_v93_principled")
+    _note = st.text_area("한 줄 복기(성공/실패 사례)", value=_jtoday.get("note", ""), key="_v93_note", height=68)
+    if st.button("💾 오늘 일지 저장", key="_v93_journal_save"):
+        _journal[_jkey] = {"target": int(_target), "realized": int(_realized),
+                           "principled": _principled, "note": _note}
+        _v93_save("v93_journal.json", _journal)
+        st.toast("복기 일지 저장됨 ✅")
+
+
 def _clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
@@ -7105,11 +7326,19 @@ def render_morning_briefing_tab():
     st.caption("※ 사이트가 임베드를 차단하면 빈 화면이 될 수 있습니다 — 그럴 땐 새 창에서 직접 열어 확인하세요.")
 
 
-tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g = st.tabs(
-    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "🎯 실전 관제탑"])
+tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g, tab_h = st.tabs(
+    ["🏠 홈", "🔍 분석", "📡 스캐너", "🔄 전략", "⚙️ 관리", "🌅 브리핑", "🎯 실전 관제탑", "🛡️ 실전매매"])
 
 with tab_f:
     render_morning_briefing_tab()
+
+with tab_h:
+    try:
+        render_v93_trading_tab()
+    except Exception as _v93e:
+        import traceback as _tbv93
+        st.error(f"⚠️ 실전매매 모듈 오류 — {type(_v93e).__name__}: {_v93e}")
+        st.caption(_tbv93.format_exc().splitlines()[-1])
 
 with tab_g:
     # ── 관제탑 헤더: 제목 + 장 상태(정규장/NXT/장외) + KST ──
