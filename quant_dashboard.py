@@ -3866,6 +3866,18 @@ def render_manju_morning_pick():
             f"<span style='color:#8b93a7;font-size:11px'>{_now.strftime('%H:%M')} KST · "
             f"{'장중 확정' if _after_830 else '08:30 동시호가 前 예비'}</span></div>")
     st.markdown(_hdr, unsafe_allow_html=True)
+    # 매크로 리스크오프면 매수 픽 대신 '관망' 강제 (폭락장 오해 방지)
+    _mv = st.session_state.get("_macro_verdict") or {}
+    if _mv.get("block"):
+        st.markdown(
+            "<div style='border:2px solid #ef4444;border-radius:12px;padding:12px 14px;"
+            "background:linear-gradient(180deg,#1a0505,#111c33)'>"
+            "<div style='font-size:15px;font-weight:900;color:#fca5a5'>🔴 오늘은 관망 — 신규 매수 보류</div>"
+            "<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>매크로 리스크오프(현금 방어) 발동 — "
+            "픽이 있어도 <b>오늘은 사는 날이 아닙니다.</b> 매크로 🟢 전환 후 진입하세요.</div></div>",
+            unsafe_allow_html=True)
+        st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
+        return
     if not _pick:
         st.info("🕗 조건(주도섹터 유입 + 매수 우위) 충족 종목 없음 — 관망 (장 초반 수급 형성 후 재확인)")
         return
@@ -3964,8 +3976,25 @@ def render_dolpanty_pick():
     # 20MA 위 종목 우선 → 점수순
     _cands.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
     _pick = _cands[0] if _cands else None
+    # 매크로 리스크오프면 매수 픽 대신 '관망'
+    _mv = st.session_state.get("_macro_verdict") or {}
+    if _mv.get("block"):
+        st.markdown(
+            "<div style='border:2px solid #ef4444;border-radius:12px;padding:12px 14px;"
+            "background:linear-gradient(180deg,#1a0505,#111c33)'>"
+            "<div style='font-size:15px;font-weight:900;color:#fca5a5'>🔴 오늘은 관망 — 종가베팅 보류</div>"
+            "<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>매크로 리스크오프(현금 방어) 발동 — "
+            "<b>오늘 종베는 쉬는 게 정답.</b> 매크로 🟢 전환·낙폭 진정 후 재산출하세요.</div></div>",
+            unsafe_allow_html=True)
+        st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
+        return
     if not _pick:
         st.info("🕒 종가베팅 후보 미형성 — 15:00 이후 수급/종가 확정 시 재산출 (관망)")
+        return
+    # 후보가 있어도 셋업이 약하면(20MA 이탈·점수<40) 매수 아님 → 관망 표기
+    if (not _pick["ma_ok"]) or _pick["score"] < 40:
+        st.warning(f"🟡 관망 — 조건 미달(최상위 후보 {_pick['name']} 점수 {_pick['score']:.0f}"
+                   f"{'·20MA 이탈' if not _pick['ma_ok'] else ''}). 뚜렷한 종베 타점 아님.")
         return
     _rec = _pick["rec"]; _px = _rec["현재가"] or 0; _chg = _rec["등락률"] or 0.0
     _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
@@ -6976,6 +7005,14 @@ with tab_g:
         render_command_usage_guide()
     except Exception:
         pass
+    # 매크로 판정 먼저 산출 → 픽 카드가 리스크오프를 즉시 반영
+    try:
+        render_macro_triggers_panel()
+    except Exception as _mce:
+        import logging as _lg_mc
+        _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
+        st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
+    st.divider()
     _pk1, _pk2 = st.columns(2)
     with _pk1:
         try:
@@ -6991,13 +7028,6 @@ with tab_g:
             import logging as _lg_dpp
             _lg_dpp.warning("돌팬티 픽 실패: %s: %s", type(_dpp).__name__, _dpp)
             st.caption("⚠️ 돌팬티 픽 일시 비활성 (데이터 지연)")
-    st.divider()
-    try:
-        render_macro_triggers_panel()
-    except Exception as _mce:
-        import logging as _lg_mc
-        _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
-        st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
     st.divider()
     try:
         render_ace_picks()
