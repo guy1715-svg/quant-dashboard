@@ -3866,12 +3866,15 @@ def render_ace_picks():
                 else "linear-gradient(180deg,#0f172a,#111c33)")
         _crown = ("<span style='background:#fbbf24;color:#1a1505;padding:1px 6px;border-radius:6px;"
                   "font-size:10px;font-weight:900;margin-right:4px'>👑 오늘의 대장</span>" if _is_top else "")
+        _hotbadge = ("<span style='background:#f97316;color:#fff;padding:1px 6px;border-radius:6px;"
+                     "font-size:10px;font-weight:800;margin-right:4px'>🔥 급등 추격주의</span>"
+                     if (_chg >= 7.0) else "")
         _cards.append(
             f"<div style='border:1.5px solid {_bord};border-radius:10px;padding:10px 12px;margin-bottom:8px;"
             f"background:{_bgg}'>"
             f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
             f"<div style='font-size:14px;font-weight:900;color:#e2e8f0'>"
-            f"{_crown}{'🥇 ' if (_is_ace and not _is_top) else ''}{_name} <span style='color:#64748b;font-size:11px'>{_code}·{_p['sector']}</span></div>"
+            f"{_crown}{_hotbadge}{'🥇 ' if (_is_ace and not _is_top) else ''}{_name} <span style='color:#64748b;font-size:11px'>{_code}·{_p['sector']}</span></div>"
             f"<div style='font-size:13px;font-weight:800;color:#cbd5e1'>{_px:,} "
             f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
             f"<div style='margin-bottom:5px'>{_tag_html} {_pen_badge}</div>"
@@ -3888,6 +3891,13 @@ def render_manju_morning_pick():
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _mins = _now.hour * 60 + _now.minute
     _after_830 = _mins >= 8 * 60 + 30           # 08:30 동시호가 시작
+    # 만쥬式 유효 시간대 판정(오전 09~10시가 승부처)
+    if (9 * 60) <= _mins <= (10 * 60):
+        _mj_time = "🟢 제로아워 확정(09~10시)"
+    elif (8 * 60 + 30) <= _mins < (9 * 60):
+        _mj_time = "🔵 개장 前 예비"
+    else:
+        _mj_time = "⏰ 만쥬 시간대 아님 (참고용)"
     if not kis_available():
         st.markdown("<div style='font-size:16px;font-weight:900;color:#e2e8f0'>⚡ 오늘의 만쥬식 단타 픽</div>",
                     unsafe_allow_html=True)
@@ -3929,7 +3939,7 @@ def render_manju_morning_pick():
     _hdr = ("<div style='display:flex;justify-content:space-between;align-items:center'>"
             "<span style='font-size:17px;font-weight:900;color:#fbbf24'>⚡ 오늘의 만쥬식 단타 픽</span>"
             f"<span style='color:#8b93a7;font-size:11px'>{_now.strftime('%H:%M')} KST · "
-            f"{'장중 확정' if _after_830 else '08:30 동시호가 前 예비'}</span></div>")
+            f"{_mj_time}</span></div>")
     st.markdown(_hdr, unsafe_allow_html=True)
     # 매크로 리스크오프면 매수 픽 대신 '관망' 강제 (폭락장 오해 방지)
     _mv = st.session_state.get("_macro_verdict") or {}
@@ -3971,8 +3981,10 @@ def render_manju_morning_pick():
         f"<span style='background:#1e293b;color:#93c5fd;padding:2px 7px;border-radius:8px;font-size:11px'>{_t}</span>"
         for _t in _tags)
     _grade = "🥇 A급 (유입×연기금)" if _pick["pension"] else "🟢 유입 주도"
+    _hot = _chg >= 7.0   # 이미 급등 → 추격 주의
+    _border = "#f97316" if _hot else "#fbbf24"
     st.markdown(
-        f"<div style='border:2px solid #fbbf24;border-radius:12px;padding:10px 14px;"
+        f"<div style='border:2px solid {_border};border-radius:12px;padding:10px 14px;"
         f"background:linear-gradient(180deg,#1a1505,#111c33);"
         f"box-shadow:0 6px 22px rgba(251,191,36,0.28)'>"
         f"<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px'>"
@@ -3983,9 +3995,11 @@ def render_manju_morning_pick():
         f"<div style='margin:4px 0 3px'>{_tag_html}</div>"
         f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#fbbf24'>{_grade}</b> · {_basis}</div></div>",
         unsafe_allow_html=True)
-    if not _after_830:
-        st.caption("⏳ 08:30 동시호가 시작 前 — 예비 픽(장 시작 후 실시간 수급으로 확정 재산출)")
-    st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 자동 교차검증")
+    if _hot:
+        st.warning(f"🔥 이미 +{_chg:.1f}% 급등 — 추격매수 주의! 만쥬식은 눌림목 매집이 원칙. 급등 후 반락 대기 권장.")
+    if _mj_time.startswith("⏰"):
+        st.caption("⏰ 지금은 만쥬式 시간대(09~10시)가 아닙니다 — 이 픽은 참고용, 내일 아침 재확인하세요.")
+    st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 · '떠있다=매수' 아님")
 
 
 def render_dolpanty_pick():
@@ -4088,6 +4102,8 @@ def render_dolpanty_pick():
         f"<div style='margin:4px 0 3px'>{_tag_html}</div>"
         f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#22c55e'>{_stat} · 점수 {_pick['score']:.0f}</b> · {_basis}</div></div>",
         unsafe_allow_html=True)
+    if _chg >= 7.0:
+        st.warning(f"🔥 이미 +{_chg:.1f}% 급등 — 종가베팅은 눌림/지지 매집이 원칙. 추격 금물, 반락 대기.")
     if not _gate:
         st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
 
