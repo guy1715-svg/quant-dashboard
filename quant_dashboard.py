@@ -3557,8 +3557,23 @@ def render_pension_tracker_tab():
     st.markdown("<div style='font-size:16px;font-weight:900;color:#e2e8f0'>"
                 "🏦 연기금 포착 추적 로깅 — 스냅샷·시계열 성과·승률 통계</div>", unsafe_allow_html=True)
     st.caption("연기금(기관) 연속 순매수 종목을 포착 시점부터 박제 → T+N 주가/수급 지속성 추적")
-    _b1, _b2, _b3 = st.columns([1.3, 1.2, 2])
+    # ── 하루 1회 자동 포착·갱신(세션당 1번) — 버튼 안 눌러도 자동 축적 ──
+    _auto_flag = f"_pension_auto_{_today}"
     _cap_msg = None
+    if kis_available() and not st.session_state.get(_auto_flag):
+        try:
+            _uni_a, _seen_a = [], set()
+            for _s, _v in _BRIEF_SECTORS.items():
+                for _cd, _nm in _v.get("kr", []):
+                    if _cd not in _seen_a:
+                        _uni_a.append((_cd, _nm)); _seen_a.add(_cd)
+            _na = pension_capture_snapshot(_uni_a, _today)
+            _ua = pension_update_timeseries()
+            st.session_state[_auto_flag] = True
+            _cap_msg = ("ok", f"자동 실행 — 신규 포착 {_na}개 · 시계열 갱신 {_ua}개 (하루 1회 자동, 버튼 불필요)")
+        except Exception:
+            st.session_state[_auto_flag] = True
+    _b1, _b2, _b3 = st.columns([1.3, 1.2, 2])
     if _b1.button("📌 지금 포착 스냅샷 저장", key="_pension_capture", use_container_width=True):
         if not kis_available():
             _cap_msg = ("warn", "KIS 미연결 — 포착 불가")
@@ -3894,6 +3909,93 @@ def render_manju_morning_pick():
     if not _after_830:
         st.caption("⏳ 08:30 동시호가 시작 前 — 예비 픽(장 시작 후 실시간 수급으로 확정 재산출)")
     st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 자동 교차검증")
+
+
+def render_dolpanty_pick():
+    """🌒 오늘의 돌팬티식 종가베팅 픽 — 유입섹터 상위 종목 중 20MA↑·아래꼬리·기관+ 최고점수 자동 선정.
+    15:00~20:00 확정 / 그 외 예비. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _gate, _glabel = _dolpanty_gate_open(_now)
+    st.markdown("<div style='font-size:17px;font-weight:900;color:#86efac;margin-bottom:2px'>"
+                "🌒 오늘의 돌팬티식 종가베팅 픽</div>", unsafe_allow_html=True)
+    if not kis_available():
+        st.caption("⚠️ KIS 미연결 — 자동 선정 불가"); return
+    _tok = kis_get_token()
+    if not _tok:
+        return
+    try:
+        _sectors = tuple((_s, tuple(_v.get("kr", []))) for _s, _v in _BRIEF_SECTORS.items())
+    except Exception:
+        return
+    _data = fetch_sector_moneyflow(_tok, _sectors)
+    _secs = _data.get("sectors", {}) if isinstance(_data, dict) else {}
+    # 유입(net 금액>0) 섹터의 상위 종목 후보(거래대금 기준 상위 8)
+    _pos = []
+    for _s, _i in _secs.items():
+        if _i.get("net", 0) <= 0:
+            continue
+        for _st in _i.get("stocks", []):
+            if _st.get("net") and _st["net"] > 0:
+                _pos.append({**_st, "sector": _s})
+    _pos.sort(key=lambda x: x["net"], reverse=True)
+    # 후보별 돌팬티 셋업(20MA·아래꼬리·기관) 점수 산출
+    _cands = []
+    for _p in _pos[:8]:
+        _rec = {"현재가": None, "등락률": None, "시가": None, "고가": None, "저가": None,
+                "거래량": None, "MA20": None, "기관": _p.get("qty"), "외인": 0}
+        try:
+            _pr = kis_get_price(_p["code"]) or {}
+            _rec.update({"현재가": _pr.get("현재가"), "등락률": _pr.get("등락률"),
+                         "시가": _pr.get("시가"), "고가": _pr.get("고가"),
+                         "저가": _pr.get("저가"), "거래량": _pr.get("거래량")})
+        except Exception:
+            pass
+        try:
+            _ind = calc_indicators(fetch_ohlcv(_p["code"], 60))
+            _rec["MA20"] = float(_ind["MA20"].iloc[-1])
+        except Exception:
+            pass
+        if not _rec["현재가"]:
+            continue
+        _sc, _g, _tag, _fac = _dolpanty_score(_rec, True, False)   # 랭킹용(게이트 무시 점수)
+        _ma_ok = bool(_rec["MA20"] and _rec["현재가"] > _rec["MA20"])
+        _tail = _dol_lower_tail(_rec["시가"], _rec["고가"], _rec["저가"], _rec["현재가"])
+        _cands.append({**_p, "rec": _rec, "score": _sc, "ma_ok": _ma_ok, "tail": _tail})
+    # 20MA 위 종목 우선 → 점수순
+    _cands.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
+    _pick = _cands[0] if _cands else None
+    if not _pick:
+        st.info("🕒 종가베팅 후보 미형성 — 15:00 이후 수급/종가 확정 시 재산출 (관망)")
+        return
+    _rec = _pick["rec"]; _px = _rec["현재가"] or 0; _chg = _rec["등락률"] or 0.0
+    _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+    _tags = []
+    try:
+        _tags = fetch_stock_triggers(_pick["code"], _pick["name"])
+    except Exception:
+        pass
+    _tag_html = " ".join(
+        f"<span style='background:#1e293b;color:#93c5fd;padding:2px 7px;border-radius:8px;font-size:11px'>{_t}</span>"
+        for _t in _tags)
+    _setup = []
+    _setup.append("📈20MA↑" if _pick["ma_ok"] else "📉20MA↓")
+    if _pick["tail"]: _setup.append("🪝아래꼬리")
+    _setup.append(f"💹 {_pick['sector']} 유입 +{_pick['net']/1e8:,.0f}억")
+    _basis = " · ".join(_setup)
+    _stat = "장중 확정" if _gate else "예비(15:00 이후 확정)"
+    st.markdown(
+        f"<div style='border:2px solid #22c55e;border-radius:12px;padding:10px 14px;"
+        f"background:linear-gradient(180deg,#05140a,#111c33);box-shadow:0 6px 22px rgba(34,197,94,0.25)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px'>"
+        f"<div style='font-size:19px;font-weight:900;color:#86efac'>🌒 {_pick['name']} "
+        f"<span style='font-size:11px;color:#94a3b8'>{_pick['code']}·{_pick['sector']}</span></div>"
+        f"<div style='font-size:15px;font-weight:800;color:#e2e8f0'>{_px:,} "
+        f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
+        f"<div style='margin:4px 0 3px'>{_tag_html}</div>"
+        f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#22c55e'>{_stat} · 점수 {_pick['score']:.0f}</b> · {_basis}</div></div>",
+        unsafe_allow_html=True)
+    if not _gate:
+        st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
 
 
 def render_command_usage_guide():
@@ -6855,16 +6957,40 @@ with tab_g:
         f"font-size:12px;font-weight:800'>{_mst[1]}</span>"
         f"<span style='color:#8b93a7;font-size:12px'>{_gn.strftime('%m/%d %H:%M')} KST</span></div></div>",
         unsafe_allow_html=True)
+    # ── 자동 새로고침 토글(선택) — 켜면 N초마다 페이지 전체 재로드 ──
+    _arc1, _arc2 = st.columns([1, 3])
+    _auto_on = _arc1.checkbox("🔁 자동 새로고침", key="_g_autorefresh",
+                              help="켜면 아래 주기마다 화면이 스스로 갱신됩니다(KIS 호출 증가).")
+    _auto_sec = _arc2.select_slider("주기(초)", options=[15, 30, 60, 120], value=30,
+                                    key="_g_autorefresh_sec", disabled=not _auto_on)
+    if _auto_on:
+        try:
+            import streamlit.components.v1 as _cmp_ar
+            _cmp_ar.html(
+                f"<script>setTimeout(function(){{window.parent.location.reload();}}, {int(_auto_sec)*1000});</script>",
+                height=0)
+            _arc2.caption(f"🟢 {_auto_sec}초마다 자동 갱신 중 — 끄려면 체크 해제")
+        except Exception:
+            pass
     try:
         render_command_usage_guide()
     except Exception:
         pass
-    try:
-        render_manju_morning_pick()
-    except Exception as _mpe:
-        import logging as _lg_mp
-        _lg_mp.warning("만쥬 단타 픽 실패: %s: %s", type(_mpe).__name__, _mpe)
-        st.caption("⚠️ 오늘의 단타 픽 일시 비활성 (데이터 지연)")
+    _pk1, _pk2 = st.columns(2)
+    with _pk1:
+        try:
+            render_manju_morning_pick()
+        except Exception as _mpe:
+            import logging as _lg_mp
+            _lg_mp.warning("만쥬 단타 픽 실패: %s: %s", type(_mpe).__name__, _mpe)
+            st.caption("⚠️ 만쥬 픽 일시 비활성 (데이터 지연)")
+    with _pk2:
+        try:
+            render_dolpanty_pick()
+        except Exception as _dpp:
+            import logging as _lg_dpp
+            _lg_dpp.warning("돌팬티 픽 실패: %s: %s", type(_dpp).__name__, _dpp)
+            st.caption("⚠️ 돌팬티 픽 일시 비활성 (데이터 지연)")
     st.divider()
     try:
         render_macro_triggers_panel()
