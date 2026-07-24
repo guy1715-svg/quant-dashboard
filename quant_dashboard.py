@@ -3078,12 +3078,66 @@ def _macro_verdict(d):
     return ("🟡 중립 · 선별 진입 (트리거 미충족)", "#f59e0b", False)
 
 
+# ── 📱 텔레그램 알람 (매크로 국면 전환 폰 푸시) ──────────────────────────────
+_MACRO_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macro_state.json")
+
+
+def _macro_state_load():
+    import json as _j
+    try:
+        if os.path.exists(_MACRO_STATE_FILE):
+            with open(_MACRO_STATE_FILE, "r", encoding="utf-8") as _f:
+                return _j.load(_f)
+    except Exception:
+        pass
+    return {}
+
+
+def _macro_state_save(d):
+    import json as _j
+    try:
+        with open(_MACRO_STATE_FILE, "w", encoding="utf-8") as _f:
+            _j.dump(d, _f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def send_telegram(text):
+    """텔레그램 봇으로 메시지 전송 — st.secrets의 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 사용.
+    설정 없으면 False. 예외 전파 없음."""
+    try:
+        _tok = st.secrets.get("TELEGRAM_BOT_TOKEN")
+        _cid = st.secrets.get("TELEGRAM_CHAT_ID")
+        if not _tok or not _cid:
+            return False
+        _requests.get(f"https://api.telegram.org/bot{_tok}/sendMessage",
+                      params={"chat_id": _cid, "text": text}, timeout=6)
+        return True
+    except Exception:
+        return False
+
+
 def render_macro_triggers_panel():
     """🌐 매크로 3대 트리거 교차검증 패널 — 실전 관제탑 상단 상시 표시. 예외 전파 없음."""
     _d = fetch_macro_triggers()
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _verd, _vc, _block = _macro_verdict(_d)
     st.session_state["_macro_verdict"] = {"text": _verd, "block": _block}
+
+    # ── 국면 전환 감지 → 텔레그램 폰 알림(개선 시 1회) ──
+    _sev = 2 if _block else (0 if "진입 허용" in _verd else 1)   # 2=리스크오프 1=중립 0=진입허용
+    _alarm_on = bool(st.session_state.get("_macro_alarm_on"))
+    if _alarm_on and _d.get("ok"):
+        _prev = _macro_state_load()
+        _psev = _prev.get("sev")
+        if _psev is not None and _sev < _psev:   # 국면 개선(나빠짐엔 알림 안 함)
+            _msg = (f"📈 매크로 국면 개선!\n{_verd}\n"
+                    f"나스닥선물 {(_d.get('nq_pct') or 0):+.2f}% · WTI {(_d.get('wti_pct') or 0):+.2f}%\n"
+                    f"{_now.strftime('%m/%d %H:%M')} KST — 대시보드 확인하세요")
+            if send_telegram(_msg):
+                st.toast("📱 텔레그램 알림 전송됨 (매크로 개선)")
+        if _psev != _sev:
+            _macro_state_save({"sev": _sev, "verd": _verd})
 
     def _c(v):
         return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
@@ -3127,6 +3181,17 @@ def render_macro_triggers_panel():
             f"- **② 반도체 동조** {_semi_detail_txt} → {_semi_st}\n"
             f"- **③ WTI 원유** {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "") + f" → {_wti_st}")
         st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
+        st.divider()
+        _tg_ok = bool(st.secrets.get("TELEGRAM_BOT_TOKEN") and st.secrets.get("TELEGRAM_CHAT_ID"))
+        st.checkbox("📱 텔레그램 알람 (🔴→🟢 국면 개선 시 폰 푸시)", key="_macro_alarm_on",
+                    disabled=not _tg_ok,
+                    help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램으로 즉시 알림")
+        if not _tg_ok:
+            st.caption("⚠️ 알람 쓰려면 `.streamlit/secrets.toml`에 TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID 필요 "
+                       "(아래 안내 참고) · 🔁자동 새로고침 켜둬야 감지됨")
+        else:
+            if st.button("✈️ 테스트 알림 보내기", key="_tg_test"):
+                st.toast("전송됨" if send_telegram("✅ 대시보드 텔레그램 알람 테스트 — 연결 정상") else "전송 실패(토큰 확인)")
 
 
 # ══════════════════════════════════════════════════════════════════════════
