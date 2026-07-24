@@ -3753,43 +3753,66 @@ def render_pension_tracker_tab():
     else:
         st.caption("통계 표본 부족 — 시계열 갱신(🔄) 후 T+1 이상 경과 필요")
 
-    # ── 포착 종목 리스트 + 시계열 드릴다운 ──
-    st.markdown("**📋 포착 종목 (최근순)**")
+    # ── 포착 종목 — 기간 필터 + 날짜별 아코디언 + 원-라인 테이블 ──
     def _c(v): return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
-    for _r in sorted(_recs, key=lambda r: r.get("T", ""), reverse=True):
-        _lr = _r.get("last_ret")
-        _lr_txt = (f"<span style='color:{_c(_lr)}'>{_lr:+.2f}%</span>" if isinstance(_lr, (int, float)) else "<span style='color:#94a3b8'>T+0</span>")
-        _hd = (f"{_r['name']} ({_r['code']}) · 포착 {_r['T']} · 연기금 {_r.get('org_streak',0)}일 "
-               f"· 점수 {_r.get('score',0)}")
-        with st.expander(f"🏦 {_hd}", expanded=False):
-            st.markdown(
-                f"<div style='font-size:12px;color:#cbd5e1'>포착가 <b>{_r.get('capture_price',0):,}</b> · "
-                f"진입 {_r.get('entry',0):,} · 손절 {_r.get('stop',0):,} · "
-                f"외인동반 {'🟢' if _r.get('foreign_pos') else '⚪'} · 현재 {_lr_txt}</div>",
-                unsafe_allow_html=True)
-            _snaps = _r.get("snapshots") or {}
-            if not _snaps:
-                st.caption("시계열 미수집 — [🔄 시계열 성과 갱신] 눌러 T+N 데이터 채우기")
-                continue
+    _fcol1, _fcol2 = st.columns([1.2, 3])
+    _period = _fcol1.selectbox("기간", ["최근 3일", "오늘", "전체"], key="_pen_period")
+    # 기간 필터링
+    import datetime as _dtp
+    def _daysago(_ds):
+        try:
+            return (_now.date() - _dtp.datetime.strptime(_ds, "%Y-%m-%d").date()).days
+        except Exception:
+            return 999
+    if _period == "오늘":
+        _flt = [r for r in _recs if r.get("T") == _today]
+    elif _period == "최근 3일":
+        _flt = [r for r in _recs if _daysago(r.get("T", "")) <= 3]
+    else:
+        _flt = list(_recs)
+    _fcol2.caption(f"📋 포착 종목 — {_period} · {len(_flt)}건 (전체 {len(_recs)}건 · 로그 보존)")
+    if not _flt:
+        st.caption("해당 기간 포착 종목 없음"); return
+    # 날짜별 그룹
+    _by_date = {}
+    for r in _flt:
+        _by_date.setdefault(r.get("T", "?"), []).append(r)
+    for _dt_key in sorted(_by_date.keys(), reverse=True):
+        _grp = sorted(_by_date[_dt_key], key=lambda r: r.get("score", 0), reverse=True)
+        _dlabel = "오늘" if _dt_key == _today else _dt_key
+        with st.expander(f"📅 {_dlabel} (포착 {len(_grp)}건)", expanded=(_dt_key == max(_by_date.keys()))):
             _tr = []
-            for _dk in sorted(_snaps.keys()):
-                _s = _snaps[_dk]
-                _rp = _s.get("ret_pct")
-                _hold = _s.get("org_hold")
-                _hicon = "🟢유지" if _hold is True else "🔴이탈" if _hold is False else "—"
+            for _r in _grp:
+                _cap = _r.get("capture_price", 0)
+                _lr = _r.get("last_ret")
+                _cur_px = None
+                _snaps = _r.get("snapshots") or {}
+                if _snaps:
+                    _cur_px = list(sorted(_snaps.items()))[-1][1].get("close")
+                _cur_txt = f"{_cur_px:,}" if _cur_px else "—"
+                _lr_txt = (f"<span style='color:{_c(_lr)}'>{_lr:+.2f}%</span>"
+                           if isinstance(_lr, (int, float)) else "<span style='color:#64748b'>T+0</span>")
+                _sc = _r.get("score", 0)
+                _sc_c = "#22c55e" if _sc >= 60 else "#f59e0b" if _sc >= 40 else "#94a3b8"
                 _tr.append(
-                    f"<tr><td style='padding:4px 8px;color:#94a3b8'>T+{_s.get('n','?')}</td>"
-                    f"<td style='padding:4px 8px;color:#64748b'>{_dk}</td>"
-                    f"<td style='padding:4px 8px;text-align:right;color:#cbd5e1'>{_s.get('close',0):,}</td>"
-                    f"<td style='padding:4px 8px;text-align:right;color:{_c(_rp)};font-weight:700'>{_rp:+.2f}%</td>"
-                    f"<td style='padding:4px 8px;text-align:center'>{_hicon}</td></tr>")
+                    f"<tr style='border-bottom:1px solid #1e293b'>"
+                    f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_r['name']}"
+                    f" <span style='color:#475569;font-size:10px'>{_r['code']}</span></td>"
+                    f"<td style='padding:5px 8px;text-align:right;color:#cbd5e1'>{_cap:,} / {_cur_txt}</td>"
+                    f"<td style='padding:5px 8px;text-align:center;color:#a78bfa'>🏦{_r.get('org_streak',0)}일</td>"
+                    f"<td style='padding:5px 8px;text-align:center;color:{_sc_c};font-weight:800'>{_sc}</td>"
+                    f"<td style='padding:5px 8px;text-align:right;color:#ef4444'>{_r.get('stop',0):,}</td>"
+                    f"<td style='padding:5px 8px;text-align:right;font-weight:700'>{_lr_txt}</td></tr>")
             st.markdown(
                 "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
                 "border:1px solid #1e293b;border-radius:6px'><thead>"
                 "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
-                "<th style='padding:4px 8px;text-align:left'>경과</th><th style='padding:4px 8px;text-align:left'>일자</th>"
-                "<th style='padding:4px 8px;text-align:right'>종가</th><th style='padding:4px 8px;text-align:right'>수익률</th>"
-                "<th style='padding:4px 8px;text-align:center'>연기금 수급</th></tr></thead>"
+                "<th style='padding:5px 8px;text-align:left'>종목</th>"
+                "<th style='padding:5px 8px;text-align:right'>포착가 / 현재가</th>"
+                "<th style='padding:5px 8px;text-align:center'>연기금</th>"
+                "<th style='padding:5px 8px;text-align:center'>점수</th>"
+                "<th style='padding:5px 8px;text-align:right'>손절가</th>"
+                "<th style='padding:5px 8px;text-align:right'>수익률(T+N)</th></tr></thead>"
                 f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
 
 
