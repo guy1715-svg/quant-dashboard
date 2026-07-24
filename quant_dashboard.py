@@ -6854,7 +6854,12 @@ with tab_a:
     from datetime import datetime as _dt_cc
     _kst_h = (_dt_cc.utcnow().hour + 9) % 24
     _kst_m = _dt_cc.utcnow().minute
-    _is_market_open = (9 <= _kst_h < 16) and not (_kst_h == 9 and _kst_m < 30)
+    # [V6.1 NXT 반영] 넥스트레이드(ATS) 애프터마켓 → 국내주식 실질 매매 종료 20:00 고정.
+    #   정규장 09:00~15:30 · NXT 애프터 15:30~20:00 모두 '거래 가능' → 15:30 마감發 가짜 리스크오프 금지.
+    _mins_cc = _kst_h * 60 + _kst_m
+    _regular_open = (9 * 60) <= _mins_cc <= (15 * 60 + 30)
+    _nxt_open = (15 * 60 + 30) < _mins_cc <= (20 * 60)
+    _is_market_open = _regular_open or _nxt_open
     _blackout_48 = False
     _v891_home = run_v891_system_check()
     if not _v891_home['can_enter']:
@@ -6914,11 +6919,12 @@ div[data-testid="stExpander"] { margin-bottom:0.5rem; }
         "🎯 V9.2 <span style='background:linear-gradient(90deg,#4da6ff,#a78bfa);"
         "-webkit-background-clip:text;-webkit-text-fill-color:transparent'>Quant Command Center</span></div>",
         unsafe_allow_html=True)
-    _market_badge = (
-        "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>● 장중</span>"
-        if _is_market_open else
-        "<span style='background:#374151;color:#9ca3af;padding:3px 10px;border-radius:20px;font-size:12px'>○ 장외</span>"
-    )
+    if _regular_open:
+        _market_badge = "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>● 정규장</span>"
+    elif _nxt_open:
+        _market_badge = "<span style='background:#f59e0b;color:#1a1505;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700'>🌙 NXT 애프터(~20시)</span>"
+    else:
+        _market_badge = "<span style='background:#374151;color:#9ca3af;padding:3px 10px;border-radius:20px;font-size:12px'>○ 장외</span>"
     _sb_cols[1].markdown(_market_badge, unsafe_allow_html=True)
     _mkt_home = _get_market()
     for _i_sb, (_nm_sb, _key_sb) in enumerate([("코스피","코스피"),("코스닥","코스닥"),("나스닥","나스닥")]):
