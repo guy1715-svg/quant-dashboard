@@ -3896,6 +3896,51 @@ def render_manju_morning_pick():
     st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 자동 교차검증")
 
 
+def render_command_usage_guide():
+    """📖 실전 관제탑 사용법 — 하루 2회 단타(오전 만쥬 + 종가 돌팬티→익일 시초) 운용 루틴."""
+    with st.expander("📖 사용법 · 하루 2회 단타 운용 루틴 (처음이면 여기부터)", expanded=False):
+        st.markdown("""
+<style>
+.guide-wrap{display:flex;gap:12px;flex-wrap:wrap}
+.guide-card{flex:1;min-width:280px;border:1px solid #1e293b;border-radius:12px;padding:12px 14px;
+  background:linear-gradient(180deg,#0f172a,#111c33)}
+.guide-card h4{margin:0 0 8px;font-size:15px;font-weight:900}
+.guide-step{display:flex;gap:8px;margin-bottom:7px;font-size:12px;color:#cbd5e1;line-height:1.45}
+.guide-t{flex-shrink:0;background:#1e293b;color:#93c5fd;border-radius:6px;padding:1px 7px;
+  font-size:11px;font-weight:800;height:fit-content;white-space:nowrap}
+.gp{background:#16a34a;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800}
+.gr{background:#ef4444;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800}
+</style>
+<div class='guide-wrap'>
+  <div class='guide-card' style='border-color:#fbbf24'>
+    <h4 style='color:#fde68a'>⚡ 만쥬式 — 오전 09~10시 승부</h4>
+    <div class='guide-step'><span class='guide-t'>08:30~09:00</span>
+      <span>맨 위 <b>🌐 매크로 배너</b> 색 확인(🔴면 오전 보류) → <b>⚡오늘의 만쥬 픽</b> 카드에서 오늘의 대장 후보 파악</span></div>
+    <div class='guide-step'><span class='guide-t'>09:00~09:10</span>
+      <span><b>⚡만쥬式</b> 서브탭 → <b>🟢ZERO-HOUR ACTIVE</b> 확인 → 🔄새로고침 → 액션이 <span class='gp'>⚡진입</span>인 종목 매수(대장 우선, 후속주 동시)</span></div>
+    <div class='guide-step'><span class='guide-t'>청산</span>
+      <span><span class='gr'>✂️칼손절</span> 뜨면 즉시 시장가 손절 · <b>10시 넘으면</b> mute → 신규진입 금지·정리</span></div>
+  </div>
+  <div class='guide-card' style='border-color:#22c55e'>
+    <h4 style='color:#86efac'>🌒 돌팬티式 — 15~20시 매수 → 익일 시초 매도</h4>
+    <div class='guide-step'><span class='guide-t'>15:00~15:30</span>
+      <span><b>🌒돌팬티式</b> 서브탭 → 🔄새로고침 → <b>📈20MA·🪝꼬리·기관+·점수🟢</b> 겹치는 종목이 종베 후보 (현금 30%룰 확인)</span></div>
+    <div class='guide-step'><span class='guide-t'>교차검증</span>
+      <span><b>🌀머니투어</b> 유입처 섹터 + <b>🏦연기금 추적</b> 연속매집 동시 충족 = <b>A급</b>(상단 카드에 표시)</span></div>
+    <div class='guide-step'><span class='guide-t'>18:00~20:00</span>
+      <span>헤더가 <b>🌙NXT 애프터</b>로 전환 → 저녁 대외리스크 재확인 후 <b>종가~애프터 최종 매수</b></span></div>
+    <div class='guide-step'><span class='guide-t'>익일 08:00~08:05</span>
+      <span>시초 동시호가 <b>갭 +1~2% 익절</b> · 갭 없거나 20MA 이탈이면 정리</span></div>
+  </div>
+</div>
+<div style='margin-top:10px;padding:8px 12px;background:#111c33;border:1px solid #1e293b;border-radius:8px;font-size:12px;color:#cbd5e1'>
+  <b style='color:#fbbf24'>📌 매일 3습관</b> &nbsp;①화면 볼 때마다 <b>🔄강제 새로고침</b>(자동갱신 없음) &nbsp;
+  ②<b>🏦연기금 추적</b>에서 📌포착 스냅샷 저장 + 🔄시계열 갱신(승률 DB 축적) &nbsp;
+  ③<b>🌐매크로 배너</b> 🔴면 그날 판 접기
+</div>
+""", unsafe_allow_html=True)
+
+
 def _clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
@@ -6789,6 +6834,31 @@ with tab_f:
     render_morning_briefing_tab()
 
 with tab_g:
+    # ── 관제탑 헤더: 제목 + 장 상태(정규장/NXT/장외) + KST ──
+    _gn = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _gm = _gn.hour * 60 + _gn.minute
+    if (9 * 60) <= _gm <= (15 * 60 + 30):
+        _mst = ("#16a34a", "● 정규장")
+    elif (15 * 60 + 30) < _gm <= (20 * 60):
+        _mst = ("#f59e0b", "🌙 NXT 애프터 ~20시")
+    elif (8 * 60 + 30) <= _gm < (9 * 60):
+        _mst = ("#3b82f6", "🔔 개장 준비")
+    else:
+        _mst = ("#64748b", "○ 장외")
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;align-items:center;"
+        f"padding:8px 14px;border-radius:12px;margin-bottom:8px;"
+        f"background:linear-gradient(90deg,#0b1220,#111c33);border:1px solid #1e293b'>"
+        f"<div style='font-size:19px;font-weight:900;color:#f0f4ff'>🎯 실전 관제탑</div>"
+        f"<div style='display:flex;gap:10px;align-items:center'>"
+        f"<span style='background:{_mst[0]};color:#fff;padding:3px 11px;border-radius:20px;"
+        f"font-size:12px;font-weight:800'>{_mst[1]}</span>"
+        f"<span style='color:#8b93a7;font-size:12px'>{_gn.strftime('%m/%d %H:%M')} KST</span></div></div>",
+        unsafe_allow_html=True)
+    try:
+        render_command_usage_guide()
+    except Exception:
+        pass
     try:
         render_manju_morning_pick()
     except Exception as _mpe:
