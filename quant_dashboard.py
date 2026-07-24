@@ -3769,6 +3769,98 @@ def render_ace_picks():
     st.caption("💡 A급 = 섹터 자금 유입처 + 연기금 포착 동시 충족 → '왜(뉴스 사유)·수급(자금 유입)·연속성(연기금)' 3중 확인")
 
 
+def render_manju_morning_pick():
+    """⚡ 오늘의 만쥬식 단타 픽 — 머니투어 주도섹터 × 연기금 포착 교차검증 자동 선정.
+    Step1 주도섹터(net+·수급강도) → Step2 연기금/유입처 중복 → Step3 최상단 픽 카드. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _mins = _now.hour * 60 + _now.minute
+    _after_830 = _mins >= 8 * 60 + 30           # 08:30 동시호가 시작
+    if not kis_available():
+        st.markdown("<div style='font-size:16px;font-weight:900;color:#e2e8f0'>⚡ 오늘의 만쥬식 단타 픽</div>",
+                    unsafe_allow_html=True)
+        st.caption("⚠️ KIS 미연결 — 자동 선정 불가"); return
+    _tok = kis_get_token()
+    if not _tok:
+        return
+    try:
+        _sectors = tuple((_s, tuple(_v.get("kr", []))) for _s, _v in _BRIEF_SECTORS.items())
+    except Exception:
+        return
+    _data = fetch_sector_moneyflow(_tok, _sectors)
+    _secs = _data.get("sectors", {}) if isinstance(_data, dict) else {}
+    # Step1: 주도 섹터(누적 순매수 +) 순위
+    _lead = sorted([(s, i) for s, i in _secs.items() if i.get("net", 0) > 0],
+                   key=lambda x: x[1]["net"], reverse=True)
+    _lead_rank = {s: _r + 1 for _r, (s, _i) in enumerate(_lead)}
+    # Step1-b: 주도 섹터 내 순매수 + 종목 후보(수급강도 부여)
+    _cands = []
+    for _s, _i in _lead:
+        for _st in _i.get("stocks", []):
+            _n = _st.get("net")
+            if _n and _n > 0:
+                _strength = "강" if abs(_n) >= 100000 else "중" if abs(_n) >= 30000 else "약"
+                _cands.append({**_st, "sector": _s, "strength": _strength})
+    # Step2: 연기금 포착 교집합(중복 체크)
+    try:
+        _pen = {r["code"]: r for r in _pension_load().get("records", [])}
+    except Exception:
+        _pen = {}
+    for _c in _cands:
+        _c["pension"] = _pen.get(_c["code"])
+    # 랭킹: 연기금 겹침 우선 → 수급강도(net) → 섹터 순위
+    _cands.sort(key=lambda c: (1 if c["pension"] else 0, c["net"], -_lead_rank.get(c["sector"], 99)),
+                reverse=True)
+    _pick = _cands[0] if _cands else None
+
+    _hdr = ("<div style='display:flex;justify-content:space-between;align-items:center'>"
+            "<span style='font-size:17px;font-weight:900;color:#fbbf24'>⚡ 오늘의 만쥬식 단타 픽</span>"
+            f"<span style='color:#8b93a7;font-size:11px'>{_now.strftime('%H:%M')} KST · "
+            f"{'장중 확정' if _after_830 else '08:30 동시호가 前 예비'}</span></div>")
+    st.markdown(_hdr, unsafe_allow_html=True)
+    if not _pick:
+        st.info("🕗 조건(주도섹터 유입 + 매수 우위) 충족 종목 없음 — 관망 (장 초반 수급 형성 후 재확인)")
+        return
+    # Step3: 픽 카드
+    _code = _pick["code"]; _name = _pick["name"]; _sec = _pick["sector"]
+    _pr = {}
+    try:
+        _pr = kis_get_price(_code) or {}
+    except Exception:
+        pass
+    _px = _pr.get("현재가") or 0; _chg = _pr.get("등락률") or 0.0
+    _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+    _tags = []
+    try:
+        _tags = fetch_stock_triggers(_code, _name)
+    except Exception:
+        pass
+    _si = {"강": "🟢🟢🟢 강", "중": "🟢🟢 중", "약": "🟢 약"}.get(_pick["strength"], "🟢")
+    # 선정 근거 요약
+    _reasons = [f"주도 섹터 유입 {_lead_rank.get(_sec, '?')}위({_sec})"]
+    if _pick["pension"]:
+        _reasons.append(f"연기금 연속 매집 {_pick['pension'].get('org_streak','?')}일")
+    _reasons.append(f"수급 강도 {_si}")
+    _basis = " + ".join(_reasons)
+    _tag_html = " ".join(
+        f"<span style='background:#1e293b;color:#93c5fd;padding:2px 7px;border-radius:8px;font-size:11px'>{_t}</span>"
+        for _t in _tags)
+    _grade = "🥇 A급 (유입×연기금)" if _pick["pension"] else "🟢 유입 주도"
+    st.markdown(
+        f"<div style='border:2px solid #fbbf24;border-radius:12px;padding:14px 16px;"
+        f"background:linear-gradient(180deg,#1a1505,#111c33)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+        f"<div style='font-size:20px;font-weight:900;color:#fde68a'>{_name} "
+        f"<span style='font-size:12px;color:#94a3b8'>{_code}·{_sec}</span></div>"
+        f"<div style='font-size:16px;font-weight:800;color:#e2e8f0'>{_px:,} "
+        f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
+        f"<div style='margin:6px 0'>{_tag_html}</div>"
+        f"<div style='font-size:12px;color:#cbd5e1'><b style='color:#fbbf24'>{_grade}</b> · "
+        f"선정 근거: {_basis}</div></div>", unsafe_allow_html=True)
+    if not _after_830:
+        st.caption("⏳ 08:30 동시호가 시작 前 — 예비 픽(장 시작 후 실시간 수급으로 확정 재산출)")
+    st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 자동 교차검증")
+
+
 def _clamp(x, lo, hi):
     return lo if x < lo else hi if x > hi else x
 
@@ -6662,6 +6754,13 @@ with tab_f:
     render_morning_briefing_tab()
 
 with tab_g:
+    try:
+        render_manju_morning_pick()
+    except Exception as _mpe:
+        import logging as _lg_mp
+        _lg_mp.warning("만쥬 단타 픽 실패: %s: %s", type(_mpe).__name__, _mpe)
+        st.caption("⚠️ 오늘의 단타 픽 일시 비활성 (데이터 지연)")
+    st.divider()
     try:
         render_macro_triggers_panel()
     except Exception as _mce:
