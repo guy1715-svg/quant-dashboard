@@ -3137,18 +3137,20 @@ def render_macro_triggers_panel():
 # ══════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=90, show_spinner=False)
 def fetch_sector_moneyflow(token, sectors):
-    """섹터별 외인+기관 누적 순매수 합산(당일 KIS실시간 추정 → 네이버 전일 폴백).
-    ⚠️ token 캐시 밖 주입(session_state 미접근). sectors=((섹터명,((코드,명),...)),...) 튜플.
-    반환 {'_ok':bool, 'sectors':{섹터명:{'net':int,'cnt':int,'src':str}}}."""
+    """[V6.1 금액 기반] 섹터별 외인+기관 누적 순매수 **거래대금(원)** 합산 + 시총 대비 유입비율.
+    ⚠️ 수량(주) 기반 착시 폐기 — 금액(순매수수량×현재가)만 팩트로 집계.
+    token 캐시 밖 주입(session_state 미접근). sectors=((섹터명,((코드,명),...)),...) 튜플.
+    반환 {'_ok':bool, 'sectors':{섹터명:{'net'(원),'cnt','src','stocks':[{net(원),qty,price,ratio,...}]}}}."""
     _out = {}
     if not token:
         return {"_ok": False, "sectors": _out}
     _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
     for _sname, _stocks in sectors:
-        _net, _cnt, _src = 0, 0, None
-        _detail = []   # 종목별 세부(드릴다운용)
+        _net_amt, _cnt, _src = 0, 0, None      # _net_amt: 섹터 순매수 거래대금(원)
+        _detail = []
         for _code, _nm in _stocks:
-            _v, _vsrc = None, None
+            _qty, _vsrc = None, None
+            # (1) 순매수 수량(외인+기관)
             try:
                 _re = _requests.get(
                     f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
@@ -3161,19 +3163,36 @@ def fetch_sector_moneyflow(token, sectors):
                         if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
                             _le = _row; break
                     if _le:
-                        _v = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
+                        _qty = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
                         _vsrc = "KIS실시간"
             except Exception:
                 pass
-            if _v is None:  # 실시간 0/빈값 → 네이버 전일 실측
+            if _qty is None:
                 _nv = _md_investor_naver(_code)
                 if _inv_valid(_nv):
-                    _v = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
+                    _qty = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
                     _vsrc = "naver(전일)"
-            _detail.append({"code": _code, "name": _nm, "net": _v, "src": _vsrc})
-            if _v is not None:
-                _net += _v; _cnt += 1; _src = _src or _vsrc
-        _out[_sname] = {"net": _net, "cnt": _cnt, "src": _src, "stocks": _detail}
+            # (2) 현재가 + 시가총액(hts_avls, 억원) — 금액·비율 산출용
+            _price, _mktcap = None, None
+            try:
+                _rp = _requests.get(
+                    f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                    headers={**_hdr, "tr_id": "FHKST01010100"},
+                    params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _code}, timeout=5)
+                _op = _rp.json().get("output", {})
+                if isinstance(_op, dict) and _op:
+                    _price = _to_int(_op.get("stck_prpr"))
+                    _mktcap = _to_int(_op.get("hts_avls")) * 100000000  # 억원 → 원
+            except Exception:
+                pass
+            # (3) 순매수 금액(원) = 수량 × 현재가 · 시총 대비 유입비율
+            _amt = (_qty * _price) if (_qty is not None and _price) else None
+            _ratio = (_amt / _mktcap) if (_amt is not None and _mktcap and _mktcap > 0) else None
+            _detail.append({"code": _code, "name": _nm, "net": _amt, "qty": _qty,
+                            "price": _price, "ratio": _ratio, "src": _vsrc})
+            if _amt is not None:
+                _net_amt += _amt; _cnt += 1; _src = _src or _vsrc
+        _out[_sname] = {"net": _net_amt, "cnt": _cnt, "src": _src, "stocks": _detail}
     return {"_ok": bool(_out), "sectors": _out}
 
 
@@ -3253,14 +3272,15 @@ def render_money_tour_panel():
         f"<div style='background:{_sc}22;border:1px solid {_sc};border-radius:8px;"
         f"padding:6px 12px;margin:6px 0;font-weight:800;color:{_sc};font-size:13px'>{_sig}</div>",
         unsafe_allow_html=True)
-    # 섹터 테이블
+    # 섹터 테이블 (금액 기반 — 억원)
     def _c(v): return "#ef4444" if (v is not None and v < 0) else "#16a34a" if (v is not None and v > 0) else "#94a3b8"
+    def _eok(v): return f"{v/1e8:+,.0f}억" if isinstance(v, (int, float)) else "—"
     _tr = []
     for _i, r in enumerate(_rows):
         _net = r["net"]; _dl = r["delta"]
         _flag = ("🔴 이탈" if _net < 0 else "🟢 유입" if _net > 0 else "⚪ 중립")
         _arrow = ("▲" if (_dl is not None and _dl > 0) else "▼" if (_dl is not None and _dl < 0) else "—")
-        _dtxt = (f"{_arrow} {_dl:+,}" if _dl is not None else "· (기준 수집중)")
+        _dtxt = (f"{_arrow} {_eok(_dl)}" if _dl is not None else "· (기준 수집중)")
         _tag = ""
         if r["sector"] == _inflow["sector"]: _tag = " <span style='color:#22c55e;font-size:10px'>◀유입처</span>"
         elif r["sector"] == _outflow["sector"]: _tag = " <span style='color:#ef4444;font-size:10px'>◀이탈원</span>"
@@ -3268,7 +3288,7 @@ def render_money_tour_panel():
         _tr.append(
             f"<tr style='background:{_bg}'>"
             f"<td style='padding:6px 8px;font-weight:800;color:#e2e8f0'>{r['sector']}{_tag}</td>"
-            f"<td style='padding:6px 8px;text-align:right;color:{_c(_net)};font-weight:700'>{_net:+,}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:{_c(_net)};font-weight:700'>{_eok(_net)}</td>"
             f"<td style='padding:6px 8px;text-align:right;color:{_c(_dl)}'>{_dtxt}</td>"
             f"<td style='padding:6px 8px;text-align:center'>{_flag}</td>"
             f"<td style='padding:6px 8px;text-align:center;color:#64748b;font-size:11px'>{r['cnt']}종목·{r['src'] or '—'}</td></tr>")
@@ -3277,13 +3297,13 @@ def render_money_tour_panel():
         "border:1px solid #1e293b;border-radius:8px'><thead>"
         "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
         "<th style='padding:6px 8px;text-align:left'>섹터</th>"
-        "<th style='padding:6px 8px;text-align:right'>누적 순매수(주)</th>"
+        "<th style='padding:6px 8px;text-align:right'>순매수 거래대금(억)</th>"
         "<th style='padding:6px 8px;text-align:right'>직전대비 Δ</th>"
         "<th style='padding:6px 8px;text-align:center'>판정</th>"
         "<th style='padding:6px 8px;text-align:center'>수집</th></tr></thead>"
         f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
-    st.caption("💡 순매수=외인+기관 합산 · Δ=직전 스냅샷 대비 증감(연속 꺾임/유입 추적) · "
-               "매크로 정상 + 이탈원→유입처 동시 성립 시 🚀 전조 시그널")
+    st.caption("💡 [V6.1 금액 기준] 순매수=외인+기관 **거래대금(수량×현재가)** 합산 · 수량 착시 배제 · "
+               "Δ=직전 스냅샷 대비 · 매크로 정상 + 이탈원→유입처 시 🚀 전조 시그널")
 
     # ── 종목 드릴다운 렌더러 (with_triggers=True면 뉴스 시그널 태그 컬럼 추가) ──────
     def _stock_rows_html(_sector_name, with_triggers=False):
@@ -3294,16 +3314,19 @@ def render_money_tour_panel():
             _snet = _sst.get("net")
             _spv = _prev_snet.get(_sst["code"])
             _sdl = (_snet - _spv) if (isinstance(_snet, (int, float)) and isinstance(_spv, (int, float))) else None
-            # 수급 강도(누적 순매수 절대량 기준)
+            # 수급 강도(누적 순매수 거래대금 절대액 기준 — 억원)
             if _snet is None:      _stg = "<span style='color:#94a3b8'>· 수급 대기</span>"
-            elif abs(_snet) >= 100000: _stg = ("<b style='color:#22c55e'>🟢🟢🟢 강</b>" if _snet > 0 else "<b style='color:#ef4444'>🔴🔴🔴 강</b>")
-            elif abs(_snet) >= 30000:  _stg = ("<span style='color:#16a34a'>🟢🟢 중</span>" if _snet > 0 else "<span style='color:#ef4444'>🔴🔴 중</span>")
+            elif abs(_snet) >= 1e10: _stg = ("<b style='color:#22c55e'>🟢🟢🟢 강</b>" if _snet > 0 else "<b style='color:#ef4444'>🔴🔴🔴 강</b>")
+            elif abs(_snet) >= 3e9:  _stg = ("<span style='color:#16a34a'>🟢🟢 중</span>" if _snet > 0 else "<span style='color:#ef4444'>🔴🔴 중</span>")
             else:                  _stg = ("<span style='color:#16a34a'>🟢 약</span>" if _snet > 0 else "<span style='color:#ef4444'>🔴 약</span>" if _snet < 0 else "⚪")
             _sc2 = _c(_snet)
             _sdc = _c(_sdl)
             _sarrow = ("▲" if (_sdl is not None and _sdl > 0) else "▼" if (_sdl is not None and _sdl < 0) else "—")
-            _sdtxt = (f"{_sarrow} {_sdl:+,}" if _sdl is not None else "· 수집중")
-            _nettxt = (f"{_snet:+,}" if _snet is not None else "—")
+            _sdtxt = (f"{_sarrow} {_sdl/1e8:+,.0f}억" if _sdl is not None else "· 수집중")
+            _ratio = _sst.get("ratio")
+            _rtxt = (f" <span style='color:#64748b;font-size:10px'>({_ratio*100:+.2f}%)</span>"
+                     if isinstance(_ratio, (int, float)) else "")
+            _nettxt = (f"{_snet/1e8:+,.0f}억{_rtxt}" if _snet is not None else "—")
             _bg2 = "#0f172a" if _j % 2 == 0 else "#111c33"
             _trig_td = ""
             if with_triggers:
@@ -3329,7 +3352,7 @@ def render_money_tour_panel():
             "border:1px solid #1e293b;border-radius:6px'><thead>"
             "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
             "<th style='padding:5px 8px;text-align:left'>종목명</th>"
-            "<th style='padding:5px 8px;text-align:right'>개별 순매수(주)</th>"
+            "<th style='padding:5px 8px;text-align:right'>순매수 거래대금(억·시총%)</th>"
             "<th style='padding:5px 8px;text-align:right'>직전대비 Δ</th>"
             f"<th style='padding:5px 8px;text-align:center'>수급 강도</th>{_trig_th}</tr></thead>"
             f"<tbody>{''.join(_out_html)}</tbody></table></div>")
@@ -3772,7 +3795,8 @@ def render_ace_picks():
             f"<div style='font-size:13px;font-weight:800;color:#cbd5e1'>{_px:,} "
             f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
             f"<div style='margin-bottom:5px'>{_tag_html} {_pen_badge}</div>"
-            f"<div style='font-size:11px;color:#94a3b8'>💹 섹터 자금유입 순매수 <b style='color:#16a34a'>+{_p['net']:,}주</b>"
+            f"<div style='font-size:11px;color:#94a3b8'>💹 섹터 자금유입 거래대금 <b style='color:#16a34a'>+{_p['net']/1e8:,.0f}억</b>"
+            f"{(' · 시총比 ' + format(_p.get('ratio')*100, '+.2f') + '%') if isinstance(_p.get('ratio'), (int, float)) else ''}"
             f"{' · 🏦 연기금 연속 매수 겹침(강력)' if _is_ace else ''}</div></div>")
     st.markdown("".join(_cards), unsafe_allow_html=True)
     st.caption("💡 A급 = 섹터 자금 유입처 + 연기금 포착 동시 충족 → '왜(뉴스 사유)·수급(자금 유입)·연속성(연기금)' 3중 확인")
@@ -3805,9 +3829,9 @@ def render_manju_morning_pick():
     _cands = []
     for _s, _i in _lead:
         for _st in _i.get("stocks", []):
-            _n = _st.get("net")
+            _n = _st.get("net")   # 순매수 거래대금(원)
             if _n and _n > 0:
-                _strength = "강" if abs(_n) >= 100000 else "중" if abs(_n) >= 30000 else "약"
+                _strength = "강" if abs(_n) >= 1e10 else "중" if abs(_n) >= 3e9 else "약"
                 _cands.append({**_st, "sector": _s, "strength": _strength})
     # Step2: 연기금 포착 교집합(중복 체크)
     try:
