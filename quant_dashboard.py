@@ -3223,6 +3223,11 @@ def render_macro_triggers_panel():
         st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
         st.divider()
         st.markdown("**📱 텔레그램 알람** — 봇 토큰·chat_id 입력 후 💾저장하면 계속 고정(재시작해도 유지)")
+        # 초기화 요청 처리(위젯 생성 前) — 중복입력 정리용
+        if st.session_state.pop("_tg_do_reset", False):
+            st.session_state["_tg_token_input"] = ""
+            st.session_state["_tg_chat_input"] = ""
+            _tg_file_save("", "")
         # 저장파일에서 자동 채우기(세션 비었을 때만)
         _sf_tok, _sf_cid = _tg_file_load()
         if _sf_tok and not st.session_state.get("_tg_token_input"):
@@ -3243,6 +3248,12 @@ def render_macro_triggers_panel():
             st.toast("저장됨 — 이제 재시작해도 유지 ✅" if _ok else "저장 실패")
         if _ac3.button("✈️ 테스트 전송", key="_tg_test", disabled=not _tg_ok, use_container_width=True):
             st.toast("전송됨 ✅" if send_telegram("✅ 대시보드 텔레그램 알람 테스트 — 연결 정상") else "전송 실패(토큰/chat_id 확인)")
+        if _tg_ok and (len(_tok_now) > 60 or len(_cid_now) > 12):
+            st.error(f"⚠️ 값이 중복 입력된 것 같습니다(토큰 {len(_tok_now)}자·chat_id {len(_cid_now)}자). "
+                     "🗑 초기화 후 한 번씩만 입력하세요. (정상: 토큰 46자·chat_id 10자)")
+        if st.button("🗑 초기화 (중복/오입력 정리)", key="_tg_reset"):
+            st.session_state["_tg_do_reset"] = True
+            st.rerun()
         _saved = "💾 저장됨(고정)" if (_sf_tok and _sf_cid) else "미저장"
         st.caption((f"🟢 입력 완료 · {_saved} — 체크 + 🔁자동 새로고침 켜두면 알림 작동" if _tg_ok
                     else "위 두 칸 입력 후 💾저장 · 🔁자동 새로고침 켜둬야 감지됨")
