@@ -4657,25 +4657,29 @@ def render_global_header():
 @keyframes ambAmber {{0%,100%{{box-shadow:inset 0 0 30px 6px rgba(245,158,11,0.10);}}50%{{box-shadow:inset 0 0 60px 16px rgba(245,158,11,0.35);}}}}
 .kh-ambient{{position:fixed;inset:0;pointer-events:none;z-index:99;border-radius:6px;}}
 .kh-amb-red{{animation:ambRed 1.1s infinite;}} .kh-amb-amber{{animation:ambAmber 2.0s infinite;}}
-/* 📱 [MTS 초고밀도 성형] 모바일 세로 뷰포트 스크롤 최소화 */
+/* 📱 [MTS 뷰포트 최종 성형] 탭 찌그러짐·터치타겟·여백·슬라이더 감도 보정 */
 @media (max-width:768px) {{
-  /* 전역 여백 제로화 */
-  .block-container {{padding:0.5rem 0.4rem !important;max-width:100% !important;}}
+  /* ② 컨테이너 여백 극한 다이어트 — 가로 꽉 차게 */
+  .block-container {{padding-left:0.4rem !important;padding-right:0.4rem !important;padding-top:1rem !important;
+    padding-bottom:0.6rem !important;max-width:100% !important;}}
   div[data-testid="stVerticalBlock"] {{gap:0.3rem !important;}}
   div[data-testid="stHorizontalBlock"] {{gap:0.3rem !important;}}
+  /* ① 탭 찌그러짐·오터치 방지 — 스크롤 가로 유지 + 터치타겟 확보 */
+  .stTabs [data-baseweb="tab-list"] {{gap:4px !important;overflow-x:auto !important;flex-wrap:nowrap !important;}}
+  .stTabs [data-baseweb="tab"] {{min-height:40px !important;padding:8px 10px !important;
+    font-size:12px !important;font-weight:700 !important;white-space:nowrap !important;}}
   /* 메트릭 여백 압축 */
   div[data-testid="stMetric"] {{padding:4px 6px !important;border-radius:8px !important;}}
   div[data-testid="stMetricValue"] {{font-size:1.0rem !important;}}
   div[data-testid="stMetricLabel"] {{font-size:0.66rem !important;}}
-  /* 버튼 터치 타겟 48px+ (엄지 최적화) */
-  div.stButton > button {{min-height:48px !important;font-size:13px !important;font-weight:700 !important;
+  /* ③ 원터치 버튼 48px·14px·800 */
+  div.stButton > button {{min-height:48px !important;font-size:14px !important;font-weight:800 !important;
     border-radius:12px !important;margin-bottom:3px !important;}}
-  /* Slide-to-Sell 슬라이더 높이 보정(오터치 방지 드래그) */
-  div[data-testid="stSlider"] {{padding:6px 2px !important;}}
-  div[data-testid="stSlider"] div[data-baseweb="slider"] {{height:34px !important;}}
-  div[data-testid="stSlider"] [role="slider"] {{width:26px !important;height:26px !important;}}
+  /* ③ Slide-to-Sell 슬라이더 핫스팟 확보(상하 10px) */
+  div[data-testid="stSlider"] div[data-baseweb="slider"] {{padding-top:10px !important;padding-bottom:10px !important;
+    height:40px !important;}}
+  div[data-testid="stSlider"] [role="slider"] {{width:28px !important;height:28px !important;}}
   /* 나머지 밀착 */
-  .stTabs [data-baseweb="tab"] {{padding:5px 7px !important;font-size:11px !important;font-weight:800 !important;}}
   div[data-testid="stExpander"] {{margin-bottom:0.25rem !important;}}
   h1,h2,h3,h4 {{margin:0.15rem 0 !important;}}
   hr {{margin:0.35rem 0 !important;}}
