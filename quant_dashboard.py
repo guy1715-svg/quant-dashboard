@@ -4026,10 +4026,14 @@ def render_ace_picks():
         _pen = {}
     _ace = [x for x in _pos if x["code"] in _pen]      # 교집합 = A급
     _picks = _ace if _ace else _pos[:5]                 # 겹침 없으면 유입 상위 후보
+    # ── A안: 원톱 픽(만쥬/돌팬티)으로 이미 뽑힌 종목은 아래 리스트에서 제외(중복 제거) ──
+    _top_codes = {st.session_state.get("_today_pick_code"), st.session_state.get("_today_dol_code")} - {None}
+    if _top_codes:
+        _picks = [p for p in _picks if p["code"] not in _top_codes]
     if not _picks:
-        st.caption("현재 유입 섹터 내 매수 우위 종목 없음 — 관망"); return
+        st.caption("현재 유입 섹터 내 매수 우위 종목 없음(원톱 픽 제외) — 관망"); return
     _grade = "A급 (유입×연기금)" if _ace else "후보 (유입 상위)"
-    st.caption(f"등급: {_grade} · {_now.strftime('%H:%M')} KST · 아래 표에서 종목 선택 → 정밀분석")
+    st.caption(f"등급: {_grade} · 원톱 제외 · {_now.strftime('%H:%M')} KST · 아래 표에서 종목 선택 → 정밀분석")
     # ── [엑셀형 컴팩트 테이블] 종목명 | 현재가 | 등락률 | 수급등급 | 주도사유 ──
     _rows_html = []; _opts = []
     for _i, _p in enumerate(_picks[:8]):
@@ -4255,6 +4259,7 @@ def render_dolpanty_pick():
     # 20MA 위 종목 우선 → 점수순
     _cands.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
     _pick = _cands[0] if _cands else None
+    st.session_state["_today_dol_code"] = _pick["code"] if _pick else None
     # 매크로 리스크오프면 매수 픽 대신 '관망'
     _mv = st.session_state.get("_macro_verdict") or {}
     if _mv.get("block"):
