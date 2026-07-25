@@ -1020,9 +1020,11 @@ def fetch_manju_scalp_data(token, targets):
     import logging as _lg
     if not token:
         return {"_ok": False, "_err": "토큰 없음", "rows": []}
+    from concurrent.futures import ThreadPoolExecutor
     _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
-    _rows, _any = [], False
-    for _tk, _nm in targets:
+
+    def _one(_tk, _nm):
+        """단일 종목 수집(스레드 워커) — row dict 반환. 리턴 스펙 동일."""
         _r = {"ticker": _tk, "name": _nm, "현재가": None, "등락률": None,
               "고가": None, "거래량": None, "프로그램순매수": None, "출처": None, "ok": False}
         # (1) 현재가/등락률/고가/거래량 — inquire-price(FHKST01010100)
@@ -1047,7 +1049,6 @@ def fetch_manju_scalp_data(token, targets):
                 params={"MKSC_SHRN_ISCD": _tk}, timeout=5)
             _o2 = _re.json().get("output2", [])
             if isinstance(_o2, list) and _o2:
-                # 마지막 행이 빈/0일 수 있어 → 0이 아닌 최신 행 우선 선택
                 _le = None
                 for _row in reversed(_o2):
                     if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
@@ -1059,7 +1060,6 @@ def fetch_manju_scalp_data(token, targets):
                 if _f or _o:
                     _r["프로그램순매수"] = _f + _o
                     _r["출처"] = "KIS실시간"
-            # 추정이 0/빈값이면 네이버 전일 수급으로 폴백(순수 네트워크=캐시 안전)
             if not _r["프로그램순매수"]:
                 _nvm = _md_investor_naver(_tk)
                 if _inv_valid(_nvm):
@@ -1068,8 +1068,11 @@ def fetch_manju_scalp_data(token, targets):
         except Exception as _e:
             _lg.warning("manju[%s] 수급 실패: %s: %s", _tk, type(_e).__name__, _e)
         _r["ok"] = _r["등락률"] is not None
-        _any = _any or _r["ok"]
-        _rows.append(_r)
+        return _r
+
+    with ThreadPoolExecutor(max_workers=10) as _ex:
+        _rows = list(_ex.map(lambda a: _one(*a), targets))   # 입력 순서 보존
+    _any = any(_r["ok"] for _r in _rows)
     return {"_ok": _any, "rows": _rows}
 
 
@@ -3382,54 +3385,64 @@ def fetch_sector_moneyflow(token, sectors):
     _out = {}
     if not token:
         return {"_ok": False, "sectors": _out}
+    from concurrent.futures import ThreadPoolExecutor
     _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
+
+    def _one(_sname, _code, _nm):
+        """단일 종목 수집(스레드 워커) — 리턴 스펙 동일. (섹터, detail dict)."""
+        _qty, _vsrc = None, None
+        try:
+            _re = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                headers={**_hdr, "tr_id": "HHPTJ04160200"},
+                params={"MKSC_SHRN_ISCD": _code}, timeout=5)
+            _o2 = _re.json().get("output2", [])
+            if isinstance(_o2, list) and _o2:
+                _le = None
+                for _row in reversed(_o2):
+                    if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
+                        _le = _row; break
+                if _le:
+                    _qty = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
+                    _vsrc = "KIS실시간"
+        except Exception:
+            pass
+        if _qty is None:
+            _nv = _md_investor_naver(_code)
+            if _inv_valid(_nv):
+                _qty = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
+                _vsrc = "naver(전일)"
+        _price, _mktcap = None, None
+        try:
+            _rp = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers={**_hdr, "tr_id": "FHKST01010100"},
+                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _code}, timeout=5)
+            _op = _rp.json().get("output", {})
+            if isinstance(_op, dict) and _op:
+                _price = _to_int(_op.get("stck_prpr"))
+                _mktcap = _to_int(_op.get("hts_avls")) * 100000000  # 억원 → 원
+        except Exception:
+            pass
+        _amt = (_qty * _price) if (_qty is not None and _price) else None
+        _ratio = (_amt / _mktcap) if (_amt is not None and _mktcap and _mktcap > 0) else None
+        return _sname, {"code": _code, "name": _nm, "net": _amt, "qty": _qty,
+                        "price": _price, "ratio": _ratio, "src": _vsrc}
+
+    # 전 종목 병렬 수집 → 종목코드→detail 매핑(취합은 메인스레드에서 순서 보존 조립)
+    _tasks = [(s, c, n) for s, _st in sectors for c, n in _st]
+    _bykey = {}
+    with ThreadPoolExecutor(max_workers=10) as _ex:
+        for _s, _d in _ex.map(lambda a: _one(*a), _tasks):
+            _bykey[(_s, _d["code"])] = _d
     for _sname, _stocks in sectors:
-        _net_amt, _cnt, _src = 0, 0, None      # _net_amt: 섹터 순매수 거래대금(원)
-        _detail = []
+        _net_amt, _cnt, _src, _detail = 0, 0, None, []
         for _code, _nm in _stocks:
-            _qty, _vsrc = None, None
-            # (1) 순매수 수량(외인+기관)
-            try:
-                _re = _requests.get(
-                    f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
-                    headers={**_hdr, "tr_id": "HHPTJ04160200"},
-                    params={"MKSC_SHRN_ISCD": _code}, timeout=5)
-                _o2 = _re.json().get("output2", [])
-                if isinstance(_o2, list) and _o2:
-                    _le = None
-                    for _row in reversed(_o2):
-                        if isinstance(_row, dict) and (_to_int(_row.get("frgn_fake_ntby_qty")) or _to_int(_row.get("orgn_fake_ntby_qty"))):
-                            _le = _row; break
-                    if _le:
-                        _qty = _to_int(_le.get("frgn_fake_ntby_qty")) + _to_int(_le.get("orgn_fake_ntby_qty"))
-                        _vsrc = "KIS실시간"
-            except Exception:
-                pass
-            if _qty is None:
-                _nv = _md_investor_naver(_code)
-                if _inv_valid(_nv):
-                    _qty = _to_int(_nv.get("외인")) + _to_int(_nv.get("기관"))
-                    _vsrc = "naver(전일)"
-            # (2) 현재가 + 시가총액(hts_avls, 억원) — 금액·비율 산출용
-            _price, _mktcap = None, None
-            try:
-                _rp = _requests.get(
-                    f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
-                    headers={**_hdr, "tr_id": "FHKST01010100"},
-                    params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _code}, timeout=5)
-                _op = _rp.json().get("output", {})
-                if isinstance(_op, dict) and _op:
-                    _price = _to_int(_op.get("stck_prpr"))
-                    _mktcap = _to_int(_op.get("hts_avls")) * 100000000  # 억원 → 원
-            except Exception:
-                pass
-            # (3) 순매수 금액(원) = 수량 × 현재가 · 시총 대비 유입비율
-            _amt = (_qty * _price) if (_qty is not None and _price) else None
-            _ratio = (_amt / _mktcap) if (_amt is not None and _mktcap and _mktcap > 0) else None
-            _detail.append({"code": _code, "name": _nm, "net": _amt, "qty": _qty,
-                            "price": _price, "ratio": _ratio, "src": _vsrc})
-            if _amt is not None:
-                _net_amt += _amt; _cnt += 1; _src = _src or _vsrc
+            _d = _bykey.get((_sname, _code)) or {"code": _code, "name": _nm, "net": None,
+                                                 "qty": None, "price": None, "ratio": None, "src": None}
+            _detail.append(_d)
+            if _d.get("net") is not None:
+                _net_amt += _d["net"]; _cnt += 1; _src = _src or _d.get("src")
         _out[_sname] = {"net": _net_amt, "cnt": _cnt, "src": _src, "stocks": _detail}
     return {"_ok": bool(_out), "sectors": _out}
 
@@ -5014,37 +5027,46 @@ def fetch_theme_turnover(token, sectors):
     _out = {}
     if not token:
         return _out
+    from concurrent.futures import ThreadPoolExecutor
     _hdr = {"authorization": f"Bearer {token}", "appkey": _kis_key(), "appsecret": _kis_secret()}
-    for _sname, _stocks in sectors:
-        _tot, _chgs, _major, _det = 0, [], 0, []
-        for _code, _nm in _stocks:
-            _px = _vol = _chg = 0
-            try:
-                _rp = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
-                                    headers={**_hdr, "tr_id": "FHKST01010100"},
-                                    params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _code}, timeout=5)
-                _op = _rp.json().get("output", {})
-                _px = _to_int(_op.get("stck_prpr")); _vol = _to_int(_op.get("acml_vol"))
-                _chg = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
-            except Exception:
-                pass
-            _to = _px * _vol
-            _mj = False
-            try:
-                _re = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
-                                    headers={**_hdr, "tr_id": "HHPTJ04160200"},
-                                    params={"MKSC_SHRN_ISCD": _code}, timeout=5)
-                _o2 = _re.json().get("output2", [])
-                if isinstance(_o2, list) and _o2:
-                    _le = _o2[-1] if isinstance(_o2[-1], dict) else {}
-                    _mj = (_to_int(_le.get("frgn_fake_ntby_qty")) > 0) and (_to_int(_le.get("orgn_fake_ntby_qty")) > 0)
-            except Exception:
-                pass
-            if _to:
-                _tot += _to; _chgs.append(_chg)
-                if _mj: _major += 1
-                _det.append({"name": _nm, "code": _code, "px": _px, "turnover": _to, "chg": _chg, "major": _mj})
-        _out[_sname] = {"turnover": _tot, "avg_chg": (sum(_chgs) / len(_chgs)) if _chgs else 0.0,
+
+    def _one(_sname, _code, _nm):
+        """단일 종목 거래대금·양매수 수집(스레드 워커) — 리턴 스펙 동일."""
+        _px = _vol = _chg = 0
+        try:
+            _rp = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                                headers={**_hdr, "tr_id": "FHKST01010100"},
+                                params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": _code}, timeout=5)
+            _op = _rp.json().get("output", {})
+            _px = _to_int(_op.get("stck_prpr")); _vol = _to_int(_op.get("acml_vol"))
+            _chg = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
+        except Exception:
+            pass
+        _to = _px * _vol
+        _mj = False
+        try:
+            _re = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                                headers={**_hdr, "tr_id": "HHPTJ04160200"},
+                                params={"MKSC_SHRN_ISCD": _code}, timeout=5)
+            _o2 = _re.json().get("output2", [])
+            if isinstance(_o2, list) and _o2:
+                _le = _o2[-1] if isinstance(_o2[-1], dict) else {}
+                _mj = (_to_int(_le.get("frgn_fake_ntby_qty")) > 0) and (_to_int(_le.get("orgn_fake_ntby_qty")) > 0)
+        except Exception:
+            pass
+        return _sname, {"name": _nm, "code": _code, "px": _px, "turnover": _to, "chg": _chg, "major": _mj}
+
+    _tasks = [(s, c, n) for s, _st in sectors for c, n in _st]
+    _grp = {s: [] for s, _ in sectors}
+    with ThreadPoolExecutor(max_workers=10) as _ex:
+        for _s, _d in _ex.map(lambda a: _one(*a), _tasks):
+            if _d["turnover"]:
+                _grp.setdefault(_s, []).append(_d)
+    for _sname, _det in _grp.items():
+        _chgs = [d["chg"] for d in _det]
+        _major = sum(1 for d in _det if d["major"])
+        _out[_sname] = {"turnover": sum(d["turnover"] for d in _det),
+                        "avg_chg": (sum(_chgs) / len(_chgs)) if _chgs else 0.0,
                         "major": _major, "stocks": sorted(_det, key=lambda s: s["turnover"], reverse=True)}
     return _out
 
