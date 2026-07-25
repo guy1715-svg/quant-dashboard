@@ -2240,9 +2240,10 @@ def calc_portfolio_value(acc):
                 except Exception: pass
     return total
 
-def check_smart_killswitch(acc, hard_pct=-5.0):
+def check_hard_breaker(acc, hard_pct=-5.0):
     """−5% 하드 서킷 브레이커 — 보유 종목 수익률 ≤ hard_pct면 EXECUTE_MARKET_SELL 신호 + 가상 청산.
-    실계좌 게이트와 무관하게 acc(dict) 가상 청산·현금 합산 실행. 반환 신호 리스트."""
+    실계좌 게이트와 무관하게 acc(dict) 가상 청산·현금 합산 실행. 반환 신호 리스트.
+    ⚠️ 기존 check_smart_killswitch(ticker,entry,current)와 다른 함수(이름충돌 방지 개명)."""
     _signals = []
     if not isinstance(acc, dict) or not acc.get("positions"):
         return _signals
