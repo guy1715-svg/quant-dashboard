@@ -8283,6 +8283,16 @@ with tab_g:
     st.divider()
     # ═══ [하단] ⚙️ 도구 · 📖 도움말 — 매일 보는 정보 아래로(증권사 앱 '더보기/도움말' 관례) ═══
     _section_title("⚙", "🛠️", "도구 · 사용설명서")
+    # ── 📡 V12 수급 골든크로스 텔레그램 엔진 테스트/스캔 ──
+    st.markdown("<div style='font-size:12px;font-weight:700;color:#93c5fd;margin:2px 0'>"
+                "📡 장중 수급 골든크로스 경보 엔진 (외인·기관 쌍끌이 × 10억↑ × 연기금)</div>",
+                unsafe_allow_html=True)
+    try:
+        import v12_telegram_supply_engine as _tse
+        _tse.render_supply_engine_test_button()
+    except Exception as _tsee:
+        st.caption(f"수급 경보 엔진 일시 비활성: {type(_tsee).__name__}")
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     _arc1, _arc2 = st.columns([1, 3])
     _auto_on = _arc1.checkbox("🔁 자동 새로고침", key="_g_autorefresh",
                               help="켜면 아래 주기마다 화면이 스스로 갱신됩니다(KIS 호출 증가).")
