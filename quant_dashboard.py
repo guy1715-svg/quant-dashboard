@@ -4669,9 +4669,13 @@ def render_global_header():
     # (앰비언트 전체화면 광원 제거 — 시선 산만 방지, 헤더 배너만으로 상태 표현)
     _ambient = ""
     st.markdown(f"""<style>
-@keyframes khblink {{0%,100%{{box-shadow:0 0 0 0 rgba(239,68,68,0.15);border-color:#ef4444;}}50%{{box-shadow:0 0 18px 4px rgba(239,68,68,0.85);border-color:#fca5a5;}}}}
+/* [V12 2차] khblink 부드럽게 — 0으로 꺼지지 않고 은은한 상시 글로우가 테두리를 감싸며 맥동 */
+@keyframes khblink {{0%,100%{{box-shadow:0 0 6px 1px rgba(239,68,68,0.28);border-color:#ef4444;}}50%{{box-shadow:0 0 20px 5px rgba(239,68,68,0.55);border-color:#fca5a5;}}}}
 @keyframes khpulse {{0%,100%{{box-shadow:0 0 4px 1px rgba(245,158,11,0.25);}}50%{{box-shadow:0 0 14px 3px rgba(245,158,11,0.7);}}}}
-.kh-blink{{animation:khblink 1.0s infinite;}} .kh-pulse{{animation:khpulse 1.6s infinite;}}
+/* [V12 2차] Slide-to-Sell 트랙 적색 앰비언트 맥박 + 확인버튼 활성 bounce */
+@keyframes khtrack {{0%,100%{{box-shadow:0 0 8px rgba(239,68,68,0.45);}}50%{{box-shadow:0 0 14px rgba(239,68,68,0.6);}}}}
+@keyframes khbounce {{0%,100%{{transform:translateY(0);}}50%{{transform:translateY(-2px);}}}}
+.kh-blink{{animation:khblink 1.4s ease-in-out infinite;}} .kh-pulse{{animation:khpulse 1.6s infinite;}}
 .kh-wrap{{position:sticky;top:0;z-index:100;border-radius:10px;padding:7px 14px;margin-bottom:8px;
   border:1.5px solid {_bc};background:{_bg};overflow-x:auto}}
 /* 📱 [MTS 뷰포트 최종 성형] 탭 찌그러짐·터치타겟·여백·슬라이더 감도 보정 */
@@ -4871,7 +4875,8 @@ def render_order_confirm(code, name, qty, price, side, kp):
         _gc = "#22c55e" if _is_buy else "#ef4444"
         st.markdown(
             f"<div style='height:4px;border-radius:3px;margin:2px 0 -2px;background:{_gc};"
-            f"box-shadow:0 0 12px 2px {_gc}'></div>", unsafe_allow_html=True)
+            f"box-shadow:0 0 14px 2px {_gc};animation:khbounce .9s ease-in-out infinite'></div>",
+            unsafe_allow_html=True)
     if st.button(f"✅ {_sidetxt} 최종 승인", key=f"{kp}_confirm", disabled=_dis,
                  type=("primary" if not _dis else "secondary"), use_container_width=True):
         # ── 실주문 2중 안전 게이트 ──
@@ -4916,7 +4921,8 @@ def render_quick_action_bar(code, name, qty, price):
             st.markdown(
                 f"<div style='height:10px;border-radius:6px;background:#1e293b;overflow:hidden;margin:-6px 0 4px'>"
                 f"<div style='width:{_slide}%;height:100%;background:linear-gradient(90deg,#64748b,{_fillc});"
-                f"box-shadow:0 0 {int(4+_slide*0.08)}px rgba(239,68,68,{0.4+0.4*_slide/100:.2f});transition:width .2s'></div></div>"
+                f"box-shadow:0 0 {int(4+_slide*0.08)}px rgba(239,68,68,{0.4+0.4*_slide/100:.2f});transition:width .2s;"
+                f"{'animation:khtrack 1.2s infinite;' if _slide>0 else ''}'></div></div>"
                 f"<div style='text-align:center;font-size:11px;color:{'#ef4444' if _slide>=100 else '#94a3b8'};font-weight:800'>"
                 f"{'🔥 격발 준비 완료 — 확인창 열림' if _slide>=100 else f'{_slide}% — 100까지 밀어 매도'}</div>",
                 unsafe_allow_html=True)
@@ -5118,7 +5124,7 @@ def render_theme_ranking_board():
         _hot = _act and _info["major"] >= 2
         _fire = ("<span style='color:#39ff14;font-weight:900;text-shadow:0 0 6px #39ff14'>🔥</span> " if _hot else "")
         _rowstyle = ("opacity:1;background:linear-gradient(90deg,rgba(57,255,20,0.13),rgba(34,197,94,0.05));"
-                     "box-shadow:inset 3px 0 0 #39ff14" if _hot else f"opacity:{1 if _act else 0.5}")
+                     "border-left:3.5px solid #10b981;box-shadow:inset 3px 0 0 #10b981" if _hot else f"opacity:{1 if _act else 0.5}")
         _nmc = "#eaffea" if _hot else _tc
         _tr.append(
             f"<tr style='{_rowstyle}'>"
@@ -7346,19 +7352,22 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 [data-testid="stSidebar"] { background: #0d1424 !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
 .stTabs [data-baseweb="tab-list"] { background: rgba(255,255,255,0.04) !important; border-color: rgba(255,255,255,0.08) !important; }
 .stTabs [data-baseweb="tab"] { color: #94a3b8 !important; }
-.metric-card { background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important; border: 1.5px solid rgba(255,255,255,0.05) !important;
+/* ── [V12 2차 성형] Neon on Obsidian 벤토 카드 — 메트릭·metric-card·expander 통일 ── */
+.metric-card, [data-testid="stMetric"], [data-testid="stExpander"] {
+    background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important;
+    border: 1px solid rgba(255,255,255,0.05) !important; border-radius: 12px !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.25) !important;
     transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease !important; }
-.metric-card:hover { transform: translateY(-2px) !important; border-color: rgba(56,189,248,0.35) !important;
-    box-shadow: 0 8px 22px rgba(2,6,23,0.55), 0 0 14px rgba(16,185,129,0.10) !important; }
+.metric-card:hover, [data-testid="stMetric"]:hover, [data-testid="stExpander"]:hover {
+    transform: translateY(-2px) !important; border-color: rgba(59,130,246,0.30) !important;
+    box-shadow: 0 8px 30px rgba(59,130,246,0.15) !important; }
+/* 프로그램 양매수(외인+기관) / 주도테마 행 — 실시간 에메랄드 액티브 보더 */
+.prog-active { border-left: 3.5px solid #10b981 !important; }
 .metric-card .value { color: #e2e8f0 !important; }
 .stButton > button[kind="secondary"] { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.12) !important; color: #94a3b8 !important; }
-[data-testid="stExpander"] { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; }
 .streamlit-expanderHeader { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; }
 [data-baseweb="select"] > div { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
 .stTextInput input, .stNumberInput input, textarea { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
-[data-testid="stMetric"] { background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important; border: 1.5px solid rgba(255,255,255,0.05) !important;
-    border-radius: 12px !important; transition: box-shadow .18s ease, border-color .18s ease !important; }
-[data-testid="stMetric"]:hover { border-color: rgba(56,189,248,0.30) !important; box-shadow: 0 6px 18px rgba(2,6,23,0.5) !important; }
 [data-testid="stExpander"]:hover { border-color: rgba(56,189,248,0.22) !important; }
 [data-testid="stMetricValue"] { color: #e2e8f0 !important; }
 """
