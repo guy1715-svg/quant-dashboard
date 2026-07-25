@@ -4631,20 +4631,39 @@ def render_global_header():
                         "🚨 NO-POSITION 셧다운 | 신규 진입 원천 차단 (현금 보유 관망)", "kh-blink"),
     }
     _bg, _bc, _sc, _sig, _anim = _THEME[_mode]
+    # 🌌 [작업2] 전체화면 앰비언트 광원 — NO_POSITION 시 화면 테두리 붉은 싸이렌 점멸 오버레이
+    _ambient = ""
+    if _mode == "NO_POSITION":
+        _ambient = ("<div class='kh-ambient kh-amb-red'></div>")
+    elif _mode == "HALF_CAPS":
+        _ambient = ("<div class='kh-ambient kh-amb-amber'></div>")
     st.markdown(f"""<style>
 @keyframes khblink {{0%,100%{{box-shadow:0 0 0 0 rgba(239,68,68,0.15);border-color:#ef4444;}}50%{{box-shadow:0 0 18px 4px rgba(239,68,68,0.85);border-color:#fca5a5;}}}}
 @keyframes khpulse {{0%,100%{{box-shadow:0 0 4px 1px rgba(245,158,11,0.25);}}50%{{box-shadow:0 0 14px 3px rgba(245,158,11,0.7);}}}}
 .kh-blink{{animation:khblink 1.0s infinite;}} .kh-pulse{{animation:khpulse 1.6s infinite;}}
 .kh-wrap{{position:sticky;top:0;z-index:100;border-radius:10px;padding:7px 14px;margin-bottom:8px;
   border:1.5px solid {_bc};background:{_bg};overflow-x:auto}}
-/* 📱 모바일(MTS) 고밀도 튜닝 */
+/* 🌌 앰비언트 전체화면 광원(테두리 inset glow) */
+@keyframes ambRed {{0%,100%{{box-shadow:inset 0 0 40px 8px rgba(239,68,68,0.15);}}50%{{box-shadow:inset 0 0 90px 22px rgba(239,68,68,0.55);}}}}
+@keyframes ambAmber {{0%,100%{{box-shadow:inset 0 0 30px 6px rgba(245,158,11,0.10);}}50%{{box-shadow:inset 0 0 60px 16px rgba(245,158,11,0.35);}}}}
+.kh-ambient{{position:fixed;inset:0;pointer-events:none;z-index:99;border-radius:6px;}}
+.kh-amb-red{{animation:ambRed 1.1s infinite;}} .kh-amb-amber{{animation:ambAmber 2.0s infinite;}}
+/* 📱 [작업1] 모바일(MTS) 초밀착 고밀도 패킹 — 한 화면에 호가·배너·슬라이더 */
 @media (max-width:768px) {{
-  .block-container {{padding:1rem 0.5rem !important;}}
-  div[data-testid="stMetric"] {{padding:6px 10px !important;border-radius:8px !important;}}
-  .stTabs [data-baseweb="tab"] {{padding:6px 8px !important;font-size:11px !important;font-weight:800 !important;}}
-  .stButton > button {{min-height:44px !important;font-size:13px !important;border-radius:10px !important;margin-bottom:4px !important;}}
+  .block-container {{padding:0.4rem 0.4rem 0.6rem !important;max-width:100% !important;}}
+  div[data-testid="stVerticalBlock"] {{gap:0.35rem !important;}}
+  div[data-testid="stHorizontalBlock"] {{gap:0.35rem !important;}}
+  div[data-testid="stMetric"] {{padding:4px 8px !important;border-radius:8px !important;}}
+  div[data-testid="stMetricValue"] {{font-size:1.05rem !important;}}
+  div[data-testid="stMetricLabel"] {{font-size:0.68rem !important;}}
+  .stTabs [data-baseweb="tab"] {{padding:5px 7px !important;font-size:11px !important;font-weight:800 !important;}}
+  .stButton > button {{min-height:44px !important;font-size:13px !important;border-radius:10px !important;margin-bottom:3px !important;}}
+  div[data-testid="stExpander"] {{margin-bottom:0.3rem !important;}}
+  h1,h2,h3,h4 {{margin:0.2rem 0 !important;}}
+  hr {{margin:0.4rem 0 !important;}}
+  table {{font-size:11px !important;}}
 }}
-</style>
+</style>{_ambient}
 <div class="kh-wrap {_anim}">
 <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;white-space:nowrap">
   <span style="font-weight:900;color:{_sc};font-size:13px">{_sig}</span>
@@ -4835,10 +4854,17 @@ def render_quick_action_bar(code, name, qty, price):
         # 급락장(🔴)에서는 Slide-to-Sell 강제(망설임 차단)
         if _mode == "NO_POSITION":
             _slide = st.slider(f"🔒 우측 끝(100)까지 밀어 {name} {_q:,}주 즉시 매도", 0, 100, 0, key=f"qa_slide_{code}")
+            # [작업3] 트랙 동적 시각화 — 밀수록 회색→강렬한 붉은색 게이지 차오름
+            _fillc = f"rgba(239,68,68,{0.25 + 0.75*_slide/100:.2f})"
+            st.markdown(
+                f"<div style='height:10px;border-radius:6px;background:#1e293b;overflow:hidden;margin:-6px 0 4px'>"
+                f"<div style='width:{_slide}%;height:100%;background:linear-gradient(90deg,#64748b,{_fillc});"
+                f"box-shadow:0 0 {int(_slide/10)}px {_fillc};transition:width .2s'></div></div>"
+                f"<div style='text-align:center;font-size:11px;color:{'#ef4444' if _slide>=100 else '#94a3b8'};font-weight:800'>"
+                f"{'🔥 격발 준비 완료 — 확인창 열림' if _slide>=100 else f'{_slide}% — 100까지 밀어 매도'}</div>",
+                unsafe_allow_html=True)
             if _slide >= 100:
                 render_order_confirm(code, name, _q, price, _side, f"qa_{code}")
-            else:
-                st.caption("⬅➡ 슬라이더를 100까지 밀면 매도 확인창이 열립니다 (급락장 오조작 방지)")
         else:
             render_order_confirm(code, name, _q, price, _side, f"qa_{code}")
         if st.button("취소", key=f"qa_cancel_{code}"):
@@ -5022,11 +5048,17 @@ def render_theme_ranking_board():
         _cc = "#ef4444" if _info["avg_chg"] < 0 else "#16a34a" if _info["avg_chg"] > 0 else "#94a3b8"
         _mj = ("<span style='background:#16a34a;color:#052e16;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:800'>🟢 양매수</span>"
                if _info["major"] >= 2 else "<span style='color:#64748b;font-size:10px'>—</span>")
+        # [작업4] 진짜 주도 테마(거래대금 1000억↑ + 쌍끌이 양매수) → 형광 홀로그램 강조 + 🔥
+        _hot = _act and _info["major"] >= 2
+        _fire = ("<span style='color:#39ff14;font-weight:900;text-shadow:0 0 6px #39ff14'>🔥</span> " if _hot else "")
+        _rowstyle = ("opacity:1;background:linear-gradient(90deg,rgba(57,255,20,0.13),rgba(34,197,94,0.05));"
+                     "box-shadow:inset 3px 0 0 #39ff14" if _hot else f"opacity:{1 if _act else 0.5}")
+        _nmc = "#eaffea" if _hot else _tc
         _tr.append(
-            f"<tr style='opacity:{1 if _act else 0.5}'>"
+            f"<tr style='{_rowstyle}'>"
             f"<td style='padding:5px 8px;color:#94a3b8'>{_i}</td>"
-            f"<td style='padding:5px 8px;font-weight:800;color:{_tc}'>{_THEME_ICONS.get(_s,'📊')} {_s}</td>"
-            f"<td style='padding:5px 8px;text-align:right;font-weight:700;color:{_tc}'>{_eok(_to)}</td>"
+            f"<td style='padding:5px 8px;font-weight:800;color:{_nmc}'>{_fire}{_THEME_ICONS.get(_s,'📊')} {_s}</td>"
+            f"<td style='padding:5px 8px;text-align:right;font-weight:700;color:{_nmc}'>{_eok(_to)}</td>"
             f"<td style='padding:5px 8px;text-align:center'>{_mj}</td>"
             f"<td style='padding:5px 8px;text-align:right;color:{_cc}'>{_info['avg_chg']:+.2f}%</td></tr>")
     st.markdown("<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
