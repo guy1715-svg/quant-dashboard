@@ -4657,20 +4657,29 @@ def render_global_header():
 @keyframes ambAmber {{0%,100%{{box-shadow:inset 0 0 30px 6px rgba(245,158,11,0.10);}}50%{{box-shadow:inset 0 0 60px 16px rgba(245,158,11,0.35);}}}}
 .kh-ambient{{position:fixed;inset:0;pointer-events:none;z-index:99;border-radius:6px;}}
 .kh-amb-red{{animation:ambRed 1.1s infinite;}} .kh-amb-amber{{animation:ambAmber 2.0s infinite;}}
-/* 📱 [작업1] 모바일(MTS) 초밀착 고밀도 패킹 — 한 화면에 호가·배너·슬라이더 */
+/* 📱 [MTS 초고밀도 성형] 모바일 세로 뷰포트 스크롤 최소화 */
 @media (max-width:768px) {{
-  .block-container {{padding:0.4rem 0.4rem 0.6rem !important;max-width:100% !important;}}
-  div[data-testid="stVerticalBlock"] {{gap:0.35rem !important;}}
-  div[data-testid="stHorizontalBlock"] {{gap:0.35rem !important;}}
-  div[data-testid="stMetric"] {{padding:4px 8px !important;border-radius:8px !important;}}
-  div[data-testid="stMetricValue"] {{font-size:1.05rem !important;}}
-  div[data-testid="stMetricLabel"] {{font-size:0.68rem !important;}}
+  /* 전역 여백 제로화 */
+  .block-container {{padding:0.5rem 0.4rem !important;max-width:100% !important;}}
+  div[data-testid="stVerticalBlock"] {{gap:0.3rem !important;}}
+  div[data-testid="stHorizontalBlock"] {{gap:0.3rem !important;}}
+  /* 메트릭 여백 압축 */
+  div[data-testid="stMetric"] {{padding:4px 6px !important;border-radius:8px !important;}}
+  div[data-testid="stMetricValue"] {{font-size:1.0rem !important;}}
+  div[data-testid="stMetricLabel"] {{font-size:0.66rem !important;}}
+  /* 버튼 터치 타겟 48px+ (엄지 최적화) */
+  div.stButton > button {{min-height:48px !important;font-size:13px !important;font-weight:700 !important;
+    border-radius:12px !important;margin-bottom:3px !important;}}
+  /* Slide-to-Sell 슬라이더 높이 보정(오터치 방지 드래그) */
+  div[data-testid="stSlider"] {{padding:6px 2px !important;}}
+  div[data-testid="stSlider"] div[data-baseweb="slider"] {{height:34px !important;}}
+  div[data-testid="stSlider"] [role="slider"] {{width:26px !important;height:26px !important;}}
+  /* 나머지 밀착 */
   .stTabs [data-baseweb="tab"] {{padding:5px 7px !important;font-size:11px !important;font-weight:800 !important;}}
-  .stButton > button {{min-height:44px !important;font-size:13px !important;border-radius:10px !important;margin-bottom:3px !important;}}
-  div[data-testid="stExpander"] {{margin-bottom:0.3rem !important;}}
-  h1,h2,h3,h4 {{margin:0.2rem 0 !important;}}
-  hr {{margin:0.4rem 0 !important;}}
-  table {{font-size:11px !important;}}
+  div[data-testid="stExpander"] {{margin-bottom:0.25rem !important;}}
+  h1,h2,h3,h4 {{margin:0.15rem 0 !important;}}
+  hr {{margin:0.35rem 0 !important;}}
+  table {{font-size:11px !important;}} table td, table th {{padding:3px 5px !important;}}
 }}
 </style>{_ambient}
 <div class="kh-wrap {_anim}">
