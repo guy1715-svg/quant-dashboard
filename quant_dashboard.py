@@ -2240,6 +2240,42 @@ def calc_portfolio_value(acc):
                 except Exception: pass
     return total
 
+def check_smart_killswitch(acc, hard_pct=-5.0):
+    """−5% 하드 서킷 브레이커 — 보유 종목 수익률 ≤ hard_pct면 EXECUTE_MARKET_SELL 신호 + 가상 청산.
+    실계좌 게이트와 무관하게 acc(dict) 가상 청산·현금 합산 실행. 반환 신호 리스트."""
+    _signals = []
+    if not isinstance(acc, dict) or not acc.get("positions"):
+        return _signals
+    _remain = []
+    for _p in acc["positions"]:
+        _rt = None
+        try:
+            _rt = float(_p.get("return_pct")) if _p.get("return_pct") is not None else None
+        except Exception:
+            _rt = None
+        # return_pct 없으면 현재가/평단으로 산출(결측 시 평단 폴백 → 0%)
+        if _rt is None:
+            _avg = float(_p.get("avg_price", 0) or 0)
+            _cur = _p.get("current_price")
+            _cur = float(_cur) if (isinstance(_cur, (int, float)) and _cur == _cur and _cur > 0) else _avg
+            _rt = ((_cur / _avg - 1) * 100) if _avg else 0.0
+        if _rt <= hard_pct:
+            _cur = float(_p.get("current_price") or _p.get("avg_price") or 0)
+            _qty = int(_p.get("qty", 0))
+            _e = _est_settlement(_cur, _qty, "SELL")
+            acc["cash"] = float(acc.get("cash", 0)) + _e["net"]   # 가상 청산 대금 합산
+            _signals.append({"signal": "EXECUTE_MARKET_SELL", "ticker": _p.get("ticker"),
+                             "name": _p.get("name"), "return_pct": round(_rt, 2), "net_proceeds": _e["net"]})
+            if v12_logger:
+                try: v12_logger.log_trade(_p.get("ticker"), _p.get("name"), "SELL", _qty, _cur,
+                                          net_price=_e["net"], cash_after=acc["cash"], memo="EXECUTE_MARKET_SELL −5% 하드브레이커")
+                except Exception: pass
+        else:
+            _remain.append(_p)
+    acc["positions"] = _remain   # 청산된 종목 제거
+    return _signals
+
+
 def _parse_watchlist(wl):
     """watchlist 문자열 → [(ticker, name), ...] 파싱"""
     result = []
@@ -4731,13 +4767,23 @@ def render_order_confirm(code, name, qty, price, side, kp):
     import time as _t
     _e = _est_settlement(price, qty, side)
     _sidetxt = "매수" if str(side).upper() == "BUY" else "매도"
-    _ok = st.session_state.get(f"_risk_mode") != "NO_POSITION" or str(side).upper() == "SELL"
+    _is_buy = str(side).upper() == "BUY"
+    # 매수 게이트: NO_POSITION 신호등 / 세론락 / NST 소형주락 → 매수 차단
+    _son_lock = bool(st.session_state.get(f"_sell_on_news_lock_{code}"))
+    _nst_lock = bool(st.session_state.get(f"_nst_small_cap_lock_{code}"))
+    _no_pos = st.session_state.get("_risk_mode") == "NO_POSITION"
+    _ok = (not _is_buy) or (not _no_pos and not _son_lock and not _nst_lock)
     st.markdown(f"**🧾 {name} {_sidetxt} {qty:,}주 @ {int(price):,}**")
     st.caption(f"예상 대금 {_e['gross']:,.0f} · 수수료 {_e['fee']:,} · 슬리피지 {_e['slip']:,}"
                f"{(' · 거래세 '+format(_e['tax'],',')) if _e['tax'] else ''} → "
                f"**실질 {'출금' if side.upper()=='BUY' else '입금'} {abs(_e['net']):,.0f}원**")
     if not _ok:
-        st.error("🔴 NO-POSITION 셧다운 — 신규 매수 차단. 현금도 하나의 강력한 무기입니다.")
+        if _no_pos:
+            st.error("🔴 NO-POSITION 셧다운 — 신규 매수 차단. 현금도 하나의 강력한 무기입니다.")
+        elif _son_lock:
+            st.error("🔴 세론(Sell on News) 락 — 실적 발표 직후 물량 폭격 구간. 신규 매수 차단.")
+        elif _nst_lock:
+            st.error("🔒 NST 소형주 락 — 유동성 부족(탈출 마비 위험). 야간 매수 차단.")
         return
     _okey = f"_order_open_{kp}"
     if st.session_state.get(_okey) is None:
@@ -4842,12 +4888,37 @@ def render_holdings_risk():
         _qty = int(_h.get("수량", 0)); _pl = int(_h.get("평가손익", 0))
         _tgt = int(_avg * 1.05); _stop = int(_avg * 0.97)
         # −3% 칼손절 텔레그램(중복 방지)
-        if _rt <= -3.0:
+        # −3% 칼손절 알림(1회) / −5% 하드 브레이커 강제청산(EXECUTE_MARKET_SELL)
+        if _rt <= -5.0:
+            _kh = f"_hardsell_{_cd}"
+            if not st.session_state.get(_kh):
+                _e5 = _est_settlement(_cur, _qty, "SELL")
+                # 실계좌 게이트와 무관하게: 가상 청산 로그 + 텔레그램. 게이트 ON이면 실주문 추가 전송.
+                _real5 = False
+                try: _real5 = bool(st.secrets.get("REAL_TRADING_ENABLED")) and st.session_state.get("_real_trading_approved")
+                except Exception: _real5 = False
+                if _real5:
+                    try: kis_send_order(_cd, _qty, "SELL")
+                    except Exception: pass
+                if v12_logger:
+                    try: v12_logger.log_trade(_cd, _nm, "SELL", _qty, _cur, net_price=_e5["net"],
+                                              memo="EXECUTE_MARKET_SELL −5% 하드브레이커" + ("(실주문)" if _real5 else "(모의)"))
+                    except Exception: pass
+                    try: v12_logger.log_safety_lock("HARD_BREAKER_5PCT", _cd, _nm, f"{_rt:+.1f}% 강제청산")
+                    except Exception: pass
+                send_telegram(f"🚨🚨 하드브레이커! {_nm} {_rt:+.1f}% — EXECUTE_MARKET_SELL 강제청산"
+                              f"{'(실주문)' if _real5 else '(모의)'}")
+                st.session_state[_kh] = True
+                st.error(f"🚨 {_nm} −5% 하드 브레이커 — 강제 시장가 청산 {'전송' if _real5 else '(모의)'}")
+        elif _rt <= -3.0:
             _k = f"_cut_alert_{_cd}"
             if not st.session_state.get(_k):
                 if send_telegram(f"🚨 칼손절! {_nm} {_rt:+.1f}% (현재 {_cur:,}/평단 {_avg:,})\n−3% 도달 — 즉시 손절"):
                     st.session_state[_k] = True
-        _stt = ("<b style='color:#ef4444'>🚨 −3% 손절</b>" if _rt <= -3
+        elif _rt > -2.5:
+            st.session_state.pop(f"_cut_alert_{_cd}", None); st.session_state.pop(f"_hardsell_{_cd}", None)
+        _stt = ("<b style='color:#ef4444'>🚨 −5% 강제청산</b>" if _rt <= -5
+                else "<b style='color:#ef4444'>🚨 −3% 손절</b>" if _rt <= -3
                 else "<span style='color:#f59e0b'>🟠 −2% 주의</span>" if _rt <= -2
                 else "<b style='color:#16a34a'>🎯 목표 근접</b>" if _rt >= 4
                 else "<span style='color:#94a3b8'>보유</span>")
