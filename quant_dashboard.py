@@ -3295,29 +3295,13 @@ def render_macro_triggers_panel():
         return f"{v:+.2f}%" if isinstance(v, (int, float)) else "—"
     _nq = _d.get("nq_pct"); _wti = _d.get("wti_pct"); _semi = _d.get("semi", {}) or {}
     _sox = _semi.get("SOX")
-    _wti_tag = " (급등)" if (_wti is not None and _wti >= _MACRO_WTI_RISK) else ""
-    # ── 슬림 1줄 띠 배너(핵심만) + hover 상세 툴팁 ──
     _semi_detail_txt = " · ".join(f"{k} {_f(v)}" for k, v in _semi.items()) or "데이터 대기"
-    _tip = (f"반도체 동조: {_semi_detail_txt}  |  나스닥선물 {_f(_nq)}({_d.get('nq_ref_src','기준')} 대비)  |  "
-            f"WTI {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "")).replace("'", "")
-    _line = (f"<b style='color:{_vc}'>{_verd}</b>"
-             f"<span style='color:#475569'>&nbsp;|&nbsp;</span>"
-             f"<span style='color:#cbd5e1'>나스닥 <span style='color:{_c(_nq)}'>{_f(_nq)}</span></span>"
-             f"<span style='color:#475569'>&nbsp;|&nbsp;</span>"
-             f"<span style='color:#cbd5e1'>WTI <span style='color:{_c(_wti)}'>{_f(_wti)}{_wti_tag}</span></span>")
-    st.markdown(
-        f"<div title=\"{_tip}\" style='position:sticky;top:0;z-index:5;background:{_vc}1f;"
-        f"border:1px solid {_vc};border-radius:8px;padding:5px 12px;margin-bottom:4px;"
-        f"display:flex;justify-content:space-between;align-items:center;font-size:13px;"
-        f"white-space:nowrap;overflow-x:auto;cursor:help'>"
-        f"<span>🌐 {_line}</span>"
-        f"<span style='color:#64748b;font-size:10px;flex-shrink:0'>{_now.strftime('%H:%M')} ⓘ</span></div>",
-        unsafe_allow_html=True)
+    # (중복 배너 제거 — 상단 전역 헤더가 이미 🌐 신호등·나스닥·WTI 표시. 여기선 상세만.)
     if not _d.get("ok"):
         st.caption("매크로 데이터 수신 대기 (yfinance)")
         return
-    # 상세는 접힌 드롭다운(hover 어려운 모바일 대비)
-    with st.expander("🌐 매크로 3대 트리거 상세", expanded=False):
+    # 상세는 접힌 드롭다운(전역 헤더 보조 — 3대 트리거 세부 + 텔레그램 알람 설정)
+    with st.expander("🌐 매크로 3대 트리거 상세 · 📱 알람 설정", expanded=False):
         _peers = [v for k, v in _semi.items() if k != "SOX"]; _ups = sum(1 for v in _peers if v > 0)
         _sync = (_sox is not None and _sox > 0) and (len(_peers) > 0 and _ups >= max(1, round(len(_peers)*0.6)))
         _nq_st = ("🔴 차단(−0.2%↓)" if (_nq is not None and _nq <= _MACRO_NQ_BLOCK)
