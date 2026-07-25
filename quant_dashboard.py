@@ -4045,8 +4045,9 @@ def render_ace_picks():
     if not _picks:
         st.caption("현재 유입 섹터 내 매수 우위 종목 없음 — 관망"); return
     _grade = "A급 (유입×연기금)" if _ace else "후보 (유입 상위)"
-    st.caption(f"등급: {_grade} · {_now.strftime('%H:%M')} KST · 🔍 클릭 시 정밀분석 · 뉴스 시그널 자동 태깅")
-    # ── One-line 압축 인터랙티브 리스트 (종목|시세|배지|상태|🔍) ──
+    st.caption(f"등급: {_grade} · {_now.strftime('%H:%M')} KST · 아래 표에서 종목 선택 → 정밀분석")
+    # ── [엑셀형 컴팩트 테이블] 종목명 | 현재가 | 등락률 | 수급등급 | 주도사유 ──
+    _rows_html = []; _opts = []
     for _i, _p in enumerate(_picks[:8]):
         _code = _p["code"]; _name = _p["name"]
         _pr = {}
@@ -4057,24 +4058,47 @@ def render_ace_picks():
         _px = _pr.get("현재가") or 0; _chg = _pr.get("등락률") or 0.0
         _rec = _pen.get(_code)
         _is_top = (_code == st.session_state.get("_today_pick_code"))
-        _badges = ""
-        if _is_top:
-            _badges += "<span style='background:#fbbf24;color:#1a1505;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:900'>👑대장</span> "
-        elif _rec:
-            _badges += "<span style='background:#22c55e;color:#052e16;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:800'>🥇A급</span> "
+        _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+        # 수급등급: A급(연기금겹침)/유입, 급등 표시
+        _grade_b = ("<span style='background:#22c55e;color:#052e16;padding:1px 6px;border-radius:5px;font-weight:800'>🥇A급</span>"
+                    if _rec else "<span style='background:#334155;color:#cbd5e1;padding:1px 6px;border-radius:5px'>유입</span>")
         if _chg >= 7.0:
-            _badges += "<span style='background:#f97316;color:#fff;padding:1px 6px;border-radius:6px;font-size:10px'>🔥급등</span> "
-        if _rec:
-            _badges += f"<span style='background:#4c1d95;color:#ddd6fe;padding:1px 6px;border-radius:6px;font-size:10px'>🏦{_rec.get('org_streak','?')}일</span> "
-        _badges += f"<span style='color:#16a34a;font-size:10px'>+{_p['net']/1e8:,.0f}억</span>"
-        _status = (f"<span style='color:#64748b;font-size:10px'>· {_p['sector']}</span>")
-        _compact_pick_row(_i, _code, _name, _px, _chg, _badges, _status, "ace")
-    # 선택 종목 드릴다운
-    _dt = st.session_state.get("_drill_target")
-    if _dt:
-        with st.expander(f"🔍 {_dt['name']} 정밀 분석", expanded=True):
-            render_stock_drilldown(_dt["code"], _dt["name"])
-    st.caption("💡 A급 = 섹터 자금 유입처 + 연기금 포착 동시 충족 · 🔍 버튼으로 즉시 정밀분석")
+            _grade_b += " <span style='color:#f97316'>🔥</span>"
+        # 주도사유: 뉴스 태그 1개 + 섹터 + 유입 금액
+        _tag1 = ""
+        try:
+            _t = fetch_stock_triggers(_code, _name)
+            _tag1 = _t[0] if _t else ""
+        except Exception:
+            pass
+        _reason = f"{_p['sector']} +{_p['net']/1e8:,.0f}억" + (f" · {_tag1}" if _tag1 else "") + (f" · 연기금{_rec.get('org_streak','?')}일" if _rec else "")
+        _crown = "👑 " if _is_top else ""
+        _bg = "#1a1505" if _is_top else ("#0f172a" if _i % 2 == 0 else "#111c33")
+        _rows_html.append(
+            f"<tr style='background:{_bg}'>"
+            f"<td style='padding:5px 8px;font-weight:800;color:#e2e8f0'>{_crown}{_name}<span style='color:#475569;font-size:10px'> {_code}</span></td>"
+            f"<td style='padding:5px 8px;text-align:right;color:#cbd5e1'>{_px:,}</td>"
+            f"<td style='padding:5px 8px;text-align:right;color:{_chg_c};font-weight:700'>{_chg:+.2f}%</td>"
+            f"<td style='padding:5px 8px;text-align:center'>{_grade_b}</td>"
+            f"<td style='padding:5px 8px;color:#94a3b8;font-size:11px'>{_reason}</td></tr>")
+        _opts.append(f"{_name} ({_code})")
+    st.markdown(
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:5px 8px;text-align:left'>종목명</th>"
+        "<th style='padding:5px 8px;text-align:right'>현재가</th>"
+        "<th style='padding:5px 8px;text-align:right'>등락률</th>"
+        "<th style='padding:5px 8px;text-align:center'>수급등급</th>"
+        "<th style='padding:5px 8px;text-align:left'>주도사유</th></tr></thead>"
+        f"<tbody>{''.join(_rows_html)}</tbody></table></div>", unsafe_allow_html=True)
+    # 종목 선택 → 정밀분석 드릴다운
+    _sel = st.selectbox("🔍 정밀분석 종목", ["(선택)"] + _opts, key="_ace_drill_sel")
+    if _sel and _sel != "(선택)":
+        _scode = _sel.split("(")[-1].rstrip(")"); _sname = _sel.split(" (")[0]
+        with st.expander(f"🔍 {_sname} 정밀 분석", expanded=True):
+            render_stock_drilldown(_scode, _sname)
+    st.caption("💡 A급 = 섹터 자금 유입처 + 연기금 포착 동시 충족")
 
 
 def render_manju_morning_pick():
@@ -4653,23 +4677,14 @@ def render_global_header():
                         "🚨 NO-POSITION 셧다운 | 신규 진입 원천 차단 (현금 보유 관망)", "kh-blink"),
     }
     _bg, _bc, _sc, _sig, _anim = _THEME[_mode]
-    # 🌌 [작업2] 전체화면 앰비언트 광원 — NO_POSITION 시 화면 테두리 붉은 싸이렌 점멸 오버레이
+    # (앰비언트 전체화면 광원 제거 — 시선 산만 방지, 헤더 배너만으로 상태 표현)
     _ambient = ""
-    if _mode == "NO_POSITION":
-        _ambient = ("<div class='kh-ambient kh-amb-red'></div>")
-    elif _mode == "HALF_CAPS":
-        _ambient = ("<div class='kh-ambient kh-amb-amber'></div>")
     st.markdown(f"""<style>
 @keyframes khblink {{0%,100%{{box-shadow:0 0 0 0 rgba(239,68,68,0.15);border-color:#ef4444;}}50%{{box-shadow:0 0 18px 4px rgba(239,68,68,0.85);border-color:#fca5a5;}}}}
 @keyframes khpulse {{0%,100%{{box-shadow:0 0 4px 1px rgba(245,158,11,0.25);}}50%{{box-shadow:0 0 14px 3px rgba(245,158,11,0.7);}}}}
 .kh-blink{{animation:khblink 1.0s infinite;}} .kh-pulse{{animation:khpulse 1.6s infinite;}}
 .kh-wrap{{position:sticky;top:0;z-index:100;border-radius:10px;padding:7px 14px;margin-bottom:8px;
   border:1.5px solid {_bc};background:{_bg};overflow-x:auto}}
-/* 🌌 앰비언트 전체화면 광원(테두리 inset glow) */
-@keyframes ambRed {{0%,100%{{box-shadow:inset 0 0 40px 8px rgba(239,68,68,0.15);}}50%{{box-shadow:inset 0 0 90px 22px rgba(239,68,68,0.55);}}}}
-@keyframes ambAmber {{0%,100%{{box-shadow:inset 0 0 30px 6px rgba(245,158,11,0.10);}}50%{{box-shadow:inset 0 0 60px 16px rgba(245,158,11,0.35);}}}}
-.kh-ambient{{position:fixed;inset:0;pointer-events:none;z-index:99;border-radius:6px;}}
-.kh-amb-red{{animation:ambRed 1.1s infinite;}} .kh-amb-amber{{animation:ambAmber 2.0s infinite;}}
 /* 📱 [MTS 뷰포트 최종 성형] 탭 찌그러짐·터치타겟·여백·슬라이더 감도 보정 */
 @media (max-width:768px) {{
   /* ② 컨테이너 여백 극한 다이어트 — 가로 꽉 차게 */
@@ -4738,35 +4753,46 @@ def render_stock_drilldown(code, name=""):
         _disp = ((_close / _ma20 - 1) * 100) if _ma20 else 0.0
     except Exception:
         st.caption("지표 계산 실패"); return
-    # 미니 차트
+    # ── 외인/기관 수급(외인/기관) ──
+    _frn = _org = None; _ivsrc = ""
     try:
-        _cols = [c for c in ["종가", "MA5", "MA20", "MA60"] if c in _ind.columns]
-        st.line_chart(_ind[_cols].tail(60), height=180)
+        _iv = _dol_investor(code) or {}
+        _frn = _to_int(_iv.get("외인")); _org = _to_int(_iv.get("기관")); _ivsrc = _iv.get("src", "")
     except Exception:
         pass
-    _m1, _m2, _m3, _m4 = st.columns(4)
-    _m1.metric("20MA 이격", f"{_disp:+.1f}%")
-    _m2.metric("RSI", f"{_rsi:.0f}" if _rsi is not None else "—")
-    _m3.metric("지지선", f"{_sup:,.0f}" if _sup else "—")
-    _m4.metric("저항선", f"{_res:,.0f}" if _res else "—")
-    # 타점 요약 + 트리거
-    _setup = []
-    _setup.append("📈20MA↑" if (_close and _ma20 and _close > _ma20) else "📉20MA↓")
-    if _ma5 and _ma20 and _ma5 > _ma20: _setup.append("정배열(5>20)")
-    if _rsi is not None:
-        _setup.append("🔥과열(RSI70+)" if _rsi >= 70 else "❄️과매도(RSI30-)" if _rsi <= 30 else f"RSI {_rsi:.0f}")
+    # ── [3줄 핵심 매매 시나리오 요약] ──
+    _ma_ok = bool(_close and _ma20 and _close > _ma20)
+    _s1 = (f"① 추세: {'📈 20MA 위 정배열' if (_ma_ok and _ma5>_ma20) else '📈 20MA 위' if _ma_ok else '📉 20MA 이탈(약세)'}"
+           f" · 이격 {_disp:+.1f}%")
+    _s2 = (f"② 수급: 외인 {(_frn if _frn is not None else 0):+,} · 기관 {(_org if _org is not None else 0):+,}"
+           f"{' ('+_ivsrc+')' if _ivsrc else ''} → {'🟢 양매수' if (_frn and _org and _frn>0 and _org>0) else '🟡 혼조/약함'}")
+    _rsi_txt = ("🔥과열" if (_rsi is not None and _rsi>=70) else "❄️과매도" if (_rsi is not None and _rsi<=30) else "중립")
+    _s3 = f"③ 대응: 진입 후 −3% 칼손절 원칙 · RSI {(_rsi if _rsi is not None else 0):.0f}({_rsi_txt}) · 저항 {int(_res):,} 돌파 시 홀딩"
+    st.markdown(f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 10px;"
+                f"font-size:12px;color:#cbd5e1;line-height:1.6'>🎯 <b>핵심 시나리오</b><br>{_s1}<br>{_s2}<br>{_s3}</div>",
+                unsafe_allow_html=True)
+    # ── 진입/손절/목표 메트릭 박스 ──
+    _entry = int(_close); _stop = int(_close * 0.97); _t1 = int(_close * 1.03)
+    _e1, _e2, _e3 = st.columns(3)
+    _e1.metric("🎯 진입", f"{_entry:,}")
+    _e2.metric("✂️ 손절(−3%)", f"{_stop:,}")
+    _e3.metric("🚀 목표(+3%)", f"{_t1:,}")
+    # 트리거 태그
     _tags = []
     try:
         _tags = fetch_stock_triggers(code, name)
     except Exception:
         pass
     _tag_html = " ".join(f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:11px'>{t}</span>" for t in _tags)
-    st.markdown(f"<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>🎯 {' · '.join(_setup)}</div>"
-                f"<div style='margin-top:3px'>{_tag_html or '<span style=color:#64748b;font-size:11px>뉴스 시그널 없음</span>'}</div>",
+    st.markdown(f"<div style='margin-top:2px'>{_tag_html or '<span style=color:#64748b;font-size:11px>뉴스 시그널 없음</span>'}</div>",
                 unsafe_allow_html=True)
-    _entry = int(_close); _stop = int(_close * 0.97); _t1 = int(_close * 1.03)
-    st.caption(f"참고 타점 — 진입 {_entry:,} · 손절 {_stop:,}(−3%) · 1차목표 {_t1:,}(+3%) "
-               f"· 지지 {int(_sup):,}~저항 {int(_res):,}")
+    # 미니 차트(접이식 — 슬림 유지)
+    with st.expander("📈 차트 보기", expanded=False):
+        try:
+            _cols = [c for c in ["종가", "MA5", "MA20", "MA60"] if c in _ind.columns]
+            st.line_chart(_ind[_cols].tail(60), height=160)
+        except Exception:
+            st.caption("차트 데이터 없음")
     # ── 어닝 세론(Sell on News) 감지 ──
     try:
         import v12_sell_on_news_detector as _son
@@ -8194,9 +8220,13 @@ with tab_g:
         _lg_hr.warning("보유종목 리스크 실패: %s: %s", type(_hre).__name__, _hre)
         st.caption("⚠️ 보유 종목 패널 일시 비활성")
     st.divider()
-    # ═══ 하단: ⚔️ 신규 타격 대기열 (픽 — 잔고 무관, 익절/손절 단어 미사용) ═══
-    st.markdown("#### ⚔️ 신규 타격 대기열 (NEW ENTRY QUEUE)")
-    st.caption("아래는 '신규 진입 후보'입니다 — 관망/급등(추격금지)로만 판단하세요. 익절·손절은 위 보유 종목 전용.")
+    # ═══ [④ 시각 경계 분리] 시스템 단독 원톱 추천 — 뚜렷한 프레임 + 타이틀 ═══
+    st.markdown(
+        "<div style='border:2px solid #fbbf24;border-radius:12px;padding:10px 12px 4px;margin-bottom:6px;"
+        "background:linear-gradient(180deg,#1a1505,#0b1220);box-shadow:0 4px 16px rgba(251,191,36,0.18)'>"
+        "<div style='font-size:15px;font-weight:900;color:#fde68a'>👑 시스템 단독 원톱 추천</div>"
+        "<div style='font-size:11px;color:#94a3b8;margin-bottom:2px'>시스템이 교차검증으로 뽑은 오늘의 단 하나 — "
+        "아래 '관심종목/테마 리스트'와 구분됩니다</div></div>", unsafe_allow_html=True)
     _pk1, _pk2 = st.columns(2)
     with _pk1:
         try:
@@ -8213,12 +8243,14 @@ with tab_g:
             _lg_dpp.warning("돌팬티 픽 실패: %s: %s", type(_dpp).__name__, _dpp)
             st.caption("⚠️ 돌팬티 픽 일시 비활성 (데이터 지연)")
     st.divider()
+    # ── ⚔️ 관심종목·테마 리스트 (원톱과 시각적으로 구분되는 하단 구역) ──
+    st.markdown("#### ⚔️ 관심종목·테마 리스트 (엑셀형)")
     try:
         render_ace_picks()
     except Exception as _ace_e:
         import logging as _lg_ace
         _lg_ace.warning("A급 원톱 패널 실패: %s: %s", type(_ace_e).__name__, _ace_e)
-        st.caption("⚠️ A급 원톱 패널 일시 비활성 (데이터 지연)")
+        st.caption("⚠️ 리스트 일시 비활성 (데이터 지연)")
     st.divider()
     _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
         ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
