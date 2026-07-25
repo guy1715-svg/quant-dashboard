@@ -4287,48 +4287,56 @@ def render_dolpanty_pick():
 
 
 def render_command_usage_guide():
-    """📖 실전 관제탑 사용법 — 하루 2회 단타(오전 만쥬 + 종가 돌팬티→익일 시초) 운용 루틴."""
-    with st.expander("📖 사용법 · 하루 2회 단타 운용 루틴 (처음이면 여기부터)", expanded=False):
+    """📖 V12.0 내장형 모바일 핸드북 — 실전 지침서·5대 골든룰·대공사 로드맵 아카이브."""
+    # ① 실전 지침서 요약 교재
+    with st.expander("📖 ① 실전 지침서 요약 교재 (주도주·종배·리스크)", expanded=False):
         st.markdown("""
-<style>
-.guide-wrap{display:flex;gap:12px;flex-wrap:wrap}
-.guide-card{flex:1;min-width:280px;border:1px solid #1e293b;border-radius:12px;padding:12px 14px;
-  background:linear-gradient(180deg,#0f172a,#111c33)}
-.guide-card h4{margin:0 0 8px;font-size:15px;font-weight:900}
-.guide-step{display:flex;gap:8px;margin-bottom:7px;font-size:12px;color:#cbd5e1;line-height:1.45}
-.guide-t{flex-shrink:0;background:#1e293b;color:#93c5fd;border-radius:6px;padding:1px 7px;
-  font-size:11px;font-weight:800;height:fit-content;white-space:nowrap}
-.gp{background:#16a34a;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800}
-.gr{background:#ef4444;color:#fff;border-radius:10px;padding:0 7px;font-size:10px;font-weight:800}
-</style>
-<div class='guide-wrap'>
-  <div class='guide-card' style='border-color:#fbbf24'>
-    <h4 style='color:#fde68a'>⚡ 만쥬式 — 오전 09~10시 승부</h4>
-    <div class='guide-step'><span class='guide-t'>08:30~09:00</span>
-      <span>맨 위 <b>🌐 매크로 배너</b> 색 확인(🔴면 오전 보류) → <b>⚡오늘의 만쥬 픽</b> 카드에서 오늘의 대장 후보 파악</span></div>
-    <div class='guide-step'><span class='guide-t'>09:00~09:10</span>
-      <span><b>⚡만쥬式</b> 서브탭 → <b>🟢ZERO-HOUR ACTIVE</b> 확인 → 🔄새로고침 → 액션이 <span class='gp'>⚡진입</span>인 종목 매수(대장 우선, 후속주 동시)</span></div>
-    <div class='guide-step'><span class='guide-t'>청산</span>
-      <span><span class='gr'>✂️칼손절</span> 뜨면 즉시 시장가 손절 · <b>10시 넘으면</b> mute → 신규진입 금지·정리</span></div>
-  </div>
-  <div class='guide-card' style='border-color:#22c55e'>
-    <h4 style='color:#86efac'>🌒 돌팬티式 — 15~20시 매수 → 익일 시초 매도</h4>
-    <div class='guide-step'><span class='guide-t'>15:00~15:30</span>
-      <span><b>🌒돌팬티式</b> 서브탭 → 🔄새로고침 → <b>📈20MA·🪝꼬리·기관+·점수🟢</b> 겹치는 종목이 종베 후보 (현금 30%룰 확인)</span></div>
-    <div class='guide-step'><span class='guide-t'>교차검증</span>
-      <span><b>🌀머니투어</b> 유입처 섹터 + <b>🏦연기금 추적</b> 연속매집 동시 충족 = <b>A급</b>(상단 카드에 표시)</span></div>
-    <div class='guide-step'><span class='guide-t'>18:00~20:00</span>
-      <span>헤더가 <b>🌙NXT 애프터</b>로 전환 → 저녁 대외리스크 재확인 후 <b>종가~애프터 최종 매수</b></span></div>
-    <div class='guide-step'><span class='guide-t'>익일 08:00~08:05</span>
-      <span>시초 동시호가 <b>갭 +1~2% 익절</b> · 갭 없거나 20MA 이탈이면 정리</span></div>
-  </div>
-</div>
-<div style='margin-top:10px;padding:8px 12px;background:#111c33;border:1px solid #1e293b;border-radius:8px;font-size:12px;color:#cbd5e1'>
-  <b style='color:#fbbf24'>📌 매일 3습관</b> &nbsp;①화면 볼 때마다 <b>🔄강제 새로고침</b>(자동갱신 없음) &nbsp;
-  ②<b>🏦연기금 추적</b>에서 📌포착 스냅샷 저장 + 🔄시계열 갱신(승률 DB 축적) &nbsp;
-  ③<b>🌐매크로 배너</b> 🔴면 그날 판 접기
-</div>
-""", unsafe_allow_html=True)
+**🏆 주도주 5대 원칙**
+
+| # | 원칙 | 핵심 |
+|---|---|---|
+| ① | 💰 거래대금 최우선 | 최소 **400~500억↑**(많을수록 우수·1,000억↑ 대장) |
+| ② | 🏦 외인/기관 수급 | 정배열 + 신고가 돌파 동반 |
+| ③ | 📰 뉴스/재료 | 단발성 여부 판독(지속 재료 우선) |
+| ④ | 🔥 주도 테마 | 반도체·로봇 등 **대장주** 먼저 |
+| ⑤ | 📈 이쁜 차트 | 5일선 돌파·전고점 돌파 |
+
+**🌒 종배/스윙 매매법**
+
+| 시점 | 행동 |
+|---|---|
+| 15:10~15:20 / NST야간 | 종가·야간 **선취매** |
+| 익일 09:00~09:10 | 갭상승 시 **1~2% 분할 익절**(욕심 X) |
+| 반복 | 소액 **복리 누적** (100만원으로 수천 번 연습!) |
+
+**✂️ 손절·리스크 관리**
+- 예측이 아닌 **대응** · 원칙대로 **2~3% 칼손절**
+- 지수 폭락 시 **도마뱀 꼬리 자르기** → 기회비용·현금 확보
+""")
+    # ② V12.0 실전 매매 5대 골든 룰
+    with st.expander("⚡ ② V12.0 실전 매매 5대 골든 룰 (0.1초 스캔)", expanded=False):
+        st.markdown("""
+| 룰 | 조건 | 기계적 행동 |
+|---|---|---|
+| 1️⃣ 매크로 우선 | 🔴 신호등 = 리스크오프 | **판 접기**(신규매수 금지) |
+| 2️⃣ 거래대금 | <400억 | **패스**(잡주 차단) |
+| 3️⃣ 진입 | ⚡진입 + 안 급등(+7%↓) | 대장 우선 분할 |
+| 4️⃣ 손절 | −3% | **칼손절** / −5% 하드브레이커 강제청산 |
+| 5️⃣ 익절 | 갭 +1~2% | **분할 익절**·수익 격리 |
+""")
+    # ③ V12.0 관제탑 대공사 로드맵
+    with st.expander("🗺️ ③ V12.0 관제탑 대공사 로드맵 (구축 이력)", expanded=False):
+        st.markdown("""
+| 단계 | 구축물 | 핵심 |
+|---|---|---|
+| 1️⃣ 백엔드 | `v12_logger` | 거래·에러·세이프티락 로깅 + NaN폴백·토큰쿨다운 |
+| 2️⃣ 코어 | 세론 감지 · ODI | Sell on News(선반영≥8%·PSR≤−5%) + 호가왜곡 |
+| 3️⃣ UI | 3색 신호등 | 🟢NORMAL/🟡HALF/🔴NO_POSITION + 오터치·Slide-to-Sell |
+| 4️⃣ 랭킹 | 거래대금 보드 | 금액기준 주도테마 + 실주문 2중게이트 + 자가진단 |
+| 5️⃣ 검증 | 안전 게이팅 | −5% 하드브레이커 + 세론/NST 매수락 통합 |
+
+📱 MTS: 초밀착 CSS · 앰비언트 광원 · Slide-to-Sell 트랙 · 형광 주도테마
+""")
 
 
 # ══════════════════════════════════════════════════════════════════════════
