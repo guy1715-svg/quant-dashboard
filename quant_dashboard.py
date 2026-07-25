@@ -4866,7 +4866,14 @@ def render_order_confirm(code, name, qty, price, side, kp):
             _c.html("<script>setTimeout(()=>window.parent.location.reload(),2100)</script>", height=0)
         except Exception:
             pass
-    if st.button(f"✅ {_sidetxt} 최종 승인", key=f"{kp}_confirm", disabled=_dis, use_container_width=True):
+    if not _dis:
+        # 쿨다운 종료 순간 — 활성 CTA 강조(매수 녹색/매도 적색 글로우 바). 무한 펄스 아님(1회 강조).
+        _gc = "#22c55e" if _is_buy else "#ef4444"
+        st.markdown(
+            f"<div style='height:4px;border-radius:3px;margin:2px 0 -2px;background:{_gc};"
+            f"box-shadow:0 0 12px 2px {_gc}'></div>", unsafe_allow_html=True)
+    if st.button(f"✅ {_sidetxt} 최종 승인", key=f"{kp}_confirm", disabled=_dis,
+                 type=("primary" if not _dis else "secondary"), use_container_width=True):
         # ── 실주문 2중 안전 게이트 ──
         _g1 = False
         try: _g1 = bool(st.secrets.get("REAL_TRADING_ENABLED"))
@@ -4909,7 +4916,7 @@ def render_quick_action_bar(code, name, qty, price):
             st.markdown(
                 f"<div style='height:10px;border-radius:6px;background:#1e293b;overflow:hidden;margin:-6px 0 4px'>"
                 f"<div style='width:{_slide}%;height:100%;background:linear-gradient(90deg,#64748b,{_fillc});"
-                f"box-shadow:0 0 {int(_slide/10)}px {_fillc};transition:width .2s'></div></div>"
+                f"box-shadow:0 0 {int(4+_slide*0.08)}px rgba(239,68,68,{0.4+0.4*_slide/100:.2f});transition:width .2s'></div></div>"
                 f"<div style='text-align:center;font-size:11px;color:{'#ef4444' if _slide>=100 else '#94a3b8'};font-weight:800'>"
                 f"{'🔥 격발 준비 완료 — 확인창 열림' if _slide>=100 else f'{_slide}% — 100까지 밀어 매도'}</div>",
                 unsafe_allow_html=True)
@@ -7339,14 +7346,20 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 [data-testid="stSidebar"] { background: #0d1424 !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
 .stTabs [data-baseweb="tab-list"] { background: rgba(255,255,255,0.04) !important; border-color: rgba(255,255,255,0.08) !important; }
 .stTabs [data-baseweb="tab"] { color: #94a3b8 !important; }
-.metric-card { background: #0f1726 !important; border-color: rgba(255,255,255,0.08) !important; }
+.metric-card { background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important; border: 1.5px solid rgba(255,255,255,0.05) !important;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease !important; }
+.metric-card:hover { transform: translateY(-2px) !important; border-color: rgba(56,189,248,0.35) !important;
+    box-shadow: 0 8px 22px rgba(2,6,23,0.55), 0 0 14px rgba(16,185,129,0.10) !important; }
 .metric-card .value { color: #e2e8f0 !important; }
 .stButton > button[kind="secondary"] { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.12) !important; color: #94a3b8 !important; }
 [data-testid="stExpander"] { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; }
 .streamlit-expanderHeader { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; }
 [data-baseweb="select"] > div { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
 .stTextInput input, .stNumberInput input, textarea { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
-[data-testid="stMetric"] { background: #0f1726 !important; border-color: rgba(255,255,255,0.08) !important; }
+[data-testid="stMetric"] { background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important; border: 1.5px solid rgba(255,255,255,0.05) !important;
+    border-radius: 12px !important; transition: box-shadow .18s ease, border-color .18s ease !important; }
+[data-testid="stMetric"]:hover { border-color: rgba(56,189,248,0.30) !important; box-shadow: 0 6px 18px rgba(2,6,23,0.5) !important; }
+[data-testid="stExpander"]:hover { border-color: rgba(56,189,248,0.22) !important; }
 [data-testid="stMetricValue"] { color: #e2e8f0 !important; }
 """
 else:
@@ -7584,6 +7597,8 @@ if st.session_state.ui_mobile:
 .stTabs [data-baseweb="tab"] { padding: 7px 10px !important; font-size: 11px !important; }
 .stButton > button { padding: 7px 10px !important; font-size: 11px !important; }
 .stDataFrame { font-size: 11px !important; }
+table { font-size: 11.5px !important; } table td, table th { padding: 3px 5px !important; }
+table td b, table th { font-weight: 800 !important; }
 """
 else:
     _mobile_css = ""
