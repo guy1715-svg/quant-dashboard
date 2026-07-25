@@ -8185,26 +8185,15 @@ with tab_g:
         f"font-size:12px;font-weight:800'>{_mst[1]}</span>"
         f"<span style='color:#8b93a7;font-size:12px'>{_gn.strftime('%m/%d %H:%M')} KST</span></div></div>",
         unsafe_allow_html=True)
-    # ── 자동 새로고침 토글(선택) — 켜면 N초마다 페이지 전체 재로드 ──
-    _arc1, _arc2 = st.columns([1, 3])
-    _auto_on = _arc1.checkbox("🔁 자동 새로고침", key="_g_autorefresh",
-                              help="켜면 아래 주기마다 화면이 스스로 갱신됩니다(KIS 호출 증가).")
-    _auto_sec = _arc2.select_slider("주기(초)", options=[15, 30, 60, 120], value=30,
-                                    key="_g_autorefresh_sec", disabled=not _auto_on)
-    if _auto_on:
-        try:
-            import streamlit.components.v1 as _cmp_ar
-            _cmp_ar.html(
-                f"<script>setTimeout(function(){{window.parent.location.reload();}}, {int(_auto_sec)*1000});</script>",
-                height=0)
-            _arc2.caption(f"🟢 {_auto_sec}초마다 자동 갱신 중 — 끄려면 체크 해제")
-        except Exception:
-            pass
-    try:
-        render_command_usage_guide()
-    except Exception:
-        pass
-    # 매크로 판정 먼저 산출 → 픽 카드가 리스크오프를 즉시 반영
+    # ═══ [사용흐름 재배치] 자동새로고침·사용설명서는 화면 하단 '⚙️ 도구·도움말'로 이동(상단 클러터 제거) ═══
+    # ── ① 🚦 오늘 매매 가능? — 매크로 신호등을 최상단에(매매 판단 1순위). 픽 카드가 리스크오프 즉시 반영 ──
+    _section_title = lambda _n, _ico, _txt: st.markdown(
+        f"<div style='display:flex;align-items:center;gap:8px;margin:2px 0 6px'>"
+        f"<span style='background:#1e293b;color:#93c5fd;width:22px;height:22px;border-radius:6px;"
+        f"display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:900'>{_n}</span>"
+        f"<span style='font-size:15px;font-weight:800;color:#e2e8f0'>{_ico} {_txt}</span></div>",
+        unsafe_allow_html=True)
+    _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
     except Exception as _mce:
@@ -8212,7 +8201,8 @@ with tab_g:
         _lg_mc.warning("매크로 트리거 패널 실패: %s: %s", type(_mce).__name__, _mce)
         st.caption("⚠️ 매크로 트리거 패널 일시 비활성 (데이터 지연)")
     st.divider()
-    # ═══ 상단: 💰 계좌 요약 + 🛡️ 보유 종목 리스크 관리 (잔고 기반) — 신규와 물리적 분리 ═══
+    # ═══ ② 💰 계좌 요약 + 🛡️ 보유 종목 리스크 관리 (잔고 기반) — 신규와 물리적 분리 ═══
+    _section_title("2", "💰", "내 계좌 · 보유 종목 리스크")
     try:
         render_account_summary()
     except Exception:
@@ -8224,7 +8214,9 @@ with tab_g:
         _lg_hr.warning("보유종목 리스크 실패: %s: %s", type(_hre).__name__, _hre)
         st.caption("⚠️ 보유 종목 패널 일시 비활성")
     st.divider()
-    # ═══ [④ 시각 경계 분리] 시스템 단독 원톱 추천 — 뚜렷한 프레임 + 타이틀 ═══
+    # ═══ ③ 오늘의 매매 후보 — 원톱(금색 강조) + 관심 리스트(무채색) 위계 분리 ═══
+    _section_title("3", "🎯", "오늘의 매매 후보")
+    # ─ 시스템 단독 원톱 추천 — 뚜렷한 금색 프레임(유일 강조) ─
     st.markdown(
         "<div style='border:2px solid #fbbf24;border-radius:12px;padding:10px 12px 4px;margin-bottom:6px;"
         "background:linear-gradient(180deg,#1a1505,#0b1220);box-shadow:0 4px 16px rgba(251,191,36,0.18)'>"
@@ -8246,9 +8238,8 @@ with tab_g:
             import logging as _lg_dpp
             _lg_dpp.warning("돌팬티 픽 실패: %s: %s", type(_dpp).__name__, _dpp)
             st.caption("⚠️ 돌팬티 픽 일시 비활성 (데이터 지연)")
-    st.divider()
-    # ── ⚔️ 관심종목·테마 리스트 (원톱과 시각적으로 구분되는 하단 구역) ──
-    st.markdown("#### ⚔️ 관심종목·테마 리스트 (엑셀형)")
+    st.markdown("<div style='font-size:12px;font-weight:700;color:#94a3b8;margin:8px 0 2px'>"
+                "⚔️ 관심종목·테마 리스트 (원톱 제외 · 엑셀형)</div>", unsafe_allow_html=True)
     try:
         render_ace_picks()
     except Exception as _ace_e:
@@ -8256,6 +8247,8 @@ with tab_g:
         _lg_ace.warning("A급 원톱 패널 실패: %s: %s", type(_ace_e).__name__, _ace_e)
         st.caption("⚠️ 리스트 일시 비활성 (데이터 지연)")
     st.divider()
+    # ═══ ④ 🔬 전략별 심화 분석 ═══
+    _section_title("4", "🔬", "전략별 심화 분석")
     _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
         ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
          "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
@@ -8287,6 +8280,27 @@ with tab_g:
             import traceback as _tbpn
             st.error(f"⚠️ 연기금 추적 오류 — {type(_pne).__name__}: {_pne}")
             st.caption(_tbpn.format_exc().splitlines()[-1])
+    st.divider()
+    # ═══ [하단] ⚙️ 도구 · 📖 도움말 — 매일 보는 정보 아래로(증권사 앱 '더보기/도움말' 관례) ═══
+    _section_title("⚙", "🛠️", "도구 · 사용설명서")
+    _arc1, _arc2 = st.columns([1, 3])
+    _auto_on = _arc1.checkbox("🔁 자동 새로고침", key="_g_autorefresh",
+                              help="켜면 아래 주기마다 화면이 스스로 갱신됩니다(KIS 호출 증가).")
+    _auto_sec = _arc2.select_slider("주기(초)", options=[15, 30, 60, 120], value=30,
+                                    key="_g_autorefresh_sec", disabled=not _auto_on)
+    if _auto_on:
+        try:
+            import streamlit.components.v1 as _cmp_ar
+            _cmp_ar.html(
+                f"<script>setTimeout(function(){{window.parent.location.reload();}}, {int(_auto_sec)*1000});</script>",
+                height=0)
+            _arc2.caption(f"🟢 {_auto_sec}초마다 자동 갱신 중 — 끄려면 체크 해제")
+        except Exception:
+            pass
+    try:
+        render_command_usage_guide()
+    except Exception:
+        pass
 
 
 with tab_a:
