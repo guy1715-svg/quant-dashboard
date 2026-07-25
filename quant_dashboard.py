@@ -7350,26 +7350,37 @@ html, body, [class*="css"] { background-color: #0a0f1e !important; color: #e2e8f
 h1,h2,h3,h4 { color: #e2e8f0 !important; }
 hr { border-color: rgba(255,255,255,0.08) !important; }
 [data-testid="stSidebar"] { background: #0d1424 !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
-.stTabs [data-baseweb="tab-list"] { background: rgba(255,255,255,0.04) !important; border-color: rgba(255,255,255,0.08) !important; }
-.stTabs [data-baseweb="tab"] { color: #94a3b8 !important; }
-/* ── [V12 2차 성형] Neon on Obsidian 벤토 카드 — 메트릭·metric-card·expander 통일 ── */
+.stTabs [data-baseweb="tab-list"] { background: transparent !important; border-bottom: 1px solid rgba(255,255,255,0.08) !important; }
+.stTabs [data-baseweb="tab"] { color: #94a3b8 !important; background: transparent !important; }
+.stTabs [aria-selected="true"] { color: #e2e8f0 !important; box-shadow: inset 0 -2px 0 #10b981 !important; }
+.stTabs [data-baseweb="tab-highlight"] { background: #10b981 !important; box-shadow: 0 0 8px rgba(16,185,129,0.6) !important; }
+/* ── [V12 3차 명품] Obsidian Frost 벤토 카드 — 메트릭·metric-card·expander 통일 ── */
 .metric-card, [data-testid="stMetric"], [data-testid="stExpander"] {
-    background: linear-gradient(135deg,#0f172a 0%,#0d1424 100%) !important;
-    border: 1px solid rgba(255,255,255,0.05) !important; border-radius: 12px !important;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.25) !important;
+    background: linear-gradient(135deg,#0f172a 0%,#070a13 100%) !important;
+    border: 1px solid rgba(255,255,255,0.07) !important; border-radius: 12px !important;
+    box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5) !important;
     transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease !important; }
 .metric-card:hover, [data-testid="stMetric"]:hover, [data-testid="stExpander"]:hover {
-    transform: translateY(-2px) !important; border-color: rgba(59,130,246,0.30) !important;
-    box-shadow: 0 8px 30px rgba(59,130,246,0.15) !important; }
+    transform: translateY(-3px) !important; border-color: rgba(34,197,94,0.25) !important;
+    box-shadow: 0 14px 36px -10px rgba(0,0,0,0.6), 0 0 16px rgba(34,197,94,0.10) !important; }
 /* 프로그램 양매수(외인+기관) / 주도테마 행 — 실시간 에메랄드 액티브 보더 */
 .prog-active { border-left: 3.5px solid #10b981 !important; }
 .metric-card .value { color: #e2e8f0 !important; }
 .stButton > button[kind="secondary"] { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.12) !important; color: #94a3b8 !important; }
-.streamlit-expanderHeader { background: rgba(255,255,255,0.03) !important; border-color: rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; }
+/* [V12 3차] Expander 헤더 투박한 상자 제거 — 텍스트만 도드라지게 */
+.streamlit-expanderHeader, [data-testid="stExpander"] summary { background: transparent !important; border: none !important; color: #f1f5f9 !important; font-weight: 700 !important; }
 [data-baseweb="select"] > div { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
 .stTextInput input, .stNumberInput input, textarea { background: #0f1726 !important; border-color: rgba(255,255,255,0.12) !important; color: #e2e8f0 !important; }
-[data-testid="stExpander"]:hover { border-color: rgba(56,189,248,0.22) !important; }
+/* [V12 3차] 트레이딩 수치 고가독성 모노스페이스 — 자간 압축·정렬 완벽 */
+[data-testid="stMetricValue"], [data-testid="stMetricDelta"], .metric-card .value, .mono {
+    font-family: "Inter","IBM Plex Mono",-apple-system,monospace !important; letter-spacing: -0.02em !important; }
 [data-testid="stMetricValue"] { color: #e2e8f0 !important; }
+/* [V12 3차] 초슬림 무광 핀테크 스크롤바(4px) */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #10b981; }
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
 """
 else:
     _theme_css = """
