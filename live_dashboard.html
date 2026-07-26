@@ -6,131 +6,163 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="실전속보">
-<meta name="theme-color" content="#0a0f1e">
+<meta name="theme-color" content="#0a0a0c">
 <title>⚡ 실전속보</title>
-<!-- 홈화면 아이콘 — 번개+다크(데이터 URI SVG, 외부요청 없음) -->
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Crect width='180' height='180' rx='40' fill='%230a0f1e'/%3E%3Ctext x='50%25' y='54%25' font-size='104' text-anchor='middle' dominant-baseline='central'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0f1e'/%3E%3Ctext x='50%25' y='55%25' font-size='40' text-anchor='middle' dominant-baseline='central'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Crect width='180' height='180' rx='40' fill='%230a0a0c'/%3E%3Ctext x='50%25' y='54%25' font-size='104' text-anchor='middle' dominant-baseline='central' fill='%23f5f5f0'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0a0c'/%3E%3Ctext x='50%25' y='55%25' font-size='40' text-anchor='middle' dominant-baseline='central'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
 <style>
   :root{
-    --bg:#0a0f1e; --card:linear-gradient(135deg,#0f172a 0%,#070a13 100%);
-    --bd:rgba(255,255,255,0.07); --txt:#f1f5f9; --sec:#94a3b8; --dim:#64748b;
-    --emerald:#10b981; --rose:#ef4444; --amber:#f59e0b;
-    --shadow:0 10px 30px -12px rgba(0,0,0,0.55);
+    --bg:#0a0a0c; --card:linear-gradient(160deg,#161618 0%,#0d0d0f 100%);
+    --bd:rgba(255,255,255,0.09); --bd2:rgba(255,255,255,0.14);
+    --ink:#ededef; --sec:#9a9aa0; --dim:#5a5a60;
+    --up:#f2f2f0; --down:#6f6f76;              /* 흑백: 상승=밝은 아이보리, 하락=중간 그레이 */
+    --shadow:0 12px 34px -14px rgba(0,0,0,0.7);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  body{margin:0;background:var(--bg);color:var(--txt);
+  body{margin:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Inter",monospace;
-    letter-spacing:-0.02em;padding:14px 12px calc(28px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
-  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-  .brand{font-size:19px;font-weight:900}
-  .brand .g{background:linear-gradient(90deg,#4da6ff,#a78bfa);-webkit-background-clip:text;
-    -webkit-text-fill-color:transparent}
+    letter-spacing:-0.02em;padding:16px 13px calc(30px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+  .top{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;
+    padding-bottom:12px;border-bottom:1px solid var(--bd)}
+  .brand{font-size:20px;font-weight:900;letter-spacing:0.02em}
+  .brand .g{color:var(--dim);font-weight:800}
   .fresh{font-size:11px;color:var(--sec);text-align:right;line-height:1.5}
-  .fresh .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:middle}
-  .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;
-    box-shadow:var(--shadow);padding:14px 15px;margin-bottom:12px}
-  .lbl{font-size:11px;font-weight:800;color:var(--dim);letter-spacing:0.04em;text-transform:uppercase;margin-bottom:9px}
-  .sig{display:flex;align-items:center;gap:12px}
-  .sig .em{font-size:34px;line-height:1}
+  .fresh .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:15px;
+    box-shadow:var(--shadow);padding:15px 16px;margin-bottom:11px}
+  .lbl{font-size:10px;font-weight:800;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:11px}
+  /* 매크로 신호등 — 흑백 글리프 */
+  .sig{display:flex;align-items:center;gap:14px}
+  .sig .gl{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:15px;font-weight:900;flex:0 0 auto;border:2px solid var(--ink)}
   .sig .tx{font-size:17px;font-weight:900}
   .sig .de{font-size:12px;color:var(--sec);margin-top:3px}
-  .row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
-  .row:last-child{border-bottom:none}
-  .row .nm{flex:0 0 84px;font-weight:800;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .bar{flex:1;height:8px;border-radius:6px;background:rgba(255,255,255,0.05);overflow:hidden;position:relative}
-  .bar > i{position:absolute;top:0;bottom:0;border-radius:6px}
-  .val{flex:0 0 84px;text-align:right;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
-  .pos{color:#34d399}.neg{color:#f87171}
-  .ace{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;
-    background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.22);border-radius:10px;margin-bottom:7px}
-  .ace .n{font-weight:800;font-size:14px}
-  .ace .s{font-size:11px;color:var(--sec)}
-  .ace .a{font-size:13px;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums}
-  .empty{color:var(--dim);font-size:12px;padding:6px 0}
-  /* 원톱 픽 — 금색 강조 프레임 */
-  .pick{border:2px solid #fbbf24;border-radius:14px;padding:13px 15px;margin-bottom:12px;
-    background:linear-gradient(180deg,#1a1505,#0b1220);box-shadow:0 4px 18px rgba(251,191,36,0.16)}
-  .pick .lbl{color:#fde68a}
+  /* 현금비중 권장 */
+  .cash{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .cash .lv{font-size:16px;font-weight:900}
+  .cash .ms{font-size:12px;color:var(--sec);margin-top:2px}
+  .cash .rt{font-size:15px;font-weight:900;white-space:nowrap;padding:5px 11px;border:1px solid var(--bd2);border-radius:999px}
+  /* 오늘의 픽 — 아이보리 얇은 프레임(흑백 강조) */
+  .pick{border:1px solid var(--bd2);border-radius:15px;padding:14px 16px;margin-bottom:11px;
+    background:linear-gradient(160deg,#1d1d1f 0%,#0e0e10 100%);box-shadow:var(--shadow);position:relative}
+  .pick::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:3px;background:var(--ink)}
+  .pick .lbl{color:#cfcfce}
   .pick .body{display:flex;justify-content:space-between;align-items:center}
-  .pick .n{font-size:19px;font-weight:900;color:#fef3c7}
-  .pick .s{font-size:11px;color:var(--sec);margin-top:2px}
-  .pick .a{font-size:15px;font-weight:900;color:#fbbf24;font-variant-numeric:tabular-nums}
+  .pick .n{font-size:20px;font-weight:900;color:#fafaf7}
+  .pick .s{font-size:11px;color:var(--sec);margin-top:3px}
+  .pick .a{font-size:15px;font-weight:900;font-variant-numeric:tabular-nums}
   .badge{display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:6px;
-    background:rgba(52,211,153,0.18);color:#6ee7b7;margin-left:6px;vertical-align:middle}
-  /* 지표 세부 그리드 */
+    border:1px solid var(--bd2);color:#cfcfce;margin-left:6px;vertical-align:middle}
+  /* 전조 시그널 */
+  .prec{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:800;flex-wrap:wrap}
+  .prec .fr{color:var(--down)}.prec .to{color:var(--up)}
+  .prec .ar{color:var(--sec)}
+  .prec .amt{font-size:12px;color:var(--sec);font-weight:600;width:100%;margin-top:3px}
+  /* 지표 그리드 */
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .chip{background:rgba(255,255,255,0.03);border:1px solid var(--bd);border-radius:10px;padding:8px 10px}
-  .chip .k{font-size:11px;color:var(--sec);margin-bottom:2px}
+  .chip{background:rgba(255,255,255,0.03);border:1px solid var(--bd);border-radius:11px;padding:9px 11px}
+  .chip .k{font-size:11px;color:var(--sec);margin-bottom:3px}
   .chip .v{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums}
   .chip .u{font-size:11px;font-weight:600;color:var(--dim)}
-  .t-up{color:#34d399}.t-down{color:#f87171}.t-flat{color:var(--txt)}
-  .stale{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;
-    border-radius:10px;padding:9px 12px;font-size:12px;font-weight:700;margin-bottom:12px;display:none}
-  .refresh{width:100%;padding:11px;border:1px solid var(--bd);border-radius:12px;background:rgba(255,255,255,0.04);
-    color:var(--sec);font-size:13px;font-weight:700;margin-top:2px}
+  /* 섹터 랭킹 */
+  .row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06)}
+  .row:last-child{border-bottom:none}
+  .row .nm{flex:0 0 80px;font-weight:800;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar{flex:1;height:7px;border-radius:5px;background:rgba(255,255,255,0.06);overflow:hidden;position:relative}
+  .bar > i{position:absolute;top:0;bottom:0;border-radius:5px}
+  .val{flex:0 0 82px;text-align:right;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+  .up{color:var(--up)}.down{color:var(--down)}
+  /* A급 */
+  .ace{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;
+    background:rgba(255,255,255,0.03);border:1px solid var(--bd);border-radius:11px;margin-bottom:7px}
+  .ace .n{font-weight:800;font-size:14px}
+  .ace .s{font-size:11px;color:var(--sec)}
+  .ace .a{font-size:13px;font-weight:800;font-variant-numeric:tabular-nums}
+  .empty{color:var(--dim);font-size:12px;padding:6px 0}
+  .stale{background:rgba(255,255,255,0.05);border:1px solid var(--bd2);color:#cfcfce;
+    border-radius:11px;padding:10px 13px;font-size:12px;font-weight:700;margin-bottom:11px;display:none}
+  .refresh{width:100%;padding:12px;border:1px solid var(--bd);border-radius:13px;background:rgba(255,255,255,0.03);
+    color:var(--sec);font-size:13px;font-weight:800;letter-spacing:0.05em;margin-top:2px}
   .refresh:active{background:rgba(255,255,255,0.08)}
-  .foot{text-align:center;color:var(--dim);font-size:10px;margin-top:14px}
+  .foot{text-align:center;color:var(--dim);font-size:10px;margin-top:15px;letter-spacing:0.03em}
 </style>
 </head>
 <body>
   <div class="top">
     <div class="brand">⚡ 실전<span class="g">속보</span></div>
-    <div class="fresh" id="fresh"><span class="dot" style="background:#64748b"></span>불러오는 중…</div>
+    <div class="fresh" id="fresh"><span class="dot" style="background:#5a5a60"></span>불러오는 중…</div>
   </div>
 
-  <div class="stale" id="stale">⚠️ watcher가 꺼져 있는 것 같습니다 — 데이터가 오래됐어요. PC의 start_watcher를 켜주세요.</div>
+  <div class="stale" id="stale">⚠ watcher가 꺼져 있는 듯합니다 — 데이터가 오래됐어요. PC의 start_watcher를 켜주세요.</div>
 
   <!-- 매크로 신호등 -->
   <div class="card">
     <div class="lbl">매크로 신호등</div>
     <div class="sig">
-      <div class="em" id="sigEm">⏳</div>
+      <div class="gl" id="sigGl">·</div>
       <div><div class="tx" id="sigTx">—</div><div class="de" id="sigDe"></div></div>
     </div>
   </div>
 
-  <!-- 원톱 픽 (있을 때만 표시) -->
+  <!-- 현금비중·대응 권장 -->
+  <div class="card">
+    <div class="lbl">현금비중 · 대응 권장</div>
+    <div class="cash">
+      <div><div class="lv" id="cashLv">—</div><div class="ms" id="cashMs"></div></div>
+      <div class="rt" id="cashRt"></div>
+    </div>
+  </div>
+
+  <!-- 오늘의 픽 (있을 때만) -->
   <div class="pick" id="pickCard" style="display:none">
-    <div class="lbl">👑 시스템 원톱 픽 (수급 최상위)</div>
+    <div class="lbl" id="pickLbl">오늘의 픽</div>
     <div class="body">
-      <div><span class="n" id="pickN">—</span><span class="badge" id="pickB" style="display:none">🏦 연기금</span>
+      <div><span class="n" id="pickN">—</span><span class="badge" id="pickB" style="display:none">연기금</span>
         <div class="s" id="pickS"></div></div>
       <div class="a" id="pickA"></div>
     </div>
   </div>
 
+  <!-- 전조 시그널 (있을 때만) -->
+  <div class="card" id="precCard" style="display:none">
+    <div class="lbl">전조 시그널 · 자금 이동</div>
+    <div class="prec">
+      <span class="fr" id="precFr"></span><span class="ar">→</span><span class="to" id="precTo"></span>
+      <span class="amt" id="precAmt"></span>
+    </div>
+  </div>
+
   <!-- 지표 세부 -->
   <div class="card">
-    <div class="lbl">지표 세부 (환율·VIX·지수)</div>
+    <div class="lbl">지표 세부 · 환율 · VIX · 지수</div>
     <div class="grid" id="ind"><div class="empty">데이터 대기…</div></div>
   </div>
 
   <!-- 섹터 수급 랭킹 -->
   <div class="card">
-    <div class="lbl">섹터 수급 랭킹 (순매수 억원)</div>
+    <div class="lbl">섹터 수급 랭킹 · 순매수 억원</div>
     <div id="rank"><div class="empty">데이터 대기…</div></div>
   </div>
 
   <!-- A급 종목 -->
   <div class="card">
-    <div class="lbl">🥇 A급 종목 (자금유입 × 연기금)</div>
+    <div class="lbl">A급 종목 · 자금유입 × 연기금</div>
     <div id="ace"><div class="empty">데이터 대기…</div></div>
   </div>
 
-  <button class="refresh" onclick="load(true)">🔄 새로고침</button>
+  <button class="refresh" onclick="load(true)">새로고침</button>
   <div class="foot" id="foot"></div>
 
 <script>
-  // ── 설정: snapshot.json 위치(GitHub data 브랜치 raw). 리포 바뀌면 여기만 수정 ──
   var REPO = "guy1715-svg/quant-dashboard";
   var BRANCH = "data";
   var URL = "https://raw.githubusercontent.com/" + REPO + "/" + BRANCH + "/snapshot.json";
 
+  // 흑백 신호등: 위험할수록 채워진 글리프
   var SIG = {
-    0:{em:"🟢", tx:"진입 허용 · 정상 대응", c:"#34d399"},
-    1:{em:"🟡", tx:"중립 · 선별 진입",    c:"#fbbf24"},
-    2:{em:"🔴", tx:"리스크오프 · 관망",   c:"#f87171"}
+    0:{gl:"○", tx:"진입 허용 · 정상 대응"},
+    1:{gl:"◑", tx:"중립 · 선별 진입"},
+    2:{gl:"●", tx:"리스크오프 · 관망"}
   };
 
   function ago(ts){
@@ -140,24 +172,33 @@
     if(m < 60) return m + "분 전";
     return Math.floor(m/60) + "시간 " + (m%60) + "분 전";
   }
-
   function eok(v){
-    var s = (v>=0?"+":"") + v.toLocaleString(undefined,{maximumFractionDigits:0});
-    return s + "억";
+    return (v>=0?"+":"") + v.toLocaleString(undefined,{maximumFractionDigits:0}) + "억";
   }
+  // 흑백 유지: 컬러 신호등 이모지(🔴🟡🟢) 제거 — 좌측 글리프가 신호 담당
+  function mono(s){ return (s||"").replace(/[🔴🟡🟢⚪⚫]/g,"").trim(); }
 
   function render(d){
     // 신호등
     var s = SIG[d.macro && d.macro.sev] || SIG[1];
-    document.getElementById("sigEm").textContent = s.em;
-    var tx = document.getElementById("sigTx");
-    tx.textContent = (d.macro && d.macro.text) || s.tx; tx.style.color = s.c;
+    document.getElementById("sigGl").textContent = s.gl;
+    document.getElementById("sigTx").textContent = mono(d.macro && d.macro.text) || s.tx;
     document.getElementById("sigDe").textContent = (d.macro && d.macro.detail) || "";
 
-    // 원톱 픽
+    // 현금비중
+    var cg = d.cash_guide;
+    if(cg){
+      document.getElementById("cashLv").textContent = mono(cg.level) || "—";
+      document.getElementById("cashMs").textContent = cg.msg || "";
+      document.getElementById("cashRt").textContent = cg.ratio || "";
+    }
+
+    // 오늘의 픽 (top_pick + pick_mode 시간대)
     var pc = document.getElementById("pickCard");
     if(d.top_pick && d.top_pick.name){
-      var tp = d.top_pick;
+      var tp = d.top_pick, pm = d.pick_mode || {};
+      document.getElementById("pickLbl").textContent =
+        "오늘의 픽 · " + (pm.tag || "참고") + (pm.when ? " ("+pm.when+")" : "");
       document.getElementById("pickN").textContent = tp.name;
       document.getElementById("pickS").textContent = tp.sector + " · " + tp.code;
       document.getElementById("pickA").textContent = eok(tp.amt_eok);
@@ -165,23 +206,32 @@
       pc.style.display = "block";
     } else { pc.style.display = "none"; }
 
+    // 전조 시그널
+    var prc = document.getElementById("precCard");
+    if(d.precursor && d.precursor.to){
+      document.getElementById("precFr").textContent = d.precursor.from + " 이탈";
+      document.getElementById("precTo").textContent = d.precursor.to + " 유입";
+      document.getElementById("precAmt").textContent = "유입 " + eok(d.precursor.inflow_eok) + " · 폭등 前 선취 후보";
+      prc.style.display = "block";
+    } else { prc.style.display = "none"; }
+
     // 지표 세부
     var ind = document.getElementById("ind");
     if(d.indicators && d.indicators.length){
       ind.innerHTML = d.indicators.map(function(it){
+        var glyph = it.tone==="up" ? "▲ " : it.tone==="down" ? "▼ " : "";
+        var cls = it.tone==="down" ? "down" : "up";
         return '<div class="chip"><div class="k">'+it.label+'</div>'
-          + '<div class="v t-'+(it.tone||"flat")+'">'+it.value
+          + '<div class="v '+cls+'">'+glyph+it.value
           + '<span class="u">'+(it.unit||"")+'</span></div></div>';
       }).join("");
-    } else {
-      ind.innerHTML = '<div class="empty">지표 대기…</div>';
-    }
+    } else { ind.innerHTML = '<div class="empty">지표 대기…</div>'; }
 
     // 신선도
     var mins = d.updated_ts ? (Date.now()/1000 - d.updated_ts)/60 : 999;
-    var dotc = mins < 8 ? "#10b981" : (mins < 20 ? "#f59e0b" : "#ef4444");
+    var bright = mins < 8 ? "#ededef" : (mins < 20 ? "#9a9aa0" : "#5a5a60");
     document.getElementById("fresh").innerHTML =
-      '<span class="dot" style="background:'+dotc+'"></span>' + ago(d.updated_ts) + ' 갱신';
+      '<span class="dot" style="background:'+bright+'"></span>' + ago(d.updated_ts) + ' 갱신';
     document.getElementById("stale").style.display = mins >= 20 ? "block" : "none";
 
     // 섹터 랭킹
@@ -191,11 +241,11 @@
       rank.innerHTML = d.supply.ranking.map(function(r){
         var w = Math.max(4, Math.abs(r.net_eok)/max*100);
         var pos = r.net_eok >= 0;
-        var col = pos ? "#10b981" : "#ef4444";
+        var col = pos ? "#f2f2f0" : "#6f6f76";
         var side = pos ? "left:50%" : "right:50%";
         return '<div class="row"><div class="nm">'+r.sector+'</div>'
           + '<div class="bar"><i style="'+side+';width:'+(w/2)+'%;background:'+col+'"></i></div>'
-          + '<div class="val '+(pos?"pos":"neg")+'">'+eok(r.net_eok)+'</div></div>';
+          + '<div class="val '+(pos?"up":"down")+'">'+(pos?"▲ ":"▼ ")+eok(r.net_eok)+'</div></div>';
       }).join("");
     } else {
       rank.innerHTML = '<div class="empty">'+(d.kis_on===false?"KIS 키 미설정 — 수급 OFF":"장중 데이터 대기 또는 리스크오프")+'</div>';
@@ -213,7 +263,7 @@
       ace.innerHTML = '<div class="empty">현재 겹침 종목 없음 (유입×연기금)</div>';
     }
 
-    document.getElementById("foot").textContent = "데이터: " + (d.updated||"-") + " KST · 60초마다 자동 갱신";
+    document.getElementById("foot").textContent = "데이터 " + (d.updated||"-") + " KST · 60초마다 자동 갱신";
   }
 
   function load(manual){
@@ -222,7 +272,7 @@
       .then(render)
       .catch(function(e){
         document.getElementById("fresh").innerHTML =
-          '<span class="dot" style="background:#ef4444"></span>연결 실패';
+          '<span class="dot" style="background:#6f6f76"></span>연결 실패';
         if(manual) document.getElementById("foot").textContent = "snapshot.json 로드 실패 ("+e.message+") — 최초 1회는 watcher가 업로드해야 생성됩니다";
       });
   }
