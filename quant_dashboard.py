@@ -998,10 +998,69 @@ _MANJU_DEFAULT_TARGETS = [
 ]
 # 시그널 가중치 테이블(2-A). W1은 곱셈 게이트(제로아워 밖=0) → total = W1 × Σ(Wi·fi).
 _MANJU_WEIGHTS      = {"W2": 35, "W3": 20, "W4": 15, "W5": 12, "W6": 10, "W7": 8}
-_MANJU_PROG_REF     = 200000       # 외인·기관 추정 순매수(프로그램 프록시) 정규화 기준(주)
-_MANJU_VOL_REF      = 3_000_000    # 거래량(거래대금 프록시) 정규화 기준(주)
+_MANJU_PROG_REF     = 200000       # [구/폴백] 외인·기관 추정 순매수 정규화 기준(주) — 금액 결측 시만 사용
+_MANJU_VOL_REF      = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만 사용
 _MANJU_NEARHI_TOL   = 0.010        # 신고가/저항 근접 허용치 1.0%
 _MANJU_LEADER_BREAK = 0.015        # 대장주 꺾임 감지 임계(당일 고점 대비 -1.5%)
+# ── [V12.1 금액기반 리팩토링] 수량(주)→금액(원) 물리변환 정규화 기준 ──
+_MANJU_PROG_AMT_REF = 3_000_000_000    # 프로그램 수급 금액 만점 기준: +30억 원(=3,000백만=3,000,000천원)
+_MANJU_TURNOVER_REF = 30_000_000_000   # 거래대금 만점/시가저격 임계: 300억 원(=30,000백만=30,000,000천원)
+_MANJU_SNIPER_SMALL = 15_000_000_000   # 중소형주 완화 임계: 150억 원(탄력성 필터)
+_MANJU_LARGECAP_PX  = 50_000           # 대형주 판정 프록시(현재가 ≥ 5만원 → 대형, 300억 요구)
+
+# ── 삼성증권 HTS 화면별 거래대금 단위 이원화 포맷터 (금액=원 입력) ──
+def format_to_thousand_won(won):
+    """#1501 빠른종목검색 화면 대조용 — 천 원(Thousand KRW) 단위. 300억→30,000,000."""
+    try:
+        return f"{int(round((won or 0) / 1_000)):,}"
+    except Exception:
+        return "—"
+
+
+def format_to_million_won(won):
+    """#0517 관심종목 화면 대조용 — 백만 원(Million KRW) 단위. 300억→30,000."""
+    try:
+        return f"{int(round((won or 0) / 1_000_000)):,}"
+    except Exception:
+        return "—"
+
+
+def _fmt_signed_thousand(won):
+    """부호 포함 천원 단위(수급 금액용) — +12,345 / -6,789."""
+    try:
+        _v = int(round((won or 0) / 1_000))
+        return f"{_v:+,}"
+    except Exception:
+        return "—"
+
+
+# ── 3대 핵심 모니터링 라인업(6종) — 반도체 이탈 반사이익 피난처 ──
+_MANJU_LINEUP_6 = [
+    ("207940", "삼성바이오로직스"), ("068270", "셀트리온"),      # A: 바이오 방어주
+    ("011070", "LG이노텍"),        ("090460", "비에이치"),        # B: 애플 공급망
+    ("103140", "풍산"),            ("010130", "고려아연"),        # C: 관세/원자재 수혜
+]
+
+
+def _manju_sniper(rec, now_kst=None):
+    """🎯 09:10 시가저격 배지 판정 — KST 09:00~09:10 내 당일 누적 거래대금이 임계 돌파 시 활성.
+    대형주/중소형주 탄력성 필터: 대형주(현재가≥5만) 300억, 중소형주 150억(완화).
+    반환 (active:bool, badge_html:str, need_won:int)."""
+    _n = now_kst or (datetime.utcnow() + timedelta(hours=9))
+    _mins = _n.hour * 60 + _n.minute
+    _in_window = (9 * 60) <= _mins <= (9 * 60 + 10)
+    _to = rec.get("거래대금") or 0
+    _px = rec.get("현재가") or 0
+    _need = _MANJU_TURNOVER_REF if _px >= _MANJU_LARGECAP_PX else _MANJU_SNIPER_SMALL
+    _cap = "대형" if _px >= _MANJU_LARGECAP_PX else "중소형"
+    _active = bool(_in_window and _to >= _need)
+    if _active:
+        _badge = ("<span style='background:linear-gradient(90deg,#f59e0b,#fbbf24);color:#1a1505;"
+                  "padding:2px 9px;border-radius:10px;font-size:11px;font-weight:900;"
+                  "box-shadow:0 0 10px rgba(251,191,36,0.5)'>🎯 09:10 시가저격 완료</span>")
+    else:
+        _badge = ""
+    return _active, _badge, _need
 
 
 def _manju_gate_open(now_kst=None):
@@ -1026,8 +1085,12 @@ def fetch_manju_scalp_data(token, targets):
     def _one(_tk, _nm):
         """단일 종목 수집(스레드 워커) — row dict 반환. 리턴 스펙 동일."""
         _r = {"ticker": _tk, "name": _nm, "현재가": None, "등락률": None,
-              "고가": None, "거래량": None, "프로그램순매수": None, "출처": None, "ok": False}
-        # (1) 현재가/등락률/고가/거래량 — inquire-price(FHKST01010100)
+              "고가": None, "거래량": None, "거래대금": None,
+              "프로그램순매수": None, "출처": None, "ok": False,
+              # [V12.1] 금액(원) 기반 필드 — 실시간 추정 수량 × 현재가 물리변환
+              "외인추정수량": 0, "기관추정수량": 0,
+              "외인추정금액": 0, "기관추정금액": 0, "프로그램금액": None}
+        # (1) 현재가/등락률/고가/거래량/거래대금 — inquire-price(FHKST01010100)
         try:
             _rp = _requests.get(
                 f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -1039,6 +1102,8 @@ def fetch_manju_scalp_data(token, targets):
                 _r["등락률"] = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
                 _r["고가"]  = int(str(_op.get("stck_hgpr", 0)).replace(",", "") or 0)
                 _r["거래량"] = int(str(_op.get("acml_vol", 0)).replace(",", "") or 0)
+                # 당일 누적 거래대금(원) — HTS #0517/#1501 대조용 실시간 대금
+                _r["거래대금"] = int(str(_op.get("acml_tr_pbmn", 0)).replace(",", "") or 0)
         except Exception as _e:
             _lg.warning("manju[%s] 현재가 실패: %s: %s", _tk, type(_e).__name__, _e)
         # (2) 외인·기관 추정 순매수(프로그램 융단폭격 프록시) — HHPTJ04160200(당일 T)
@@ -1058,13 +1123,25 @@ def fetch_manju_scalp_data(token, targets):
                 _f = _to_int(_le.get("frgn_fake_ntby_qty")) if isinstance(_le, dict) else 0
                 _o = _to_int(_le.get("orgn_fake_ntby_qty")) if isinstance(_le, dict) else 0
                 if _f or _o:
-                    _r["프로그램순매수"] = _f + _o
+                    _r["프로그램순매수"] = _f + _o          # (수량, 하위호환 유지)
                     _r["출처"] = "KIS실시간"
+                    # [V12.1 핵심] 실시간 추정 수량 × 현재가 → 실질 금액(원) 물리변환
+                    _cp = _r["현재가"] or 0
+                    _r["외인추정수량"], _r["기관추정수량"] = _f, _o
+                    _r["외인추정금액"] = _f * _cp
+                    _r["기관추정금액"] = _o * _cp
+                    _r["프로그램금액"] = (_f + _o) * _cp    # 외인추정금액 + 기관추정금액
             if not _r["프로그램순매수"]:
                 _nvm = _md_investor_naver(_tk)
                 if _inv_valid(_nvm):
-                    _r["프로그램순매수"] = _to_int(_nvm.get("외인")) + _to_int(_nvm.get("기관"))
+                    _fn, _on = _to_int(_nvm.get("외인")), _to_int(_nvm.get("기관"))
+                    _r["프로그램순매수"] = _fn + _on
                     _r["출처"] = _nvm.get("src", "naver(전일)")
+                    _cp = _r["현재가"] or 0
+                    _r["외인추정수량"], _r["기관추정수량"] = _fn, _on
+                    _r["외인추정금액"] = _fn * _cp
+                    _r["기관추정금액"] = _on * _cp
+                    _r["프로그램금액"] = (_fn + _on) * _cp
         except Exception as _e:
             _lg.warning("manju[%s] 수급 실패: %s: %s", _tk, type(_e).__name__, _e)
         _r["ok"] = _r["등락률"] is not None
@@ -1085,8 +1162,13 @@ def _manju_score(rec, leader_chg, gate_open):
     _hi   = rec.get("고가") or 0
     _vol  = rec.get("거래량") or 0
     _prog = rec.get("프로그램순매수")
-    # f2 프로그램 융단폭격(외인·기관 추정 순매수 크기)
-    _f2 = min(_prog / _MANJU_PROG_REF, 1.0) if (_prog is not None and _prog > 0) else 0.0
+    _prog_amt = rec.get("프로그램금액")   # [V12.1] 금액(원) — 우선 사용
+    _turn = rec.get("거래대금")           # [V12.1] 당일 누적 거래대금(원)
+    # f2 프로그램 융단폭격 — 금액(원) 기준(+30억=만점). 금액 결측 시만 수량 폴백.
+    if _prog_amt is not None and _prog_amt > 0:
+        _f2 = min(_prog_amt / _MANJU_PROG_AMT_REF, 1.0)
+    else:
+        _f2 = min(_prog / _MANJU_PROG_REF, 1.0) if (_prog is not None and _prog > 0) else 0.0
     # f3 신고가/저항 근접(당일 고가를 전고 프록시로) — 현재가가 고가에 붙을수록 ↑
     _f3 = 0.0
     if _px > 0 and _hi > 0:
@@ -1097,8 +1179,11 @@ def _manju_score(rec, leader_chg, gate_open):
     _f5 = 1.0 if (_chg > 0 and (_prog or 0) > 0) else 0.0
     # f6 짝꿍 갭(후속주 저평가: 대장 대비 덜 오른 정도)
     _f6 = min(max(1.0 - (_chg / leader_chg), 0.0), 1.0) if (leader_chg and leader_chg > 0) else 0.0
-    # f7 거래량(거래대금 프록시)
-    _f7 = min(_vol / _MANJU_VOL_REF, 1.0) if _vol > 0 else 0.0
+    # f7 거래대금 — 금액(원) 기준(300억=만점). 금액 결측 시만 거래량 폴백.
+    if _turn is not None and _turn > 0:
+        _f7 = min(_turn / _MANJU_TURNOVER_REF, 1.0)
+    else:
+        _f7 = min(_vol / _MANJU_VOL_REF, 1.0) if _vol > 0 else 0.0
     _w = _MANJU_WEIGHTS
     _raw = (_w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 +
             _w["W5"]*_f5 + _w["W6"]*_f6 + _w["W7"]*_f7)
@@ -1128,7 +1213,7 @@ def _action_pill(kind):
 def render_manju_scalp_monitor(targets=None):
     """[만쥬式 초단타 감시 위젯] 3대 코어 패널 렌더 — 유니버스/엔트리 시그널/리스크·자금.
     W1 제로아워 게이트·가중치 총점·등급 매핑·하드 오버라이드(대장 꺾임·-1R) 반영. 예외 전파 없음."""
-    _tg   = targets or _MANJU_DEFAULT_TARGETS
+    _tg   = targets or _MANJU_LINEUP_6      # [V12.1] 반도체 이탈 반사이익 3대 라인업(6종) 기본
     _now  = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _gate = _manju_gate_open(_now)
     # ── 헤더 + 제로아워 게이트 배지
@@ -1290,8 +1375,45 @@ def render_manju_scalp_monitor(targets=None):
         "<th style='padding:6px 8px;text-align:left'>개별 액션·리스크</th></tr></thead>"
         f"<tbody>{''.join(_rows_html)}</tbody></table></div>")
     st.markdown(_table, unsafe_allow_html=True)
-    st.caption("🎯 가중치: 융단폭격(35)·신고가(20)·체결(15)·호가(12)·짝꿍(10)·거래대금(8) "
+    st.caption("🎯 가중치: 융단폭격(35·금액)·신고가(20)·체결(15)·호가(12)·짝꿍(10)·거래대금(8·금액) "
                "· 🟢진입 🟡관찰 🔴미달 · 🥇대장주=당일 등락률 최고")
+
+    # ══ [V12.1] 실시간 수급 '금액(원)' 카드 — 삼성증권 HTS #0517/#1501 단위 이원화 대조 ══
+    _snipers = [r for r in _valid if _manju_sniper(r, _now)[0]]
+    if _snipers:
+        st.markdown(
+            "<div style='background:linear-gradient(90deg,#1a1505,#0b1220);border:1px solid #fbbf24;"
+            "border-radius:10px;padding:8px 12px;margin:8px 0;font-size:13px;font-weight:800;color:#fde68a'>"
+            "🎯 09:10 시가저격 완료 — " + " · ".join(r["name"] for r in _snipers) +
+            " <span style='color:#94a3b8;font-weight:600;font-size:11px'>(거래대금 임계 돌파 · 🔌 HTS 플러그 동기화 후 타격)</span></div>",
+            unsafe_allow_html=True)
+    st.markdown("<div style='font-size:13px;font-weight:800;color:#93c5fd;margin:6px 0 4px'>"
+                "💰 실시간 수급 금액 카드 (HTS 대조 · 상위 3종)</div>", unsafe_allow_html=True)
+    for r in _valid[:3]:
+        _px = r.get("현재가") or 0; _chg = r.get("등락률") or 0.0
+        _cc = "#ef4444" if _chg < 0 else "#22c55e" if _chg > 0 else "#94a3b8"
+        _to = r.get("거래대금") or 0
+        _prog_a, _frn_a, _org_a = r.get("프로그램금액") or 0, r.get("외인추정금액") or 0, r.get("기관추정금액") or 0
+        _act, _sbadge, _need = _manju_sniper(r, _now)
+        _to_c = "#fbbf24" if (_to and _to >= _need) else "#cbd5e1"
+        _pc = lambda v: "#22c55e" if v > 0 else "#ef4444" if v < 0 else "#94a3b8"
+        st.markdown(
+            "<div style='background:linear-gradient(135deg,#0f172a,#070a13);border:1px solid rgba(255,255,255,0.08);"
+            "border-radius:12px;padding:11px 13px;margin-bottom:7px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
+            f"<span style='font-size:15px;font-weight:900;color:#e2e8f0'>{r['name']} "
+            f"<span style='font-size:12px;color:#cbd5e1'>{_px:,}</span> "
+            f"<span style='font-size:12px;color:{_cc}'>({_chg:+.2f}%)</span></span>{_sbadge}</div>"
+            f"<div style='font-size:11px;color:#94a3b8;line-height:1.9;font-family:monospace'>"
+            f"· 실시간 거래대금 <span style='color:{_to_c};font-weight:700'>[{'대형' if _px >= _MANJU_LARGECAP_PX else '중소형'}]</span><br>"
+            f"&nbsp;&nbsp;└ #1501 빠른검색(천원): <b style='color:{_to_c}'>{format_to_thousand_won(_to)}</b><br>"
+            f"&nbsp;&nbsp;└ #0517 관심종목(백만): <b style='color:{_to_c}'>{format_to_million_won(_to)}</b><br>"
+            f"· 프로그램금액(추정): <b style='color:{_pc(_prog_a)}'>{_fmt_signed_thousand(_prog_a)}</b> 천원<br>"
+            f"· 외국인추정금액&nbsp;&nbsp;&nbsp;: <b style='color:{_pc(_frn_a)}'>{_fmt_signed_thousand(_frn_a)}</b> 천원<br>"
+            f"· 기관추정금액&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b style='color:{_pc(_org_a)}'>{_fmt_signed_thousand(_org_a)}</b> 천원"
+            f"</div></div>", unsafe_allow_html=True)
+    st.caption(f"📏 300억=30,000,000천원=30,000백만 · 프로그램 만점 +30억 · {r.get('출처','—') if _valid else ''} "
+               "· 실시간 추정수량×현재가 = 금액(원) 물리변환")
 
 
 # ══════════════════════════════════════════════════════════════════════════
