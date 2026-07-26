@@ -3529,7 +3529,7 @@ def render_money_tour_panel():
             f"<td style='padding:6px 8px;text-align:center;color:#64748b;font-size:11px'>{r['cnt']}종목·{r['src'] or '—'}</td></tr>")
     st.markdown(
         "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
-        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55)'><thead>"
         "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
         "<th style='padding:6px 8px;text-align:left'>섹터</th>"
         "<th style='padding:6px 8px;text-align:right'>순매수 거래대금(억)</th>"
@@ -4072,7 +4072,7 @@ def render_ace_picks():
         _opts.append(f"{_name} ({_code})")
     st.markdown(
         "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
-        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55)'><thead>"
         "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
         "<th style='padding:5px 8px;text-align:left'>종목명</th>"
         "<th style='padding:5px 8px;text-align:right'>현재가</th>"
@@ -4761,7 +4761,7 @@ def render_stock_drilldown(code, name=""):
            f"{' ('+_ivsrc+')' if _ivsrc else ''} → {'🟢 양매수' if (_frn and _org and _frn>0 and _org>0) else '🟡 혼조/약함'}")
     _rsi_txt = ("🔥과열" if (_rsi is not None and _rsi>=70) else "❄️과매도" if (_rsi is not None and _rsi<=30) else "중립")
     _s3 = f"③ 대응: 진입 후 −3% 칼손절 원칙 · RSI {(_rsi if _rsi is not None else 0):.0f}({_rsi_txt}) · 저항 {int(_res):,} 돌파 시 홀딩"
-    st.markdown(f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 10px;"
+    st.markdown(f"<div style='background:linear-gradient(135deg,#0f172a 0%,#070a13 100%);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:10px 12px;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55);"
                 f"font-size:12px;color:#cbd5e1;line-height:1.6'>🎯 <b>핵심 시나리오</b><br>{_s1}<br>{_s2}<br>{_s3}</div>",
                 unsafe_allow_html=True)
     # ── 진입/손절/목표 메트릭 박스 ──
@@ -5022,7 +5022,7 @@ def render_holdings_risk():
             f"<td style='padding:5px 8px;text-align:center'>{_stt}</td></tr>")
     st.markdown(
         "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
-        "border:1px solid #1e293b;border-radius:8px'><thead>"
+        "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55)'><thead>"
         "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
         "<th style='padding:5px 8px;text-align:left'>종목</th>"
         "<th style='padding:5px 8px;text-align:right'>평단→현재</th>"
@@ -5134,7 +5134,7 @@ def render_theme_ranking_board():
             f"<td style='padding:5px 8px;text-align:center'>{_mj}</td>"
             f"<td style='padding:5px 8px;text-align:right;color:{_cc}'>{_info['avg_chg']:+.2f}%</td></tr>")
     st.markdown("<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
-                "border:1px solid #1e293b;border-radius:8px'><thead>"
+                "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55)'><thead>"
                 "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
                 "<th style='padding:5px 8px'>순위</th><th style='padding:5px 8px;text-align:left'>테마</th>"
                 "<th style='padding:5px 8px;text-align:right'>누적 거래대금</th>"
