@@ -15,7 +15,8 @@
     --bg:#0a0a0c; --card:linear-gradient(160deg,#161618 0%,#0d0d0f 100%);
     --bd:rgba(255,255,255,0.09); --bd2:rgba(255,255,255,0.14);
     --ink:#ededef; --sec:#9a9aa0; --dim:#5a5a60;
-    --up:#f2f2f0; --down:#6f6f76;              /* 흑백: 상승=밝은 아이보리, 하락=중간 그레이 */
+    --up:#5ecf9a; --down:#e57a72;              /* 절제된 컬러: 상승=에메랄드, 하락=코랄 */
+    --amber:#e0b24d; --green:#5ecf9a; --red:#e57a72; --gold:#e8c877;
     --shadow:0 12px 34px -14px rgba(0,0,0,0.7);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -50,7 +51,8 @@
   .pick .body{display:flex;justify-content:space-between;align-items:center}
   .pick .n{font-size:20px;font-weight:900;color:#fafaf7}
   .pick .s{font-size:11px;color:var(--sec);margin-top:3px}
-  .pick .a{font-size:15px;font-weight:900;font-variant-numeric:tabular-nums}
+  .pick .a{font-size:15px;font-weight:900;font-variant-numeric:tabular-nums;color:var(--gold)}
+  .pick .n{color:#f6ecd2}
   .badge{display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:6px;
     border:1px solid var(--bd2);color:#cfcfce;margin-left:6px;vertical-align:middle}
   /* 전조 시그널 */
@@ -77,7 +79,7 @@
     background:rgba(255,255,255,0.03);border:1px solid var(--bd);border-radius:11px;margin-bottom:7px}
   .ace .n{font-weight:800;font-size:14px}
   .ace .s{font-size:11px;color:var(--sec)}
-  .ace .a{font-size:13px;font-weight:800;font-variant-numeric:tabular-nums}
+  .ace .a{font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--gold)}
   .empty{color:var(--dim);font-size:12px;padding:6px 0}
   .stale{background:rgba(255,255,255,0.05);border:1px solid var(--bd2);color:#cfcfce;
     border-radius:11px;padding:10px 13px;font-size:12px;font-weight:700;margin-bottom:11px;display:none}
@@ -160,10 +162,11 @@
 
   // 흑백 신호등: 위험할수록 채워진 글리프
   var SIG = {
-    0:{gl:"○", tx:"진입 허용 · 정상 대응"},
-    1:{gl:"◑", tx:"중립 · 선별 진입"},
-    2:{gl:"●", tx:"리스크오프 · 관망"}
+    0:{gl:"○", tx:"진입 허용 · 정상 대응", c:"#5ecf9a"},
+    1:{gl:"◑", tx:"중립 · 선별 진입",    c:"#e0b24d"},
+    2:{gl:"●", tx:"리스크오프 · 관망",   c:"#e57a72"}
   };
+  var TONEC = {up:"#5ecf9a", down:"#e57a72", flat:"#e0b24d"};
 
   function ago(ts){
     if(!ts) return "";
@@ -181,16 +184,21 @@
   function render(d){
     // 신호등
     var s = SIG[d.macro && d.macro.sev] || SIG[1];
-    document.getElementById("sigGl").textContent = s.gl;
-    document.getElementById("sigTx").textContent = mono(d.macro && d.macro.text) || s.tx;
+    var gl = document.getElementById("sigGl");
+    gl.textContent = s.gl; gl.style.color = s.c; gl.style.borderColor = s.c;
+    var stx = document.getElementById("sigTx");
+    stx.textContent = mono(d.macro && d.macro.text) || s.tx; stx.style.color = s.c;
     document.getElementById("sigDe").textContent = (d.macro && d.macro.detail) || "";
 
     // 현금비중
     var cg = d.cash_guide;
     if(cg){
-      document.getElementById("cashLv").textContent = mono(cg.level) || "—";
+      var clv = document.getElementById("cashLv");
+      clv.textContent = mono(cg.level) || "—"; clv.style.color = TONEC[cg.tone] || "#e0b24d";
       document.getElementById("cashMs").textContent = cg.msg || "";
-      document.getElementById("cashRt").textContent = cg.ratio || "";
+      var crt = document.getElementById("cashRt");
+      crt.textContent = cg.ratio || ""; crt.style.color = TONEC[cg.tone] || "#e0b24d";
+      crt.style.borderColor = TONEC[cg.tone] || "var(--bd2)";
     }
 
     // 오늘의 픽 (top_pick + pick_mode 시간대)
@@ -241,7 +249,7 @@
       rank.innerHTML = d.supply.ranking.map(function(r){
         var w = Math.max(4, Math.abs(r.net_eok)/max*100);
         var pos = r.net_eok >= 0;
-        var col = pos ? "#f2f2f0" : "#6f6f76";
+        var col = pos ? "#5ecf9a" : "#e57a72";
         var side = pos ? "left:50%" : "right:50%";
         return '<div class="row"><div class="nm">'+r.sector+'</div>'
           + '<div class="bar"><i style="'+side+';width:'+(w/2)+'%;background:'+col+'"></i></div>'
