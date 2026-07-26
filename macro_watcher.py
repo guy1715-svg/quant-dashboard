@@ -116,24 +116,39 @@ def _gh_headers(token):
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
 
+def _gh_hint(code):
+    return {401: "토큰이 틀렸거나 만료(재발급 필요)",
+            403: "권한 부족 — classic PAT면 'repo' 체크, fine-grained면 이 저장소 선택 + Contents: Read and write",
+            404: "저장소 접근 불가 — GH_REPO 오타이거나 토큰에 이 저장소 권한 없음"}.get(code, "")
+
+
 def _gh_ensure_branch(token):
-    """data 브랜치가 없으면 기본 브랜치 HEAD에서 생성. 이미 있으면 무시."""
+    """data 브랜치가 없으면 기본 브랜치 HEAD에서 생성. 이미 있으면 무시. 실패 시 원인 출력."""
     base = f"https://api.github.com/repos/{_GH_REPO}"
     try:
         r = requests.get(f"{base}/git/ref/heads/{_GH_BRANCH}", headers=_gh_headers(token), timeout=8)
         if r.status_code == 200:
             return True
-        # 기본 브랜치 sha 조회 후 새 브랜치 생성
-        repo = requests.get(base, headers=_gh_headers(token), timeout=8).json()
-        default = repo.get("default_branch", "main")
-        head = requests.get(f"{base}/git/ref/heads/{default}", headers=_gh_headers(token), timeout=8).json()
-        sha = head.get("object", {}).get("sha")
+        # 저장소 접근/기본 브랜치 확인
+        rp = requests.get(base, headers=_gh_headers(token), timeout=8)
+        if rp.status_code != 200:
+            print(f"   ↳ 저장소 조회 실패 {rp.status_code}: {_gh_hint(rp.status_code)} (repo={_GH_REPO})")
+            return False
+        default = rp.json().get("default_branch", "main")
+        head = requests.get(f"{base}/git/ref/heads/{default}", headers=_gh_headers(token), timeout=8)
+        sha = head.json().get("object", {}).get("sha") if head.status_code == 200 else None
         if not sha:
+            print(f"   ↳ 기본 브랜치({default}) HEAD 조회 실패 {head.status_code}")
             return False
         cr = requests.post(f"{base}/git/refs", headers=_gh_headers(token), timeout=8,
                            json={"ref": f"refs/heads/{_GH_BRANCH}", "sha": sha})
-        return cr.status_code in (200, 201)
-    except Exception:
+        if cr.status_code in (200, 201):
+            print(f"   ↳ '{_GH_BRANCH}' 브랜치 생성 완료")
+            return True
+        print(f"   ↳ 브랜치 생성 실패 {cr.status_code}: {cr.json().get('message','')[:80]} · {_gh_hint(cr.status_code)}")
+        return False
+    except Exception as e:
+        print("   ↳ 브랜치 확인 오류:", e)
         return False
 
 
@@ -159,8 +174,11 @@ def push_snapshot_github(json_str):
         if sha:
             payload["sha"] = sha
         p = requests.put(base, headers=_gh_headers(token), json=payload, timeout=10)
-        if p.status_code not in (200, 201):
-            print(f"⚠️ 스냅샷 업로드 실패 {p.status_code}: {p.json().get('message','')[:80]}")
+        if p.status_code in (200, 201):
+            if not _gh_warned.get("ok"):
+                print(f"✅ 스냅샷 업로드 OK → {_GH_REPO} ({_GH_BRANCH} 브랜치)"); _gh_warned["ok"] = True
+        else:
+            print(f"⚠️ 스냅샷 업로드 실패 {p.status_code}: {p.json().get('message','')[:80]} · {_gh_hint(p.status_code)}")
     except Exception as e:
         print("스냅샷 업로드 오류:", e)
 
@@ -264,6 +282,38 @@ def compute_macro():
     detail = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
               if None not in (nq, sox, wti) else "일부 데이터 대기")
     return sev, text, detail
+
+
+def _level(sym):
+    """현재가/전일대비% 반환 (환율·VIX처럼 '값+변화' 지표용). (last, chg%) 또는 (None,None)."""
+    try:
+        fi = yf.Ticker(sym).fast_info
+        l, p = float(fi.last_price), float(fi.previous_close)
+        if l > 0 and p > 0:
+            return l, (l / p - 1) * 100
+    except Exception:
+        pass
+    return None, None
+
+
+def compute_indicators():
+    """속보판 '지표 세부' 카드용 — 나스닥·SOX·WTI(등락%)·원달러 환율·VIX(값+변화).
+    tone: 'up'(호재/초록) · 'down'(악재/빨강) · 'flat'. 환율·VIX는 상승이 리스크라 반대로 색칠."""
+    out = []
+    nq, sox, wti = _pct("NQ=F"), _pct("^SOX"), _wti_pct()
+    for lbl, v, unit in (("나스닥선물", nq, "%"), ("필라델피아반도체", sox, "%"), ("WTI 유가", wti, "%")):
+        if v is not None:
+            out.append({"label": lbl, "value": f"{v:+.2f}", "unit": unit,
+                        "tone": "up" if v > 0 else "down" if v < 0 else "flat"})
+    krw, krw_c = _level("KRW=X")
+    if krw is not None:
+        out.append({"label": "원/달러 환율", "value": f"{krw:,.1f}", "unit": f" ({krw_c:+.2f}%)",
+                    "tone": "down" if krw_c > 0.1 else "up" if krw_c < -0.1 else "flat"})  # 환율↑=리스크
+    vix, vix_c = _level("^VIX")
+    if vix is not None:
+        out.append({"label": "VIX 공포지수", "value": f"{vix:,.1f}", "unit": f" ({vix_c:+.1f}%)",
+                    "tone": "down" if vix_c > 0 else "up" if vix_c < 0 else "flat"})   # VIX↑=리스크
+    return out
 
 
 # ── KIS 수급(금액 기준) ─────────────────────────────────────────────────────
@@ -391,8 +441,10 @@ def main():
                 "updated_ts": int(now.timestamp()),
                 "kis_on": kis_on,
                 "macro": {"sev": sev, "text": mtext, "detail": mdetail},
+                "indicators": compute_indicators(),   # 환율·VIX·지수 세부
                 "supply": None,
                 "ace": [],
+                "top_pick": None,                     # 원톱 픽(수급 최상위 종목)
             }
 
             # 2)/3) 수급 전조·A급 (KIS 있을 때 + 매크로가 리스크오프 아닐 때만 유의미)
@@ -441,6 +493,21 @@ def main():
                     }
                     snap["ace"] = [{"code": _c, "name": n, "sector": sn, "amt_eok": round(amt / 1e8, 1)}
                                    for _c, n, sn, amt in ace_now]
+
+                    # 원톱 픽 — 유입 섹터 종목 중 순매수 금액 최대(단 하나). 리스크오프면 표시 안 함.
+                    _cands = []
+                    for _sn, _info in secs.items():
+                        if _info["net"] <= 0:
+                            continue
+                        for _s in _info["stocks"]:
+                            if _s["amt"] and _s["amt"] > 0:
+                                _cands.append((_s["amt"], _s["name"], _s["code"], _sn))
+                    if _cands and sev != 2:
+                        _cands.sort(reverse=True)
+                        _amt, _nm, _cd, _sc = _cands[0]
+                        snap["top_pick"] = {"name": _nm, "code": _cd, "sector": _sc,
+                                            "amt_eok": round(_amt / 1e8, 1),
+                                            "pension": _cd in pens}
 
             _snap_str = json.dumps(snap, ensure_ascii=False)
             save_snapshot(snap)
