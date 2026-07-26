@@ -24,6 +24,8 @@ import json
 import time
 import argparse
 import datetime
+import warnings
+warnings.filterwarnings("ignore")
 
 try:
     import requests
@@ -36,7 +38,12 @@ except ImportError:
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "macro_watcher_state.json")
-SECRETS_FILE = os.path.join(BASE, ".streamlit", "secrets.toml")
+# secrets.toml 탐색 후보: 프로젝트 .streamlit → 홈 .streamlit
+SECRETS_CANDIDATES = [
+    os.path.join(BASE, ".streamlit", "secrets.toml"),
+    os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml"),
+]
+SECRETS_FILE = next((p for p in SECRETS_CANDIDATES if os.path.exists(p)), SECRETS_CANDIDATES[0])
 PENSION_FILE = os.path.join(BASE, "pension_track_log.json")
 KIS_BASE = "https://openapi.koreainvestment.com:9443"
 
@@ -80,6 +87,84 @@ def save_state(d):
         pass
 
 
+# [1단계] 초고속 웹 속보판(live_dashboard.html)이 읽을 스냅샷 — 매 루프마다 최신값 저장.
+#   대시보드(Streamlit)의 무거운 재계산/콜드스타트를 우회해 <1초 로딩을 가능케 한다.
+SNAPSHOT_FILE = os.path.join(BASE, "snapshot.json")
+
+
+def save_snapshot(snap):
+    try:
+        with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# [1단계-b] snapshot.json을 GitHub 'data' 브랜치에 업로드 → GitHub Pages 속보판이 읽는다.
+#   git 설치와 무관하게 동작하도록 GitHub Contents API 사용. 필요 환경변수:
+#     GITHUB_TOKEN : repo 권한 Personal Access Token (start_watcher.bat에서 set)
+#     GH_REPO      : "owner/repo" (기본 guy1715-svg/quant-dashboard)
+#   토큰 없으면 조용히 건너뜀(로컬 파일만 갱신) → 텔레그램/수급 로직엔 영향 없음.
+import base64 as _b64
+
+_GH_REPO   = os.environ.get("GH_REPO", "guy1715-svg/quant-dashboard")
+_GH_BRANCH = os.environ.get("GH_DATA_BRANCH", "data")
+_gh_warned = {"done": False}
+
+
+def _gh_headers(token):
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+
+def _gh_ensure_branch(token):
+    """data 브랜치가 없으면 기본 브랜치 HEAD에서 생성. 이미 있으면 무시."""
+    base = f"https://api.github.com/repos/{_GH_REPO}"
+    try:
+        r = requests.get(f"{base}/git/ref/heads/{_GH_BRANCH}", headers=_gh_headers(token), timeout=8)
+        if r.status_code == 200:
+            return True
+        # 기본 브랜치 sha 조회 후 새 브랜치 생성
+        repo = requests.get(base, headers=_gh_headers(token), timeout=8).json()
+        default = repo.get("default_branch", "main")
+        head = requests.get(f"{base}/git/ref/heads/{default}", headers=_gh_headers(token), timeout=8).json()
+        sha = head.get("object", {}).get("sha")
+        if not sha:
+            return False
+        cr = requests.post(f"{base}/git/refs", headers=_gh_headers(token), timeout=8,
+                           json={"ref": f"refs/heads/{_GH_BRANCH}", "sha": sha})
+        return cr.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def push_snapshot_github(json_str):
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        if not _gh_warned["done"]:
+            print("ℹ️ GITHUB_TOKEN 미설정 — 스냅샷 GitHub 업로드 건너뜀(로컬 파일만). 웹 속보판 쓰려면 토큰 설정.")
+            _gh_warned["done"] = True
+        return
+    base = f"https://api.github.com/repos/{_GH_REPO}/contents/snapshot.json"
+    try:
+        # 기존 파일 sha 조회(업데이트에 필요). 없으면(404) 신규 생성.
+        g = requests.get(f"{base}?ref={_GH_BRANCH}", headers=_gh_headers(token), timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        if g.status_code == 404 and not _gh_ensure_branch(token):
+            print("⚠️ data 브랜치 생성 실패 — 토큰 권한(repo) 확인 필요"); return
+        payload = {
+            "message": f"data: snapshot {datetime.datetime.utcnow().strftime('%m/%d %H:%M')}Z",
+            "content": _b64.b64encode(json_str.encode("utf-8")).decode("ascii"),
+            "branch": _GH_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+        p = requests.put(base, headers=_gh_headers(token), json=payload, timeout=10)
+        if p.status_code not in (200, 201):
+            print(f"⚠️ 스냅샷 업로드 실패 {p.status_code}: {p.json().get('message','')[:80]}")
+    except Exception as e:
+        print("스냅샷 업로드 오류:", e)
+
+
 def send_telegram(token, chat_id, text):
     try:
         requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
@@ -89,9 +174,22 @@ def send_telegram(token, chat_id, text):
         print("텔레그램 전송 실패:", e); return False
 
 
+KEY_ALIASES = {"kis_app_key", "kis_key", "app_key", "kis_appkey"}
+SECRET_ALIASES = {"kis_app_secret", "kis_secret", "app_secret", "kis_appsecret"}
+
+
 def read_kis_keys():
-    """secrets.toml에서 KIS_APP_KEY/KIS_APP_SECRET 탐색(최상위+섹션). 없으면 (None,None)."""
+    """KIS App Key/Secret 탐색 — 환경변수 → secrets.toml(프로젝트/홈, 앱과 동일 별칭·섹션). 없으면 (None,None)."""
     key = secret = None
+    # 0) 환경변수(배치에서 set 가능)
+    for _n in ("KIS_APP_KEY", "KIS_KEY", "APP_KEY", "KIS_APPKEY"):
+        if not key and os.environ.get(_n):
+            key = os.environ[_n].strip()
+    for _n in ("KIS_APP_SECRET", "KIS_SECRET", "APP_SECRET", "KIS_APPSECRET"):
+        if not secret and os.environ.get(_n):
+            secret = os.environ[_n].strip()
+    if key and secret:
+        return key, secret
     try:
         data = None
         try:
@@ -104,22 +202,25 @@ def read_kis_keys():
             def _walk(d):
                 nonlocal key, secret
                 for k, v in d.items():
-                    ku = str(k).upper()
+                    kl = str(k).lower()
                     if isinstance(v, dict):
                         _walk(v)
-                    elif ku == "KIS_APP_KEY" and not key:
-                        key = str(v)
-                    elif ku == "KIS_APP_SECRET" and not secret:
-                        secret = str(v)
+                    elif kl in KEY_ALIASES and not key and isinstance(v, str):
+                        key = v.strip()
+                    elif kl in SECRET_ALIASES and not secret and isinstance(v, str):
+                        secret = v.strip()
             _walk(data)
         if not (key and secret):   # tomllib 실패/부재 → 라인 파싱 폴백
             with open(SECRETS_FILE, encoding="utf-8") as f:
                 for line in f:
-                    up = line.upper()
-                    if "KIS_APP_KEY" in up and "=" in line and not key:
-                        key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    elif "KIS_APP_SECRET" in up and "=" in line and not secret:
-                        secret = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if "=" not in line or line.strip().startswith("#"):
+                        continue
+                    name = line.split("=", 1)[0].strip().lower()
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if name in KEY_ALIASES and not key:
+                        key = val
+                    elif name in SECRET_ALIASES and not secret:
+                        secret = val
     except Exception:
         pass
     return key, secret
@@ -166,12 +267,40 @@ def compute_macro():
 
 
 # ── KIS 수급(금액 기준) ─────────────────────────────────────────────────────
+# [토큰 폭주 방지] KIS 접근토큰은 서버측 24h 유효 + '발급 1분1회'(EGW00133) 제한.
+#   5분 루프마다 새로 발급하면 카톡 발급알림이 쏟아지고 API가 막힐 수 있어 반드시 재사용한다.
+#   대시보드(quant_dashboard.py)와 동일한 kis_token_cache.json 포맷({fp,token,exp})을 공유 →
+#   같은 PC면 대시보드와 토큰을 함께 재사용(하루 1회 발급으로 수렴).
+TOKEN_FILE = os.path.join(BASE, "kis_token_cache.json")
+
+
 def kis_token(key, secret):
+    _fp = f"{key[:8]}|False"          # 실전 도메인(openapi:9443) → 대시보드 real-mode fp와 일치
+    _now = time.time()
+    # 1) 캐시(파일)에서 유효 토큰 재사용 — 만료 60초 여유
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            _d = json.load(f)
+        if _d.get("fp") == _fp and _d.get("token") and float(_d.get("exp", 0)) > _now + 60:
+            return _d["token"]
+    except Exception:
+        pass
+    # 2) 없거나 만료 → 신규 발급 후 저장
     try:
         r = requests.post(f"{KIS_BASE}/oauth2/tokenP",
                           json={"grant_type": "client_credentials", "appkey": key, "appsecret": secret},
                           timeout=8)
-        return r.json().get("access_token")
+        _j = r.json()
+        _tok = _j.get("access_token")
+        if not _tok:
+            return None
+        _exp = _now + int(_j.get("expires_in", 86400))
+        try:
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                json.dump({"fp": _fp, "token": _tok, "exp": _exp}, f)
+        except Exception:
+            pass
+        return _tok
     except Exception:
         return None
 
@@ -231,7 +360,12 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
-    print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급(전조/A급) {'ON' if kis_on else 'OFF(secrets.toml KIS키 없음)'}")
+    if not kis_on:
+        if not os.path.exists(SECRETS_FILE):
+            print(f"⚠️ secrets.toml 없음: {SECRETS_FILE}")
+        else:
+            print(f"⚠️ secrets.toml 있으나 KIS 키(KIS_APP_KEY/KIS_APP_SECRET 등) 못 찾음")
+    print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급(전조/A급) {'ON' if kis_on else 'OFF'}")
     send_telegram(token_tg, chat_id,
                   f"📡 감시 시작 — 국면 개선·전조·A급 알림 대기중\n수급 감시 {'ON' if kis_on else 'OFF(KIS키 없음)'}")
 
@@ -250,6 +384,16 @@ def main():
                     send_telegram(token_tg, chat_id, f"{icon}\n{mtext}\n{mdetail}\n{stamp} KST")
             st["sev"] = sev
             print(f"[{stamp}] 매크로 sev={sev} {mtext} | {mdetail}")
+
+            # [1단계] 웹 속보판용 스냅샷 — 매크로는 항상, 수급/A급은 KIS ON일 때 채운다.
+            snap = {
+                "updated": stamp,
+                "updated_ts": int(now.timestamp()),
+                "kis_on": kis_on,
+                "macro": {"sev": sev, "text": mtext, "detail": mdetail},
+                "supply": None,
+                "ace": [],
+            }
 
             # 2)/3) 수급 전조·A급 (KIS 있을 때 + 매크로가 리스크오프 아닐 때만 유의미)
             if kis_on:
@@ -286,6 +430,21 @@ def main():
                     st["ace"] = [a[0] for a in ace_now]
                     print(f"           수급: 유입 {inflow[0] if inflow else '-'} / 이탈 {outflow[0] if outflow else '-'} · A급 {len(ace_now)}")
 
+                    # 스냅샷 수급/A급 채우기 (억원 단위)
+                    snap["supply"] = {
+                        "ranking": [{"sector": s, "net_eok": round(info["net"] / 1e8, 1)}
+                                    for s, info in rows],
+                        "inflow": ({"sector": inflow[0], "net_eok": round(inflow[1]["net"] / 1e8, 1)}
+                                   if inflow else None),
+                        "outflow": ({"sector": outflow[0], "net_eok": round(outflow[1]["net"] / 1e8, 1)}
+                                    if outflow else None),
+                    }
+                    snap["ace"] = [{"code": _c, "name": n, "sector": sn, "amt_eok": round(amt / 1e8, 1)}
+                                   for _c, n, sn, amt in ace_now]
+
+            _snap_str = json.dumps(snap, ensure_ascii=False)
+            save_snapshot(snap)
+            push_snapshot_github(_snap_str)   # GitHub 'data' 브랜치 업로드(토큰 있을 때만)
             save_state(st)
         except Exception as e:
             print("체크 오류:", e)
