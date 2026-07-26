@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0f1e">
+<title>⚡ 실전 속보판</title>
+<style>
+  :root{
+    --bg:#0a0f1e; --card:linear-gradient(135deg,#0f172a 0%,#070a13 100%);
+    --bd:rgba(255,255,255,0.07); --txt:#f1f5f9; --sec:#94a3b8; --dim:#64748b;
+    --emerald:#10b981; --rose:#ef4444; --amber:#f59e0b;
+    --shadow:0 10px 30px -12px rgba(0,0,0,0.55);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Inter",monospace;
+    letter-spacing:-0.02em;padding:14px 12px calc(28px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .brand{font-size:19px;font-weight:900}
+  .brand .g{background:linear-gradient(90deg,#4da6ff,#a78bfa);-webkit-background-clip:text;
+    -webkit-text-fill-color:transparent}
+  .fresh{font-size:11px;color:var(--sec);text-align:right;line-height:1.5}
+  .fresh .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;
+    box-shadow:var(--shadow);padding:14px 15px;margin-bottom:12px}
+  .lbl{font-size:11px;font-weight:800;color:var(--dim);letter-spacing:0.04em;text-transform:uppercase;margin-bottom:9px}
+  .sig{display:flex;align-items:center;gap:12px}
+  .sig .em{font-size:34px;line-height:1}
+  .sig .tx{font-size:17px;font-weight:900}
+  .sig .de{font-size:12px;color:var(--sec);margin-top:3px}
+  .row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+  .row:last-child{border-bottom:none}
+  .row .nm{flex:0 0 84px;font-weight:800;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar{flex:1;height:8px;border-radius:6px;background:rgba(255,255,255,0.05);overflow:hidden;position:relative}
+  .bar > i{position:absolute;top:0;bottom:0;border-radius:6px}
+  .val{flex:0 0 84px;text-align:right;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+  .pos{color:#34d399}.neg{color:#f87171}
+  .ace{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;
+    background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.22);border-radius:10px;margin-bottom:7px}
+  .ace .n{font-weight:800;font-size:14px}
+  .ace .s{font-size:11px;color:var(--sec)}
+  .ace .a{font-size:13px;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums}
+  .empty{color:var(--dim);font-size:12px;padding:6px 0}
+  .stale{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;
+    border-radius:10px;padding:9px 12px;font-size:12px;font-weight:700;margin-bottom:12px;display:none}
+  .refresh{width:100%;padding:11px;border:1px solid var(--bd);border-radius:12px;background:rgba(255,255,255,0.04);
+    color:var(--sec);font-size:13px;font-weight:700;margin-top:2px}
+  .refresh:active{background:rgba(255,255,255,0.08)}
+  .foot{text-align:center;color:var(--dim);font-size:10px;margin-top:14px}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">⚡ 실전 <span class="g">속보판</span></div>
+    <div class="fresh" id="fresh"><span class="dot" style="background:#64748b"></span>불러오는 중…</div>
+  </div>
+
+  <div class="stale" id="stale">⚠️ watcher가 꺼져 있는 것 같습니다 — 데이터가 오래됐어요. PC의 start_watcher를 켜주세요.</div>
+
+  <!-- 매크로 신호등 -->
+  <div class="card">
+    <div class="lbl">매크로 신호등</div>
+    <div class="sig">
+      <div class="em" id="sigEm">⏳</div>
+      <div><div class="tx" id="sigTx">—</div><div class="de" id="sigDe"></div></div>
+    </div>
+  </div>
+
+  <!-- 섹터 수급 랭킹 -->
+  <div class="card">
+    <div class="lbl">섹터 수급 랭킹 (순매수 억원)</div>
+    <div id="rank"><div class="empty">데이터 대기…</div></div>
+  </div>
+
+  <!-- A급 종목 -->
+  <div class="card">
+    <div class="lbl">🥇 A급 종목 (자금유입 × 연기금)</div>
+    <div id="ace"><div class="empty">데이터 대기…</div></div>
+  </div>
+
+  <button class="refresh" onclick="load(true)">🔄 새로고침</button>
+  <div class="foot" id="foot"></div>
+
+<script>
+  // ── 설정: snapshot.json 위치(GitHub data 브랜치 raw). 리포 바뀌면 여기만 수정 ──
+  var REPO = "guy1715-svg/quant-dashboard";
+  var BRANCH = "data";
+  var URL = "https://raw.githubusercontent.com/" + REPO + "/" + BRANCH + "/snapshot.json";
+
+  var SIG = {
+    0:{em:"🟢", tx:"진입 허용 · 정상 대응", c:"#34d399"},
+    1:{em:"🟡", tx:"중립 · 선별 진입",    c:"#fbbf24"},
+    2:{em:"🔴", tx:"리스크오프 · 관망",   c:"#f87171"}
+  };
+
+  function ago(ts){
+    if(!ts) return "";
+    var m = Math.floor((Date.now()/1000 - ts)/60);
+    if(m < 1) return "방금 전";
+    if(m < 60) return m + "분 전";
+    return Math.floor(m/60) + "시간 " + (m%60) + "분 전";
+  }
+
+  function eok(v){
+    var s = (v>=0?"+":"") + v.toLocaleString(undefined,{maximumFractionDigits:0});
+    return s + "억";
+  }
+
+  function render(d){
+    // 신호등
+    var s = SIG[d.macro && d.macro.sev] || SIG[1];
+    document.getElementById("sigEm").textContent = s.em;
+    var tx = document.getElementById("sigTx");
+    tx.textContent = (d.macro && d.macro.text) || s.tx; tx.style.color = s.c;
+    document.getElementById("sigDe").textContent = (d.macro && d.macro.detail) || "";
+
+    // 신선도
+    var mins = d.updated_ts ? (Date.now()/1000 - d.updated_ts)/60 : 999;
+    var dotc = mins < 8 ? "#10b981" : (mins < 20 ? "#f59e0b" : "#ef4444");
+    document.getElementById("fresh").innerHTML =
+      '<span class="dot" style="background:'+dotc+'"></span>' + ago(d.updated_ts) + ' 갱신';
+    document.getElementById("stale").style.display = mins >= 20 ? "block" : "none";
+
+    // 섹터 랭킹
+    var rank = document.getElementById("rank");
+    if(d.supply && d.supply.ranking && d.supply.ranking.length){
+      var max = Math.max.apply(null, d.supply.ranking.map(function(r){return Math.abs(r.net_eok)})) || 1;
+      rank.innerHTML = d.supply.ranking.map(function(r){
+        var w = Math.max(4, Math.abs(r.net_eok)/max*100);
+        var pos = r.net_eok >= 0;
+        var col = pos ? "#10b981" : "#ef4444";
+        var side = pos ? "left:50%" : "right:50%";
+        return '<div class="row"><div class="nm">'+r.sector+'</div>'
+          + '<div class="bar"><i style="'+side+';width:'+(w/2)+'%;background:'+col+'"></i></div>'
+          + '<div class="val '+(pos?"pos":"neg")+'">'+eok(r.net_eok)+'</div></div>';
+      }).join("");
+    } else {
+      rank.innerHTML = '<div class="empty">'+(d.kis_on===false?"KIS 키 미설정 — 수급 OFF":"장중 데이터 대기 또는 리스크오프")+'</div>';
+    }
+
+    // A급
+    var ace = document.getElementById("ace");
+    if(d.ace && d.ace.length){
+      ace.innerHTML = d.ace.map(function(a){
+        return '<div class="ace"><div><div class="n">'+a.name+'</div>'
+          + '<div class="s">'+a.sector+' · '+a.code+'</div></div>'
+          + '<div class="a">'+eok(a.amt_eok)+'</div></div>';
+      }).join("");
+    } else {
+      ace.innerHTML = '<div class="empty">현재 겹침 종목 없음 (유입×연기금)</div>';
+    }
+
+    document.getElementById("foot").textContent = "데이터: " + (d.updated||"-") + " KST · 60초마다 자동 갱신";
+  }
+
+  function load(manual){
+    fetch(URL + "?t=" + Date.now(), {cache:"no-store"})
+      .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+      .then(render)
+      .catch(function(e){
+        document.getElementById("fresh").innerHTML =
+          '<span class="dot" style="background:#ef4444"></span>연결 실패';
+        if(manual) document.getElementById("foot").textContent = "snapshot.json 로드 실패 ("+e.message+") — 최초 1회는 watcher가 업로드해야 생성됩니다";
+      });
+  }
+
+  load(false);
+  setInterval(function(){ load(false); }, 60000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) load(false); });
+</script>
+</body>
+</html>
