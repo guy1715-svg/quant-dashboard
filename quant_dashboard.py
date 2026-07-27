@@ -1569,6 +1569,11 @@ _DOL_TP_GAP = (1.0, 2.0)    # 기계적 익절 갭 구간(%)
 _DOL_TURNOVER_REF   = 100_000_000_000   # W6 만점 기준 = 1,000억 원
 _DOL_TURNOVER_SMALL = 50_000_000_000    # 중소형주 하드컷 = 500억 원
 _DOL_LARGECAP_PX    = 50_000            # 대형주 판정 프록시(현재가 ≥ 5만원 → 1,000억 요구)
+# ── [V13.0] 금액 정규화 + 듀얼트랙 가중치 + 돌파 보너스 ──
+_DOL_AMT_REF        = 3_000_000_000     # 기관/외인 순매수 금액 만점 기준 = 30억 원(수량 착시 제거)
+_DOL_BREAKOUT_TURN  = 150_000_000_000   # 돌파 보너스 임계 거래대금 = 1,500억 원
+_DOL_WEIGHTS_THEME  = {"W2": 10, "W3": 20, "W4": 25, "W5": 35, "W6": 10}  # 🟢 테마 주도주 모드(외인/프로그램 우대)
+#   기본(대형 우량주) 가중치는 기존 _DOL_WEIGHTS = {W2:35, W3:25, W4:20, W5:10, W6:10}
 
 
 def _dolpanty_gate_open(now_kst=None):
@@ -1583,38 +1588,47 @@ def _dolpanty_gate_open(now_kst=None):
     return False, "게이트 밖"
 
 
-def _dolpanty_score(rec, gate_open, regime_halve):
-    """돌팬티式 종가 베팅 총점(0~100) — 가중치 W1~W6 이식.
-    total = W1_gate × (regime? 0.5:1) × Σ(Wi·fi). 반환 (total, grade, tag, factors)."""
+def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False):
+    """[V13.0] 돌팬티式 종가 베팅 총점(0~100) — 금액(원) 정규화 + 듀얼트랙 가중치 + 돌파 보너스.
+    total = W1_gate × (regime? 0.5:1) × Σ(Wi·fi). 반환 (total, grade, tag, factors).
+    - is_theme_mode=True: 외인/프로그램 35%·기관 10%로 스위칭(연기금 족쇄 해제, 테마 맹수주 포착)
+    - f2/f5: 주수 착시 제거 위해 '순매수 금액(수량×현재가)/30억' 정규화
+    - f3: 이격 7%↑라도 거래대금 1,500억↑ + 외인금액 강할 시 돌파 보너스(감점 면제)."""
     _close = rec.get("현재가") or 0
     _ma20  = rec.get("MA20") or 0
-    _org   = rec.get("기관") or 0
-    _frn   = rec.get("외인") or 0
+    _org   = rec.get("기관") or 0      # 기관 순매수 주수
+    _frn   = rec.get("외인") or 0      # 외인 순매수 주수
     _vol   = rec.get("거래량") or 0
     _o, _h, _l = rec.get("시가") or 0, rec.get("고가") or 0, rec.get("저가") or 0
     # [V12.2] 당일 누적 거래대금(원) — KIS 수신 우선, 없으면 현재가×거래량 폴백
     _turn  = rec.get("거래대금") or (_close * _vol if (_close and _vol) else 0)
-    # f2 스마트머니(기관 순매수 +)
-    _f2 = min(_org / _DOL_ORG_REF, 1.0) if _org > 0 else 0.0
-    # f3 20MA 돌파/지지 — 종가>20MA 전제, 눌림목 근접(지지)일수록 ↑
-    _f3 = 0.0
-    if _close > 0 and _ma20 > 0 and _close > _ma20:
-        _disp = _close / _ma20 - 1.0
-        if   _disp <= 0.03: _f3 = 1.0     # 눌림목/지지 근접(최적)
-        elif _disp <= 0.07: _f3 = 0.7     # 돌파 유지
-        else:               _f3 = 0.4     # 과열(추격 부담)
-    # f4 아래꼬리 강도(꼬리비율/0.33)
-    _f4 = 0.0
-    if _h > _l > 0:
-        _f4 = min(max((min(_o, _close) - _l), 0.0) / (_h - _l) / 0.33, 1.0)
-    # f5 외인 동반(+)
-    _f5 = min(_frn / _DOL_FRN_REF, 1.0) if _frn > 0 else 0.0
+    # 듀얼트랙 가중치 — 테마 주도주 모드 시 외인/프로그램 우대
+    _w = _DOL_WEIGHTS_THEME if is_theme_mode else _DOL_WEIGHTS
+    # [V13.0 금액 정규화] 순매수 '금액(원)' = 주수 × 현재가 → 30억 만점
+    _org_amt = _org * _close if _close > 0 else 0
+    _frn_amt = _frn * _close if _close > 0 else 0
+    # f2 스마트머니(기관 순매수 금액)
+    _f2 = min(_org_amt / _DOL_AMT_REF, 1.0) if _org_amt > 0 else 0.0
+    # f5 외인/프로그램(순매수 금액)
+    _f5 = min(_frn_amt / _DOL_AMT_REF, 1.0) if _frn_amt > 0 else 0.0
     # f6 거래대금 — 금액(원) 기준(1,000억=만점). 금액 결측 시만 거래량 폴백.
     if _turn > 0:
         _f6 = min(_turn / _DOL_TURNOVER_REF, 1.0)
     else:
         _f6 = min(_vol / _DOL_VOL_REF, 1.0) if _vol > 0 else 0.0
-    _w = _DOL_WEIGHTS
+    # f3 20MA 돌파/지지 + [V13.0] 돌파 보너스(1,500억↑ 폭발 + 외인금액 강 → 이격 감점 면제)
+    _f3 = 0.0
+    if _close > 0 and _ma20 > 0 and _close > _ma20:
+        _disp = _close / _ma20 - 1.0
+        if _disp > 0.07 and _turn >= _DOL_BREAKOUT_TURN and _f5 >= 0.7:
+            _f3 = 1.0     # 강력한 전고점 돌파형 — 과열 감점 면제(대원전선式 구제)
+        elif _disp <= 0.03: _f3 = 1.0     # 눌림목/지지 근접(최적)
+        elif _disp <= 0.07: _f3 = 0.7     # 돌파 유지
+        else:               _f3 = 0.4     # 단순 과열(추격 부담)
+    # f4 아래꼬리 강도(꼬리비율/0.25 — 완화)
+    _f4 = 0.0
+    if _h > _l > 0:
+        _f4 = min(max((min(_o, _close) - _l), 0.0) / (_h - _l) / 0.25, 1.0)
     _raw = _w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 + _w["W5"]*_f5 + _w["W6"]*_f6
     _total = round((1 if gate_open else 0) * (0.5 if regime_halve else 1.0) * _raw, 1)
     # [V12.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 무조건 제외(SKIP, total=0)
@@ -1622,15 +1636,16 @@ def _dolpanty_score(rec, gate_open, regime_halve):
     _need = _DOL_TURNOVER_REF if _close >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
     if _turn < _need:
         _cap = "대형" if _close >= _DOL_LARGECAP_PX else "중소형"
-        return 0.0, "⚪ 제외", "SKIP", {"기관": _f2, "20MA": _f3, "아래꼬리": _f4,
-                                        "외인": _f5, "거래대금": _f6,
+        return 0.0, "⚪ 제외", "SKIP", {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
+                                        "외인(금액)": _f5, "거래대금": _f6,
                                         "_hardcut": f"거래대금 {_turn/1e8:,.0f}억 < {_cap} 관문 {_need/1e8:,.0f}억"}
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
     elif _total >= 40: _grade, _tag = "🟡 관찰",     "WATCH"
     else:              _grade, _tag = "⚪ 제외",     "SKIP"
-    return _total, _grade, _tag, {"기관": _f2, "20MA": _f3, "아래꼬리": _f4,
-                                   "외인": _f5, "거래대금": _f6}
+    return _total, _grade, _tag, {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
+                                   "외인(금액)": _f5, "거래대금": _f6,
+                                   "_mode": "테마" if is_theme_mode else "대형"}
 
 
 def render_dolpanty_swing_monitor(targets=None):
@@ -1717,10 +1732,14 @@ def render_dolpanty_swing_monitor(targets=None):
     if not _recs:
         st.caption("데이터 수신 대기 — 장중·KIS 연결 시 갱신")
         return
+    # [V13.0] 테마 주도주 모드 토글 — 외인/프로그램 가중치 격상(기관 족쇄 해제)
+    _theme_mode = st.toggle("🟢 테마 주도주 모드 (외인·프로그램 우대 · 기관 족쇄 해제)",
+                            key="_dol_theme_mode",
+                            help="ON: 외인/프로그램 35%·기관 10% — 원전·전력·중소형 반도체 등 테마 맹수주 포착. OFF: 기관 35%(대형 우량주)")
     # 점수 산출(현금30% 발동 시 게이트 강제 차단)
     _eff_gate = _gate and not _cash_mute
     for r in _recs:
-        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime)
+        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime, _theme_mode)
     _recs.sort(key=lambda r: r["_score"], reverse=True)
 
     # ── 통합 원-라인 테이블 (종목당 전 상태 한 줄 정렬) ──────────────────────
@@ -4567,7 +4586,8 @@ def render_dolpanty_pick():
             pass
         if not _rec["현재가"]:
             continue
-        _sc, _g, _tag, _fac = _dolpanty_score(_rec, True, False)   # 랭킹용(게이트 무시 점수)
+        _sc, _g, _tag, _fac = _dolpanty_score(_rec, True, False,
+                                              st.session_state.get("_dol_theme_mode", False))   # 랭킹용(게이트 무시 점수)
         _ma_ok = bool(_rec["MA20"] and _rec["현재가"] > _rec["MA20"])
         _tail = _dol_lower_tail(_rec["시가"], _rec["고가"], _rec["저가"], _rec["현재가"])
         _cands.append({**_p, "rec": _rec, "score": _sc, "ma_ok": _ma_ok, "tail": _tail,
