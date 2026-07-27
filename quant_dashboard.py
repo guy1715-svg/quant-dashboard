@@ -1572,7 +1572,7 @@ _DOL_LARGECAP_PX    = 50_000            # 대형주 판정 프록시(현재가 �
 # ── [V13.0] 금액 정규화 + 듀얼트랙 가중치 + 돌파 보너스 ──
 _DOL_AMT_REF        = 3_000_000_000     # 기관/외인 순매수 금액 만점 기준 = 30억 원(수량 착시 제거)
 _DOL_BREAKOUT_TURN  = 150_000_000_000   # 돌파 보너스 임계 거래대금 = 1,500억 원
-_DOL_WEIGHTS_THEME  = {"W2": 10, "W3": 20, "W4": 25, "W5": 35, "W6": 10}  # 🟢 테마 주도주 모드(외인/프로그램 우대)
+_DOL_WEIGHTS_THEME  = {"W2": 10, "W3": 20, "W4": 15, "W5": 35, "W6": 20}  # 🟢 테마 주도주 모드(v3: 외인35·거래대금20)
 #   기본(대형 우량주) 가중치는 기존 _DOL_WEIGHTS = {W2:35, W3:25, W4:20, W5:10, W6:10}
 
 
@@ -1620,8 +1620,8 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False):
     _f3 = 0.0
     if _close > 0 and _ma20 > 0 and _close > _ma20:
         _disp = _close / _ma20 - 1.0
-        if _disp > 0.07 and _turn >= _DOL_BREAKOUT_TURN and _f5 >= 0.7:
-            _f3 = 1.0     # 강력한 전고점 돌파형 — 과열 감점 면제(대원전선式 구제)
+        if _disp > 0.05 and _turn >= _DOL_BREAKOUT_TURN and _f5 >= 0.7:
+            _f3 = 1.0     # 강력한 전고점 돌파형 — 과열 감점 면제(v3: 이격 5%↑·1,500억↑·외인강)
         elif _disp <= 0.03: _f3 = 1.0     # 눌림목/지지 근접(최적)
         elif _disp <= 0.07: _f3 = 0.7     # 돌파 유지
         else:               _f3 = 0.4     # 단순 과열(추격 부담)
@@ -4674,6 +4674,94 @@ def render_dolpanty_pick():
         st.warning(f"🔥 이미 +{_chg:.1f}% 급등 — 종가베팅은 눌림/지지 매집이 원칙. 추격 금물, 반락 대기.")
     if not _gate:
         st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 📓 매매일지 입력폼 — 손익 자동계산(수수료·세금·슬리피지) + CSV 기록 + 승률 요약
+# ══════════════════════════════════════════════════════════════════════════
+_TRADE_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trading_log.csv")
+_TJ_FEE  = 0.00015   # 수수료 0.015%(편도)
+_TJ_TAX  = 0.0018    # 증권거래세 0.18%(매도 시)
+_TJ_SLIP = 0.001     # 슬리피지 0.1%(편도 가정)
+
+
+def _trade_calc(buy, sell, qty):
+    """실현손익·수익률 계산 — 수수료(양방)·거래세(매도)·슬리피지(양방) 공제. (순손익, 수익률%, 총비용)."""
+    _b, _s = (buy or 0) * (qty or 0), (sell or 0) * (qty or 0)
+    _cost = (_b + _s) * _TJ_FEE + _s * _TJ_TAX + (_b + _s) * _TJ_SLIP
+    _net = (_s - _b) - _cost
+    _ret = (_net / _b * 100) if _b > 0 else 0.0
+    return round(_net), round(_ret, 2), round(_cost)
+
+
+def render_trading_journal():
+    """📓 매매일지 — 종목·매수/매도가·수량 입력 → 순손익 자동계산·CSV 누적·승률 요약. 예외 전파 없음."""
+    import pandas as _pd
+    st.markdown("<div style='font-size:13px;font-weight:800;color:#86efac;margin:6px 0 2px'>"
+                "📓 매매일지 · 손익 자동계산 (수수료 0.015%·거래세 0.18%·슬리피지 0.1% 반영)</div>",
+                unsafe_allow_html=True)
+    # 기존 기록 로드
+    try:
+        _log = _pd.read_csv(_TRADE_LOG_FILE, dtype=str).fillna("") if os.path.exists(_TRADE_LOG_FILE) else _pd.DataFrame()
+    except Exception:
+        _log = _pd.DataFrame()
+    with st.form("_tj_form", clear_on_submit=True):
+        _c1, _c2, _c3 = st.columns([2, 1, 1])
+        _nm  = _c1.text_input("종목명", placeholder="예: 두산에너빌리티")
+        _cd  = _c2.text_input("코드(선택)", placeholder="034020")
+        _dt  = _c3.text_input("날짜", value=(datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d"))
+        _c4, _c5, _c6 = st.columns(3)
+        _buy = _c4.number_input("매수단가", min_value=0, step=10, value=0)
+        _sel = _c5.number_input("매도단가", min_value=0, step=10, value=0)
+        _qty = _c6.number_input("수량", min_value=0, step=1, value=0)
+        _memo = st.text_input("메모(진입근거·대응)", placeholder="미장 SMR +4% 보고 종배 진입 / 갭 노림")
+        _sub = st.form_submit_button("💾 기록 추가", use_container_width=True)
+    if _sub:
+        if _nm and _buy > 0 and _sel > 0 and _qty > 0:
+            _net, _ret, _cost = _trade_calc(_buy, _sel, _qty)
+            _row = {"날짜": _dt, "종목명": _nm, "코드": _cd, "매수가": int(_buy), "매도가": int(_sel),
+                    "수량": int(_qty), "순손익": _net, "수익률%": _ret, "비용": _cost, "메모": _memo}
+            _log = _pd.concat([_log, _pd.DataFrame([_row])], ignore_index=True)
+            try:
+                _log.to_csv(_TRADE_LOG_FILE, index=False, encoding="utf-8-sig")
+                st.success(f"✅ 기록 완료 — {_nm} 순손익 {_net:+,}원 ({_ret:+.2f}%)")
+            except Exception as _e:
+                st.error(f"저장 실패: {_e}")
+        else:
+            st.warning("종목명·매수가·매도가·수량을 모두 입력하세요.")
+    if _log is None or _log.empty:
+        st.caption("아직 기록 없음 — 위에 첫 매매를 입력해보세요.")
+        return
+    # 요약(승률·누적손익)
+    try:
+        _pnl = _pd.to_numeric(_log.get("순손익"), errors="coerce").fillna(0)
+        _tot = int(_pnl.sum()); _win = int((_pnl > 0).sum()); _n = len(_pnl)
+        _wr = (_win / _n * 100) if _n else 0
+        _tc = "#22c55e" if _tot >= 0 else "#ef4444"
+        st.markdown(
+            f"<div style='display:flex;gap:14px;flex-wrap:wrap;font-size:13px;margin:4px 0'>"
+            f"<span>📊 <b>{_n}건</b></span>"
+            f"<span>🎯 승률 <b>{_wr:.0f}%</b> ({_win}승 {_n-_win}패)</span>"
+            f"<span>💰 누적손익 <b style='color:{_tc}'>{_tot:+,}원</b></span></div>",
+            unsafe_allow_html=True)
+    except Exception:
+        pass
+    st.dataframe(_log.iloc[::-1], use_container_width=True, hide_index=True)
+    _dc1, _dc2 = st.columns([1, 1])
+    try:
+        _dc1.download_button("⬇️ CSV 다운로드(영구보관)", _log.to_csv(index=False, encoding="utf-8-sig"),
+                             file_name="trading_log.csv", mime="text/csv", use_container_width=True)
+    except Exception:
+        pass
+    if _dc2.button("🗑 전체 기록 삭제", use_container_width=True):
+        try:
+            if os.path.exists(_TRADE_LOG_FILE):
+                os.remove(_TRADE_LOG_FILE)
+            st.rerun()
+        except Exception:
+            pass
+    st.caption("💡 이 표를 저에게 '오늘 복기 써줘'와 함께 던지면 4차원 오답노트로 분석해 드립니다. "
+               "⚠️ 클라우드는 세션 초기화 시 사라질 수 있어 CSV 다운로드로 영구보관하세요.")
 
 
 def render_command_usage_guide():
@@ -8718,6 +8806,12 @@ with tab_g:
             _arc2.caption(f"🟢 {_auto_sec}초마다 자동 갱신 중 — 끄려면 체크 해제")
         except Exception:
             pass
+    st.divider()
+    with st.expander("📓 매매일지 · 손익 자동계산 (내 실제 매매 기록)", expanded=False):
+        try:
+            render_trading_journal()
+        except Exception as _tje:
+            st.caption(f"매매일지 일시 비활성: {type(_tje).__name__}")
     try:
         render_command_usage_guide()
     except Exception:
