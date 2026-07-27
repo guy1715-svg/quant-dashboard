@@ -636,6 +636,7 @@ def kis_get_price(ticker):
                 "전일대비":  int(_data.get("prdy_vrss", 0)),
                 "등락률":    float(_data.get("prdy_ctrt", 0)),
                 "거래량":    int(_data.get("acml_vol", 0)),
+                "거래대금":  int(str(_data.get("acml_tr_pbmn", 0)).replace(",", "") or 0),  # 당일 누적 거래대금(원)
                 "고가":      int(_data.get("stck_hgpr", 0)),
                 "저가":      int(_data.get("stck_lwpr", 0)),
                 "시가":      int(_data.get("stck_oprc", 0)),
@@ -1561,9 +1562,13 @@ def _dol_investor(code):
 _DOL_WEIGHTS = {"W2": 35, "W3": 25, "W4": 20, "W5": 10, "W6": 10}
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
-_DOL_VOL_REF = 3_000_000    # 거래량(거래대금 프록시) 정규화 기준(주)
+_DOL_VOL_REF = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만
 _DOL_CASH_MIN = 0.30        # 현금 30% 룰
 _DOL_TP_GAP = (1.0, 2.0)    # 기계적 익절 갭 구간(%)
+# ── [V12.2 금액기반] 주도주 절대원칙: 거래대금 1,000억(중소형 500억) 하드컷 ──
+_DOL_TURNOVER_REF   = 100_000_000_000   # W6 만점 기준 = 1,000억 원
+_DOL_TURNOVER_SMALL = 50_000_000_000    # 중소형주 하드컷 = 500억 원
+_DOL_LARGECAP_PX    = 50_000            # 대형주 판정 프록시(현재가 ≥ 5만원 → 1,000억 요구)
 
 
 def _dolpanty_gate_open(now_kst=None):
@@ -1587,6 +1592,8 @@ def _dolpanty_score(rec, gate_open, regime_halve):
     _frn   = rec.get("외인") or 0
     _vol   = rec.get("거래량") or 0
     _o, _h, _l = rec.get("시가") or 0, rec.get("고가") or 0, rec.get("저가") or 0
+    # [V12.2] 당일 누적 거래대금(원) — KIS 수신 우선, 없으면 현재가×거래량 폴백
+    _turn  = rec.get("거래대금") or (_close * _vol if (_close and _vol) else 0)
     # f2 스마트머니(기관 순매수 +)
     _f2 = min(_org / _DOL_ORG_REF, 1.0) if _org > 0 else 0.0
     # f3 20MA 돌파/지지 — 종가>20MA 전제, 눌림목 근접(지지)일수록 ↑
@@ -1602,16 +1609,28 @@ def _dolpanty_score(rec, gate_open, regime_halve):
         _f4 = min(max((min(_o, _close) - _l), 0.0) / (_h - _l) / 0.33, 1.0)
     # f5 외인 동반(+)
     _f5 = min(_frn / _DOL_FRN_REF, 1.0) if _frn > 0 else 0.0
-    # f6 거래량(거래대금 프록시)
-    _f6 = min(_vol / _DOL_VOL_REF, 1.0) if _vol > 0 else 0.0
+    # f6 거래대금 — 금액(원) 기준(1,000억=만점). 금액 결측 시만 거래량 폴백.
+    if _turn > 0:
+        _f6 = min(_turn / _DOL_TURNOVER_REF, 1.0)
+    else:
+        _f6 = min(_vol / _DOL_VOL_REF, 1.0) if _vol > 0 else 0.0
     _w = _DOL_WEIGHTS
     _raw = _w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 + _w["W5"]*_f5 + _w["W6"]*_f6
     _total = round((1 if gate_open else 0) * (0.5 if regime_halve else 1.0) * _raw, 1)
+    # [V12.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 무조건 제외(SKIP, total=0)
+    #   대형주(현재가≥5만) 1,000억 / 중소형 500억 미만이면 '가짜 수급 잡주'로 보고 청산.
+    _need = _DOL_TURNOVER_REF if _close >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
+    if _turn < _need:
+        _cap = "대형" if _close >= _DOL_LARGECAP_PX else "중소형"
+        return 0.0, "⚪ 제외", "SKIP", {"기관": _f2, "20MA": _f3, "아래꼬리": _f4,
+                                        "외인": _f5, "거래대금": _f6,
+                                        "_hardcut": f"거래대금 {_turn/1e8:,.0f}억 < {_cap} 관문 {_need/1e8:,.0f}억"}
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
     elif _total >= 40: _grade, _tag = "🟡 관찰",     "WATCH"
     else:              _grade, _tag = "⚪ 제외",     "SKIP"
-    return _total, _grade, _tag, {"기관": _f2, "20MA": _f3, "아래꼬리": _f4, "외인": _f5, "거래량": _f6}
+    return _total, _grade, _tag, {"기관": _f2, "20MA": _f3, "아래꼬리": _f4,
+                                   "외인": _f5, "거래대금": _f6}
 
 
 def render_dolpanty_swing_monitor(targets=None):
@@ -1670,7 +1689,7 @@ def render_dolpanty_swing_monitor(targets=None):
     _recs = []
     for _c, _n in _tg:
         _r = {"ticker": _c, "name": _n, "현재가": None, "등락률": None,
-              "시가": None, "고가": None, "저가": None, "거래량": None,
+              "시가": None, "고가": None, "저가": None, "거래량": None, "거래대금": None,
               "MA20": None, "기관": None, "외인": None, "src": None}
         try:
             _pr = kis_get_price(_c)
@@ -1678,6 +1697,7 @@ def render_dolpanty_swing_monitor(targets=None):
                 _r["현재가"] = _pr.get("현재가"); _r["등락률"] = _pr.get("등락률")
                 _r["시가"] = _pr.get("시가"); _r["고가"] = _pr.get("고가")
                 _r["저가"] = _pr.get("저가"); _r["거래량"] = _pr.get("거래량")
+                _r["거래대금"] = _pr.get("거래대금")
         except Exception:
             pass
         try:
@@ -4414,6 +4434,21 @@ def render_manju_morning_pick():
     _grade = "🥇 A급 (유입×연기금)" if _pick["pension"] else "🟢 유입 주도"
     _hot = _chg >= 7.0   # 이미 급등 → 추격 주의
     _border = "#f97316" if _hot else "#fbbf24"
+    # ── 🚦 액션 판정 배너 — "지금 사라/기다려라" 한눈에 ──
+    if _mj_time.startswith("⏰"):
+        _vd = ("⏸️ 대기", "지금은 진입 시간대 아님 — 만쥬는 09~10시가 승부처. 이 픽은 참고용.", "#64748b", "#0f172a")
+    elif _mj_time.startswith("🔵"):
+        _vd = ("🔵 준비", "개장(09시) 후 수급 확인하고 진입 판단. 아직 진입 아님.", "#3b82f6", "#0b1220")
+    elif _hot:
+        _vd = ("👀 관찰", f"이미 +{_chg:.1f}% 급등 — 추격 금지. 눌림목 반락 대기.", "#f59e0b", "#1a1505")
+    else:
+        _vd = ("⚡ 지금 진입 검토", "제로아워·수급 유효 — 눌림목 분할 진입 + 진입 즉시 −3% 칼손절 세팅.", "#22c55e", "#052e16")
+    st.markdown(
+        f"<div style='display:flex;align-items:center;gap:10px;border:2px solid {_vd[2]};border-radius:12px;"
+        f"padding:10px 14px;margin-bottom:6px;background:linear-gradient(180deg,{_vd[3]},#111c33)'>"
+        f"<span style='font-size:20px;font-weight:900;color:{_vd[2]};white-space:nowrap'>{_vd[0]}</span>"
+        f"<span style='font-size:12px;color:#cbd5e1;line-height:1.4'>{_vd[1]}</span></div>",
+        unsafe_allow_html=True)
     st.markdown(
         f"<div style='border:2px solid {_border};border-radius:12px;padding:10px 14px;"
         f"background:linear-gradient(180deg,#1a1505,#111c33);"
@@ -4464,12 +4499,13 @@ def render_dolpanty_pick():
     _cands = []
     for _p in _pos[:8]:
         _rec = {"현재가": None, "등락률": None, "시가": None, "고가": None, "저가": None,
-                "거래량": None, "MA20": None, "기관": _p.get("qty"), "외인": 0}
+                "거래량": None, "거래대금": None, "MA20": None, "기관": _p.get("qty"), "외인": 0}
         try:
             _pr = kis_get_price(_p["code"]) or {}
             _rec.update({"현재가": _pr.get("현재가"), "등락률": _pr.get("등락률"),
                          "시가": _pr.get("시가"), "고가": _pr.get("고가"),
-                         "저가": _pr.get("저가"), "거래량": _pr.get("거래량")})
+                         "저가": _pr.get("저가"), "거래량": _pr.get("거래량"),
+                         "거래대금": _pr.get("거래대금")})
         except Exception:
             pass
         try:
@@ -4482,9 +4518,12 @@ def render_dolpanty_pick():
         _sc, _g, _tag, _fac = _dolpanty_score(_rec, True, False)   # 랭킹용(게이트 무시 점수)
         _ma_ok = bool(_rec["MA20"] and _rec["현재가"] > _rec["MA20"])
         _tail = _dol_lower_tail(_rec["시가"], _rec["고가"], _rec["저가"], _rec["현재가"])
-        _cands.append({**_p, "rec": _rec, "score": _sc, "ma_ok": _ma_ok, "tail": _tail})
-    # 20MA 위 종목 우선 → 점수순
-    _cands.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
+        _cands.append({**_p, "rec": _rec, "score": _sc, "ma_ok": _ma_ok, "tail": _tail,
+                       "turnover": _rec.get("거래대금") or 0})
+    # [V12.2 하드컷] 거래대금 1,000억(중소형 500억) 미달=제외(score 0) → 통과 후보만 선정 대상
+    _passed = [c for c in _cands if c["score"] > 0]
+    _passed.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
+    _cands = _passed
     _pick = _cands[0] if _cands else None
     st.session_state["_today_dol_code"] = _pick["code"] if _pick else None
     # 매크로 리스크오프면 매수 픽 대신 '관망'
@@ -4500,7 +4539,8 @@ def render_dolpanty_pick():
         st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
         return
     if not _pick:
-        st.info("🕒 종가베팅 후보 미형성 — 15:00 이후 수급/종가 확정 시 재산출 (관망)")
+        st.info("🕒 종가베팅 후보 미형성 — 거래대금 관문(대형 1,000억 / 중소형 500억↑) 통과 종목 없음. "
+                "15:00 이후 수급/종가 확정 시 재산출 (관망)")
         return
     # 후보가 있어도 셋업이 약하면(20MA 이탈·점수<40) 매수 아님 → 관망 표기
     if (not _pick["ma_ok"]) or _pick["score"] < 40:
@@ -4520,9 +4560,25 @@ def render_dolpanty_pick():
     _setup = []
     _setup.append("📈20MA↑" if _pick["ma_ok"] else "📉20MA↓")
     if _pick["tail"]: _setup.append("🪝아래꼬리")
+    _turn_v = _pick.get("turnover") or 0
+    _tcap = "대형" if _px >= _DOL_LARGECAP_PX else "중소형"
+    _setup.append(f"💰거래대금 {_turn_v/1e8:,.0f}억({_tcap}·관문통과)")
     _setup.append(f"💹 {_pick['sector']} 유입 +{_pick['net']/1e8:,.0f}억")
     _basis = " · ".join(_setup)
     _stat = "장중 확정" if _gate else "예비(15:00 이후 확정)"
+    # ── 🚦 액션 판정 배너 ──
+    if not _gate:
+        _vd = ("⏸️ 대기", "종가베팅 확정 시간대 아님(15:00~15:30 / 18:00~20:00). 지금은 예비 후보.", "#64748b", "#0f172a")
+    elif _chg >= 7.0:
+        _vd = ("👀 관찰", f"이미 +{_chg:.1f}% 급등 — 추격 금지. 눌림/지지 매집 대기.", "#f59e0b", "#1a1505")
+    else:
+        _vd = ("⚡ 지금 진입 검토", "확정 시간대·셋업 유효 — 종가 굳는 것 확인 후 매수, 익일 갭 +1~2% 익절.", "#22c55e", "#052e16")
+    st.markdown(
+        f"<div style='display:flex;align-items:center;gap:10px;border:2px solid {_vd[2]};border-radius:12px;"
+        f"padding:10px 14px;margin-bottom:6px;background:linear-gradient(180deg,{_vd[3]},#111c33)'>"
+        f"<span style='font-size:20px;font-weight:900;color:{_vd[2]};white-space:nowrap'>{_vd[0]}</span>"
+        f"<span style='font-size:12px;color:#cbd5e1;line-height:1.4'>{_vd[1]}</span></div>",
+        unsafe_allow_html=True)
     st.markdown(
         f"<div style='border:2px solid #22c55e;border-radius:12px;padding:10px 14px;"
         f"background:linear-gradient(180deg,#05140a,#111c33);box-shadow:0 6px 22px rgba(34,197,94,0.25)'>"
