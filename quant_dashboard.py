@@ -3557,7 +3557,7 @@ def render_macro_triggers_panel():
             st.session_state["_tg_chat_input"] = _sf_cid
         _tgc1, _tgc2 = st.columns(2)
         _tgc1.text_input("봇 토큰", key="_tg_token_input", type="password",
-                         placeholder="예: 8215476952:AAF...", help="BotFather가 준 토큰")
+                         placeholder="예: 1234567890:AAF...(BotFather 발급)", help="BotFather가 준 토큰")
         _tgc2.text_input("chat_id", key="_tg_chat_input", placeholder="예: 1781972453")
         _tok_now, _cid_now = _tg_creds()
         _tg_ok = bool(_tok_now and _cid_now)
