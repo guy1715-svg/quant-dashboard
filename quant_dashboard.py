@@ -1042,6 +1042,44 @@ _MANJU_LINEUP_6 = [
 ]
 
 
+def _manju_entry_ok(rec):
+    """진입(초록) 3대 조건 — 거래대금 ≥ 300억 AND 프로그램·외인·기관 추정금액 모두 양수(+).
+    화면 '진입' 시그널과 텔레그램 발송의 단일 기준."""
+    _turn = rec.get("거래대금") or 0
+    _prog = rec.get("프로그램금액") or 0
+    _frn  = rec.get("외인추정금액") or 0
+    _org  = rec.get("기관추정금액") or 0
+    return bool(_turn >= _MANJU_TURNOVER_REF and _prog > 0 and _frn > 0 and _org > 0)
+
+
+def _manju_notify_entries(valid_rows, now_kst):
+    """진입 3-조건 신규 충족 종목 → 텔레그램 다이렉트 발송(종목별 당일 1회). 예외 전파 없음.
+    ⚠️ 대시보드가 열려 rerun될 때만 발송(상시 알림은 macro_watcher 담당)."""
+    try:
+        _today = now_kst.strftime("%Y%m%d")
+        _sent = st.session_state.get("_manju_tg_sent") or {}
+        if _sent.get("_day") != _today:
+            _sent = {"_day": _today}
+        for r in valid_rows:
+            if not _manju_entry_ok(r):
+                continue
+            _code = r.get("ticker")
+            if _sent.get(_code):
+                continue
+            _px, _chg = r.get("현재가") or 0, r.get("등락률") or 0.0
+            _to = r.get("거래대금") or 0
+            _ok = send_telegram(
+                f"🟢 진입 시그널 — {r.get('name')}\n"
+                f"거래대금 {_to/1e8:,.0f}억(300억↑) · 프로그램/외인/기관 모두 (+)\n"
+                f"현재가 {_px:,} ({_chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
+            if _ok:
+                _sent[_code] = True
+        st.session_state["_manju_tg_sent"] = _sent
+    except Exception:
+        pass
+
+
 def _manju_sniper(rec, now_kst=None):
     """🎯 09:10 시가저격 배지 판정 — KST 09:00~09:10 내 당일 누적 거래대금이 임계 돌파 시 활성.
     대형주/중소형주 탄력성 필터: 대형주(현재가≥5만) 300억, 중소형주 150억(완화).
@@ -1262,6 +1300,9 @@ def render_manju_scalp_monitor(targets=None):
         r["_score"], r["_grade"], r["_tag"], r["_fac"] = _manju_score(r, _leader_chg, _gate)
         r["_is_leader"] = (r is _leader)
     _valid.sort(key=lambda r: r["_score"], reverse=True)
+    # [V6.3] 진입(초록) 3-조건 신규 충족 → 텔레그램 다이렉트 발송(제로아워·종목별 당일 1회)
+    if _gate:
+        _manju_notify_entries(_valid, _now)
 
     # ── 🛡️ 글로벌 통제 패널 (테이블과 분리: R 입력·계좌 경고·강제청산) ──────────
     if "_manju_R_won" not in st.session_state:
@@ -3373,6 +3414,9 @@ def _tg_creds():
     if not _cid:
         try: _cid = st.secrets.get("TELEGRAM_CHAT_ID", "") or ""
         except Exception: _cid = ""
+    # .env / 환경변수 폴백 — secrets.toml 미설정 로컬(포트 1111 등)에서도 동작
+    if not _tok: _tok = os.environ.get("TELEGRAM_BOT_TOKEN", "") or ""
+    if not _cid: _cid = os.environ.get("TELEGRAM_CHAT_ID", "") or ""
     return str(_tok).strip(), str(_cid).strip()
 
 
