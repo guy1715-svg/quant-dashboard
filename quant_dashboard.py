@@ -3413,8 +3413,14 @@ def fetch_macro_triggers():
     return _out
 
 
+_MACRO_SOX_CRASH = -5.0   # 반도체 폭락 → 🔴 리스크오프(신규매수 차단)
+_MACRO_SOX_WARN  = -3.0   # 반도체 조정 → 🟠 경고(한도 50% HALF_CAPS)
+
+
 def _macro_verdict(d):
-    """3대 트리거 종합 판정 → (verdict_text, color, block_bool). block_bool=True면 신규매수 차단."""
+    """3대 트리거 종합 판정 → (verdict_text, color, block_bool, half_bool).
+    K-국장은 반도체 시총 비중이 커 SOX 급락에 종속 동조 → SOX 방어막 편입.
+    block=True면 신규매수 차단(🔴 NO_POSITION). half=True면 한도 50%(🟠 HALF_CAPS)."""
     _nq = d.get("nq_pct")
     _wti = d.get("wti_pct")
     _semi = d.get("semi", {}) or {}
@@ -3425,11 +3431,19 @@ def _macro_verdict(d):
     _riskoff = (_wti is not None and _wti >= _MACRO_WTI_RISK)
     _nq_block = (_nq is not None and _nq <= _MACRO_NQ_BLOCK)
     _nq_go = (_nq is not None and _nq >= _MACRO_NQ_GO)
+    _sox_crash = (_sox is not None and _sox <= _MACRO_SOX_CRASH)   # SOX ≤ −5% 폭락
+    _sox_warn  = (_sox is not None and _sox <= _MACRO_SOX_WARN)    # SOX ≤ −3% 조정
+    # 🔴 리스크오프 — 유가 급등 / 나스닥 급락 / 반도체 폭락
+    if _sox_crash:
+        return (f"🔴 리스크오프 · 신규매수 차단(반도체 폭락 SOX {_sox:+.1f}%)", "#ef4444", True, False)
     if _riskoff or _nq_block:
-        return ("🔴 리스크오프 · 신규매수 차단(현금 방어)", "#ef4444", True)
+        return ("🔴 리스크오프 · 신규매수 차단(현금 방어)", "#ef4444", True, False)
+    # 🟠 경고 — 반도체 조정(−3%↓) → 한도 50%
+    if _sox_warn:
+        return (f"🟠 경고 · 반도체 조정(SOX {_sox:+.1f}%) — 한도 50%", "#f59e0b", False, True)
     if _nq_go and _semi_sync:
-        return ("🟢 진입 허용 (매크로 3대 양호)", "#22c55e", False)
-    return ("🟡 중립 · 선별 진입 (트리거 미충족)", "#f59e0b", False)
+        return ("🟢 진입 허용 (매크로 3대 양호)", "#22c55e", False, False)
+    return ("🟡 중립 · 선별 진입 (트리거 미충족)", "#f59e0b", False, False)
 
 
 # ── 📱 텔레그램 알람 (매크로 국면 전환 폰 푸시) ──────────────────────────────
@@ -3518,8 +3532,8 @@ def render_macro_triggers_panel():
     """🌐 매크로 3대 트리거 교차검증 패널 — 실전 관제탑 상단 상시 표시. 예외 전파 없음."""
     _d = fetch_macro_triggers()
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
-    _verd, _vc, _block = _macro_verdict(_d)
-    st.session_state["_macro_verdict"] = {"text": _verd, "block": _block}
+    _verd, _vc, _block, _half = _macro_verdict(_d)
+    st.session_state["_macro_verdict"] = {"text": _verd, "block": _block, "half": _half}
 
     # ── 국면 전환 감지 → 텔레그램 폰 알림(개선 시 1회) ──
     _sev = 2 if _block else (0 if "진입 허용" in _verd else 1)   # 2=리스크오프 1=중립 0=진입허용
@@ -3554,14 +3568,23 @@ def render_macro_triggers_panel():
         _nq_st = ("🔴 차단(−0.2%↓)" if (_nq is not None and _nq <= _MACRO_NQ_BLOCK)
                   else "🟢 긍정(+0.5%↑)" if (_nq is not None and _nq >= _MACRO_NQ_GO)
                   else "🟡 중립" if _nq is not None else "데이터 대기")
-        _semi_st = ("🟢 동반 상승" if _sync else "🟡 동조 미확인" if _semi else "데이터 대기")
+        # 반도체 동조 상태 — 폭락(−5%↓)/조정(−3%↓) 방어막 반영
+        if _sox is not None and _sox <= _MACRO_SOX_CRASH:
+            _semi_st = f"🔴 폭락(SOX {_sox:+.1f}%) — 신규매수 차단"
+        elif _sox is not None and _sox <= _MACRO_SOX_WARN:
+            _semi_st = f"🟠 조정(SOX {_sox:+.1f}%) — 한도 50%"
+        elif _sync:
+            _semi_st = "🟢 동반 상승"
+        elif _semi:
+            _semi_st = "🟡 동조 미확인"
+        else:
+            _semi_st = "데이터 대기"
         _wti_st = ("🔴 급등 리스크오프" if (_wti is not None and _wti >= _MACRO_WTI_RISK)
                    else "🟢 안정" if _wti is not None else "데이터 대기")
         st.markdown(
             f"- **① 나스닥 선물** {_f(_nq)} ({_d.get('nq_ref_src','기준')} 대비) → {_nq_st}\n"
             f"- **② 반도체 동조** {_semi_detail_txt} → {_semi_st}\n"
             f"- **③ WTI 원유** {_f(_wti)}" + (f" (${_d.get('wti'):.1f})" if _d.get('wti') else "") + f" → {_wti_st}")
-        st.caption("📌 SK하이닉스 ADR 발행한도(2.5%) 소진·아비트리지 봉쇄 → 미 국장 고프리미엄 지속(기본변수)")
         st.divider()
         st.markdown("**📱 텔레그램 알람** — 봇 토큰·chat_id 입력 후 💾저장하면 계속 고정(재시작해도 유지)")
         # 초기화 요청 처리(위젯 생성 前) — 중복입력 정리용
@@ -4680,8 +4703,8 @@ def render_v93_trading_tab():
     # 매크로 판정이 아직 없으면 직접 산출
     if not _mv:
         try:
-            _mv_d = fetch_macro_triggers(); _t, _c, _b = _macro_verdict(_mv_d)
-            _mv = {"text": _t, "block": _b}
+            _mv_d = fetch_macro_triggers(); _t, _c, _b, _hf = _macro_verdict(_mv_d)
+            _mv = {"text": _t, "block": _b, "half": _hf}
         except Exception:
             _mv = {"text": "판정 대기", "block": False}
     _block = _mv.get("block")
@@ -4900,7 +4923,8 @@ def render_global_header():
     _half_caps = (not _no_position) and (
         (isinstance(_krw, (int, float)) and _krw >= 1450)
         or (isinstance(_worst_idx, (int, float)) and _worst_idx <= -1.5)
-        or (isinstance(_nq, (int, float)) and _nq < 0))
+        or (isinstance(_nq, (int, float)) and _nq < 0)
+        or bool(_mv.get("half")))          # 🟠 반도체 조정(SOX ≤ −3%) → 한도 50%
     _mode = "NO_POSITION" if _no_position else "HALF_CAPS" if _half_caps else "NORMAL"
     st.session_state["_risk_mode"] = _mode
     st.session_state["_killswitch"] = (_mode == "NO_POSITION")
