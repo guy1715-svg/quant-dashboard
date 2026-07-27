@@ -7857,8 +7857,29 @@ table td b, table th { font-weight: 800 !important; }
 else:
     _mobile_css = ""
 
-if _theme_css or _mobile_css:
-    st.markdown(f"<style>{_theme_css}{_mobile_css}</style>", unsafe_allow_html=True)
+# [모바일 겹침 방지] 좁은 화면에서 커스텀 HTML 카드가 눌려 겹치는 현상 보정 — 토글 무관 상시 적용
+_resp_css = """
+@media (max-width: 640px) {
+  /* 커스텀 마크다운 카드: 줄간격 확보 + 컨테이너 폭 넘침 방지 */
+  [data-testid="stMarkdownContainer"] { line-height: 1.55 !important; }
+  [data-testid="stMarkdownContainer"] div { max-width: 100% !important; }
+  /* flex 헤더(제목↔배지 양끝정렬)가 좁으면 다음 줄로 내려가게 → 겹침 제거 */
+  [data-testid="stMarkdownContainer"] div[style*="display:flex"],
+  [data-testid="stMarkdownContainer"] div[style*="display: flex"] {
+      flex-wrap: wrap !important; row-gap: 4px !important; align-items: flex-start !important; }
+  /* 한글 단어 끊김 방지 + 긴 텍스트 줄바꿈 */
+  [data-testid="stMarkdownContainer"] span,
+  [data-testid="stMarkdownContainer"] b { word-break: keep-all !important; overflow-wrap: anywhere !important; }
+  /* 넓은 표는 카드 안에서 가로 스크롤 */
+  [data-testid="stMarkdownContainer"] table { display: block !important; width: 100% !important;
+      overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+  /* 배지·pill이 다닥 붙어 겹치지 않게 최소 간격 */
+  [data-testid="stMarkdownContainer"] span[style*="border-radius"] { margin: 1px 0 !important; }
+}
+"""
+
+if _theme_css or _mobile_css or _resp_css:
+    st.markdown(f"<style>{_theme_css}{_mobile_css}{_resp_css}</style>", unsafe_allow_html=True)
 
 # ── 헤더 + UI 토글 버튼 ──
 _h1, _h2, _h3 = st.columns([4, 1, 1])
