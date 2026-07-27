@@ -4570,13 +4570,21 @@ def render_dolpanty_pick():
     _cands = []
     for _p in _pos[:8]:
         _rec = {"현재가": None, "등락률": None, "시가": None, "고가": None, "저가": None,
-                "거래량": None, "거래대금": None, "MA20": None, "기관": _p.get("qty"), "외인": 0}
+                "거래량": None, "거래대금": None, "MA20": None, "기관": 0, "외인": 0}
         try:
             _pr = kis_get_price(_p["code"]) or {}
             _rec.update({"현재가": _pr.get("현재가"), "등락률": _pr.get("등락률"),
                          "시가": _pr.get("시가"), "고가": _pr.get("고가"),
                          "저가": _pr.get("저가"), "거래량": _pr.get("거래량"),
                          "거래대금": _pr.get("거래대금")})
+        except Exception:
+            pass
+        # [V13.0 동기화] 전략 탭과 동일한 실측 수급 주입 — 외인:0 하드코딩 제거
+        #   _dol_investor: KIS 실시간 추정 → KIS 일별 → 네이버 순 폴백(외인·기관 순매수 수량)
+        try:
+            _inv = _dol_investor(_p["code"])
+            _rec["기관"] = _inv.get("기관", 0) if _inv else 0
+            _rec["외인"] = _inv.get("외인", 0) if _inv else 0
         except Exception:
             pass
         try:
