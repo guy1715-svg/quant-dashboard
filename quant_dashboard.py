@@ -1034,12 +1034,45 @@ def _fmt_signed_thousand(won):
         return "—"
 
 
-# ── 3대 핵심 모니터링 라인업(6종) — 반도체 이탈 반사이익 피난처 ──
-_MANJU_LINEUP_6 = [
+# ── 3대 핵심 모니터링 라인업 — 외부 JSON(manju_watchlist.json)에서 로드, 매일 교체 가능 ──
+_MANJU_LINEUP_DEFAULT = [
     ("207940", "삼성바이오로직스"), ("068270", "셀트리온"),      # A: 바이오 방어주
     ("011070", "LG이노텍"),        ("090460", "비에이치"),        # B: 애플 공급망
     ("103140", "풍산"),            ("010130", "고려아연"),        # C: 관세/원자재 수혜
 ]
+_MANJU_WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manju_watchlist.json")
+
+
+def _manju_load_lineup():
+    """manju_watchlist.json에서 라인업 로드 — watcher와 동일 파일 공유. 없거나 깨지면 기본값.
+    반환: [(code, name), ...]."""
+    try:
+        import json as _jml
+        with open(_MANJU_WATCHLIST_FILE, encoding="utf-8") as _f:
+            _d = _jml.load(_f)
+        _lst = _d.get("lineup") if isinstance(_d, dict) else _d
+        _out = []
+        for _it in (_lst or []):
+            if isinstance(_it, (list, tuple)) and len(_it) >= 2:
+                _c = str(_it[0]).strip().zfill(6)
+                if _c.isdigit():
+                    _out.append((_c, str(_it[1]).strip() or _c))
+        return _out or _MANJU_LINEUP_DEFAULT
+    except Exception:
+        return _MANJU_LINEUP_DEFAULT
+
+
+def _manju_save_lineup(pairs):
+    """라인업을 manju_watchlist.json에 저장 — [(code,name),...]. 성공 True."""
+    try:
+        import json as _jml
+        _payload = {"_설명": "만쥬 라인업 — 이 파일만 고치면 대시보드/watcher가 자동 반영.",
+                    "lineup": [[str(_c).strip().zfill(6), str(_n).strip()] for _c, _n in pairs]}
+        with open(_MANJU_WATCHLIST_FILE, "w", encoding="utf-8") as _f:
+            _jml.dump(_payload, _f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
 
 
 def _manju_entry_ok(rec):
@@ -1251,7 +1284,7 @@ def _action_pill(kind):
 def render_manju_scalp_monitor(targets=None):
     """[만쥬式 초단타 감시 위젯] 3대 코어 패널 렌더 — 유니버스/엔트리 시그널/리스크·자금.
     W1 제로아워 게이트·가중치 총점·등급 매핑·하드 오버라이드(대장 꺾임·-1R) 반영. 예외 전파 없음."""
-    _tg   = targets or _MANJU_LINEUP_6      # [V12.1] 반도체 이탈 반사이익 3대 라인업(6종) 기본
+    _tg   = targets or _manju_load_lineup()   # [V12.1] 외부 JSON 라인업(매일 교체 가능)
     _now  = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _gate = _manju_gate_open(_now)
     # ── 헤더 + 제로아워 게이트 배지
@@ -1272,6 +1305,28 @@ def render_manju_scalp_monitor(targets=None):
             except Exception: pass
         st.rerun()
     _rc2.caption(f"⏱ 수급 45초 캐시 · 시세 실시간 · {_now.strftime('%H:%M:%S')} 기준 (자동갱신 없음 → 버튼/상호작용 시 최신화)")
+    # ── 📝 라인업 편집(매일 교체) — manju_watchlist.json 저장 → watcher도 자동 반영 ──
+    with st.expander(f"📝 감시 라인업 편집 ({len(_tg)}종) — 매일 종목 교체", expanded=False):
+        st.caption("종목코드(6자리)·종목명 입력 후 저장 → 대시보드 즉시 + watcher는 다음 루프에 자동 반영(재시작 불필요).")
+        _le_df = pd.DataFrame([{"종목코드": _c, "종목명": _n} for _c, _n in _tg])
+        _le_ed = st.data_editor(
+            _le_df, num_rows="dynamic", use_container_width=True, key="_manju_lineup_editor",
+            column_config={
+                "종목코드": st.column_config.TextColumn("종목코드", help="6자리 (예: 207940)"),
+                "종목명": st.column_config.TextColumn("종목명(선택)")})
+        if st.button("💾 라인업 저장", key="_manju_lineup_save"):
+            _pairs = []
+            for _row in _le_ed.to_dict("records"):
+                _c = str(_row.get("종목코드", "")).strip()
+                if _c:
+                    _pairs.append((_c, _row.get("종목명", "") or _c))
+            if _pairs and _manju_save_lineup(_pairs):
+                try: fetch_manju_scalp_data.clear()
+                except Exception: pass
+                st.success(f"✅ {len(_pairs)}종 저장 완료 — manju_watchlist.json 갱신 (watcher 자동 반영)")
+                st.rerun()
+            else:
+                st.error("저장 실패 — 종목코드를 1개 이상 입력하세요.")
     _mv = st.session_state.get("_macro_verdict") or {}
     if _mv.get("block"):
         st.warning(f"🌐 매크로 교차검증: {_mv.get('text','')} — 신규 진입 보류 권고")
@@ -1429,32 +1484,38 @@ def render_manju_scalp_monitor(targets=None):
             " <span style='color:#94a3b8;font-weight:600;font-size:11px'>(거래대금 임계 돌파 · 🔌 HTS 플러그 동기화 후 타격)</span></div>",
             unsafe_allow_html=True)
     st.markdown("<div style='font-size:13px;font-weight:800;color:#93c5fd;margin:6px 0 4px'>"
-                "💰 실시간 수급 금액 카드 (HTS 대조 · 상위 3종)</div>", unsafe_allow_html=True)
-    for r in _valid[:3]:
+                "💰 실시간 수급 금액 (HTS 대조 · 상위 3종)</div>", unsafe_allow_html=True)
+    _eokf = lambda w: f"{w/1e8:+,.0f}억"          # 부호 포함 억
+    _eoku = lambda w: f"{w/1e8:,.0f}억"           # 무부호 억(거래대금)
+    _pc = lambda v: "#22c55e" if v > 0 else "#ef4444" if v < 0 else "#94a3b8"
+    _srows = []
+    for _i, r in enumerate(_valid[:3]):
         _px = r.get("현재가") or 0; _chg = r.get("등락률") or 0.0
         _cc = "#ef4444" if _chg < 0 else "#22c55e" if _chg > 0 else "#94a3b8"
         _to = r.get("거래대금") or 0
-        _prog_a, _frn_a, _org_a = r.get("프로그램금액") or 0, r.get("외인추정금액") or 0, r.get("기관추정금액") or 0
+        _prog_a, _frn_a = r.get("프로그램금액") or 0, r.get("외인추정금액") or 0
         _act, _sbadge, _need = _manju_sniper(r, _now)
-        _to_c = "#fbbf24" if (_to and _to >= _need) else "#cbd5e1"
-        _pc = lambda v: "#22c55e" if v > 0 else "#ef4444" if v < 0 else "#94a3b8"
-        st.markdown(
-            "<div style='background:linear-gradient(135deg,#0f172a,#070a13);border:1px solid rgba(255,255,255,0.08);"
-            "border-radius:12px;padding:11px 13px;margin-bottom:7px'>"
-            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
-            f"<span style='font-size:15px;font-weight:900;color:#e2e8f0'>{r['name']} "
-            f"<span style='font-size:12px;color:#cbd5e1'>{_px:,}</span> "
-            f"<span style='font-size:12px;color:{_cc}'>({_chg:+.2f}%)</span></span>{_sbadge}</div>"
-            f"<div style='font-size:11px;color:#94a3b8;line-height:1.9;font-family:monospace'>"
-            f"· 실시간 거래대금 <span style='color:{_to_c};font-weight:700'>[{'대형' if _px >= _MANJU_LARGECAP_PX else '중소형'}]</span><br>"
-            f"&nbsp;&nbsp;└ #1501 빠른검색(천원): <b style='color:{_to_c}'>{format_to_thousand_won(_to)}</b><br>"
-            f"&nbsp;&nbsp;└ #0517 관심종목(백만): <b style='color:{_to_c}'>{format_to_million_won(_to)}</b><br>"
-            f"· 프로그램금액(추정): <b style='color:{_pc(_prog_a)}'>{_fmt_signed_thousand(_prog_a)}</b> 천원<br>"
-            f"· 외국인추정금액&nbsp;&nbsp;&nbsp;: <b style='color:{_pc(_frn_a)}'>{_fmt_signed_thousand(_frn_a)}</b> 천원<br>"
-            f"· 기관추정금액&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <b style='color:{_pc(_org_a)}'>{_fmt_signed_thousand(_org_a)}</b> 천원"
-            f"</div></div>", unsafe_allow_html=True)
-    st.caption(f"📏 300억=30,000,000천원=30,000백만 · 프로그램 만점 +30억 · {r.get('출처','—') if _valid else ''} "
-               "· 실시간 추정수량×현재가 = 금액(원) 물리변환")
+        _to_c = "#fbbf24" if (_to and _to >= _need) else "#e2e8f0"
+        _bg = "#0f172a" if _i % 2 == 0 else "#111c33"
+        _crown = " 🎯" if _act else ""
+        _srows.append(
+            f"<tr style='background:{_bg}'>"
+            f"<td style='padding:6px 8px;font-weight:800;color:#e2e8f0'>{r['name']}{_crown}</td>"
+            f"<td style='padding:6px 8px;text-align:right;color:#cbd5e1'>{_px:,} "
+            f"<span style='color:{_cc}'>({_chg:+.2f}%)</span></td>"
+            f"<td style='padding:6px 8px;text-align:right;font-weight:700;color:{_to_c}'>{_eoku(_to)}</td>"
+            f"<td style='padding:6px 8px;text-align:right'>프로그램 <b style='color:{_pc(_prog_a)}'>{_eokf(_prog_a)}</b>"
+            f" <span style='color:#94a3b8'>(외인<span style='color:{_pc(_frn_a)}'>{_eokf(_frn_a)}</span>)</span></td></tr>")
+    st.markdown(
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden'>"
+        "<thead><tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:6px 8px;text-align:left'>종목명</th>"
+        "<th style='padding:6px 8px;text-align:right'>현재가(등락률)</th>"
+        "<th style='padding:6px 8px;text-align:right'>거래대금</th>"
+        "<th style='padding:6px 8px;text-align:right'>프로그램/외인 수급</th></tr></thead>"
+        f"<tbody>{''.join(_srows)}</tbody></table></div>", unsafe_allow_html=True)
+    st.caption("🎯=09:10 시가저격 · 금액=실시간 추정수량×현재가 · 300억↑+수급(+)=진입")
 
 
 # ══════════════════════════════════════════════════════════════════════════

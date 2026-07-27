@@ -399,6 +399,163 @@ def pension_codes():
         return set()
 
 
+def _cash_guide(sev):
+    """현금비중·대응 권장 — 매크로 신호등(sev) 직결. 대시보드 '현금비중 신호등'과 동일 원칙."""
+    return {
+        2: {"level": "🔴 경고", "ratio": "현금 50%+", "msg": "미수/신용 금지 · 무포지션 권장", "tone": "down"},
+        1: {"level": "🟡 주의", "ratio": "현금 30%+", "msg": "선별 진입 · 분할 대응", "tone": "flat"},
+        0: {"level": "🟢 양호", "ratio": "정상 대응", "msg": "원칙 매매 유지", "tone": "up"},
+    }.get(sev, {"level": "🟡 주의", "ratio": "현금 30%+", "msg": "선별 진입", "tone": "flat"})
+
+
+# ── [V12.1] 09:10 시가저격 텔레그램 — 만쥬 라인업(외부 JSON, 매일 교체 가능) ──
+# 기본값(파일 없을 때 폴백). 실제 감시 대상은 manju_watchlist.json에서 매 루프 로드.
+MANJU_LINEUP_DEFAULT = [
+    ("207940", "삼성바이오로직스"), ("068270", "셀트리온"),
+    ("011070", "LG이노텍"),        ("090460", "비에이치"),
+    ("103140", "풍산"),            ("010130", "고려아연"),
+]
+WATCHLIST_FILE = os.path.join(BASE, "manju_watchlist.json")
+
+
+def load_lineup():
+    """manju_watchlist.json에서 감시 라인업 로드 — 매 루프 호출(핫리로드, 재시작 불필요).
+    포맷: {"lineup": [["207940","삼성바이오로직스"], ...]}. 없거나 깨지면 기본값."""
+    try:
+        with open(WATCHLIST_FILE, encoding="utf-8") as f:
+            _d = json.load(f)
+        _lst = _d.get("lineup") if isinstance(_d, dict) else _d
+        _out = []
+        for _it in (_lst or []):
+            if isinstance(_it, (list, tuple)) and len(_it) >= 2:
+                _code = str(_it[0]).strip().zfill(6)
+                _name = str(_it[1]).strip()
+                if _code and _code.isdigit():
+                    _out.append((_code, _name or _code))
+            elif isinstance(_it, dict) and _it.get("code"):
+                _code = str(_it["code"]).strip().zfill(6)
+                _out.append((_code, str(_it.get("name", _code)).strip() or _code))
+        return _out or MANJU_LINEUP_DEFAULT
+    except Exception:
+        return MANJU_LINEUP_DEFAULT
+SNIPER_LARGE = 30_000_000_000   # 대형주 임계 300억
+SNIPER_SMALL = 15_000_000_000   # 중소형주 임계 150억
+SNIPER_LARGECAP_PX = 50_000     # 현재가 ≥ 5만 → 대형주 판정
+
+
+def _price_and_turnover(token, key, secret, code):
+    """종목 현재가·등락률·누적거래대금(원) — inquire-price. (px, chg, turnover) 또는 (None,None,None)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict) and o:
+            return (_to_int(o.get("stck_prpr")),
+                    float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0),
+                    _to_int(o.get("acml_tr_pbmn")))
+    except Exception:
+        pass
+    return None, None, None
+
+
+def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+    """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
+    반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단."""
+    m = now_kst.hour * 60 + now_kst.minute
+    in_window = (9 * 60) <= m <= (9 * 60 + 10)
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("sniper_sent", {})
+    if sent.get("_day") != today:               # 날짜 바뀌면 초기화
+        sent = {"_day": today}
+    out = []
+    if not in_window:
+        state["sniper_sent"] = sent
+        return out
+    for code, name in lineup:
+        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        if not px or not turn:
+            continue
+        need = SNIPER_LARGE if px >= SNIPER_LARGECAP_PX else SNIPER_SMALL
+        cap = "대형" if px >= SNIPER_LARGECAP_PX else "중소형"
+        if turn >= need:
+            out.append({"name": name, "code": code, "px": px, "chg": chg,
+                        "turnover_eok": round(turn / 1e8, 0), "cap": cap})
+            if not sent.get(code):              # 당일 첫 돌파만 발송
+                send_telegram(token_tg, chat_id,
+                              f"🎯 09:10 시가저격 완료 — {name}\n"
+                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파\n"
+                              f"현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"🔌 HTS 플러그 동기화 후 금액 3종(+) 확인 → 타격")
+                sent[code] = True
+    state["sniper_sent"] = sent
+    return out
+
+
+def _investor_est(token, key, secret, code):
+    """종목 장중 외국인/기관 추정 순매수 '수량' — investor-trend-estimate. (frn_qty, org_qty)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "HHPTJ04160200"},
+                         params={"MKSC_SHRN_ISCD": code}, timeout=6)
+        o2 = r.json().get("output2", [])
+        if isinstance(o2, list) and o2:
+            for row in reversed(o2):
+                if isinstance(row, dict) and (_to_int(row.get("frgn_fake_ntby_qty")) or _to_int(row.get("orgn_fake_ntby_qty"))):
+                    return _to_int(row.get("frgn_fake_ntby_qty")), _to_int(row.get("orgn_fake_ntby_qty"))
+    except Exception:
+        pass
+    return 0, 0
+
+
+def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+    """진입(초록) 3-조건 상시 감시 — 라인업, 제로아워(09:00~10:00) 창.
+    조건: 거래대금 ≥ 임계(대형300/중소150억) AND 프로그램·외인·기관 추정금액 모두 (+).
+    신규 충족 종목만 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (10 * 60)):            # 만쥬 제로아워 밖 → 감시 안 함
+        return []
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("entry_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    out = []
+    for code, name in lineup:
+        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        if not px or not turn:
+            continue
+        need = SNIPER_LARGE if px >= SNIPER_LARGECAP_PX else SNIPER_SMALL
+        frn_q, org_q = _investor_est(token, key, secret, code)
+        prog_amt, frn_amt, org_amt = (frn_q + org_q) * px, frn_q * px, org_q * px
+        entry_ok = (turn >= need and prog_amt > 0 and frn_amt > 0 and org_amt > 0)
+        if not entry_ok:
+            continue
+        out.append({"name": name, "code": code, "px": px, "chg": chg,
+                    "turnover_eok": round(turn / 1e8, 0),
+                    "prog_eok": round(prog_amt / 1e8, 1)})
+        if not sent.get(code):
+            send_telegram(token_tg, chat_id,
+                          f"🟢 진입 시그널 — {name}\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · 프로그램/외인/기관 모두 (+)\n"
+                          f"프로그램 {prog_amt/1e8:+,.0f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                          f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
+            sent[code] = True
+    state["entry_sent"] = sent
+    return out
+
+
+def _pick_mode(now_kst):
+    """현재 KST 시각 기준 오늘의 픽 성격. 만쥬=오전 초단타(09~10), 돌팬티=오후 종가베팅(13~15:30)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if 9 * 60 <= m <= 10 * 60:
+        return {"tag": "만쥬式", "when": "오전 초단타 (09~10시 승부처)"}
+    if 13 * 60 <= m <= 15 * 60 + 30:
+        return {"tag": "돌팬티式", "when": "오후 종가베팅 구간"}
+    return {"tag": "참고", "when": "픽 유효 시간대 아님 (참고용)"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=int, default=300, help="체크 주기(초), 기본 300=5분")
@@ -441,10 +598,15 @@ def main():
                 "updated_ts": int(now.timestamp()),
                 "kis_on": kis_on,
                 "macro": {"sev": sev, "text": mtext, "detail": mdetail},
+                "cash_guide": _cash_guide(sev),       # 현금비중·대응 권장(sev 기반)
                 "indicators": compute_indicators(),   # 환율·VIX·지수 세부
                 "supply": None,
+                "precursor": None,                    # 전조 시그널(자금 이동)
                 "ace": [],
                 "top_pick": None,                     # 원톱 픽(수급 최상위 종목)
+                "pick_mode": _pick_mode(now),         # 시간대: 만쥬(오전)/돌팬티(오후)/참고
+                "snipers": [],                        # 09:10 시가저격 돌파 종목
+                "entries": [],                        # 진입 3-조건 충족 종목(상시)
             }
 
             # 2)/3) 수급 전조·A급 (KIS 있을 때 + 매크로가 리스크오프 아닐 때만 유의미)
@@ -458,6 +620,8 @@ def main():
                     # 전조 시그널
                     if (inflow and outflow and inflow[0] != outflow[0]
                             and inflow[1]["net"] > 0 and outflow[1]["net"] < 0 and sev != 2):
+                        snap["precursor"] = {"from": outflow[0], "to": inflow[0],
+                                             "inflow_eok": round(inflow[1]["net"] / 1e8, 1)}
                         key = f"{outflow[0]}>{inflow[0]}"
                         if st.get("tour_key") != key:
                             send_telegram(token_tg, chat_id,
@@ -509,13 +673,32 @@ def main():
                                             "amt_eok": round(_amt / 1e8, 1),
                                             "pension": _cd in pens}
 
+                    # 라인업 핫리로드(manju_watchlist.json) — 파일만 고치면 재시작 없이 반영
+                    _lineup = load_lineup()
+                    # 09:10 시가저격 — 라인업 거래대금 임계 돌파 시 종목별 1회 텔레그램
+                    try:
+                        snap["snipers"] = check_snipers(tok, kis_key, kis_secret, now, st,
+                                                        token_tg, chat_id, _lineup)
+                    except Exception as _se:
+                        print("시가저격 체크 오류:", _se)
+                    # 진입 3-조건 상시 알림 — 제로아워(09~10) 거래대금+수급 모두(+) 충족 시 텔레그램
+                    try:
+                        snap["entries"] = check_entries(tok, kis_key, kis_secret, now, st,
+                                                        token_tg, chat_id, _lineup)
+                    except Exception as _ee:
+                        print("진입 체크 오류:", _ee)
+
             _snap_str = json.dumps(snap, ensure_ascii=False)
             save_snapshot(snap)
             push_snapshot_github(_snap_str)   # GitHub 'data' 브랜치 업로드(토큰 있을 때만)
             save_state(st)
         except Exception as e:
             print("체크 오류:", e)
-        time.sleep(max(30, args.interval))
+        # 제로아워(09:00~10:00)엔 60초로 촘촘히(시가저격·진입 즉시 포착), 그 외엔 지정 간격
+        _kn = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _km = _kn.hour * 60 + _kn.minute
+        _iv = 60 if (9 * 60) <= _km <= (10 * 60) else args.interval
+        time.sleep(max(30, _iv))
 
 
 if __name__ == "__main__":
