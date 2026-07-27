@@ -3473,26 +3473,51 @@ def _macro_state_save(d):
 _TG_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_config.json")
 
 
-def _tg_file_load():
-    """telegram_config.json에서 저장된 토큰·chat_id 로드(고정용). (token, chat)."""
+def _tg_config_read():
+    """telegram_config.json 전체 dict 로드(토큰·chat_id·alarm_on 등)."""
     import json as _j
     try:
         if os.path.exists(_TG_CONFIG_FILE):
             _d = _j.load(open(_TG_CONFIG_FILE, encoding="utf-8"))
-            return str(_d.get("token", "")).strip(), str(_d.get("chat_id", "")).strip()
+            return _d if isinstance(_d, dict) else {}
     except Exception:
         pass
-    return "", ""
+    return {}
 
 
-def _tg_file_save(token, chat):
+def _tg_config_write(_d):
     import json as _j
     try:
         with open(_TG_CONFIG_FILE, "w", encoding="utf-8") as _f:
-            _j.dump({"token": token, "chat_id": chat}, _f, ensure_ascii=False)
+            _j.dump(_d, _f, ensure_ascii=False)
         return True
     except Exception:
         return False
+
+
+def _tg_file_load():
+    """저장된 토큰·chat_id 로드(고정용). (token, chat)."""
+    _d = _tg_config_read()
+    return str(_d.get("token", "")).strip(), str(_d.get("chat_id", "")).strip()
+
+
+def _tg_file_save(token, chat):
+    """토큰·chat_id 저장 — 기존 alarm_on 등 다른 설정은 보존(병합)."""
+    _d = _tg_config_read()
+    _d["token"] = token; _d["chat_id"] = chat
+    return _tg_config_write(_d)
+
+
+def _macro_alarm_load():
+    """국면 개선 알람 체크 상태 로드(재접속에도 유지)."""
+    return bool(_tg_config_read().get("alarm_on", False))
+
+
+def _macro_alarm_save(val):
+    """국면 개선 알람 체크 상태 저장 — 토큰·chat_id는 보존(병합)."""
+    _d = _tg_config_read()
+    _d["alarm_on"] = bool(val)
+    return _tg_config_write(_d)
 
 
 def _tg_creds():
@@ -3605,8 +3630,12 @@ def render_macro_triggers_panel():
         _tok_now, _cid_now = _tg_creds()
         _tg_ok = bool(_tok_now and _cid_now)
         _ac1, _ac2, _ac3 = st.columns([1.4, 1, 1])
+        # 체크 상태를 파일에서 복원(새 세션·새로고침에도 유지) — 최초 1회만 초기화
+        if "_macro_alarm_on" not in st.session_state:
+            st.session_state["_macro_alarm_on"] = _macro_alarm_load()
         _ac1.checkbox("🔴→🟢 국면 개선 시 폰 푸시", key="_macro_alarm_on", disabled=not _tg_ok,
-                      help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램 즉시 알림")
+                      help="매크로가 리스크오프→중립/진입허용으로 바뀌면 텔레그램 즉시 알림",
+                      on_change=lambda: _macro_alarm_save(st.session_state.get("_macro_alarm_on")))
         if _ac2.button("💾 저장(고정)", key="_tg_save", disabled=not _tg_ok, use_container_width=True):
             _ok = _tg_file_save(st.session_state.get("_tg_token_input", ""), st.session_state.get("_tg_chat_input", ""))
             st.toast("저장됨 — 이제 재시작해도 유지 ✅" if _ok else "저장 실패")
