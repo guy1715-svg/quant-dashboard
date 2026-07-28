@@ -1559,7 +1559,7 @@ def _dol_investor(code):
     return None
 
 
-_DOL_WEIGHTS = {"W2": 35, "W3": 25, "W4": 20, "W5": 10, "W6": 10}
+_DOL_WEIGHTS = {"W2": 35, "W3": 20, "W4": 15, "W5": 10, "W6": 20}   # [V13 기본] 기관35·MA20:20·꼬리15·외인10·거래대금20
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
 _DOL_VOL_REF = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만
@@ -1620,8 +1620,11 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False):
     _f3 = 0.0
     if _close > 0 and _ma20 > 0 and _close > _ma20:
         _disp = _close / _ma20 - 1.0
-        if _disp > 0.05 and _turn >= _DOL_BREAKOUT_TURN and _f5 >= 0.7:
-            _f3 = 1.0     # 강력한 전고점 돌파형 — 과열 감점 면제(v3: 이격 5%↑·1,500억↑·외인강)
+        # [V13] 돌파 보너스 — 이격 5%↑라도 거래대금 1,500억↑ + 전고점 돌파양봉(종가가 당일 고가에 근접 마감)이면 감점 면제
+        #   ※ 전고점은 rec에 전일고가/저항 데이터가 없어 '당일 고가 98% 이상 마감(장대양봉)'으로 프록시
+        _breakout_candle = (_h > 0 and _close >= _h * 0.98)
+        if _disp > 0.05 and _turn >= _DOL_BREAKOUT_TURN and _breakout_candle:
+            _f3 = 1.0     # 강력한 전고점 돌파형 — 과열 감점 면제(대원전선式 구제)
         elif _disp <= 0.03: _f3 = 1.0     # 눌림목/지지 근접(최적)
         elif _disp <= 0.07: _f3 = 0.7     # 돌파 유지
         else:               _f3 = 0.4     # 단순 과열(추격 부담)
@@ -5062,8 +5065,16 @@ def render_global_header():
     except Exception: pass
     # ── V12.0 3색 리스크 신호등 판정 (NO_POSITION > HALF_CAPS > NORMAL) ──
     _worst_idx = min([v for v in (_ks, _kq) if isinstance(v, (int, float))], default=None)
+    # [V13 Priority 1] 파생 플래시크래시 전이 방어 — 장 종료 직전(15:00~15:20) 방향 애매 + 나스닥선물 음봉전환 시
+    #   연쇄청산·익일 시초가 급락·사이드카 리스크 차단 위해 Overnight Block(100% 현금화) 최우선 강제.
+    _mins_hdr = _now.hour * 60 + _now.minute
+    _overnight_block = (
+        ((15 * 60) <= _mins_hdr <= (15 * 60 + 20))       # 장 종료 직전 20분
+        and isinstance(_nq, (int, float)) and _nq < 0    # 나스닥선물 음봉 전환
+        and "진입 허용" not in _mv.get("text", ""))       # 방향 애매(매크로 🟢 명확 진입허용이 아님)
     _no_position = (
-        (isinstance(_ks, (int, float)) and _ks <= -2.0) or (isinstance(_kq, (int, float)) and _kq <= -2.0)
+        _overnight_block
+        or (isinstance(_ks, (int, float)) and _ks <= -2.0) or (isinstance(_kq, (int, float)) and _kq <= -2.0)
         or (isinstance(_krw, (int, float)) and _krw >= 1520) or bool(_mv.get("block")))
     _half_caps = (not _no_position) and (
         (isinstance(_krw, (int, float)) and _krw >= 1450)
@@ -5082,6 +5093,7 @@ def render_global_header():
         elif isinstance(_worst_idx, (int, float)) and _worst_idx <= -1.5: _rzn.append("지수 −1.5%↓ 조정")
         if isinstance(_nq, (int, float)) and _nq < 0: _rzn.append(f"나스닥선물 {_nq:+.2f}%")
         if _mv.get("block"): _rzn.append("매크로 리스크오프")
+        if _overnight_block: _rzn.append("파생 플래시크래시 방어(Overnight Block)")
         try: v12_logger.log_safety_lock(f"RISK_{_mode}", "MARKET", "시장전체", " · ".join(_rzn))
         except Exception: pass
         st.session_state["_risk_mode_logged"] = _mode
