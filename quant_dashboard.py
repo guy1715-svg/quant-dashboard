@@ -3804,15 +3804,15 @@ def render_money_tour_panel():
         _rows.append({"sector": _s, "net": _net, "delta": _delta,
                       "cnt": _info.get("cnt", 0), "src": _info.get("src")})
     _rows.sort(key=lambda r: r["net"], reverse=True)
-    # 머니투어: 유입처(net 최대·delta 최대) ← 이탈원(net 최소·delta 최소)
-    _inflow = max(_rows, key=lambda r: (r["delta"] if r["delta"] is not None else r["net"]))
-    _outflow = min(_rows, key=lambda r: (r["delta"] if r["delta"] is not None else r["net"]))
+    # [버그수정] 자금 이동 방향은 '실측 순매수액(net)' 기준 — 이탈원=net 최소(가장 많이 매도),
+    #   유입처=net 최대(가장 많이 매수). delta(직전대비)로 뽑으면 매도폭 축소를 '유입'으로 오판해 방향 반전됨.
+    _inflow = max(_rows, key=lambda r: r["net"])     # 유입처 = 순매수액 최대
+    _outflow = min(_rows, key=lambda r: r["net"])    # 이탈원 = 순매수액 최소(가장 큰 매도)
     _mv = st.session_state.get("_macro_verdict") or {}
     _riskoff = _mv.get("block")
-    # 전조 시그널: 유입처 delta>0(또는 net>0 최상위) & 이탈원 delta<0 & 매크로 정상
+    # 전조 시그널: 유입처 net>0(자금 유입) & 이탈원 net<0(자금 이탈) & 매크로 정상
     if (_inflow["sector"] != _outflow["sector"]
-            and (_inflow["delta"] is None or _inflow["delta"] > 0)
-            and (_outflow["delta"] is None or _outflow["delta"] < 0)):
+            and _inflow["net"] > 0 and _outflow["net"] < 0):
         if _riskoff:
             _sig = (f"⚠️ 자금이 <b>{_outflow['sector']}</b>→<b>{_inflow['sector']}</b> 이동 중이나 "
                     f"매크로 리스크오프 — 전조 신뢰도 낮음(관망)")
@@ -4470,13 +4470,19 @@ def render_manju_morning_pick():
     _mv = st.session_state.get("_macro_verdict") or {}
     if _mv.get("block"):
         st.markdown(
-            "<div style='border:2px solid #ef4444;border-radius:12px;padding:12px 14px;"
-            "background:linear-gradient(180deg,#1a0505,#111c33)'>"
-            "<div style='font-size:15px;font-weight:900;color:#fca5a5'>🔴 오늘은 관망 — 신규 매수 보류</div>"
-            "<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>매크로 리스크오프(현금 방어) 발동 — "
-            "픽이 있어도 <b>오늘은 사는 날이 아닙니다.</b> 매크로 🟢 전환 후 진입하세요.</div></div>",
+            "<div style='border:3px solid #ef4444;border-radius:12px;padding:14px 16px;"
+            "background:linear-gradient(180deg,#2a0808,#111c33);box-shadow:0 0 16px rgba(239,68,68,0.35)'>"
+            "<div style='font-size:20px;font-weight:900;color:#fff;background:#ef4444;border-radius:8px;"
+            "padding:6px 12px;text-align:center;letter-spacing:0.5px'>🛑 오늘은 사는 날이 아닙니다 (관망)</div>"
+            "<div style='font-size:13px;color:#fecaca;margin-top:8px;font-weight:700'>"
+            "🔴 매크로 리스크오프(현금 방어) 발동 — 신규 매수 <b style='color:#fff'>전면 보류</b>. "
+            "아래 종목은 <b style='color:#fca5a5'>진입 신호가 아니라 '참고 후보'</b>일 뿐입니다. "
+            "매크로 🟢 전환 후에만 진입하세요.</div></div>",
             unsafe_allow_html=True)
-        st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
+        st.markdown(
+            f"<div style='font-size:12px;color:#94a3b8;margin-top:4px'>"
+            f"👀 <b>참고 후보(매수 아님·관망)</b>: {_pick['name'] if _pick else '없음'}</div>",
+            unsafe_allow_html=True)
         return
     if not _pick:
         st.info("🕗 조건(주도섹터 유입 + 매수 우위) 충족 종목 없음 — 관망 (장 초반 수급 형성 후 재확인)")
