@@ -1042,23 +1042,46 @@ _MANJU_LINEUP_DEFAULT = [
     ("103140", "풍산"),            ("010130", "고려아연"),        # C: 관세/원자재 수혜
 ]
 _MANJU_WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manju_watchlist.json")
+# watcher가 GitHub 'data' 브랜치에 올리는 스냅샷 — 자동 라인업 동기화용(두 기기 문제 해결)
+_MANJU_SNAP_URL = "https://raw.githubusercontent.com/guy1715-svg/quant-dashboard/data/snapshot.json"
+
+
+def _lineup_parse(_lst):
+    _out = []
+    for _it in (_lst or []):
+        if isinstance(_it, (list, tuple)) and len(_it) >= 2:
+            _c = str(_it[0]).strip().zfill(6)
+            if _c.isdigit():
+                _out.append((_c, str(_it[1]).strip() or _c))
+    return _out
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _manju_lineup_from_github():
+    """watcher가 올린 스냅샷(data 브랜치)에서 오늘의 자동 라인업 로드 — 클라우드 대시보드 동기화.
+    실패/빈값이면 None(로컬 파일로 폴백)."""
+    try:
+        _r = _requests.get(_MANJU_SNAP_URL, params={"t": int(_time_kis.time())}, timeout=6)
+        if _r.status_code == 200:
+            _lp = _lineup_parse(_r.json().get("lineup"))
+            return _lp or None
+    except Exception:
+        pass
+    return None
 
 
 def _manju_load_lineup():
-    """manju_watchlist.json에서 라인업 로드 — watcher와 동일 파일 공유. 없거나 깨지면 기본값.
+    """라인업 로드 — ① watcher 스냅샷(GitHub, 자동 동기화) → ② 로컬 manju_watchlist.json → ③ 기본값.
     반환: [(code, name), ...]."""
+    _gh = _manju_lineup_from_github()
+    if _gh:
+        return _gh
     try:
         import json as _jml
         with open(_MANJU_WATCHLIST_FILE, encoding="utf-8") as _f:
             _d = _jml.load(_f)
         _lst = _d.get("lineup") if isinstance(_d, dict) else _d
-        _out = []
-        for _it in (_lst or []):
-            if isinstance(_it, (list, tuple)) and len(_it) >= 2:
-                _c = str(_it[0]).strip().zfill(6)
-                if _c.isdigit():
-                    _out.append((_c, str(_it[1]).strip() or _c))
-        return _out or _MANJU_LINEUP_DEFAULT
+        return _lineup_parse(_lst) or _MANJU_LINEUP_DEFAULT
     except Exception:
         return _MANJU_LINEUP_DEFAULT
 
