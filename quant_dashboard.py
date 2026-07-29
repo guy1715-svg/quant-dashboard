@@ -1596,6 +1596,31 @@ _DOL_LARGECAP_PX    = 50_000            # 대형주 판정 프록시(현재가 �
 _DOL_AMT_REF        = 3_000_000_000     # 기관/외인 순매수 금액 만점 기준 = 30억 원(수량 착시 제거)
 _DOL_BREAKOUT_TURN  = 150_000_000_000   # 돌파 보너스 임계 거래대금 = 1,500억 원
 _DOL_WEIGHTS_THEME  = {"W2": 10, "W3": 20, "W4": 15, "W5": 35, "W6": 20}  # 🟢 테마 주도주 모드(v3: 외인35·거래대금20)
+# ── [V6.1-B] 14:30 V자 턴어라운드 종가베팅 오버라이드 ──
+_TA_WIN    = (14 * 60 + 15, 15 * 60 + 20)   # 턴어라운드 게이트 14:15~15:20
+_TA_PANIC  = -7.0                            # 당일 저점 등락률 ≤ -7% (패닉셀 이력)
+_TA_NQ     = -0.5                            # 나스닥선물 -0.5%↑ 회복(반등 유지)
+_TA_BONUS  = 20                              # V자 반등 특별 가중치 +20
+
+
+def _dolpanty_turnaround(rec, nq_pct, prev_net):
+    """14:30 V자 턴어라운드 정렬 판정 — (ok, factors).
+    ①패닉(당일저점 ≤ -7%) ②매크로반등(NQ ≥ -0.5%) ③매도둔화(순매도 증가 멈춤/양전) ④하방지지(아래꼬리)."""
+    _px  = rec.get("현재가") or 0
+    _chg = rec.get("등락률") or 0.0
+    _lo  = rec.get("저가") or 0
+    # ① 패닉셀 이력 — 전일종가 역산 후 당일 저점 등락률
+    _prev_close = _px / (1 + _chg / 100.0) if (_px and _chg is not None) else 0
+    _panic = bool(_prev_close > 0 and _lo > 0 and (_lo / _prev_close - 1) * 100 <= _TA_PANIC)
+    # ② 매크로 반등 — 나스닥선물 낙폭 축소
+    _macro = bool(nq_pct is not None and nq_pct >= _TA_NQ)
+    # ③ 매도 폭격 둔화 — 외인+기관 순매수(주수) 기울기 0↑(더 안 늘어남) 또는 양전
+    _cur_net = (rec.get("기관") or 0) + (rec.get("외인") or 0)
+    _supply = bool(_cur_net >= 0 or (prev_net is not None and _cur_net >= prev_net))
+    # ④ 하방 지지 — 아래꼬리(세력 매집 흔적)
+    _tail = _dol_lower_tail(rec.get("시가"), rec.get("고가"), rec.get("저가"), _px)
+    _ok = _panic and _macro and _supply and _tail
+    return _ok, {"패닉셀": _panic, "매크로반등": _macro, "매도둔화": _supply, "지지꼬리": _tail}
 #   기본(대형 우량주) 가중치는 기존 _DOL_WEIGHTS = {W2:35, W3:25, W4:20, W5:10, W6:10}
 
 
@@ -1611,8 +1636,9 @@ def _dolpanty_gate_open(now_kst=None):
     return False, "게이트 밖"
 
 
-def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False):
+def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaround=False):
     """[V13.0] 돌팬티式 종가 베팅 총점(0~100) — 금액(원) 정규화 + 듀얼트랙 가중치 + 돌파 보너스.
+    turnaround=True(14:30 V자 정렬 충족): 게이트 강제 개방 + 특별 가중치 +20(패닉 선취매 예외).
     total = W1_gate × (regime? 0.5:1) × Σ(Wi·fi). 반환 (total, grade, tag, factors).
     - is_theme_mode=True: 외인/프로그램 35%·기관 10%로 스위칭(연기금 족쇄 해제, 테마 맹수주 포착)
     - f2/f5: 주수 착시 제거 위해 '순매수 금액(수량×현재가)/30억' 정규화
@@ -1656,7 +1682,11 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False):
     if _h > _l > 0:
         _f4 = min(max((min(_o, _close) - _l), 0.0) / (_h - _l) / 0.25, 1.0)
     _raw = _w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 + _w["W5"]*_f5 + _w["W6"]*_f6
-    _total = round((1 if gate_open else 0) * (0.5 if regime_halve else 1.0) * _raw, 1)
+    # [V6.1-B] 턴어라운드 정렬 시: 게이트 강제 개방(패닉 예외) + 특별 가중치 +20
+    _eff_gate = 1 if (gate_open or turnaround) else 0
+    _total = round(_eff_gate * (0.5 if regime_halve else 1.0) * _raw, 1)
+    if turnaround:
+        _total = min(round(_total + _TA_BONUS, 1), 100.0)
     # [V12.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 무조건 제외(SKIP, total=0)
     #   대형주(현재가≥5만) 1,000억 / 중소형 500억 미만이면 '가짜 수급 잡주'로 보고 청산.
     _need = _DOL_TURNOVER_REF if _close >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
@@ -1764,9 +1794,48 @@ def render_dolpanty_swing_monitor(targets=None):
                             help="ON: 외인/프로그램 35%·기관 10% — 원전·전력·중소형 반도체 등 테마 맹수주 포착. OFF: 기관 35%(대형 우량주)")
     # 점수 산출(현금30% 발동 시 게이트 강제 차단)
     _eff_gate = _gate and not _cash_mute
+    # [V6.1-B] 14:30 V자 턴어라운드 — 14:15~15:20 창에서 나스닥선물 반등 시 종목별 정렬 판정
+    _ta_mins = _now.hour * 60 + _now.minute
+    _ta_win = (_TA_WIN[0] <= _ta_mins <= _TA_WIN[1])
+    _nq_pct = None
+    if _ta_win:
+        try: _nq_pct = fetch_macro_triggers().get("nq_pct")
+        except Exception: _nq_pct = None
+    _ta_prev = st.session_state.get("_ta_prev_net") or {}
+    _ta_hits = []
     for r in _recs:
-        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime, _theme_mode)
+        _ta_ok = False
+        if _ta_win:
+            _pv = _ta_prev.get(r["ticker"])
+            _ta_ok, r["_ta_fac"] = _dolpanty_turnaround(r, _nq_pct, _pv)
+            _ta_prev[r["ticker"]] = (r.get("기관") or 0) + (r.get("외인") or 0)   # 다음 비교용
+        r["_ta"] = _ta_ok
+        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime, _theme_mode, _ta_ok)
+        if _ta_ok:
+            _ta_hits.append(r)
+    st.session_state["_ta_prev_net"] = _ta_prev
     _recs.sort(key=lambda r: r["_score"], reverse=True)
+
+    # 턴어라운드 정렬 종목 → 🔥 배지 + 텔레그램(종목별 당일 1회) · NO_POSITION 예외 승격
+    if _ta_hits:
+        st.markdown(
+            "<div style='border:2px solid #f97316;border-radius:12px;padding:10px 14px;margin:6px 0;"
+            "background:linear-gradient(90deg,#2a1505,#111c33);box-shadow:0 0 14px rgba(249,115,66,0.35)'>"
+            "<div style='font-size:15px;font-weight:900;color:#fdba74'>🔥 14:30 턴어라운드 포착 (비중 50% 제한)</div>"
+            "<div style='font-size:12px;color:#fed7aa;margin-top:3px'>🟠 TURNAROUND_STRIKE — 패닉셀 멈춤+매크로 반등+지지 정렬. "
+            "🔴 NO_POSITION 예외 승격, <b>HALF_CAPS(30~50%)</b>로만 선취매 · 대상: "
+            + ", ".join(r["name"] for r in _ta_hits) + "</div></div>", unsafe_allow_html=True)
+        _ta_sent = st.session_state.get("_ta_sent") or {}
+        _ta_today = _now.strftime("%Y%m%d")
+        if _ta_sent.get("_day") != _ta_today: _ta_sent = {"_day": _ta_today}
+        for r in _ta_hits:
+            if not _ta_sent.get(r["ticker"]):
+                if send_telegram(f"🔥 14:30 턴어라운드 종배 — {r['name']}\n"
+                                 f"패닉셀 멈춤+나스닥선물 반등+지지 정렬 (TURNAROUND_STRIKE)\n"
+                                 f"현재가 {int(r['현재가'] or 0):,} ({(r['등락률'] or 0):+.2f}%) · {_now.strftime('%H:%M')} KST\n"
+                                 f"⚠️ 비중 30~50%(HALF_CAPS) 선취매만 · 저점 이탈 시 −2% 손절"):
+                    _ta_sent[r["ticker"]] = True
+        st.session_state["_ta_sent"] = _ta_sent
 
     # ── 통합 원-라인 테이블 (종목당 전 상태 한 줄 정렬) ──────────────────────
     _rows_html = []
