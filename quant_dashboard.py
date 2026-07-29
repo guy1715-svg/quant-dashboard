@@ -1818,23 +1818,45 @@ def render_dolpanty_swing_monitor(targets=None):
 
     # 턴어라운드 정렬 종목 → 🔥 배지 + 텔레그램(종목별 당일 1회) · NO_POSITION 예외 승격
     if _ta_hits:
-        st.markdown(
-            "<div style='border:2px solid #f97316;border-radius:12px;padding:10px 14px;margin:6px 0;"
-            "background:linear-gradient(90deg,#2a1505,#111c33);box-shadow:0 0 14px rgba(249,115,66,0.35)'>"
-            "<div style='font-size:15px;font-weight:900;color:#fdba74'>🔥 14:30 턴어라운드 포착 (비중 50% 제한)</div>"
-            "<div style='font-size:12px;color:#fed7aa;margin-top:3px'>🟠 TURNAROUND_STRIKE — 패닉셀 멈춤+매크로 반등+지지 정렬. "
-            "🔴 NO_POSITION 예외 승격, <b>HALF_CAPS(30~50%)</b>로만 선취매 · 대상: "
-            + ", ".join(r["name"] for r in _ta_hits) + "</div></div>", unsafe_allow_html=True)
+        # [V6.1] 2단계: 15:20 전 = 정렬 대기 / 15:20 정각(±2분) = 동시호가 타격
+        _ta_strike = (15 * 60 + 20) <= _ta_mins <= (15 * 60 + 22)
+        if _ta_strike:
+            st.markdown(
+                "<div style='border:2px solid #ef4444;border-radius:12px;padding:11px 14px;margin:6px 0;"
+                "background:linear-gradient(90deg,#2a0808,#111c33);box-shadow:0 0 16px rgba(239,68,68,0.45)'>"
+                "<div style='font-size:16px;font-weight:900;color:#fca5a5'>⏰ 15:20 동시호가 타격 — 지금!</div>"
+                "<div style='font-size:12px;color:#fed7aa;margin-top:3px'>🟠 TURNAROUND_STRIKE 정렬 · "
+                "<b>시장가 딱 1주(테스트) ~ 최대 50%(HALF_CAPS)</b> · 대상: "
+                + ", ".join(r["name"] for r in _ta_hits) + "</div></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(
+                "<div style='border:2px solid #f97316;border-radius:12px;padding:10px 14px;margin:6px 0;"
+                "background:linear-gradient(90deg,#2a1505,#111c33);box-shadow:0 0 14px rgba(249,115,66,0.35)'>"
+                "<div style='font-size:15px;font-weight:900;color:#fdba74'>🔥 14:30 턴어라운드 정렬 — 15:20 동시호가 대기</div>"
+                "<div style='font-size:12px;color:#fed7aa;margin-top:3px'>🟠 패닉셀 멈춤+매크로 반등+지지 정렬. "
+                "지금은 <b>관망</b> · 15:20 정각에 <b>시장가 1주(테스트)~최대 50%</b> 타격 · 대상: "
+                + ", ".join(r["name"] for r in _ta_hits) + "</div></div>", unsafe_allow_html=True)
         _ta_sent = st.session_state.get("_ta_sent") or {}
         _ta_today = _now.strftime("%Y%m%d")
         if _ta_sent.get("_day") != _ta_today: _ta_sent = {"_day": _ta_today}
         for r in _ta_hits:
-            if not _ta_sent.get(r["ticker"]):
-                if send_telegram(f"🔥 14:30 턴어라운드 종배 — {r['name']}\n"
-                                 f"패닉셀 멈춤+나스닥선물 반등+지지 정렬 (TURNAROUND_STRIKE)\n"
-                                 f"현재가 {int(r['현재가'] or 0):,} ({(r['등락률'] or 0):+.2f}%) · {_now.strftime('%H:%M')} KST\n"
-                                 f"⚠️ 비중 30~50%(HALF_CAPS) 선취매만 · 저점 이탈 시 −2% 손절"):
-                    _ta_sent[r["ticker"]] = True
+            _tk = r["ticker"]
+            _px_s = f"{int(r['현재가'] or 0):,} ({(r['등락률'] or 0):+.2f}%)"
+            # ① 정렬 대기 알림 (15:20 전, 종목별 1회)
+            if not _ta_strike and not _ta_sent.get(_tk + "_wait"):
+                if send_telegram(f"🔥 14:30 턴어라운드 정렬 — {r['name']}\n"
+                                 f"패닉셀 멈춤+나스닥선물 반등+지지 정렬\n"
+                                 f"현재가 {_px_s} · {_now.strftime('%H:%M')} KST\n"
+                                 f"⏳ 지금은 관망 · 15:20 정각 동시호가 대기 (섣부른 진입 금지)"):
+                    _ta_sent[_tk + "_wait"] = True
+            # ② 15:20 타격 알림 (종목별 1회)
+            if _ta_strike and not _ta_sent.get(_tk + "_strike"):
+                if send_telegram(f"⏰ 지금 타격 — {r['name']} (15:20 동시호가)\n"
+                                 f"TURNAROUND_STRIKE 정렬 확정\n"
+                                 f"현재가 {_px_s} · {_now.strftime('%H:%M')} KST\n"
+                                 f"🎯 동시호가 시장가 '딱 1주'(테스트) ~ 최대 50%(HALF_CAPS)\n"
+                                 f"⚠️ 저점 이탈 시 −2% 손절"):
+                    _ta_sent[_tk + "_strike"] = True
         st.session_state["_ta_sent"] = _ta_sent
 
     # ── 통합 원-라인 테이블 (종목당 전 상태 한 줄 정렬) ──────────────────────
