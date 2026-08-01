@@ -1070,6 +1070,19 @@ def _manju_lineup_from_github():
     return None
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _watcher_snapshot():
+    """watcher가 올린 스냅샷(data 브랜치) 전체를 로드 — macro/supply/precursor/ace 등.
+    실패 시 빈 dict. render_supply_blackhole·과열 경고 등 대시보드 위젯이 공용으로 사용."""
+    try:
+        _r = _requests.get(_MANJU_SNAP_URL, params={"t": int(_time_kis.time())}, timeout=6)
+        if _r.status_code == 200 and isinstance(_r.json(), dict):
+            return _r.json()
+    except Exception:
+        pass
+    return {}
+
+
 def _manju_load_lineup():
     """라인업 로드 — ① watcher 스냅샷(GitHub, 자동 동기화) → ② 로컬 manju_watchlist.json → ③ 기본값.
     반환: [(code, name), ...]."""
@@ -1721,6 +1734,21 @@ def render_dolpanty_swing_monitor(targets=None):
         f"<div>{_badge} <span style='color:#8b93a7;font-size:11px'>"
         f"15:00~15:30 · 18:00~20:00 · {_now.strftime('%H:%M:%S')} KST</span></div></div>",
         unsafe_allow_html=True)
+    # [V6.1 Task3] 야간 NXT 분할 타격 — 1차(15:20 50%) 이후 19:30~20:00 2차 격발(남은 50% 불타기)
+    _nmin = _now.hour * 60 + _now.minute
+    if (19 * 60 + 30) <= _nmin <= (20 * 60):
+        st.markdown(
+            "<div style='border:2px solid #f97316;border-radius:10px;padding:9px 13px;margin:4px 0;"
+            "background:linear-gradient(90deg,#2a1505,#111c33);box-shadow:0 0 12px rgba(249,115,66,0.3)'>"
+            "<div style='font-size:14px;font-weight:900;color:#fdba74'>🔥 2차 격발(남은 50% 불타기) 타이밍</div>"
+            "<div style='font-size:11px;color:#fed7aa;margin-top:2px'>1차 선취매(15:20·50%)가 야간 유지/상승 중이면 "
+            "남은 50% 추가 · <b>단 −2% 이탈 시 즉시 전량 칼손절</b></div></div>", unsafe_allow_html=True)
+    if (18 * 60) <= _nmin <= (20 * 60):
+        st.markdown(
+            "<div style='background:rgba(239,68,68,0.10);border:1px solid #ef4444;border-radius:9px;"
+            "padding:7px 12px;margin-bottom:4px;font-size:12px;font-weight:800;color:#fca5a5'>"
+            "🛡️ 야간장 킬스위치: 보유 종목 수익률 <b>−2% 이탈 시 즉시 전량 칼손절</b> (야간 탈출 마비 전 탈출)</div>",
+            unsafe_allow_html=True)
     _rc1, _rc2 = st.columns([1, 4])
     if _rc1.button("🔄 강제 새로고침", key="_dol_refresh", use_container_width=True):
         for _fn in (fetch_ohlcv, fetch_macro_triggers):
@@ -2221,8 +2249,8 @@ def check_index_shutdown_us() -> tuple:
 
 # ── 전역 손절 비율 상수 ──────────────────────────────────────────────────────
 # 이 두 값만 바꾸면 전체 손절가 로직에 일괄 반영됨
-_STOP_LOSS_PCT  = 0.07   # 기본 손절: entry × (1 - 0.07) = -7%
-_STOP_LOSS_HARD = 0.10   # 하드 서킷: entry × (1 - 0.10) = -10%
+_STOP_LOSS_PCT  = 0.02   # [V6.1] 기계적 칼손절 -2%(경고) — 도마뱀 꼬리 자르기(타이트)
+_STOP_LOSS_HARD = 0.03   # [V6.1] 하드 서킷 -3% → EXECUTE_MARKET_SELL(강제 시장가 청산)
 
 def fetch_realtime_price(ticker: str) -> float:
     """캐시 없이 실시간 현재가 조회 — 킬스위치/평가 전용 (TTL=0)"""
@@ -3478,6 +3506,7 @@ def get_wti_oil():
 _MACRO_NQ_BLOCK  = -0.2    # 나스닥선물 차단 임계(%)
 _MACRO_NQ_GO     =  0.5    # 나스닥선물 긍정 진입 임계(%)
 _MACRO_WTI_RISK  =  2.0    # WTI 급등 리스크오프 임계(%)
+_MACRO_WTI_CRASH = -5.0    # [V6.1] WTI 급락 호재 임계(%) — 기술주 반등 연료
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -3579,6 +3608,10 @@ def _macro_verdict(d):
         return (f"🟠 경고 · 반도체 조정(SOX {_sox:+.1f}%) — 한도 50%", "#f59e0b", False, True)
     if _nq_go and _semi_sync:
         return ("🟢 진입 허용 (매크로 3대 양호)", "#22c55e", False, False)
+    # [V6.1 Task2] WTI 유가 −5%↑ 폭락 = 기술주 반등 연료(호재) → 나스닥 중립이어도 🟢 승격
+    #   ※ 단, 반도체 폭락/리스크오프(위 🔴)는 이미 반환돼 이 지점엔 안 옴 → 안전 우선 보장
+    if _wti is not None and _wti <= _MACRO_WTI_CRASH:
+        return (f"🟢 진입 허용 (유가 폭락 호재 WTI {_wti:+.1f}%)", "#22c55e", False, False)
     return ("🟡 중립 · 선별 진입 (트리거 미충족)", "#f59e0b", False, False)
 
 
@@ -5196,11 +5229,14 @@ def render_global_header():
         _overnight_block
         or (isinstance(_ks, (int, float)) and _ks <= -2.0) or (isinstance(_kq, (int, float)) and _kq <= -2.0)
         or (isinstance(_krw, (int, float)) and _krw >= 1520) or bool(_mv.get("block")))
+    # [V6.1 Task4] 7~9월 계절성 방어 — 여름 변동성 구간은 기본 HALF_CAPS로 하향
+    _season_half = _now.month in (7, 8, 9)
     _half_caps = (not _no_position) and (
         (isinstance(_krw, (int, float)) and _krw >= 1450)
         or (isinstance(_worst_idx, (int, float)) and _worst_idx <= -1.5)
         or (isinstance(_nq, (int, float)) and _nq < 0)
-        or bool(_mv.get("half")))          # 🟠 반도체 조정(SOX ≤ −3%) → 한도 50%
+        or bool(_mv.get("half"))           # 🟠 반도체 조정(SOX ≤ −3%) → 한도 50%
+        or _season_half)                   # 🗓️ 7~9월 계절성 방어
     _mode = "NO_POSITION" if _no_position else "HALF_CAPS" if _half_caps else "NORMAL"
     st.session_state["_risk_mode"] = _mode
     st.session_state["_killswitch"] = (_mode == "NO_POSITION")
@@ -5250,6 +5286,15 @@ def render_global_header():
                         "🚨 NO-POSITION 셧다운 | 신규 진입 원천 차단 (현금 보유 관망)", "kh-blink"),
     }
     _bg, _bc, _sc, _sig, _anim = _THEME[_mode]
+    # 🔥 [V13.2] 과열 경고 — 매크로 🟢(NORMAL)이나 watcher가 주도주 과열(A급 0개) 판정 시 문구 교체(뇌동추격 통제)
+    if _mode == "NORMAL":
+        try:
+            _ov = ((_watcher_snapshot().get("macro") or {}).get("overheat"))
+            if _ov:
+                _sc = "#fb923c"
+                _sig = "🔥 주도주 과열 — 매크로 🟢이나 A급 후보 0개 · 눌림목(조정) 대기, 추격 금지"
+        except Exception:
+            pass
     # (앰비언트 전체화면 광원 제거 — 시선 산만 방지, 헤더 배너만으로 상태 표현)
     _ambient = ""
     st.markdown(f"""<style>
@@ -5683,8 +5728,48 @@ def fetch_theme_turnover(token, sectors):
     return _out
 
 
+def render_supply_blackhole():
+    """🌪️ 실시간 수급 블랙홀 현황판 — watcher 스냅샷의 섹터 순매수(net) 기준.
+    돈이 빠지는 섹터(이탈원) ➡️ 빨려드는 섹터(유입처)를 큰 화살표로 대비. 데이터 없으면 조용히 skip."""
+    _snap = _watcher_snapshot()
+    _sup = (_snap or {}).get("supply") or {}
+    _inf = _sup.get("inflow"); _outf = _sup.get("outflow")
+    _prec = (_snap or {}).get("precursor") or {}
+    # 이탈/유입 둘 다 있어야 '블랙홀'로 성립. 하나라도 없으면 표시 안 함(착시 방지).
+    if not (_inf and _outf and _inf.get("net_eok", 0) > 0 and _outf.get("net_eok", 0) < 0):
+        return
+    def _amt(v):
+        _a = abs(v)
+        return f"{_a/1e4:.2f}조" if _a >= 1e4 else f"{_a:,.0f}억"
+    _to_sec = _inf["sector"]; _from_sec = _outf["sector"]
+    _in_amt = _inf["net_eok"]; _out_amt = _outf["net_eok"]
+    # precursor(연속 전환 감지분)가 같은 방향이면 '로테이션 확정' 뱃지
+    _confirmed = bool(_prec and _prec.get("to") == _to_sec)
+    _badge = ("<span style='background:#39ff14;color:#052e16;padding:2px 8px;border-radius:6px;"
+              "font-size:11px;font-weight:900;text-shadow:none'>🔒 로테이션 확정</span>"
+              if _confirmed else
+              "<span style='color:#fbbf24;font-size:11px;font-weight:700'>관측 중</span>")
+    st.markdown(
+        "<div style='margin:6px 0 14px 0;padding:14px 16px;border-radius:14px;"
+        "background:linear-gradient(90deg,rgba(239,68,68,0.10),rgba(15,23,42,0.4),rgba(57,255,20,0.12));"
+        "border:1px solid rgba(57,255,20,0.25);box-shadow:0 10px 30px -12px rgba(0,0,0,0.6)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>"
+        f"<span style='font-weight:900;font-size:14px;color:#eaffea'>🌪️ 실시간 수급 블랙홀</span>{_badge}</div>"
+        "<div style='display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap'>"
+        f"<div style='text-align:center'><div style='color:#94a3b8;font-size:10px'>이탈원</div>"
+        f"<div style='font-weight:800;font-size:15px;color:#f87171'>{_from_sec}</div>"
+        f"<div style='color:#ef4444;font-size:12px;font-weight:700'>{_amt(_out_amt)} 유출</div></div>"
+        "<div style='font-size:26px;font-weight:900;color:#39ff14;text-shadow:0 0 8px #39ff14'>➡️</div>"
+        f"<div style='text-align:center'><div style='color:#94a3b8;font-size:10px'>유입처</div>"
+        f"<div style='font-weight:800;font-size:15px;color:#4ade80'>{_to_sec}</div>"
+        f"<div style='color:#16a34a;font-size:12px;font-weight:700'>+{_amt(_in_amt)} 유입</div></div>"
+        "</div></div>", unsafe_allow_html=True)
+    st.caption("💡 섹터 순매수(net) 기준 · watcher 스냅샷 · '로테이션 확정'=연속 전환 교차검증됨")
+
+
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
+    render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
     st.markdown("#### 📡 실시간 테마 거래대금 랭킹 (금액 기준)")
     if not kis_available():
         st.caption("⚠️ KIS 미연결 — 랭킹 산출 불가"); return
@@ -7085,6 +7170,15 @@ def calc_entry_point(df, preset=None):
         target1 = round(entry * 1.08)
     if target2 <= target1:
         target2 = round(target1 * 1.07)
+
+    # [V6.1 Task4] 신규 상장주 모드 — 기계적 +2% 단타 익절 고정(보조지표 없어 추격 위험 차단)
+    try:
+        if st.session_state.get("_ipo_scalp_mode"):
+            target1 = round(entry * 1.02)
+            if target2 <= target1:
+                target2 = round(target1 * 1.02)
+    except Exception:
+        pass
 
     risk   = entry - stoploss
     # R:R은 '최종 목표(target2)' 기준 — 손절 7% 대비 목표 ~14%면 2.0 달성.
@@ -8914,6 +9008,10 @@ with tab_g:
     st.divider()
     # ═══ [하단] ⚙️ 도구 · 📖 도움말 — 매일 보는 정보 아래로(증권사 앱 '더보기/도움말' 관례) ═══
     _section_title("⚙", "🛠️", "도구 · 사용설명서")
+    # [V6.1 Task4] 신규 상장주 단타 모드 — 켜면 스캘핑 타점의 1차 목표가를 +2% 고정 익절로 강제
+    st.checkbox("🆕 신규 상장주 단타 모드 (1차 목표 +2% 기계 익절 고정)",
+                key="_ipo_scalp_mode",
+                help="신규 상장주는 보조지표(이평·전고)가 없어 추격 위험 큼 → 스캘핑 목표1을 무조건 진입가×1.02(+2%)로 고정")
     # ── 📡 V12 수급 골든크로스 텔레그램 엔진 테스트/스캔 ──
     st.markdown("<div style='font-size:12px;font-weight:700;color:#93c5fd;margin:2px 0'>"
                 "📡 장중 수급 골든크로스 경보 엔진 (외인·기관 쌍끌이 × 10억↑ × 연기금)</div>",
