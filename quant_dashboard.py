@@ -1083,6 +1083,26 @@ def _watcher_snapshot():
     return {}
 
 
+def _snap_freshness():
+    """watcher 스냅샷 신선도 — (minutes_old, badge_html). updated_ts 기준.
+    ≤3분 신선(초록)·≤10분 주의(노랑)·그 이상 낡음(빨강). ts 없으면 (None, 낡음 배지)."""
+    _snap = _watcher_snapshot()
+    _ts = (_snap or {}).get("updated_ts")
+    if not _ts:
+        return None, ("<span style='color:#f87171;font-size:10px;font-weight:700'>⚠️ 데이터 없음(watcher 확인)</span>")
+    try:
+        _mins = max(0, int((_time_kis.time() - int(_ts)) / 60))
+    except Exception:
+        return None, "<span style='color:#f87171;font-size:10px'>⚠️ 시각 오류</span>"
+    if _mins <= 3:
+        _c, _lbl = "#4ade80", f"🟢 {_mins}분 전"
+    elif _mins <= 10:
+        _c, _lbl = "#fbbf24", f"🟡 {_mins}분 전"
+    else:
+        _c, _lbl = "#f87171", f"🔴 {_mins}분 전(낡음·watcher 중단?)"
+    return _mins, f"<span style='color:{_c};font-size:10px;font-weight:700'>⏱️ {_lbl}</span>"
+
+
 def _manju_load_lineup():
     """라인업 로드 — ① watcher 스냅샷(GitHub, 자동 동기화) → ② 로컬 manju_watchlist.json → ③ 기본값.
     반환: [(code, name), ...]."""
@@ -5290,7 +5310,9 @@ def render_global_header():
     if _mode == "NORMAL":
         try:
             _ov = ((_watcher_snapshot().get("macro") or {}).get("overheat"))
-            if _ov:
+            _mins_fresh, _ = _snap_freshness()
+            # 낡은 스냅샷(>10분)의 과열 플래그는 신뢰 불가 → 무시(오탐 방지)
+            if _ov and _mins_fresh is not None and _mins_fresh <= 10:
                 _sc = "#fb923c"
                 _sig = "🔥 주도주 과열 — 매크로 🟢이나 A급 후보 0개 · 눌림목(조정) 대기, 추격 금지"
         except Exception:
@@ -5749,12 +5771,14 @@ def render_supply_blackhole():
               "font-size:11px;font-weight:900;text-shadow:none'>🔒 로테이션 확정</span>"
               if _confirmed else
               "<span style='color:#fbbf24;font-size:11px;font-weight:700'>관측 중</span>")
+    _, _fresh = _snap_freshness()      # ⏱️ 스냅샷 신선도(낡으면 착시 방지 경고)
     st.markdown(
         "<div style='margin:6px 0 14px 0;padding:14px 16px;border-radius:14px;"
         "background:linear-gradient(90deg,rgba(239,68,68,0.10),rgba(15,23,42,0.4),rgba(57,255,20,0.12));"
         "border:1px solid rgba(57,255,20,0.25);box-shadow:0 10px 30px -12px rgba(0,0,0,0.6)'>"
         f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>"
-        f"<span style='font-weight:900;font-size:14px;color:#eaffea'>🌪️ 실시간 수급 블랙홀</span>{_badge}</div>"
+        f"<span style='font-weight:900;font-size:14px;color:#eaffea'>🌪️ 실시간 수급 블랙홀</span>"
+        f"<span style='display:flex;gap:8px;align-items:center'>{_fresh}{_badge}</span></div>"
         "<div style='display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap'>"
         f"<div style='text-align:center'><div style='color:#94a3b8;font-size:10px'>이탈원</div>"
         f"<div style='font-weight:800;font-size:15px;color:#f87171'>{_from_sec}</div>"
