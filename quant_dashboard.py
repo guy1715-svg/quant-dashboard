@@ -4881,6 +4881,21 @@ def render_trading_journal():
         _log = _pd.read_csv(_TRADE_LOG_FILE, dtype=str).fillna("") if os.path.exists(_TRADE_LOG_FILE) else _pd.DataFrame()
     except Exception:
         _log = _pd.DataFrame()
+    # 📤 [V13.2] 백업 CSV 불러오기(복원) — 재배포로 사라진 기록을 백업파일로 되살림(기존과 병합·중복제거)
+    with st.expander("📤 매매일지 백업 불러오기(CSV 복원)", expanded=_log.empty):
+        _up = st.file_uploader("백업 CSV 선택 (다운로드받아 두었던 trading_log.csv)", type=["csv"], key="_tj_restore")
+        if _up is not None:
+            try:
+                _bak = _pd.read_csv(_up, dtype=str).fillna("")
+                _merged = _pd.concat([_log, _bak], ignore_index=True) if not _log.empty else _bak
+                _keys = [c for c in ["날짜", "종목명", "매수가", "매도가", "수량"] if c in _merged.columns]
+                if _keys:
+                    _merged = _merged.drop_duplicates(subset=_keys, keep="last")
+                _merged.to_csv(_TRADE_LOG_FILE, index=False, encoding="utf-8-sig")
+                st.success(f"✅ 복원 완료 — 총 {len(_merged)}건 (백업 {len(_bak)}건 병합·중복제거)")
+                _log = _merged
+            except Exception as _e:
+                st.error(f"불러오기 실패: {_e} — CSV 형식(첫 줄 헤더)인지 확인하세요.")
     with st.form("_tj_form", clear_on_submit=True):
         _c1, _c2, _c3 = st.columns([2, 1, 1])
         _nm  = _c1.text_input("종목명", placeholder="예: 두산에너빌리티")
