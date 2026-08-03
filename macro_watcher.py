@@ -691,6 +691,15 @@ def _investor_est(token, key, secret, code):
     return 0, 0
 
 
+# [V13.2 오신호 차단] 수급 전환 격발 임계 —
+#   ① 완충대: |순매수 금액| ≥ 20억 넘어야 인정(0선 근처 +0.0억 진동 무시)
+#   ② 2루프 연속 확인: 조건이 연속 2회 유지돼야 발송(단발 스파이크 무시)
+#   ③ 하락 컷: 매수전환은 현재가 −3%보다 더 빠지는 중이면 억제(급락 중 데드캣 방지)
+SUPPLY_FLIP_MIN_EOK = 20        # 완충대(억)
+SUPPLY_FLIP_CONFIRM = 2         # 연속 확인 루프 수
+SUPPLY_BUY_DROP_CUT = -3.0      # 매수전환 하락 컷(%)
+
+
 def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
     """[이원화] 텔레그램은 '음(-)→양(+) 확정 전환'만(격발용). 대시보드 속보판엔 종목별 추세(관측용) 제공.
     반환 (flips, watch):
@@ -706,6 +715,10 @@ def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lin
         prev = {"_day": today}
     if sent.get("_day") != today:
         sent = {"_day": today}
+    pend = state.get("supply_pending", {})          # 완충대·연속확인·전환이력 추적
+    if pend.get("_day") != today:
+        pend = {"_day": today}
+    _TH = SUPPLY_FLIP_MIN_EOK * 1e8
     def _trend_of(cur, pv):
         if cur >= 0:            return "pos"          # 🟢 순매수(양전)
         if pv is not None and cur > pv:  return "up"  # 🟡 개선 중(매도 둔화)
@@ -726,46 +739,40 @@ def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lin
         # 관측용 추세 — 기관·외인 각각
         watch.append({"name": name, "org_eok": round(_org / 1e8, 1), "frn_eok": round(_frn / 1e8, 1),
                       "org_trend": _trend_of(_org, _op), "frn_trend": _trend_of(_frn, _fp)})
-        # 텔레그램 격발 — 기관·외인 '각각', 음(-)→양(+) 진입신호 / 양(+)→음(-) 이탈경고 (주체·방향별 당일 1회)
-        # 🔄 기관 음→양 (바닥 반등 초입)
-        if _op is not None and _op < 0 <= _org and not sent.get(code + "_org_up"):
-            flips.append({"name": name, "code": code, "who": "기관", "dir": "up", "net_eok": round(_org / 1e8, 1)})
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🔄 기관 수급 전환(+) — {name}\n"
-                          f"기관 순매수 음(-)→양(+) 전환 (순환매/바닥반등 초입)\n"
-                          f"기관 순매수 {_org/1e8:+,.1f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                          f"👀 빨간선(기관) 고개 드는 자리 — 외인도 붙는지 확인")
-            sent[code + "_org_up"] = True
-        # ⚠️ 기관 양→음 (이탈·매도 전환 경고)
-        if _op is not None and _op >= 0 > _org and not sent.get(code + "_org_dn"):
-            flips.append({"name": name, "code": code, "who": "기관", "dir": "down", "net_eok": round(_org / 1e8, 1)})
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_SELL}\n⚠️ 기관 수급 이탈(-) — {name}\n"
-                          f"기관 순매수 양(+)→음(-) 전환 (세력 이탈·매도 시작)\n"
-                          f"기관 순매수 {_org/1e8:+,.1f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                          f"🛡️ 보유 중이면 탈출/손절 점검 — 빨간선 꺾임")
-            sent[code + "_org_dn"] = True
-        # 🔄 외인 음→양
-        if _fp is not None and _fp < 0 <= _frn and not sent.get(code + "_frn_up"):
-            flips.append({"name": name, "code": code, "who": "외인", "dir": "up", "net_eok": round(_frn / 1e8, 1)})
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🔄 외인 수급 전환(+) — {name}\n"
-                          f"외국인 순매수 음(-)→양(+) 전환 (순환매/바닥반등 초입)\n"
-                          f"외인 순매수 {_frn/1e8:+,.1f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                          f"👀 파란선(외인) 고개 드는 자리 — 기관과 쌍끌이면 강력")
-            sent[code + "_frn_up"] = True
-        # ⚠️ 외인 양→음 (이탈 경고)
-        if _fp is not None and _fp >= 0 > _frn and not sent.get(code + "_frn_dn"):
-            flips.append({"name": name, "code": code, "who": "외인", "dir": "down", "net_eok": round(_frn / 1e8, 1)})
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_SELL}\n⚠️ 외인 수급 이탈(-) — {name}\n"
-                          f"외국인 순매수 양(+)→음(-) 전환 (세력 이탈·매도 시작)\n"
-                          f"외인 순매수 {_frn/1e8:+,.1f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                          f"🛡️ 보유 중이면 탈출/손절 점검 — 파란선 꺾임")
-            sent[code + "_frn_dn"] = True
-        prev[code] = [_frn, _org]                      # 다음 루프 비교용(각각)
+        # 텔레그램 격발 — 주체(기관/외인)별. [V13.2] 완충대(±20억) + 2루프 연속 + 하락컷으로 오신호 차단.
+        def _flip(who, cur, kb, hint_up, hint_dn):
+            # 전환 이력 추적: 오늘 한 번이라도 음(-)/양(+) 완충대를 밟았는지(진짜 '전환'만 인정)
+            if cur <= -_TH: pend[kb + "_negseen"] = True
+            if cur >= _TH:  pend[kb + "_posseen"] = True
+            # 매수전환(음→양): 완충대 양수 + 하락컷 미해당 → 연속 카운트
+            _up_ok = (cur >= _TH) and (chg is None or chg > SUPPLY_BUY_DROP_CUT)
+            pend[kb + "_upc"] = (pend.get(kb + "_upc", 0) + 1) if _up_ok else 0
+            if (pend.get(kb + "_negseen") and pend.get(kb + "_upc", 0) >= SUPPLY_FLIP_CONFIRM
+                    and not sent.get(kb + "_up")):
+                flips.append({"name": name, "code": code, "who": who, "dir": "up", "net_eok": round(cur / 1e8, 1)})
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_BUY}\n🔄 {who} 수급 전환(+) — {name}\n"
+                              f"{who} 순매수 음(-)→양(+) 전환 (완충대 통과·{SUPPLY_FLIP_CONFIRM}루프 확인)\n"
+                              f"{who} 순매수 {cur/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n{hint_up}")
+                sent[kb + "_up"] = True
+            # 매도전환(양→음): 완충대 음수 → 연속 카운트(하락컷 없음 — 급락 중 이탈은 유효)
+            _dn_ok = (cur <= -_TH)
+            pend[kb + "_dnc"] = (pend.get(kb + "_dnc", 0) + 1) if _dn_ok else 0
+            if (pend.get(kb + "_posseen") and pend.get(kb + "_dnc", 0) >= SUPPLY_FLIP_CONFIRM
+                    and not sent.get(kb + "_dn")):
+                flips.append({"name": name, "code": code, "who": who, "dir": "down", "net_eok": round(cur / 1e8, 1)})
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_SELL}\n⚠️ {who} 수급 이탈(-) — {name}\n"
+                              f"{who} 순매수 양(+)→음(-) 전환 (완충대 통과·{SUPPLY_FLIP_CONFIRM}루프 확인)\n"
+                              f"{who} 순매수 {cur/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n{hint_dn}")
+                sent[kb + "_dn"] = True
+
+        _flip("기관", _org, code + "_org", "👀 빨간선(기관) 고개 — 외인도 붙는지 확인", "🛡️ 보유 시 탈출/손절 점검 — 빨간선 꺾임")
+        _flip("외인", _frn, code + "_frn", "👀 파란선(외인) 고개 — 기관과 쌍끌이면 강력", "🛡️ 보유 시 탈출/손절 점검 — 파란선 꺾임")
+        prev[code] = [_frn, _org]                      # 다음 루프 비교용(각각·관측 trend에 사용)
     state["supply_prev"] = prev
     state["supply_turn_sent"] = sent
+    state["supply_pending"] = pend
     return flips, watch
 
 
