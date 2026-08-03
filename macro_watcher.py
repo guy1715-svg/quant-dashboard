@@ -691,6 +691,34 @@ def _investor_est(token, key, secret, code):
     return 0, 0
 
 
+# [V13.2] 종목별 '진짜' 프로그램매매 순매수 금액(원) — program-trade-by-stock. 실패 시 None(가짜 안 씀).
+#   ⚠️ tr_id/필드는 KIS 실전 응답 보고 조정 필요할 수 있음. 실패하면 UI에 '—(미연동)'으로 정직 표기.
+PROGRAM_TR_ID = "FHPPG04650200"       # 종목별 프로그램매매추이(당일). 응답 이상 시 이 값부터 점검.
+
+
+def _program_net(token, key, secret, code):
+    """종목 당일 프로그램 순매수 '금액(원)' — 최신 비영(非零) 행. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/program-trade-by-stock",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": PROGRAM_TR_ID},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        j = r.json()
+        rows = j.get("output") or j.get("output1") or j.get("output2") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        for row in rows:                          # 최신(맨 앞)부터 비영 값 채택
+            if not isinstance(row, dict):
+                continue
+            for _f in ("whol_ntby_tr_pbmn", "whol_smtm_ntby_tr_pbmn", "whol_ntby_qty_pbmn"):
+                _v = _to_int(row.get(_f))
+                if _v:
+                    return _v * 1_000_000 if abs(_v) < 1e7 else _v   # 백만원 단위면 원으로 환산
+    except Exception:
+        pass
+    return None
+
+
 # [V13.2 오신호 차단] 수급 전환 격발 임계 —
 #   ① 완충대: |순매수 금액| ≥ 20억 넘어야 인정(0선 근처 +0.0억 진동 무시)
 #   ② 2루프 연속 확인: 조건이 연속 2회 유지돼야 발송(단발 스파이크 무시)
@@ -736,9 +764,24 @@ def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lin
         if not isinstance(_pv, (list, tuple)) or len(_pv) < 2:   # 옛 state(숫자) 방어
             _pv = [None, None]
         _fp, _op = _pv[0], _pv[1]
-        # 관측용 추세 — 기관·외인 각각
+        # [V13.2] 4주체 분해 — 개인은 근사(= −(외인+기관)), 프로그램은 진짜 API(_program_net)
+        _prog = _program_net(token, key, secret, code)   # 원 or None
+        _indiv = -(_frn + _org)                          # 개인 근사(순매수 총합≈0 가정)
+        # 관측용 추세 — 기관·외인 각각 + 개인/프로그램 값
         watch.append({"name": name, "org_eok": round(_org / 1e8, 1), "frn_eok": round(_frn / 1e8, 1),
-                      "org_trend": _trend_of(_org, _op), "frn_trend": _trend_of(_frn, _fp)})
+                      "org_trend": _trend_of(_org, _op), "frn_trend": _trend_of(_frn, _fp),
+                      "indiv_eok": round(_indiv / 1e8, 1),
+                      "prog_eok": (round(_prog / 1e8, 1) if _prog is not None else None),
+                      "px": px, "chg": round(chg or 0.0, 2)})
+        # 🚨 [V13.2] 개인털이 경고 — 개인만 사고 외인·기관 둘 다 파는 자리(완충대↑) → 추격 금지
+        if (_indiv >= _TH and _frn <= -_TH and _org <= -_TH
+                and not sent.get(code + "_solo")):
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_CAUTION}\n🚨 개인 홀로 매수 — {name}\n"
+                          f"개인(근사) {_indiv/1e8:+,.0f}억 매수인데 외인 {_frn/1e8:+,.0f}억·기관 {_org/1e8:+,.0f}억 동반 매도\n"
+                          f"현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                          f"⚠️ 세력 이탈 자리 — 개인 추격매수 금지")
+            sent[code + "_solo"] = True
         # 텔레그램 격발 — 주체(기관/외인)별. [V13.2] 완충대(±20억) + 2루프 연속 + 하락컷으로 오신호 차단.
         def _flip(who, cur, kb, hint_up, hint_dn):
             # 전환 이력 추적: 오늘 한 번이라도 음(-)/양(+) 완충대를 밟았는지(진짜 '전환'만 인정)

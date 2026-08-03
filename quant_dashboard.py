@@ -5791,9 +5791,62 @@ def render_supply_blackhole():
     st.caption("💡 섹터 순매수(net) 기준 · watcher 스냅샷 · '로테이션 확정'=연속 전환 교차검증됨")
 
 
+def render_supply_by_investor():
+    """👥 [V13.2] 라인업 종목별 4주체 수급 — 개인/외국인/기관/프로그램. watcher 스냅샷 supply_watch 기반.
+    개인(근사)이 사고 외인·기관이 파는 종목을 색으로 한눈에 걸러내기 위함. 데이터 없으면 skip."""
+    _snap = _watcher_snapshot()
+    _rows = (_snap or {}).get("supply_watch") or []
+    if not _rows:
+        return
+    _, _fresh = _snap_freshness()
+    def _c(v):
+        if v is None: return "#64748b"
+        return "#ef4444" if v < 0 else "#16a34a" if v > 0 else "#94a3b8"
+    def _cell(v, approx=False):
+        if v is None:
+            return "<span style='color:#64748b;font-size:11px'>—<span style='font-size:9px'>(미연동)</span></span>"
+        _s = "*" if approx else ""
+        return f"<b style='color:{_c(v)}'>{v:+,.0f}억{_s}</b>"
+    _tr = []
+    for _r in _rows:
+        _nm = _r.get("name", "")
+        _chg = _r.get("chg", 0.0)
+        # '세력' = 외인·기관·프로그램 중 (+) 개수 / 개인만 (+)면 경고
+        _frn = _r.get("frn_eok"); _org = _r.get("org_eok")
+        _ind = _r.get("indiv_eok"); _prg = _r.get("prog_eok")
+        _smart_pos = sum(1 for v in (_frn, _org, _prg) if isinstance(v, (int, float)) and v > 0)
+        _solo = (isinstance(_ind, (int, float)) and _ind > 0 and _smart_pos == 0)
+        _flag = ("<span style='color:#fb923c;font-weight:800'>🚨개인홀로</span>" if _solo
+                 else "<span style='color:#4ade80;font-weight:800'>🟢세력유입</span>" if _smart_pos >= 2
+                 else "")
+        _tr.append(
+            f"<tr>"
+            f"<td style='padding:5px 8px;font-weight:700;color:#e2e8f0'>{_nm}</td>"
+            f"<td style='padding:5px 8px;text-align:right;color:{'#ef4444' if _chg<0 else '#16a34a' if _chg>0 else '#94a3b8'}'>{_chg:+.2f}%</td>"
+            f"<td style='padding:5px 8px;text-align:right'>{_cell(_ind, approx=True)}</td>"
+            f"<td style='padding:5px 8px;text-align:right'>{_cell(_frn, approx=True)}</td>"
+            f"<td style='padding:5px 8px;text-align:right'>{_cell(_org, approx=True)}</td>"
+            f"<td style='padding:5px 8px;text-align:right'>{_cell(_prg)}</td>"
+            f"<td style='padding:5px 8px;text-align:center'>{_flag}</td></tr>")
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px'>"
+        f"<span style='font-weight:900;font-size:14px;color:#e2e8f0'>👥 종목별 4주체 수급</span>{_fresh}</div>"
+        "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+        "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden'><thead>"
+        "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+        "<th style='padding:5px 8px;text-align:left'>종목</th><th style='padding:5px 8px;text-align:right'>등락</th>"
+        "<th style='padding:5px 8px;text-align:right'>개인</th><th style='padding:5px 8px;text-align:right'>외국인</th>"
+        "<th style='padding:5px 8px;text-align:right'>기관</th><th style='padding:5px 8px;text-align:right'>프로그램</th>"
+        "<th style='padding:5px 8px;text-align:center'>판정</th></tr></thead>"
+        f"<tbody>{''.join(_tr)}</tbody></table></div>", unsafe_allow_html=True)
+    st.caption("💡 개인·외인·기관은 *장중 추정(개인=−(외인+기관) 근사) · 프로그램은 KIS 실측 · "
+               "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
+
+
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
     render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
+    render_supply_by_investor()        # 👥 [V13.2] 종목별 4주체 수급(개인/외인/기관/프로그램)
     st.markdown("#### 📡 실시간 테마 거래대금 랭킹 (금액 기준)")
     if not kis_available():
         st.caption("⚠️ KIS 미연결 — 랭킹 산출 불가"); return
