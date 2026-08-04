@@ -585,6 +585,18 @@ def _ma20_disparity(token, key, secret, code, px):
     return None
 
 
+def _log_signal(state, now_kst, kind, name, code, px):
+    """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
+    today = now_kst.strftime("%Y%m%d")
+    sl = state.get("signal_log", {})
+    if sl.get("_day") != today:
+        sl = {"_day": today, "items": []}
+    sl.setdefault("items", []).append(
+        {"t": now_kst.strftime("%H:%M"), "kind": kind, "name": name, "code": code, "px": px})
+    sl["items"] = sl["items"][-120:]          # 최근 120건만 유지
+    state["signal_log"] = sl
+
+
 def _recent_high(token, key, secret, code, days=20):
     """최근 N일 고가 중 현재가 위의 '저항선' 근사 — inquire-daily-price. 실패 시 None.
     현재가보다 높은 최근 고가들 중 가장 가까운 값(=다음 저항). 없으면 최근 최고가."""
@@ -720,6 +732,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
                               f"─────────\n"
                               f"🔌 HTS 열어 금액 3종(프로그램·외인·기관) 모두 (+) 확인 → 타격")
                 sent[code] = True
+                _log_signal(state, now_kst, "시가저격", name, code, px)
     state["sniper_sent"] = sent
     return out
 
@@ -1190,6 +1203,7 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
                               f"─────────\n"
                               f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
                 sent[_key] = True
+                _log_signal(state, now_kst, "15분봉", name, code, px)
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
             mark[code] = {"bidx": _bidx, "px": px, "turn": turn or 0}
@@ -1680,6 +1694,9 @@ def main():
                 send_interval_brief(now, st, token_tg, chat_id, snap)
             except Exception as _ibe:
                 print("요약 브리핑 오류:", _ibe)
+
+            # 📍 [V13.2] 오늘 매수 알림 로그(시각·가격) — 대시보드 '알림 성적'용
+            snap["signal_log"] = (st.get("signal_log") or {}).get("items", [])
 
             # 📓 매매일지 누적 + 장전 브리핑(08:50)·마감 복기(15:35) 발송
             journal_accumulate(st, snap)

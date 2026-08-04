@@ -5545,8 +5545,22 @@ def render_stock_drilldown(code, name=""):
                              _alt.Tooltip("지표:N", title="구분"),
                              _alt.Tooltip("가격:Q", title="가격", format=",.0f")])
                     .properties(height=200))
+                # ⭐ 오늘 이 종목에 뜬 매수 알림가 = 수평 점선으로 표시(진입 레벨 vs 현재)
+                try:
+                    _mysig = [s for s in ((_watcher_snapshot() or {}).get("signal_log") or [])
+                              if str(s.get("code")) == str(code) and s.get("px")]
+                    if _mysig:
+                        import pandas as _pdc
+                        _sigdf = _pdc.DataFrame([{"알림가": s["px"], "라벨": f"⭐{s.get('t','')} {s.get('kind','')}"} for s in _mysig])
+                        _rule = _alt.Chart(_sigdf).mark_rule(color="#fbbf24", strokeDash=[4, 3]).encode(
+                            y="알림가:Q",
+                            tooltip=[_alt.Tooltip("알림가:Q", title="알림가", format=",.0f"),
+                                     _alt.Tooltip("라벨:N", title="알림")])
+                        _chart = _chart + _rule
+                except Exception:
+                    pass
                 st.altair_chart(_chart, use_container_width=True)
-                st.caption("💡 흰선=종가 · 주황=5일선 · 파랑=20일선(기준) · 보라=60일선")
+                st.caption("💡 흰선=종가 · 주황=5일선 · 파랑=20일선(기준) · 보라=60일선 · 노란점선⭐=오늘 알림가")
             except Exception:
                 _rn = {"종가": "종가", "MA5": "5일선", "MA20": "20일선", "MA60": "60일선"}
                 st.line_chart(_ind[_cols].tail(60).rename(columns=_rn), height=160)
@@ -6067,10 +6081,60 @@ def render_supply_by_investor():
                "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
 
 
+def render_signal_scoreboard():
+    """📍 [V13.2] 오늘 매수 알림 성적 — 알림 왔을 때 샀다면 지금 얼마? 알림가 vs 현재가 수익률.
+    watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
+    _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
+    if not _sigs:
+        return
+    with st.expander(f"📍 오늘 매수 알림 성적 ({len(_sigs)}건) — 그때 샀다면 지금?", expanded=False):
+        _rows = []
+        _wins = 0; _valid = 0
+        for _s in reversed(_sigs):        # 최신 먼저
+            _cd = _s.get("code"); _alert_px = _s.get("px") or 0
+            _cur = 0
+            try:
+                _cur = (kis_get_price(_cd) or {}).get("현재가") or 0
+            except Exception:
+                _cur = 0
+            _ret = ((_cur / _alert_px - 1) * 100) if (_alert_px and _cur) else None
+            if _ret is not None:
+                _valid += 1
+                if _ret > 0: _wins += 1
+            _rc = "#16a34a" if (_ret is not None and _ret > 0) else "#ef4444" if (_ret is not None and _ret < 0) else "#94a3b8"
+            _judge = ("🟢 올랐다" if (_ret is not None and _ret >= 1) else
+                      "🔴 빠졌다" if (_ret is not None and _ret <= -1) else
+                      "⚪ 보합" if _ret is not None else "—")
+            _rows.append(
+                f"<tr><td style='padding:4px 8px;color:#94a3b8'>{_s.get('t','')}</td>"
+                f"<td style='padding:4px 8px'>{_s.get('kind','')}</td>"
+                f"<td style='padding:4px 8px;font-weight:700'>{_s.get('name','')}</td>"
+                f"<td style='padding:4px 8px;text-align:right'>{_alert_px:,}</td>"
+                f"<td style='padding:4px 8px;text-align:right'>{_cur:,}</td>"
+                f"<td style='padding:4px 8px;text-align:right;font-weight:800;color:{_rc}'>"
+                f"{(f'{_ret:+.1f}%' if _ret is not None else '—')}</td>"
+                f"<td style='padding:4px 8px;text-align:center'>{_judge}</td></tr>")
+        _wr = (_wins / _valid * 100) if _valid else 0
+        st.markdown(f"**적중률(알림가 대비 상승): {_wr:.0f}%** ({_wins}/{_valid}건)  ·  현재가 기준 실시간")
+        st.markdown(
+            "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
+            "border:1px solid rgba(255,255,255,0.07);border-radius:10px;overflow:hidden'><thead>"
+            "<tr style='background:#1e293b;color:#94a3b8;font-size:11px'>"
+            "<th style='padding:4px 8px'>시각</th><th style='padding:4px 8px'>유형</th>"
+            "<th style='padding:4px 8px;text-align:left'>종목</th>"
+            "<th style='padding:4px 8px;text-align:right'>알림가</th>"
+            "<th style='padding:4px 8px;text-align:right'>현재가</th>"
+            "<th style='padding:4px 8px;text-align:right'>수익률</th>"
+            "<th style='padding:4px 8px;text-align:center'>판정</th></tr></thead>"
+            f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
+        st.caption("💡 '알림 왔을 때 바로 샀다면' 기준 · 실제 체결가는 다를 수 있음 · 종목 돋보기 차트에 알림가 선(⭐) 표시됨")
+
+
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
     render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
     render_supply_by_investor()        # 👥 [V13.2] 종목별 4주체 수급(개인/외인/기관/프로그램)
+    render_signal_scoreboard()         # 📍 [V13.2] 오늘 매수 알림 성적(알림가 vs 현재가)
     st.markdown("#### 📡 실시간 테마 거래대금 랭킹 (금액 기준)")
     if not kis_available():
         st.caption("⚠️ KIS 미연결 — 랭킹 산출 불가"); return
