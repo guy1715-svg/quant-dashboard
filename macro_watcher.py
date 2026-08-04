@@ -1222,6 +1222,103 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
     return out
 
 
+_BAR5_PCT = 0.6    # 5분 구간 상승 몸통 기준(%) — 15분(1.0%)보다 낮게(빠른 진입용)
+
+
+def check_bar5(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+    """⚡ 5분봉 강한 양봉 — 빠른 진입 신호(15분봉보다 10분 빠름). 5분 경계마다 직전 5분 평가.
+    휩쏘 방어: ①당일 +(역추세 반등 제외) ②나스닥선물 동조 ③거래대금 증가. 15분봉은 추세 확인용으로 별도 유지."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 15) <= m <= (15 * 60 + 20)):   # 마의구간 이후~장중
+        return []
+    today = now_kst.strftime("%Y%m%d")
+    _bidx = m // 5                                    # 5분 버킷
+    _nq = _pct("NQ=F")
+    _nq_pv = state.get("bar5_nq_prev")
+    _nq_rising = (_nq_pv is None) or (_nq is None) or (_nq >= _nq_pv)
+    _nq_sync = (_nq is None) or (_nq >= 0 and _nq_rising)
+    state["bar5_nq_prev"] = _nq
+    mark = state.get("bar5_mark", {})
+    sent = state.get("bar5_sent", {})
+    if mark.get("_day") != today: mark = {"_day": today}
+    if sent.get("_day") != today: sent = {"_day": today}
+    out = []
+    for code, name in lineup:
+        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        if not px:
+            continue
+        _mk = mark.get(code)
+        if _mk and _mk.get("bidx") != _bidx and _mk.get("px"):
+            _move = (px / _mk["px"] - 1) * 100
+            _tdelta = (turn - _mk.get("turn", 0)) if turn else 0
+            _key = f"{code}_{_bidx}"
+            # 빠른 만큼 휩쏘 방어: 당일 +(역추세 반등 컷) 필수
+            if (_move >= _BAR5_PCT and _tdelta > 0 and _nq_sync and (chg or 0) > 0
+                    and not sent.get(_key)):
+                _stop = int(px * 0.98)
+                _disp = _ma20_disparity(token, key, secret, code, px)
+                _dtxt = (f"20일선 이격 +{_disp:.1f}%" + ("⚠️과열" if _disp >= 7 else "") if _disp is not None else "이격 확인불가")
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_BUY}\n⚡ 5분봉 빠른 진입 — {name}\n"
+                              f"방금 5분봉 +{_move:.1f}% · 거래대금 증가 · 당일 {(chg or 0):+.2f}%(상승중)\n"
+                              f"• 현재가 {px:,}원 · {_dtxt} · {now_kst.strftime('%H:%M')} KST\n"
+                              f"✂️ 손절 {_stop:,}원(−2%) · ⚠️빠른 신호라 15분봉 확정까지 함께 보면 안전\n"
+                              f"👉 HTS에서 기관 수급(+) 확인 후 소량 진입")
+                out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0, "bar_move": round(_move, 2)})
+                sent[_key] = True
+                _log_signal(state, now_kst, "5분봉", name, code, px)
+        if not _mk or _mk.get("bidx") != _bidx:
+            mark[code] = {"bidx": _bidx, "px": px, "turn": turn or 0}
+    state["bar5_mark"], state["bar5_sent"] = mark, sent
+    return out
+
+
+def check_closing_bet(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+    """🌒 종가배팅 자동 스캐너 — 14:30~15:20, 라인업 종목의 3박자 자동 충족 시 종목별 1회 텔레그램.
+    3박자: ①거래대금 1,000억↑(중소 500억) ②외인·기관 둘 다 순매수(+) ③20일선 위·과열 아님.
+    ④재료는 자동판별 불가 → 사람이 확인. 반환: 스냅샷용 후보 리스트."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((14 * 60 + 30) <= m <= (15 * 60 + 20)):
+        return []
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("cb_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    out = []
+    for code, name in lineup:
+        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        if not px or not turn:
+            continue
+        _need = SNIPER_LARGE if px >= SNIPER_LARGECAP_PX else SNIPER_SMALL   # 1,000억/500억
+        _turn_ok = turn >= (100_000_000_000 if px >= SNIPER_LARGECAP_PX else 50_000_000_000)
+        frn_q, org_q = _investor_est(token, key, secret, code)
+        _supply_ok = (frn_q > 0 and org_q > 0)                              # 외인·기관 쌍끌이(+)
+        _disp = _ma20_disparity(token, key, secret, code, px)
+        _chart_ok = (_disp is not None and 0 < _disp < 10)                  # 20일선 위 + 과열 아님
+        _ok3 = _turn_ok and _supply_ok and _chart_ok
+        _mark = lambda b: "✅" if b else "❌"
+        out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0,
+                    "turn_ok": _turn_ok, "supply_ok": _supply_ok, "chart_ok": _chart_ok,
+                    "pass": _ok3})
+        if _ok3 and not sent.get(code):
+            _stop = int(px * 0.98)
+            _disp_txt = f"+{_disp:.1f}%" if _disp is not None else "확인불가"
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_BUY_STRONG}\n🌒 종가배팅 후보 — {name}\n"
+                          f"3박자 자동 충족! (마감 20~50분 전)\n"
+                          f"{_mark(_turn_ok)} 거래대금 {turn/1e8:,.0f}억(임계 {_need/1e8:,.0f}↑)\n"
+                          f"{_mark(_supply_ok)} 외인 {frn_q:+,}·기관 {org_q:+,} (쌍끌이 매수)\n"
+                          f"{_mark(_chart_ok)} 20일선 위·이격 {_disp_txt}(과열 아님)\n"
+                          f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                          f"─────────\n"
+                          f"④ 재료(뉴스)는 직접 확인! · 15:20 동시호가 매수 · ✂️손절 {_stop:,}원\n"
+                          f"🌅 내일 오전 8:01~8:02 시초 익절 원칙")
+            sent[code] = True
+            _log_signal(state, now_kst, "종가배팅", name, code, px)
+    state["cb_sent"] = sent
+    return out
+
+
 def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
     """진입(초록) 3-조건 상시 감시 — 라인업, 제로아워(09:00~10:00) 창.
     조건: 거래대금 ≥ 임계(대형300/중소150억) AND 프로그램·외인·기관 추정금액 모두 (+).
@@ -1537,6 +1634,8 @@ def main():
                 "lineup": [],                         # 오늘의 감시 라인업(대시보드 동기화)
                 "turnaround": [],                     # 14:30 V자 턴어라운드 정렬 종목
                 "bar15": [],                          # 15분봉 강한 양봉 확정 종목(김팀장式)
+                "bar5": [],                           # ⚡ 5분봉 빠른 진입 종목
+                "closing_bet": [],                    # 🌒 종가배팅 자동 후보(3박자)
                 "market_supply": None,                # 시장 전체(코스피) 기관·외인 순매수
                 "sector_leaders": [],                 # 2-Tier 6대 섹터 대장주 수급 관측
                 "kospi_fut": None,                    # 코스피200 선물 실측(주간/야간 세션·KIS)
@@ -1668,11 +1767,21 @@ def main():
                         snap["turnaround"] = check_turnaround(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
                     except Exception as _tae:
                         print("턴어라운드 체크 오류:", _tae)
-                    # 김팀장式 15분봉 강한 양봉 확정 → 다음 봉 진입 신호
+                    # 김팀장式 15분봉 강한 양봉 확정 → 다음 봉 진입 신호(추세 확인용)
                     try:
                         snap["bar15"] = check_bar15(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
                     except Exception as _b15e:
                         print("15분봉 체크 오류:", _b15e)
+                    # ⚡ 5분봉 빠른 진입(15분봉보다 10분 빠름 · 당일+·수급확인 권장)
+                    try:
+                        snap["bar5"] = check_bar5(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
+                    except Exception as _b5e:
+                        print("5분봉 체크 오류:", _b5e)
+                    # 🌒 종가배팅 자동 스캐너(14:30~15:20 · 3박자 충족 시 발송)
+                    try:
+                        snap["closing_bet"] = check_closing_bet(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
+                    except Exception as _cbe:
+                        print("종배 스캐너 오류:", _cbe)
                     # 넥장(넥스트레이드 야간 16~20시) 급등 타점 — NX 시장코드·가격/거래대금 기반
                     try:
                         snap["nxt_after"] = check_nxt_after(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)

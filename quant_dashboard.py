@@ -6180,15 +6180,18 @@ def _parse_telegram_paste(text):
         if not _bt:
             continue
         _feed.append({"t": _t, "text": _bt})
-        # 시가저격/15분봉 → 타점 성적용
-        if ("시가저격" in _bt) or ("15분봉 강한 양봉" in _bt):
+        # 시가저격/15분봉/5분봉/종가배팅 → 타점 성적용
+        if (("시가저격" in _bt) or ("15분봉 강한 양봉" in _bt) or ("5분봉 빠른 진입" in _bt)
+                or ("종가배팅 후보" in _bt)):
             _nm = None
             _mm = _re.search(r"—\s*([^\n(]+)", _bt)
             if _mm:
                 _nm = _mm.group(1).strip()
             _pm = _re.search(r"현재가\s*([\d,]+)", _bt)
             _px = int(_pm.group(1).replace(",", "")) if _pm else 0
-            _kind = "시가저격" if "시가저격" in _bt else "15분봉"
+            _kind = ("시가저격" if "시가저격" in _bt else
+                     "5분봉" if "5분봉" in _bt else
+                     "종가배팅" if "종가배팅" in _bt else "15분봉")
             if _nm and _px:
                 _sigs.append({"t": _t, "kind": _kind, "name": _nm, "code": _resolve_code(_nm), "px": _px})
     return _feed, _sigs
