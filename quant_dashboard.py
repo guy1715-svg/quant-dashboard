@@ -684,6 +684,50 @@ def kis_volume_rank(top=60):
         return []
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def kis_intraday_minute(code, max_pages=14):
+    """[V13.2] 당일 1분봉 시계열(시각·종가) — inquire-time-itemchartprice 페이징. 실패 시 None.
+    알림 타점을 시간축 차트에 찍어 '신호 정확도'를 눈으로 보기 위함."""
+    try:
+        _tok = kis_get_token()
+        if not _tok:
+            return None
+        import pandas as _pdm
+        _rows = []; _hour = ""; _seen = set()
+        for _ in range(max_pages):
+            _res = _requests.get(
+                f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                headers={"authorization": f"Bearer {_tok}", "appkey": _kis_key(),
+                         "appsecret": _kis_secret(), "tr_id": "FHKST03010200"},
+                params={"fid_etc_cls_code": "", "fid_cond_mrkt_div_code": "J",
+                        "fid_input_iscd": code, "fid_input_hour_1": _hour,
+                        "fid_pw_data_incu_yn": "N"}, timeout=6)
+            _o2 = _res.json().get("output2", [])
+            if not _o2:
+                break
+            for _r in _o2:
+                _h = str(_r.get("stck_cntg_hour", "")); _p = _to_int(_r.get("stck_prpr"))
+                if _h and _p and _h not in _seen:
+                    _seen.add(_h); _rows.append((_h, _p))
+            _last = str(_o2[-1].get("stck_cntg_hour", ""))
+            if not _last:
+                break
+            try:
+                _tot = int(_last[:2]) * 60 + int(_last[2:4]) - 1
+                if _tot < 9 * 60 - 1:
+                    break
+                _hour = f"{_tot//60:02d}{_tot%60:02d}00"
+            except Exception:
+                break
+        if not _rows:
+            return None
+        _df = _pdm.DataFrame(_rows, columns=["hhmmss", "종가"]).drop_duplicates("hhmmss")
+        _df["시각"] = _df["hhmmss"].str[:2] + ":" + _df["hhmmss"].str[2:4]
+        return _df.sort_values("hhmmss").reset_index(drop=True)
+    except Exception:
+        return None
+
+
 def kis_get_orderbook(ticker):
     """KIS 실시간 호가 10단계 — 매수/매도 잔량(1~5호가) + 최우선 호가. FHKST01010200.
     반환 {'ask_qty':[5],'bid_qty':[5],'ask1','bid1'} 또는 None. 예외 전파 없음."""
@@ -6081,6 +6125,36 @@ def render_supply_by_investor():
                "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
 
 
+def render_alert_feed():
+    """🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — watcher 스냅샷 alert_feed. 최신 위, 배지색 구분."""
+    _feed = (_watcher_snapshot() or {}).get("alert_feed") or []
+    if not _feed:
+        return
+    _, _fresh = _snap_freshness()
+    def _accent(txt):
+        _h = (txt or "").splitlines()[0] if txt else ""
+        if "🟢🟢" in _h: return "#22c55e"
+        if "🟢" in _h: return "#4ade80"
+        if "🔴" in _h: return "#ef4444"
+        if "🟡" in _h: return "#fbbf24"
+        return "#64748b"        # ⚪ 정보 등
+    with st.expander(f"🗒️ 오늘 온 알람 타임라인 ({len(_feed)}건)", expanded=True):
+        st.markdown(f"<div style='text-align:right;margin-bottom:4px'>{_fresh}</div>", unsafe_allow_html=True)
+        _html = ["<div style='max-height:460px;overflow-y:auto;display:flex;flex-direction:column;gap:7px'>"]
+        for _m in reversed(_feed):        # 최신 위
+            _t = _m.get("t", ""); _txt = (_m.get("text") or "")
+            _c = _accent(_txt)
+            _safe = (_txt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>"))
+            _html.append(
+                f"<div style='border-left:3px solid {_c};background:rgba(148,163,184,0.06);"
+                f"border-radius:8px;padding:7px 10px'>"
+                f"<span style='color:#64748b;font-size:10px;font-weight:700'>⏱ {_t}</span><br>"
+                f"<span style='color:#e2e8f0;font-size:12px;line-height:1.5'>{_safe}</span></div>")
+        _html.append("</div>")
+        st.markdown("".join(_html), unsafe_allow_html=True)
+        st.caption("💡 오늘 텔레그램으로 나간 모든 알람이 시간순으로 쌓입니다(최신 위) · watcher 재시작 후부터 집계")
+
+
 def render_signal_scoreboard():
     """📍 [V13.2] 오늘 매수 알림 성적 — 알림 왔을 때 샀다면 지금 얼마? 알림가 vs 현재가 수익률.
     watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
@@ -6127,11 +6201,41 @@ def render_signal_scoreboard():
             "<th style='padding:4px 8px;text-align:right'>수익률</th>"
             "<th style='padding:4px 8px;text-align:center'>판정</th></tr></thead>"
             f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
-        st.caption("💡 '알림 왔을 때 바로 샀다면' 기준 · 실제 체결가는 다를 수 있음 · 종목 돋보기 차트에 알림가 선(⭐) 표시됨")
+        st.caption("💡 '알림 왔을 때 바로 샀다면' 기준 · 실제 체결가는 다를 수 있음")
+        # ── 📈 타점 정확도 차트 — 종목 선택 → 당일 분봉 + 알림 시각/가격 ⭐타점 ──
+        st.markdown("**📈 타점 정확도 보기 (알림 시각을 차트에 찍어 확인)**")
+        _names = list(dict.fromkeys(s.get("name") for s in _sigs if s.get("name")))
+        _code_of = {s.get("name"): s.get("code") for s in _sigs}
+        _sel = st.selectbox("종목 선택", _names, key="_sig_chart_sel")
+        if _sel:
+            _mdf = kis_intraday_minute(_code_of.get(_sel))
+            if _mdf is None or _mdf.empty:
+                st.caption("⏳ 분봉 데이터 수신 실패(장중·KIS 연결 시 표시)")
+            else:
+                try:
+                    import altair as _alt2
+                    import pandas as _pd2
+                    _base = _alt2.Chart(_mdf).mark_line(color="#38bdf8").encode(
+                        x=_alt2.X("시각:N", title="시각", axis=_alt2.Axis(labelAngle=-45, values=list(_mdf["시각"][::30]))),
+                        y=_alt2.Y("종가:Q", title="가격(원)", scale=_alt2.Scale(zero=False)),
+                        tooltip=[_alt2.Tooltip("시각:N"), _alt2.Tooltip("종가:Q", format=",.0f")])
+                    _pts = _pd2.DataFrame([{"시각": s.get("t"), "알림가": s.get("px"),
+                                            "유형": s.get("kind", "")} for s in _sigs if s.get("name") == _sel])
+                    _star = _alt2.Chart(_pts).mark_point(shape="triangle-up", size=170,
+                                                         color="#fbbf24", filled=True).encode(
+                        x="시각:N", y="알림가:Q",
+                        tooltip=[_alt2.Tooltip("시각:N", title="알림시각"),
+                                 _alt2.Tooltip("알림가:Q", title="알림가", format=",.0f"),
+                                 _alt2.Tooltip("유형:N")])
+                    st.altair_chart((_base + _star).properties(height=240), use_container_width=True)
+                    st.caption("🔺노란 삼각형 = 알림(매수타점) 뜬 시각·가격 · 파란선 = 당일 실제 주가 흐름")
+                except Exception:
+                    st.line_chart(_mdf.set_index("시각")["종가"], height=200)
 
 
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
+    render_alert_feed()                # 🗒️ [V13.2] 오늘 온 알람 타임라인(전체 메시지)
     render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
     render_supply_by_investor()        # 👥 [V13.2] 종목별 4주체 수급(개인/외인/기관/프로그램)
     render_signal_scoreboard()         # 📍 [V13.2] 오늘 매수 알림 성적(알림가 vs 현재가)

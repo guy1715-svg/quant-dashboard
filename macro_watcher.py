@@ -188,13 +188,24 @@ def push_snapshot_github(json_str):
         print("스냅샷 업로드 오류:", e)
 
 
+_ALERT_FEED = []      # [V13.2] 모든 텔레그램 알람의 당일 버퍼 — 메인 루프가 스냅샷으로 flush(대시보드 타임라인용)
+
+
 def send_telegram(token, chat_id, text):
+    _ok = False
     try:
         requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
                      params={"chat_id": chat_id, "text": text}, timeout=8)
-        return True
+        _ok = True
     except Exception as e:
-        print("텔레그램 전송 실패:", e); return False
+        print("텔레그램 전송 실패:", e)
+    # 발송 성공/실패 무관하게 피드에 기록(대시보드에서 오늘 알람 타임라인으로 표시)
+    try:
+        _n = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _ALERT_FEED.append({"day": _n.strftime("%Y%m%d"), "t": _n.strftime("%H:%M"), "text": text})
+    except Exception:
+        pass
+    return _ok
 
 
 # [V13.2] 통일 매수/매도 배지 — 모든 알림 첫 줄에 붙여 '지금 사라/팔라/기다려라'를 한눈에.
@@ -1697,6 +1708,19 @@ def main():
 
             # 📍 [V13.2] 오늘 매수 알림 로그(시각·가격) — 대시보드 '알림 성적'용
             snap["signal_log"] = (st.get("signal_log") or {}).get("items", [])
+
+            # 🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — send_telegram 버퍼를 당일 누적
+            _today_af = now.strftime("%Y%m%d")
+            _af = st.get("alert_feed", {})
+            if _af.get("_day") != _today_af:
+                _af = {"_day": _today_af, "items": []}
+            for _m in list(_ALERT_FEED):
+                if _m.get("day") == _today_af:
+                    _af.setdefault("items", []).append({"t": _m["t"], "text": _m["text"]})
+            _ALERT_FEED.clear()
+            _af["items"] = _af.get("items", [])[-200:]     # 최근 200건만 유지
+            st["alert_feed"] = _af
+            snap["alert_feed"] = _af["items"]
 
             # 📓 매매일지 누적 + 장전 브리핑(08:50)·마감 복기(15:35) 발송
             journal_accumulate(st, snap)
