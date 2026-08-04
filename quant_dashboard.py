@@ -4003,6 +4003,12 @@ def render_money_tour_panel():
     st.markdown(
         "<div style='font-size:16px;font-weight:900;color:#e2e8f0;margin-bottom:2px'>"
         "🌀 수급 머니투어 — 섹터 간 자금 대이동 추적</div>", unsafe_allow_html=True)
+    # 🗒️ [V13.2] 오늘 알람 타임라인 + 📍 타점 성적(알림가 vs 현재가 + 분봉 타점 차트) — 이 탭 최상단
+    try:
+        render_alert_feed()
+        render_signal_scoreboard()
+    except Exception as _afe:
+        st.caption(f"알람 피드 오류: {type(_afe).__name__}")
     _r1, _r2 = st.columns([1, 4])
     if _r1.button("🔄 강제 새로고침", key="_mt_refresh", use_container_width=True):
         try: fetch_sector_moneyflow.clear()
