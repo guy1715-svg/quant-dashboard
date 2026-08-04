@@ -585,6 +585,24 @@ def _ma20_disparity(token, key, secret, code, px):
     return None
 
 
+def _recent_high(token, key, secret, code, days=20):
+    """최근 N일 고가 중 현재가 위의 '저항선' 근사 — inquire-daily-price. 실패 시 None.
+    현재가보다 높은 최근 고가들 중 가장 가까운 값(=다음 저항). 없으면 최근 최고가."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        o = r.json().get("output", [])
+        highs = [_to_int(row.get("stck_hgpr")) for row in (o or [])[:days] if isinstance(row, dict)]
+        highs = [h for h in highs if h]
+        return max(highs) if highs else None
+    except Exception:
+        pass
+    return None
+
+
 def _prev_3min_high(token, key, secret, code):
     """직전 3분봉(완성) 고가 — inquire-time-itemchartprice(1분봉) 3개 집계. 실패 시 None.
     현재 형성 중 봉을 제외하고, 직전 3분(완성 구간)의 최고가를 반환. '3분봉 전고 돌파' 판정용."""
@@ -685,11 +703,22 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
             out.append({"name": name, "code": code, "px": px, "chg": chg,
                         "turnover_eok": round(turn / 1e8, 0), "cap": cap, "breakout": _broke})
             if not sent.get(code):              # 당일 첫 돌파만 발송
+                _stop = int(px * 0.98); _res = _recent_high(token, key, secret, code)
+                if _res and _res > px:
+                    _res_line = (f"🚀 돌파 홀딩 기준: {_res:,}원 (뚫으면 계속 보유)\n"
+                                 f"🔻 돌파 후 하락 매도: {int(_res*0.99):,}원 (뚫었다 다시 밑이면 매도)")
+                else:
+                    _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
                               f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk}\n"
-                              f"현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                              f"🔌 HTS 플러그 동기화 후 금액 3종(+) 확인 → 타격")
+                              f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"─── 가격표 ───\n"
+                              f"🎯 매수가(현재): {px:,}원\n"
+                              f"✂️ 손절가: {_stop:,}원 (−2%)\n"
+                              f"{_res_line}\n"
+                              f"─────────\n"
+                              f"🔌 HTS 열어 금액 3종(프로그램·외인·기관) 모두 (+) 확인 → 타격")
                 sent[code] = True
     state["sniper_sent"] = sent
     return out
@@ -1127,9 +1156,11 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
                 _nqtxt = (f"나스닥선물 {_nq:+.2f}% 상승동조🟢" if _nq is not None else "나스닥선물 확인불가")
                 # 20일선 이격 — 과열(추격) 자리인지 친절히 안내
                 _disp = _ma20_disparity(token, key, secret, code, px)
+                _res = _recent_high(token, key, secret, code)     # 저항선(최근 20일 고가)
                 out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0,
-                            "bar_move": round(_move, 2), "nq": _nq, "disp": _disp})
-                _stop = int(px * 0.98)
+                            "bar_move": round(_move, 2), "nq": _nq, "disp": _disp, "res": _res})
+                _buy = px
+                _stop = int(px * 0.98)                             # 손절 −2%
                 if _disp is None:
                     _warn = "• 이격: 확인불가 (HTS에서 20일선 위치 확인)"
                 elif _disp >= 12:
@@ -1138,15 +1169,26 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
                     _warn = f"• ⚠️ 20일선 이격 +{_disp:.1f}% = 과열 주의 — 소량·타이트 손절만"
                 else:
                     _warn = f"• 20일선 이격 +{_disp:.1f}% = 아직 여유 있음(추격 아님)"
+                # 돌파 기준가(저항선) & 돌파 후 하락 매도가
+                if _res and _res > px:
+                    _hold = _res                                   # 이 가격 뚫으면(돌파) 홀딩
+                    _resell = int(_res * 0.99)                     # 뚫었다 다시 이 밑으로 내려오면 매도
+                    _res_line = (f"🚀 돌파 홀딩 기준: {_hold:,}원 (이 위로 뚫으면 계속 보유)\n"
+                                 f"🔻 돌파 후 하락 매도: {_resell:,}원 (뚫었다 다시 이 밑이면 매도)")
+                else:
+                    _res_line = "🚀 저항 위 = 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n📊 15분봉 강한 양봉 — {name}\n"
                               f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
                               f"{_nqtxt}\n"
                               f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                               f"{_warn}\n"
+                              f"─── 가격표 ───\n"
+                              f"🎯 매수가(현재): {_buy:,}원\n"
+                              f"✂️ 손절가: {_stop:,}원 (−2%)\n"
+                              f"{_res_line}\n"
                               f"─────────\n"
-                              f"👉 지금 할 일: HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인\n"
-                              f"✂️ 사면 손절 {_stop:,}원(−2%) 먼저 걸기 · 안 뚫으면 관망")
+                              f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
                 sent[_key] = True
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
