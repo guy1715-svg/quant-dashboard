@@ -650,6 +650,40 @@ def kis_get_price(ticker):
     return None
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def kis_volume_rank(top=60):
+    """[V13.2] 당일 거래대금 상위 종목 실시간 랭킹 — volume-rank(FHPST01710000).
+    반환 [{code,name,px,chg,turnover}] (거래대금순, 최대 top). 실패 시 []."""
+    try:
+        _token = kis_get_token()
+        if not _token:
+            return []
+        _res = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/volume-rank",
+            headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "FHPST01710000"},
+            params={"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20171",
+                    "fid_input_iscd": "0000",          # 0000=전체
+                    "fid_div_cls_code": "0", "fid_blng_cls_code": "3",   # 3=거래대금 순
+                    "fid_trgt_cls_code": "111111111", "fid_trgt_exls_cls_code": "000000",
+                    "fid_input_price_1": "", "fid_input_price_2": "",
+                    "fid_vol_cnt": "", "fid_input_date_1": ""}, timeout=6)
+        _out = _res.json().get("output", [])
+        _rows = []
+        for _r in (_out or [])[:top]:
+            if not isinstance(_r, dict):
+                continue
+            _cd = str(_r.get("mksc_shrn_iscd", "")).zfill(6)
+            _px = _to_int(_r.get("stck_prpr"))
+            if not (_cd.isdigit() and _px):
+                continue
+            _rows.append({"code": _cd, "name": _r.get("hts_kor_isnm", _cd), "px": _px,
+                          "chg": float(str(_r.get("prdy_ctrt", 0)).replace(",", "") or 0),
+                          "turnover": _to_int(_r.get("acml_tr_pbmn"))})
+        return _rows
+    except Exception:
+        return []
+
+
 def kis_get_orderbook(ticker):
     """KIS 실시간 호가 10단계 — 매수/매도 잔량(1~5호가) + 최우선 호가. FHKST01010200.
     반환 {'ask_qty':[5],'bid_qty':[5],'ask1','bid1'} 또는 None. 예외 전파 없음."""
@@ -5117,27 +5151,37 @@ def render_v93_trading_tab():
     # 대형주 NXT 필터: 낙폭과대 + 수급 이탈 없음
     if _mins >= (15 * 60 + 30):   # NXT 시간대
         with st.expander("🌙 대형주 NXT 필터 (낙폭과대 + 수급 이탈 없음)", expanded=True):
+            # [V13.2] 고정 섹터풀 → 당일 거래대금 상위 대형주 '자동 스캔'으로 전환(매일 종목 최신화)
+            _NXT_LARGECAP_PX = 50_000       # 대형주 프록시(현재가 ≥ 5만원) — 중소형 호가왜곡 차단
+            _NXT_TURN_MIN = 100_000_000_000  # 거래대금 1,000억↑ 대형주만
+            _rank = kis_volume_rank(80)
             _big = []
-            for _s, _v in _BRIEF_SECTORS.items():
-                for _cd, _nm in _v.get("kr", [])[:2]:   # 섹터별 상위 2(대형주)
-                    try:
-                        _pr = kis_get_price(_cd) or {}
-                        _chg = _pr.get("등락률")
-                        _iv = _dol_investor(_cd) or {}
-                        _org = _to_int(_iv.get("기관"))
-                        if isinstance(_chg, (int, float)) and _chg <= -2.0 and _org >= 0:
-                            _big.append((_nm, _cd, _s, _chg, _org))
-                    except Exception:
-                        continue
-            if _big:
+            for _c in _rank:
+                if _c["px"] < _NXT_LARGECAP_PX or _c["turnover"] < _NXT_TURN_MIN:
+                    continue
+                if _c["chg"] > -2.0:        # 낙폭과대(−2%↓)만
+                    continue
+                try:
+                    _iv = _dol_investor(_c["code"]) or {}
+                    _org = _to_int(_iv.get("기관"))
+                except Exception:
+                    continue
+                if _org >= 0:               # 기관 순매도 아님(수급 이탈 없음)
+                    _big.append((_c["name"], _c["code"], _c["turnover"], _c["chg"], _org))
+                if len(_big) >= 15:
+                    break
+            if _rank and _big:
+                def _eok(v): return f"{v/1e12:.2f}조" if v >= 1e12 else f"{v/1e8:,.0f}억"
                 _rows = "".join(
-                    f"<tr><td style='padding:5px 8px;font-weight:700'>{n}<span style='color:#475569;font-size:10px'> {c}·{s}</span></td>"
+                    f"<tr><td style='padding:5px 8px;font-weight:700'>{n}<span style='color:#475569;font-size:10px'> {c}·{_eok(tv)}</span></td>"
                     f"<td style='padding:5px 8px;text-align:right;color:#ef4444'>{ch:+.2f}%</td>"
                     f"<td style='padding:5px 8px;text-align:right;color:{'#16a34a' if o>=0 else '#ef4444'}'>기관 {o:+,}</td></tr>"
-                    for n, c, s, ch, o in _big)
+                    for n, c, tv, ch, o in _big)
                 st.markdown(f"<table style='width:100%;border-collapse:collapse;font-size:12px'>{_rows}</table>",
                             unsafe_allow_html=True)
-                st.caption("💡 낙폭 −2%↓ + 기관 순매도 아님(이탈 없음) 대형주만 — 중소형주 제외(호가왜곡 차단)")
+                st.caption("💡 [자동 스캔] 당일 거래대금 상위 → 1,000억↑·5만원↑ 대형주 중 낙폭 −2%↓ + 기관 순매도 아님. 매일 최신화")
+            elif not _rank:
+                st.caption("⚠️ 거래대금 랭킹 수신 실패(KIS) — 잠시 후 재시도")
             else:
                 st.caption("조건(낙폭과대+수급유지) 충족 대형주 없음")
     else:
