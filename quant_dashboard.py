@@ -6327,35 +6327,49 @@ def render_signal_scoreboard():
             "<th style='padding:4px 8px;text-align:center'>판정</th></tr></thead>"
             f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
         st.caption("💡 '알림 왔을 때 바로 샀다면' 기준 · 실제 체결가는 다를 수 있음")
-        # ── 📈 타점 정확도 차트 — 종목 선택 → 당일 분봉 + 알림 시각/가격 ⭐타점 ──
+        # ── 📈 타점 정확도 차트 — 종목 선택 → 알림 시각/가격 타점(붙여넣기 데이터로 항상 표시) ──
         st.markdown("**📈 타점 정확도 보기 (알림 시각을 차트에 찍어 확인)**")
         _names = list(dict.fromkeys(s.get("name") for s in _sigs if s.get("name")))
         _code_of = {s.get("name"): s.get("code") for s in _sigs}
         _sel = st.selectbox("종목 선택", _names, key="_sig_chart_sel")
         if _sel:
-            _mdf = kis_intraday_minute(_code_of.get(_sel))
-            if _mdf is None or _mdf.empty:
-                st.caption("⏳ 분봉 데이터 수신 실패(장중·KIS 연결 시 표시)")
-            else:
-                try:
-                    import altair as _alt2
-                    import pandas as _pd2
-                    _base = _alt2.Chart(_mdf).mark_line(color="#38bdf8").encode(
-                        x=_alt2.X("시각:N", title="시각", axis=_alt2.Axis(labelAngle=-45, values=list(_mdf["시각"][::30]))),
-                        y=_alt2.Y("종가:Q", title="가격(원)", scale=_alt2.Scale(zero=False)),
-                        tooltip=[_alt2.Tooltip("시각:N"), _alt2.Tooltip("종가:Q", format=",.0f")])
-                    _pts = _pd2.DataFrame([{"시각": s.get("t"), "알림가": s.get("px"),
-                                            "유형": s.get("kind", "")} for s in _sigs if s.get("name") == _sel])
-                    _star = _alt2.Chart(_pts).mark_point(shape="triangle-up", size=170,
-                                                         color="#fbbf24", filled=True).encode(
-                        x="시각:N", y="알림가:Q",
-                        tooltip=[_alt2.Tooltip("시각:N", title="알림시각"),
-                                 _alt2.Tooltip("알림가:Q", title="알림가", format=",.0f"),
-                                 _alt2.Tooltip("유형:N")])
-                    st.altair_chart((_base + _star).properties(height=240), use_container_width=True)
-                    st.caption("🔺노란 삼각형 = 알림(매수타점) 뜬 시각·가격 · 파란선 = 당일 실제 주가 흐름")
-                except Exception:
-                    st.line_chart(_mdf.set_index("시각")["종가"], height=200)
+            import pandas as _pd2
+            # 이 종목의 알림들(시각·가격) — 붙여넣기/스냅샷 신호 자체가 '그 시각 가격'이라 KIS 없이도 흐름 표시
+            _pts = _pd2.DataFrame(
+                [{"시각": s.get("t"), "가격": s.get("px"), "유형": s.get("kind", "")}
+                 for s in _sigs if s.get("name") == _sel and s.get("px")]
+            ).sort_values("시각").reset_index(drop=True)
+            # 현재가(있으면) 마지막 점으로 추가
+            _cur = 0
+            try:
+                _cur = (kis_get_price(_code_of.get(_sel)) or {}).get("현재가") or 0
+            except Exception:
+                _cur = 0
+            try:
+                import altair as _alt2
+                _line = _alt2.Chart(_pts).mark_line(point=True, color="#38bdf8").encode(
+                    x=_alt2.X("시각:N", title="시각"),
+                    y=_alt2.Y("가격:Q", title="가격(원)", scale=_alt2.Scale(zero=False)),
+                    tooltip=[_alt2.Tooltip("시각:N", title="알림시각"),
+                             _alt2.Tooltip("가격:Q", title="알림가", format=",.0f"),
+                             _alt2.Tooltip("유형:N")])
+                _star = _alt2.Chart(_pts).mark_point(shape="triangle-up", size=170,
+                                                     color="#fbbf24", filled=True).encode(
+                    x="시각:N", y="가격:Q")
+                _layers = _line + _star
+                if _cur:
+                    _cdf = _pd2.DataFrame([{"현재가": _cur}])
+                    _rule = _alt2.Chart(_cdf).mark_rule(color="#22c55e", strokeDash=[5, 4]).encode(
+                        y="현재가:Q", tooltip=[_alt2.Tooltip("현재가:Q", title="지금 현재가", format=",.0f")])
+                    _layers = _layers + _rule
+                st.altair_chart(_layers.properties(height=240), use_container_width=True)
+                _cap = "🔺노란 삼각형 = 알림 뜬 시각·가격(파란선=흐름)"
+                if _cur:
+                    _cap += f" · 🟢초록 점선 = 지금 현재가 {_cur:,}원 (알림가가 이 선보다 아래면 그 알림은 지금 이익)"
+                st.caption(_cap)
+            except Exception:
+                st.line_chart(_pts.set_index("시각")["가격"], height=200)
+            st.caption("💡 KIS 분봉이 되면 실제 1분봉 위에 겹쳐 보이게 확장 가능 · 지금은 알림 시점 가격들로 흐름 표시(장 마감 후에도 OK)")
 
 
 def render_theme_ranking_board():
