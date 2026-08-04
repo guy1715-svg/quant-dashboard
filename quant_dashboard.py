@@ -7974,6 +7974,12 @@ with st.sidebar:
         st.caption("⚠️ 상태 패널 일시 비활성 (데이터 지연)")
 
     st.markdown("---")
+    # 📦 [복구] 산자부 수출입 동향 수동 입력 — 반도체 수출 YoY가 전역 헤더 '💾 YoY'에 반영됨
+    with st.expander("📦 수출입 동향 입력 (산자부)", expanded=False):
+        try:
+            render_motie_manual_widget(key_prefix="sb_motie")
+        except Exception as _mwe:
+            st.caption(f"입력 위젯 오류: {type(_mwe).__name__}")
     st.markdown("## ⚙️ 설정")
 
     # ── 🔑 KIS API 연동 (secrets 키 있으면 입력창 숨김 · 없을 때만 런타임 입력) ──
