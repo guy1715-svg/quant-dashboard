@@ -6132,6 +6132,30 @@ def render_supply_by_investor():
                "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
 
 
+_NAME2CODE = {
+    "SK하이닉스": "000660", "삼성전자": "005930", "한화에어로스페이스": "012450",
+    "알테오젠": "196170", "삼성바이오로직스": "207940", "한화시스템": "272210",
+    "한미반도체": "042700", "두산에너빌리티": "034020", "한국항공우주": "047810",
+    "카카오": "035720", "NAVER": "035420",
+}
+
+
+def _resolve_code(name):
+    """종목명 → 코드. 내장 매핑 → 라인업 → 실패 시 ''."""
+    if not name:
+        return ""
+    _n = name.strip()
+    if _n in _NAME2CODE:
+        return _NAME2CODE[_n]
+    try:
+        for _c, _nm in (_manju_load_lineup() or []):
+            if str(_nm).strip() == _n:
+                return str(_c).zfill(6)
+    except Exception:
+        pass
+    return ""
+
+
 def _parse_telegram_paste(text):
     """붙여넣은 텔레그램 로그 → (feed_items, signal_items). 각 메시지는 '[날짜 시:분 AM/PM] Ok:'로 시작.
     signal_items는 시가저격/15분봉만(종목·알림가 추출)."""
@@ -6166,7 +6190,7 @@ def _parse_telegram_paste(text):
             _px = int(_pm.group(1).replace(",", "")) if _pm else 0
             _kind = "시가저격" if "시가저격" in _bt else "15분봉"
             if _nm and _px:
-                _sigs.append({"t": _t, "kind": _kind, "name": _nm, "code": "", "px": _px})
+                _sigs.append({"t": _t, "kind": _kind, "name": _nm, "code": _resolve_code(_nm), "px": _px})
     return _feed, _sigs
 
 
@@ -6336,10 +6360,9 @@ def render_signal_scoreboard():
 
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
-    render_alert_feed()                # 🗒️ [V13.2] 오늘 온 알람 타임라인(전체 메시지)
     render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
     render_supply_by_investor()        # 👥 [V13.2] 종목별 4주체 수급(개인/외인/기관/프로그램)
-    render_signal_scoreboard()         # 📍 [V13.2] 오늘 매수 알림 성적(알림가 vs 현재가)
+    # (알람 타임라인·타점 성적은 머니투어 탭 render_money_tour_panel에서만 렌더 — 중복 키 방지)
     st.markdown("#### 📡 실시간 테마 거래대금 랭킹 (금액 기준)")
     if not kis_available():
         st.caption("⚠️ KIS 미연결 — 랭킹 산출 불가"); return
