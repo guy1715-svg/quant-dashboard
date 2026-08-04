@@ -6133,8 +6133,18 @@ def render_supply_by_investor():
 
 def render_alert_feed():
     """🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — watcher 스냅샷 alert_feed. 최신 위, 배지색 구분."""
-    _feed = (_watcher_snapshot() or {}).get("alert_feed") or []
+    _snap = _watcher_snapshot() or {}
+    _feed = _snap.get("alert_feed") or []
     if not _feed:
+        # 데이터 없어도 '연결됨' 확인용 안내 박스는 표시(왜 비었는지 알려주기)
+        _has_key = "alert_feed" in _snap
+        _msg = ("오늘 온 알람이 아직 없어요. 새 알람이 뜨면 여기 시간순으로 쌓입니다."
+                if _has_key else
+                "⚠️ watcher가 아직 이 기능(알람 기록) 버전이 아니에요. macro_watcher.py 최신본으로 교체 후 재시작 필요.")
+        st.markdown(
+            "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
+            f"background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>🗒️ <b>오늘 온 알람 타임라인</b><br>{_msg}</div>",
+            unsafe_allow_html=True)
         return
     _, _fresh = _snap_freshness()
     def _accent(txt):
@@ -6166,6 +6176,11 @@ def render_signal_scoreboard():
     watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
     _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
     if not _sigs:
+        st.markdown(
+            "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
+            "background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>📍 <b>오늘 매수 알림 성적</b><br>"
+            "아직 매수 알림(시가저격·15분봉)이 없어요. 뜨면 알림가 vs 현재가와 🔺타점 차트가 여기 나옵니다.</div>",
+            unsafe_allow_html=True)
         return
     with st.expander(f"📍 오늘 매수 알림 성적 ({len(_sigs)}건) — 그때 샀다면 지금?", expanded=False):
         _rows = []
