@@ -4005,6 +4005,7 @@ def render_money_tour_panel():
         "🌀 수급 머니투어 — 섹터 간 자금 대이동 추적</div>", unsafe_allow_html=True)
     # 🗒️ [V13.2] 오늘 알람 타임라인 + 📍 타점 성적(알림가 vs 현재가 + 분봉 타점 차트) — 이 탭 최상단
     try:
+        render_paste_import()          # 📋 오늘 받은 알람 붙여넣기(재시작 전 기록 복원)
         render_alert_feed()
         render_signal_scoreboard()
     except Exception as _afe:
@@ -6131,19 +6132,98 @@ def render_supply_by_investor():
                "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
 
 
+def _parse_telegram_paste(text):
+    """붙여넣은 텔레그램 로그 → (feed_items, signal_items). 각 메시지는 '[날짜 시:분 AM/PM] Ok:'로 시작.
+    signal_items는 시가저격/15분봉만(종목·알림가 추출)."""
+    import re as _re
+    _blocks = _re.split(r"\[\d+/\d+/\d{4}\s+(\d+):(\d+)\s*(AM|PM)\]\s*Ok:\s*", text or "")
+    # split는 캡처그룹 때문에 [pre, h,m,ap, body, h,m,ap, body, ...] 구조
+    _feed, _sigs = [], []
+    for _i in range(1, len(_blocks), 4):
+        if _i + 3 >= len(_blocks):
+            break
+        try:
+            _h = int(_blocks[_i]); _m = int(_blocks[_i + 1]); _ap = _blocks[_i + 2]
+            _body = _blocks[_i + 3] or ""
+        except Exception:
+            continue
+        if _ap == "PM" and _h != 12:
+            _h += 12
+        elif _ap == "AM" and _h == 12:
+            _h = 0
+        _t = f"{_h:02d}:{_m:02d}"
+        _bt = _body.strip()
+        if not _bt:
+            continue
+        _feed.append({"t": _t, "text": _bt})
+        # 시가저격/15분봉 → 타점 성적용
+        if ("시가저격" in _bt) or ("15분봉 강한 양봉" in _bt):
+            _nm = None
+            _mm = _re.search(r"—\s*([^\n(]+)", _bt)
+            if _mm:
+                _nm = _mm.group(1).strip()
+            _pm = _re.search(r"현재가\s*([\d,]+)", _bt)
+            _px = int(_pm.group(1).replace(",", "")) if _pm else 0
+            _kind = "시가저격" if "시가저격" in _bt else "15분봉"
+            if _nm and _px:
+                _sigs.append({"t": _t, "kind": _kind, "name": _nm, "code": "", "px": _px})
+    return _feed, _sigs
+
+
+def _merged_feed():
+    """스냅샷 alert_feed + 세션에 붙여넣은 로그 병합(중복 제거·시간순)."""
+    _snap = (_watcher_snapshot() or {}).get("alert_feed") or []
+    _pasted = st.session_state.get("_pasted_feed") or []
+    _seen, _out = set(), []
+    for _m in _pasted + _snap:
+        _k = (_m.get("t"), (_m.get("text") or "")[:40])
+        if _k in _seen:
+            continue
+        _seen.add(_k); _out.append(_m)
+    _out.sort(key=lambda m: m.get("t", ""))
+    return _out
+
+
+def _merged_signals():
+    """스냅샷 signal_log + 세션 붙여넣기 신호 병합(중복 제거·시간순)."""
+    _snap = (_watcher_snapshot() or {}).get("signal_log") or []
+    _pasted = st.session_state.get("_pasted_sigs") or []
+    _seen, _out = set(), []
+    for _s in _pasted + _snap:
+        _k = (_s.get("t"), _s.get("name"), _s.get("px"))
+        if _k in _seen:
+            continue
+        _seen.add(_k); _out.append(_s)
+    _out.sort(key=lambda s: s.get("t", ""))
+    return _out
+
+
+def render_paste_import():
+    """📋 오늘 텔레그램 알람 붙여넣기 → 타임라인/타점 성적에 반영(세션 보관)."""
+    with st.expander("📋 오늘 받은 알람 붙여넣기 (재시작 전 기록 복원)", expanded=False):
+        _txt = st.text_area("텔레그램 알람 복사해서 붙여넣기", key="_paste_alerts", height=140,
+                            placeholder="[8/4/2026 9:01 AM] Ok: 🟢 매수검토\n🎯 시가저격 ... 형태 그대로 붙여넣기")
+        _c1, _c2 = st.columns(2)
+        if _c1.button("📥 불러오기(반영)", key="_paste_apply", use_container_width=True) and _txt.strip():
+            _f, _s = _parse_telegram_paste(_txt)
+            st.session_state["_pasted_feed"] = _f
+            st.session_state["_pasted_sigs"] = _s
+            st.success(f"✅ 알람 {len(_f)}건 · 매수신호 {len(_s)}건 반영됨")
+            st.rerun()
+        if _c2.button("🗑 붙여넣기 지우기", key="_paste_clear", use_container_width=True):
+            st.session_state.pop("_pasted_feed", None)
+            st.session_state.pop("_pasted_sigs", None)
+            st.rerun()
+
+
 def render_alert_feed():
     """🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — watcher 스냅샷 alert_feed. 최신 위, 배지색 구분."""
-    _snap = _watcher_snapshot() or {}
-    _feed = _snap.get("alert_feed") or []
+    _feed = _merged_feed()            # 스냅샷 + 붙여넣기 병합
     if not _feed:
-        # 데이터 없어도 '연결됨' 확인용 안내 박스는 표시(왜 비었는지 알려주기)
-        _has_key = "alert_feed" in _snap
-        _msg = ("오늘 온 알람이 아직 없어요. 새 알람이 뜨면 여기 시간순으로 쌓입니다."
-                if _has_key else
-                "⚠️ watcher가 아직 이 기능(알람 기록) 버전이 아니에요. macro_watcher.py 최신본으로 교체 후 재시작 필요.")
         st.markdown(
             "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
-            f"background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>🗒️ <b>오늘 온 알람 타임라인</b><br>{_msg}</div>",
+            "background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>🗒️ <b>오늘 온 알람 타임라인</b><br>"
+            "아직 알람이 없어요. 새 알람이 뜨면 쌓이고, 위 <b>📋 붙여넣기</b>로 오늘 받은 걸 바로 불러올 수 있어요.</div>",
             unsafe_allow_html=True)
         return
     _, _fresh = _snap_freshness()
@@ -6174,7 +6254,7 @@ def render_alert_feed():
 def render_signal_scoreboard():
     """📍 [V13.2] 오늘 매수 알림 성적 — 알림 왔을 때 샀다면 지금 얼마? 알림가 vs 현재가 수익률.
     watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
-    _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
+    _sigs = _merged_signals()         # 스냅샷 + 붙여넣기 병합
     if not _sigs:
         st.markdown(
             "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
