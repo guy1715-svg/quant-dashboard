@@ -1709,6 +1709,9 @@ _DOL_CLOSEPOS_BONUS = 8     # [V13.4] 종가 캔들위치 보너스 상한(가�
 _DOL_CHG_LO         = 3.0   # 이 미만 = 수급 안 실린 약체(감점 시작)
 _DOL_CHG_HI         = 25.0  # 이 초과 = 상한가근접·다음날 상투 위험(감점 시작)
 _DOL_CHG_MAX_CUT    = 0.40  # 감점 상한(최대 40%만 깎음 → 완전히 죽이진 않음)
+# [V13.6] 동시호가 매수우위 — 15:20~15:30 창에서 순매수 누적선 우상향 락업이면 가점(Q3)
+_DOL_AUCTION_WIN    = (15 * 60 + 20, 15 * 60 + 30)  # 동시호가 창 15:20~15:30
+_DOL_AUCTION_BONUS  = 6     # 매수우위(양수·우상향 유지) 확인 시 가점(허매수 방지 위해 교차검증 필수)
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
 _DOL_VOL_REF = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만
@@ -1762,7 +1765,7 @@ def _dolpanty_gate_open(now_kst=None):
     return False, "게이트 밖"
 
 
-def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaround=False):
+def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaround=False, auction_buy=False):
     """[V13.0] 돌팬티式 종가 베팅 총점(0~100) — 금액(원) 정규화 + 듀얼트랙 가중치 + 돌파 보너스.
     turnaround=True(14:30 V자 정렬 충족): 게이트 강제 개방 + 특별 가중치 +20(패닉 선취매 예외).
     total = W1_gate × (regime? 0.5:1) × Σ(Wi·fi). 반환 (total, grade, tag, factors).
@@ -1816,6 +1819,10 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     if _h > _l > 0 and _close > 0:
         _pos = min(max((_close - _l) / (_h - _l), 0.0), 1.0)
     _cbonus = (_DOL_CLOSEPOS_BONUS * max(_pos - 0.5, 0.0) / 0.5) if _pos is not None else 0.0
+    # [V13.6] 동시호가 매수우위(Q3) — 15:20~15:30 창에서 순매수 누적선이 양수·우상향 락업이면 가점.
+    #   허매수 방지 위해 판정은 render에서 프로그램/수급 기울기로 교차검증(auction_buy) → 여기선 가점만.
+    if auction_buy:
+        _cbonus += _DOL_AUCTION_BONUS
     # [V13.5] 등락률 밴드 감점 — 최적대(+3~+25%) 밖이면 부드럽게 배율↓(결측이면 무감점).
     #   약체(<+3%): -0.05/%p · 과열(>+25%): -0.02/%p, 각각 최대 -40%까지만(급등주 예외 보존).
     _chg = rec.get("등락률")
@@ -1838,6 +1845,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
                                         "외인(금액)": _f5, "거래대금": _f6,
                                         "종가위치": (round(_pos, 2) if _pos is not None else None),
                                         "등락률밴드": round(_bandf, 2),
+                                        "동시호가매수우위": bool(auction_buy),
                                         "_hardcut": f"거래대금 {_turn/1e8:,.0f}억 < {_cap} 관문 {_need/1e8:,.0f}억"}
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
@@ -1847,6 +1855,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
                                    "외인(금액)": _f5, "거래대금": _f6,
                                    "종가위치": (round(_pos, 2) if _pos is not None else None),
                                    "등락률밴드": round(_bandf, 2),
+                                   "동시호가매수우위": bool(auction_buy),
                                    "_mode": "테마" if is_theme_mode else "대형"}
 
 
@@ -1963,6 +1972,9 @@ def render_dolpanty_swing_monitor(targets=None):
         try: _nq_pct = fetch_macro_triggers().get("nq_pct")
         except Exception: _nq_pct = None
     _ta_prev = st.session_state.get("_ta_prev_net") or {}
+    # [V13.6] 동시호가(15:20~15:30) 매수우위 — 순매수 누적선 우상향 락업 교차검증(허매수 방지)
+    _auc_win = (_DOL_AUCTION_WIN[0] <= _ta_mins <= _DOL_AUCTION_WIN[1])
+    _auc_prev = st.session_state.get("_dol_auc_prev") or {}
     _ta_hits = []
     for r in _recs:
         _ta_ok = False
@@ -1971,10 +1983,19 @@ def render_dolpanty_swing_monitor(targets=None):
             _ta_ok, r["_ta_fac"] = _dolpanty_turnaround(r, _nq_pct, _pv)
             _ta_prev[r["ticker"]] = (r.get("기관") or 0) + (r.get("외인") or 0)   # 다음 비교용
         r["_ta"] = _ta_ok
-        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime, _theme_mode, _ta_ok)
+        # 동시호가 매수우위: 순매수(외인+기관)가 양수 & 직전 스냅샷 대비 우상향 유지(첫 틱은 미확정→False)
+        _ab_ok = False
+        if _auc_win:
+            _cur_net = (r.get("기관") or 0) + (r.get("외인") or 0)
+            _apv = _auc_prev.get(r["ticker"])
+            _ab_ok = bool(_cur_net > 0 and _apv is not None and _cur_net >= _apv)
+            _auc_prev[r["ticker"]] = _cur_net   # 다음 비교용
+        r["_ab"] = _ab_ok
+        r["_score"], r["_grade"], r["_tag"], r["_fac"] = _dolpanty_score(r, _eff_gate, _regime, _theme_mode, _ta_ok, _ab_ok)
         if _ta_ok:
             _ta_hits.append(r)
     st.session_state["_ta_prev_net"] = _ta_prev
+    st.session_state["_dol_auc_prev"] = _auc_prev
     _recs.sort(key=lambda r: r["_score"], reverse=True)
 
     # 턴어라운드 정렬 종목 → 🔥 배지 + 텔레그램(종목별 당일 1회) · NO_POSITION 예외 승격
