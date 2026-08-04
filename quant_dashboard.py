@@ -4971,6 +4971,27 @@ def render_trading_journal():
             unsafe_allow_html=True)
     except Exception:
         pass
+    # 🧊 [V13.3 탐험가/Gemini] 냉혹한 팩트 폭력 복기 — 손절 룰 위반·뇌동매매 자가채점
+    try:
+        _ret = _pd.to_numeric(_log.get("수익률%"), errors="coerce").fillna(0)
+        _memos = _log.get("메모").fillna("") if "메모" in _log.columns else _pd.Series([""] * len(_log))
+        _cut_viol = int((_ret <= -5.0).sum())               # 손절 룰(−3~−5%) 방치 = −5%↓까지 손실
+        _noplan = int((_memos.astype(str).str.strip() == "").sum())  # 진입근거 없음 = 뇌동매매 의심
+        _big_loss = int(((_ret <= -3.0)).sum())
+        _score = 100 - _cut_viol * 20 - _noplan * 10
+        _score = max(0, min(100, _score))
+        _grade = "🟢 규율 양호" if _score >= 80 else "🟡 개선 필요" if _score >= 50 else "🔴 규율 붕괴"
+        st.markdown(
+            f"<div style='margin:6px 0;padding:9px 12px;border-radius:10px;border:1px solid rgba(239,68,68,0.3);"
+            f"background:rgba(239,68,68,0.07);font-size:12px;color:#fca5a5'>"
+            f"🧊 <b>냉혹한 복기 자가채점: {_score}점 · {_grade}</b><br>"
+            f"✂️ 손절룰 위반(−5%↓ 방치) <b>{_cut_viol}건</b> · "
+            f"🧠 뇌동매매 의심(근거 메모 없음) <b>{_noplan}건</b> · "
+            f"📉 −3%↓ 손실 <b>{_big_loss}건</b></div>", unsafe_allow_html=True)
+        if _cut_viol or _noplan:
+            st.caption("💡 이 표를 제미나이에게 던지며 '냉혹하게 복기해줘' 하면 오답노트로 심층 분석됩니다.")
+    except Exception:
+        pass
     st.dataframe(_log.iloc[::-1], use_container_width=True, hide_index=True)
     _dc1, _dc2 = st.columns([1, 1])
     try:
@@ -5221,6 +5242,10 @@ def render_v93_trading_tab():
     else:
         _need = [n for n, v in [("거래대금", _k1), ("수급", _k2), ("차트", _k3), ("재료", _k4)] if not v]
         st.caption(f"미충족: {', '.join(_need)} — 4박자 모두 True일 때만 종배 승인")
+
+    st.divider()
+    # ═══ [V13.3 투자 전략가/Perplexity] RICE 프레임워크 마스터 프롬프트 생성기 ═══
+    render_rice_prompt()
 
     st.divider()
     # ═══ 모듈 4: 실적 시즌 홀짝 방지 락 ═══
@@ -5496,6 +5521,52 @@ def render_stock_drilldown(code, name=""):
             st.line_chart(_ind[_cols].tail(60), height=160)
         except Exception:
             st.caption("차트 데이터 없음")
+    # ── [V13.3 탐험가] 심층 분석 4대 필터: 질적 해자 / 재무 / 안전마진 밸류 / 리스크 시나리오 ──
+    try:
+        _t_moat, _t_fin, _t_val, _t_risk = st.tabs(["🏰 질적 해자", "📊 재무 분석", "💎 안전마진 밸류", "⚠️ 리스크 3단계"])
+        _per = float(_pr.get("PER") or 0); _pbr = float(_pr.get("PBR") or 0)
+        _hi52 = int(_pr.get("52주고가") or 0); _lo52 = int(_pr.get("52주저가") or 0)
+        with _t_moat:
+            st.caption("정성 판단 항목 — 스스로 체크(자동 산출 불가). 3개↑ 체크 시 '해자 있음'")
+            _mk = f"_moat_{code}"
+            _m1 = st.checkbox("① 시장 지배력·점유율 1~2위", key=_mk+"1")
+            _m2 = st.checkbox("② 높은 전환비용/락인(고객이탈 어려움)", key=_mk+"2")
+            _m3 = st.checkbox("③ 기술·특허·규모의 경제 진입장벽", key=_mk+"3")
+            _m4 = st.checkbox("④ 브랜드/네트워크 효과", key=_mk+"4")
+            _mc = sum([_m1, _m2, _m3, _m4])
+            st.markdown(f"**해자 점수: {_mc}/4** — {'🟢 넓은 해자' if _mc>=3 else '🟡 보통' if _mc==2 else '🔴 약함'}")
+        with _t_fin:
+            if _per or _pbr:
+                _f1, _f2, _f3 = st.columns(3)
+                _f1.metric("PER", f"{_per:.1f}배" if _per else "—")
+                _f2.metric("PBR", f"{_pbr:.2f}배" if _pbr else "—")
+                _pos52 = ((_px - _lo52) / (_hi52 - _lo52) * 100) if (_hi52 > _lo52) else None
+                _f3.metric("52주 위치", f"{_pos52:.0f}%" if _pos52 is not None else "—",
+                           help="0%=52주 저가, 100%=52주 고가")
+                st.caption(f"52주 범위 {_lo52:,} ~ {_hi52:,}  ·  PER {'저평가권' if 0<_per<10 else '보통' if _per<20 else '고평가권' if _per else '—'}")
+            else:
+                st.caption("KIS 재무지표(PER/PBR) 미제공 — 종목/장중 상태에 따라 결측 가능")
+        with _t_val:
+            st.caption("⚠️ 안전마진은 가정 기반 '근사'입니다 — 확정 밸류 아님")
+            if _pbr and _per:
+                # 단순 근사: 적정 PBR을 업종 평균 가정(1.5배)으로 잡고 현재가 대비 괴리
+                _fair = _px * (1.5 / _pbr) if _pbr else _px
+                _mos = ((_fair - _px) / _px * 100) if _px else 0
+                _vc = "#16a34a" if _mos > 0 else "#ef4444"
+                st.markdown(f"가정 적정가(PBR 1.5 기준) ≈ <b>{_fair:,.0f}</b> · "
+                            f"안전마진 <b style='color:{_vc}'>{_mos:+.0f}%</b>", unsafe_allow_html=True)
+                st.caption("※ 적정 PBR 1.5는 예시 가정값 — 업종 실제 평균으로 바꿔야 정확")
+            else:
+                st.caption("PER/PBR 결측으로 밸류 근사 불가")
+        with _t_risk:
+            _s = int(_close)
+            st.markdown(
+                f"- 🟢 **낙관(+7%)**: {int(_s*1.07):,} — 저항 {int(_res):,} 돌파·수급 유입 지속\n"
+                f"- 🟡 **중립(±0)**: {_s:,} — 20MA({int(_ma20):,}) 지지 확인하며 관망\n"
+                f"- 🔴 **비관(−7%)**: {int(_s*0.93):,} — 지지 이탈·세력 이탈 시 손절")
+            st.caption("−3% 1차 칼손절 / 지지선 이탈 = 2차 청산 원칙")
+    except Exception:
+        pass
     # ── 어닝 세론(Sell on News) 감지 ──
     try:
         import v12_sell_on_news_detector as _son
@@ -5646,6 +5717,45 @@ def render_quick_action_bar(code, name, qty, price):
             st.rerun()
 
 
+_RICE_PROMPT = """[Role] 당신은 20년 경력의 월가 베테랑 CFA 애널리스트입니다.
+
+[Instruction] 아래를 정밀 분석하라:
+1. 미국 10년물 국채금리(4.6% 마지노선 이탈 여부)
+2. WTI 유가 변동률
+3. 빅테크(엔비디아·마이크로소프트·구글·아마존 등) 최근 분기 실적 및 CAPEX 설비투자 가이던스 수치
+
+[Context] 대한민국 코스피/코스닥 대형 반도체주 위주의 15:10 종가배팅 및
+18:00 대체거래소(NXT) 스윙 전략 수행 환경. 삼성전자·SK하이닉스·한미반도체 중심.
+
+[Example — 아래 4대 레이어 표 형식으로 반드시 출력]
+| 레이어 | 핵심 수치 | 해석 | 오늘 행동 |
+|---|---|---|---|
+| 1. 글로벌 매크로 기상도 | (10년물/WTI/DXY) | | |
+| 2. 미국 본진 반도체 흐름 | (SOX/엔비디아 등) | | |
+| 3. 바닥 확인 일정 | (실적·이벤트 캘린더) | | |
+| 4. 오늘 장막판·NXT 최종 행동지침 | (진입/관망/현금) | | |
+
+[환각 보완 — 필수]
+- 모든 수치에 확인 가능한 '공개 출처 URL'을 병기하라(기사·공시 페이지 링크).
+- 유료 터미널(블룸버그/로이터 단말)·DART 원형 데이터는 접근 불가하므로,
+  공개 웹에서 검증 가능한 출처만 사용하고, 미확인 정보는 반드시 '미확인'으로 표기하라."""
+
+
+def render_rice_prompt():
+    """[V13.3] 퍼플렉시티 송출용 RICE 프레임워크 마스터 프롬프트 생성기 — 복사용 텍스트 + 답변 붙여넣기."""
+    with st.expander("🧭 RICE 마스터 프롬프트 (퍼플렉시티 종가배팅 브리핑)", expanded=False):
+        st.caption("아래 프롬프트를 복사 → 퍼플렉시티에 붙여넣기 → 받은 답을 하단에 저장(참모 브리핑 아카이브)")
+        st.code(_RICE_PROMPT, language="text")
+        _ans = st.text_area("📥 퍼플렉시티 답변 붙여넣기", key="_rice_answer", height=160,
+                            placeholder="퍼플렉시티가 준 4대 레이어 표를 여기 붙여넣으면 오늘 브리핑으로 보관됩니다.")
+        if st.button("💾 오늘 브리핑 저장", key="_rice_save") and _ans.strip():
+            _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+            _arch = _v93_load("v93_rice_brief.json", {})
+            _arch[_today] = _ans.strip()
+            _v93_save("v93_rice_brief.json", _arch)
+            st.success(f"✅ {_today} 전략가 브리핑 저장됨")
+
+
 def render_account_summary():
     """💰 계좌 요약 — 가용현금·총자산·평가손익·수익률 (홈 탭 잔고요약 이관, 보유종목 위 배치)."""
     _bal = None
@@ -5665,6 +5775,30 @@ def render_account_summary():
     _m2.metric("🏦 총자산", f"{_tot:,}")
     _m3.metric("📊 평가손익", f"{_pl:+,}")
     _m4.metric("📈 수익률", f"{_rt:+.2f}%")
+    # 🧠 [V13.3 CIO 에이전트] 현금비중 30% 미만 경고 상시 점멸 + 킬스위치 작동 시 신규진입 Mute 하드락
+    _cio = []
+    if _tot and _cash_ratio < 30:
+        _cio.append(f"현금 {_cash_ratio:.0f}% (&lt;30% 룰 위반)")
+    _ks_on = bool(st.session_state.get("_killswitch"))       # render_global_header에서 판정(NO_POSITION)
+    try:
+        _dd_safe, _dd_msg = check_global_drawdown_killswitch(_tot, int(_bal.get("전일총평가", _tot) or _tot))
+    except Exception:
+        _dd_safe, _dd_msg = True, ""
+    _mute = _ks_on or (not _dd_safe)
+    if _mute:
+        st.session_state["_cio_buy_mute"] = True             # 다른 진입 로직이 참조 가능한 소프트 하드락
+        _cio.append("🚨 신규 진입 MUTE (킬스위치/낙폭)")
+    else:
+        st.session_state["_cio_buy_mute"] = False
+    if _cio:
+        st.markdown(
+            "<style>@keyframes ciopulse{0%,100%{opacity:1}50%{opacity:.45}}</style>"
+            "<div style='animation:ciopulse 1.4s ease-in-out infinite;margin:4px 0 2px;padding:7px 12px;"
+            "border-radius:10px;border:1.5px solid #f59e0b;background:rgba(245,158,11,0.12);"
+            "font-size:12px;font-weight:800;color:#fbbf24'>"
+            f"🧠 CIO 경고 — {' · '.join(_cio)}</div>", unsafe_allow_html=True)
+        if _dd_msg:
+            st.caption(_dd_msg)
 
 
 def render_holdings_risk():
@@ -5827,7 +5961,7 @@ def render_supply_blackhole():
     # precursor(연속 전환 감지분)가 같은 방향이면 '로테이션 확정' 뱃지
     _confirmed = bool(_prec and _prec.get("to") == _to_sec)
     _badge = ("<span style='background:#39ff14;color:#052e16;padding:2px 8px;border-radius:6px;"
-              "font-size:11px;font-weight:900;text-shadow:none'>🔒 로테이션 확정</span>"
+              "font-size:11px;font-weight:900;text-shadow:none'>🌪️ 자금 대이동 확정</span>"
               if _confirmed else
               "<span style='color:#fbbf24;font-size:11px;font-weight:700'>관측 중</span>")
     _, _fresh = _snap_freshness()      # ⏱️ 스냅샷 신선도(낡으면 착시 방지 경고)
