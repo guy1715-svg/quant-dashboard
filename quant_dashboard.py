@@ -1080,6 +1080,7 @@ _MANJU_WEIGHTS      = {"W2": 35, "W3": 20, "W4": 15, "W5": 12, "W6": 10, "W7": 8
 _MANJU_PROG_REF     = 200000       # [구/폴백] 외인·기관 추정 순매수 정규화 기준(주) — 금액 결측 시만 사용
 _MANJU_VOL_REF      = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만 사용
 _MANJU_NEARHI_TOL   = 0.010        # 신고가/저항 근접 허용치 1.0%
+_MANJU_CLOSEPOS_BONUS = 8          # [V13.4] 종가 캔들위치 보너스 상한(가중치 무손상·상단마감 가점)
 _MANJU_LEADER_BREAK = 0.015        # 대장주 꺾임 감지 임계(당일 고점 대비 -1.5%)
 # ── [V12.1 금액기반 리팩토링] 수량(주)→금액(원) 물리변환 정규화 기준 ──
 _MANJU_PROG_AMT_REF = 3_000_000_000    # 프로그램 수급 금액 만점 기준: +30억 원(=3,000백만=3,000,000천원)
@@ -1291,7 +1292,7 @@ def fetch_manju_scalp_data(token, targets):
     def _one(_tk, _nm):
         """단일 종목 수집(스레드 워커) — row dict 반환. 리턴 스펙 동일."""
         _r = {"ticker": _tk, "name": _nm, "현재가": None, "등락률": None,
-              "고가": None, "거래량": None, "거래대금": None,
+              "고가": None, "저가": None, "거래량": None, "거래대금": None,
               "프로그램순매수": None, "출처": None, "ok": False,
               # [V12.1] 금액(원) 기반 필드 — 실시간 추정 수량 × 현재가 물리변환
               "외인추정수량": 0, "기관추정수량": 0,
@@ -1307,6 +1308,7 @@ def fetch_manju_scalp_data(token, targets):
                 _r["현재가"] = int(str(_op.get("stck_prpr", 0)).replace(",", "") or 0)
                 _r["등락률"] = float(str(_op.get("prdy_ctrt", 0)).replace(",", "") or 0)
                 _r["고가"]  = int(str(_op.get("stck_hgpr", 0)).replace(",", "") or 0)
+                _r["저가"]  = int(str(_op.get("stck_lwpr", 0)).replace(",", "") or 0)
                 _r["거래량"] = int(str(_op.get("acml_vol", 0)).replace(",", "") or 0)
                 # 당일 누적 거래대금(원) — HTS #0517/#1501 대조용 실시간 대금
                 _r["거래대금"] = int(str(_op.get("acml_tr_pbmn", 0)).replace(",", "") or 0)
@@ -1366,6 +1368,7 @@ def _manju_score(rec, leader_chg, gate_open):
     _px   = rec.get("현재가") or 0
     _chg  = rec.get("등락률") or 0.0
     _hi   = rec.get("고가") or 0
+    _lo   = rec.get("저가") or 0
     _vol  = rec.get("거래량") or 0
     _prog = rec.get("프로그램순매수")
     _prog_amt = rec.get("프로그램금액")   # [V12.1] 금액(원) — 우선 사용
@@ -1393,13 +1396,20 @@ def _manju_score(rec, leader_chg, gate_open):
     _w = _MANJU_WEIGHTS
     _raw = (_w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 +
             _w["W5"]*_f5 + _w["W6"]*_f6 + _w["W7"]*_f7)
-    _total = round((1 if gate_open else 0) * _raw, 1)
+    # [V13.4] 종가 캔들위치 = (현재가-저가)/(고가-저가). 상단(0.5~1.0) 마감만 가점(약한 마감 0·감점 없음).
+    #   가중치(W2~W7) 무손상 → 강한 마감이면 최대 +8 얹고 100 상한. 게이트 밖이면 raw=0이라 자연 mute.
+    _pos = None
+    if _hi > _lo > 0 and _px > 0:
+        _pos = min(max((_px - _lo) / (_hi - _lo), 0.0), 1.0)
+    _cbonus = (_MANJU_CLOSEPOS_BONUS * max(_pos - 0.5, 0.0) / 0.5) if _pos is not None else 0.0
+    _total = round(min((1 if gate_open else 0) * (_raw + _cbonus), 100.0), 1)
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
     elif _total >= 40: _grade, _tag = "🟡 관찰",     "WATCH"
     else:              _grade, _tag = "⚪ 제외",     "SKIP"
     return _total, _grade, _tag, {"프로그램": _f2, "신고가근접": _f3, "체결강도": _f4,
-                                   "호가우위": _f5, "짝꿍갭": _f6, "거래량": _f7}
+                                   "호가우위": _f5, "짝꿍갭": _f6, "거래량": _f7,
+                                   "종가위치": (round(_pos, 2) if _pos is not None else None)}
 
 
 def _action_pill(kind):
@@ -1694,6 +1704,7 @@ def _dol_investor(code):
 
 
 _DOL_WEIGHTS = {"W2": 35, "W3": 20, "W4": 15, "W5": 10, "W6": 20}   # [V13 기본] 기관35·MA20:20·꼬리15·외인10·거래대금20
+_DOL_CLOSEPOS_BONUS = 8     # [V13.4] 종가 캔들위치 보너스 상한(가중치 무손상·상단마감 가점)
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
 _DOL_VOL_REF = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만
@@ -1795,9 +1806,16 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     _raw = _w["W2"]*_f2 + _w["W3"]*_f3 + _w["W4"]*_f4 + _w["W5"]*_f5 + _w["W6"]*_f6
     # [V6.1-B] 턴어라운드 정렬 시: 게이트 강제 개방(패닉 예외) + 특별 가중치 +20
     _eff_gate = 1 if (gate_open or turnaround) else 0
-    _total = round(_eff_gate * (0.5 if regime_halve else 1.0) * _raw, 1)
+    # [V13.4] 종가 캔들위치 = (현재가-저가)/(고가-저가). 상단(0.5~1.0) 마감만 가점(약한 마감 0·감점 없음).
+    #   가중치(W2~W6) 무손상·최대 +8·게이트/레짐 연동. '고가 붙어 마감' = 마감까지 매수세 유지 = 갭 확률↑.
+    _pos = None
+    if _h > _l > 0 and _close > 0:
+        _pos = min(max((_close - _l) / (_h - _l), 0.0), 1.0)
+    _cbonus = (_DOL_CLOSEPOS_BONUS * max(_pos - 0.5, 0.0) / 0.5) if _pos is not None else 0.0
+    _total = round(_eff_gate * (0.5 if regime_halve else 1.0) * (_raw + _cbonus), 1)
     if turnaround:
         _total = min(round(_total + _TA_BONUS, 1), 100.0)
+    _total = min(_total, 100.0)
     # [V12.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 무조건 제외(SKIP, total=0)
     #   대형주(현재가≥5만) 1,000억 / 중소형 500억 미만이면 '가짜 수급 잡주'로 보고 청산.
     _need = _DOL_TURNOVER_REF if _close >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
@@ -1805,6 +1823,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
         _cap = "대형" if _close >= _DOL_LARGECAP_PX else "중소형"
         return 0.0, "⚪ 제외", "SKIP", {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
                                         "외인(금액)": _f5, "거래대금": _f6,
+                                        "종가위치": (round(_pos, 2) if _pos is not None else None),
                                         "_hardcut": f"거래대금 {_turn/1e8:,.0f}억 < {_cap} 관문 {_need/1e8:,.0f}억"}
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
@@ -1812,6 +1831,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     else:              _grade, _tag = "⚪ 제외",     "SKIP"
     return _total, _grade, _tag, {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
                                    "외인(금액)": _f5, "거래대금": _f6,
+                                   "종가위치": (round(_pos, 2) if _pos is not None else None),
                                    "_mode": "테마" if is_theme_mode else "대형"}
 
 
@@ -4005,7 +4025,6 @@ def render_money_tour_panel():
         "🌀 수급 머니투어 — 섹터 간 자금 대이동 추적</div>", unsafe_allow_html=True)
     # 🗒️ [V13.2] 오늘 알람 타임라인 + 📍 타점 성적(알림가 vs 현재가 + 분봉 타점 차트) — 이 탭 최상단
     try:
-        render_paste_import()          # 📋 오늘 받은 알람 붙여넣기(재시작 전 기록 복원)
         render_alert_feed()
         render_signal_scoreboard()
     except Exception as _afe:
@@ -6132,126 +6151,10 @@ def render_supply_by_investor():
                "🚨개인홀로=개인만 매수+세력 매도(추격금지) · 🟢세력유입=외인/기관/프로그램 2주체↑ 매수")
 
 
-_NAME2CODE = {
-    "SK하이닉스": "000660", "삼성전자": "005930", "한화에어로스페이스": "012450",
-    "알테오젠": "196170", "삼성바이오로직스": "207940", "한화시스템": "272210",
-    "한미반도체": "042700", "두산에너빌리티": "034020", "한국항공우주": "047810",
-    "카카오": "035720", "NAVER": "035420",
-}
-
-
-def _resolve_code(name):
-    """종목명 → 코드. 내장 매핑 → 라인업 → 실패 시 ''."""
-    if not name:
-        return ""
-    _n = name.strip()
-    if _n in _NAME2CODE:
-        return _NAME2CODE[_n]
-    try:
-        for _c, _nm in (_manju_load_lineup() or []):
-            if str(_nm).strip() == _n:
-                return str(_c).zfill(6)
-    except Exception:
-        pass
-    return ""
-
-
-def _parse_telegram_paste(text):
-    """붙여넣은 텔레그램 로그 → (feed_items, signal_items). 각 메시지는 '[날짜 시:분 AM/PM] Ok:'로 시작.
-    signal_items는 시가저격/15분봉만(종목·알림가 추출)."""
-    import re as _re
-    _blocks = _re.split(r"\[\d+/\d+/\d{4}\s+(\d+):(\d+)\s*(AM|PM)\]\s*Ok:\s*", text or "")
-    # split는 캡처그룹 때문에 [pre, h,m,ap, body, h,m,ap, body, ...] 구조
-    _feed, _sigs = [], []
-    for _i in range(1, len(_blocks), 4):
-        if _i + 3 >= len(_blocks):
-            break
-        try:
-            _h = int(_blocks[_i]); _m = int(_blocks[_i + 1]); _ap = _blocks[_i + 2]
-            _body = _blocks[_i + 3] or ""
-        except Exception:
-            continue
-        if _ap == "PM" and _h != 12:
-            _h += 12
-        elif _ap == "AM" and _h == 12:
-            _h = 0
-        _t = f"{_h:02d}:{_m:02d}"
-        _bt = _body.strip()
-        if not _bt:
-            continue
-        _feed.append({"t": _t, "text": _bt})
-        # 시가저격/15분봉/5분봉/종가배팅 → 타점 성적용
-        if (("시가저격" in _bt) or ("15분봉 강한 양봉" in _bt) or ("5분봉 빠른 진입" in _bt)
-                or ("종가배팅 후보" in _bt)):
-            _nm = None
-            _mm = _re.search(r"—\s*([^\n(]+)", _bt)
-            if _mm:
-                _nm = _mm.group(1).strip()
-            _pm = _re.search(r"현재가\s*([\d,]+)", _bt)
-            _px = int(_pm.group(1).replace(",", "")) if _pm else 0
-            _kind = ("시가저격" if "시가저격" in _bt else
-                     "5분봉" if "5분봉" in _bt else
-                     "종가배팅" if "종가배팅" in _bt else "15분봉")
-            if _nm and _px:
-                _sigs.append({"t": _t, "kind": _kind, "name": _nm, "code": _resolve_code(_nm), "px": _px})
-    return _feed, _sigs
-
-
-def _merged_feed():
-    """스냅샷 alert_feed + 세션에 붙여넣은 로그 병합(중복 제거·시간순)."""
-    _snap = (_watcher_snapshot() or {}).get("alert_feed") or []
-    _pasted = st.session_state.get("_pasted_feed") or []
-    _seen, _out = set(), []
-    for _m in _pasted + _snap:
-        _k = (_m.get("t"), (_m.get("text") or "")[:40])
-        if _k in _seen:
-            continue
-        _seen.add(_k); _out.append(_m)
-    _out.sort(key=lambda m: m.get("t", ""))
-    return _out
-
-
-def _merged_signals():
-    """스냅샷 signal_log + 세션 붙여넣기 신호 병합(중복 제거·시간순)."""
-    _snap = (_watcher_snapshot() or {}).get("signal_log") or []
-    _pasted = st.session_state.get("_pasted_sigs") or []
-    _seen, _out = set(), []
-    for _s in _pasted + _snap:
-        _k = (_s.get("t"), _s.get("name"), _s.get("px"))
-        if _k in _seen:
-            continue
-        _seen.add(_k); _out.append(_s)
-    _out.sort(key=lambda s: s.get("t", ""))
-    return _out
-
-
-def render_paste_import():
-    """📋 오늘 텔레그램 알람 붙여넣기 → 타임라인/타점 성적에 반영(세션 보관)."""
-    with st.expander("📋 오늘 받은 알람 붙여넣기 (재시작 전 기록 복원)", expanded=False):
-        _txt = st.text_area("텔레그램 알람 복사해서 붙여넣기", key="_paste_alerts", height=140,
-                            placeholder="[8/4/2026 9:01 AM] Ok: 🟢 매수검토\n🎯 시가저격 ... 형태 그대로 붙여넣기")
-        _c1, _c2 = st.columns(2)
-        if _c1.button("📥 불러오기(반영)", key="_paste_apply", use_container_width=True) and _txt.strip():
-            _f, _s = _parse_telegram_paste(_txt)
-            st.session_state["_pasted_feed"] = _f
-            st.session_state["_pasted_sigs"] = _s
-            st.success(f"✅ 알람 {len(_f)}건 · 매수신호 {len(_s)}건 반영됨")
-            st.rerun()
-        if _c2.button("🗑 붙여넣기 지우기", key="_paste_clear", use_container_width=True):
-            st.session_state.pop("_pasted_feed", None)
-            st.session_state.pop("_pasted_sigs", None)
-            st.rerun()
-
-
 def render_alert_feed():
     """🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — watcher 스냅샷 alert_feed. 최신 위, 배지색 구분."""
-    _feed = _merged_feed()            # 스냅샷 + 붙여넣기 병합
+    _feed = (_watcher_snapshot() or {}).get("alert_feed") or []
     if not _feed:
-        st.markdown(
-            "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
-            "background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>🗒️ <b>오늘 온 알람 타임라인</b><br>"
-            "아직 알람이 없어요. 새 알람이 뜨면 쌓이고, 위 <b>📋 붙여넣기</b>로 오늘 받은 걸 바로 불러올 수 있어요.</div>",
-            unsafe_allow_html=True)
         return
     _, _fresh = _snap_freshness()
     def _accent(txt):
@@ -6281,13 +6184,8 @@ def render_alert_feed():
 def render_signal_scoreboard():
     """📍 [V13.2] 오늘 매수 알림 성적 — 알림 왔을 때 샀다면 지금 얼마? 알림가 vs 현재가 수익률.
     watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
-    _sigs = _merged_signals()         # 스냅샷 + 붙여넣기 병합
+    _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
     if not _sigs:
-        st.markdown(
-            "<div style='margin:6px 0;padding:10px 12px;border-radius:10px;border:1px dashed rgba(148,163,184,0.4);"
-            "background:rgba(148,163,184,0.05);font-size:12px;color:#94a3b8'>📍 <b>오늘 매수 알림 성적</b><br>"
-            "아직 매수 알림(시가저격·15분봉)이 없어요. 뜨면 알림가 vs 현재가와 🔺타점 차트가 여기 나옵니다.</div>",
-            unsafe_allow_html=True)
         return
     with st.expander(f"📍 오늘 매수 알림 성적 ({len(_sigs)}건) — 그때 샀다면 지금?", expanded=False):
         _rows = []
@@ -6330,56 +6228,43 @@ def render_signal_scoreboard():
             "<th style='padding:4px 8px;text-align:center'>판정</th></tr></thead>"
             f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
         st.caption("💡 '알림 왔을 때 바로 샀다면' 기준 · 실제 체결가는 다를 수 있음")
-        # ── 📈 타점 정확도 차트 — 종목 선택 → 알림 시각/가격 타점(붙여넣기 데이터로 항상 표시) ──
+        # ── 📈 타점 정확도 차트 — 종목 선택 → 당일 분봉 + 알림 시각/가격 ⭐타점 ──
         st.markdown("**📈 타점 정확도 보기 (알림 시각을 차트에 찍어 확인)**")
         _names = list(dict.fromkeys(s.get("name") for s in _sigs if s.get("name")))
         _code_of = {s.get("name"): s.get("code") for s in _sigs}
         _sel = st.selectbox("종목 선택", _names, key="_sig_chart_sel")
         if _sel:
-            import pandas as _pd2
-            # 이 종목의 알림들(시각·가격) — 붙여넣기/스냅샷 신호 자체가 '그 시각 가격'이라 KIS 없이도 흐름 표시
-            _pts = _pd2.DataFrame(
-                [{"시각": s.get("t"), "가격": s.get("px"), "유형": s.get("kind", "")}
-                 for s in _sigs if s.get("name") == _sel and s.get("px")]
-            ).sort_values("시각").reset_index(drop=True)
-            # 현재가(있으면) 마지막 점으로 추가
-            _cur = 0
-            try:
-                _cur = (kis_get_price(_code_of.get(_sel)) or {}).get("현재가") or 0
-            except Exception:
-                _cur = 0
-            try:
-                import altair as _alt2
-                _line = _alt2.Chart(_pts).mark_line(point=True, color="#38bdf8").encode(
-                    x=_alt2.X("시각:N", title="시각"),
-                    y=_alt2.Y("가격:Q", title="가격(원)", scale=_alt2.Scale(zero=False)),
-                    tooltip=[_alt2.Tooltip("시각:N", title="알림시각"),
-                             _alt2.Tooltip("가격:Q", title="알림가", format=",.0f"),
-                             _alt2.Tooltip("유형:N")])
-                _star = _alt2.Chart(_pts).mark_point(shape="triangle-up", size=170,
-                                                     color="#fbbf24", filled=True).encode(
-                    x="시각:N", y="가격:Q")
-                _layers = _line + _star
-                if _cur:
-                    _cdf = _pd2.DataFrame([{"현재가": _cur}])
-                    _rule = _alt2.Chart(_cdf).mark_rule(color="#22c55e", strokeDash=[5, 4]).encode(
-                        y="현재가:Q", tooltip=[_alt2.Tooltip("현재가:Q", title="지금 현재가", format=",.0f")])
-                    _layers = _layers + _rule
-                st.altair_chart(_layers.properties(height=240), use_container_width=True)
-                _cap = "🔺노란 삼각형 = 알림 뜬 시각·가격(파란선=흐름)"
-                if _cur:
-                    _cap += f" · 🟢초록 점선 = 지금 현재가 {_cur:,}원 (알림가가 이 선보다 아래면 그 알림은 지금 이익)"
-                st.caption(_cap)
-            except Exception:
-                st.line_chart(_pts.set_index("시각")["가격"], height=200)
-            st.caption("💡 KIS 분봉이 되면 실제 1분봉 위에 겹쳐 보이게 확장 가능 · 지금은 알림 시점 가격들로 흐름 표시(장 마감 후에도 OK)")
+            _mdf = kis_intraday_minute(_code_of.get(_sel))
+            if _mdf is None or _mdf.empty:
+                st.caption("⏳ 분봉 데이터 수신 실패(장중·KIS 연결 시 표시)")
+            else:
+                try:
+                    import altair as _alt2
+                    import pandas as _pd2
+                    _base = _alt2.Chart(_mdf).mark_line(color="#38bdf8").encode(
+                        x=_alt2.X("시각:N", title="시각", axis=_alt2.Axis(labelAngle=-45, values=list(_mdf["시각"][::30]))),
+                        y=_alt2.Y("종가:Q", title="가격(원)", scale=_alt2.Scale(zero=False)),
+                        tooltip=[_alt2.Tooltip("시각:N"), _alt2.Tooltip("종가:Q", format=",.0f")])
+                    _pts = _pd2.DataFrame([{"시각": s.get("t"), "알림가": s.get("px"),
+                                            "유형": s.get("kind", "")} for s in _sigs if s.get("name") == _sel])
+                    _star = _alt2.Chart(_pts).mark_point(shape="triangle-up", size=170,
+                                                         color="#fbbf24", filled=True).encode(
+                        x="시각:N", y="알림가:Q",
+                        tooltip=[_alt2.Tooltip("시각:N", title="알림시각"),
+                                 _alt2.Tooltip("알림가:Q", title="알림가", format=",.0f"),
+                                 _alt2.Tooltip("유형:N")])
+                    st.altair_chart((_base + _star).properties(height=240), use_container_width=True)
+                    st.caption("🔺노란 삼각형 = 알림(매수타점) 뜬 시각·가격 · 파란선 = 당일 실제 주가 흐름")
+                except Exception:
+                    st.line_chart(_mdf.set_index("시각")["종가"], height=200)
 
 
 def render_theme_ranking_board():
     """📡 실시간 테마별 거래대금 랭킹보드 — 금액(현재가×거래량) 기준. 1000억↑ 활성, 400억↑ 종목 노출."""
+    render_alert_feed()                # 🗒️ [V13.2] 오늘 온 알람 타임라인(전체 메시지)
     render_supply_blackhole()          # 🌪️ [V13.2] 수급 블랙홀 현황판(상단)
     render_supply_by_investor()        # 👥 [V13.2] 종목별 4주체 수급(개인/외인/기관/프로그램)
-    # (알람 타임라인·타점 성적은 머니투어 탭 render_money_tour_panel에서만 렌더 — 중복 키 방지)
+    render_signal_scoreboard()         # 📍 [V13.2] 오늘 매수 알림 성적(알림가 vs 현재가)
     st.markdown("#### 📡 실시간 테마 거래대금 랭킹 (금액 기준)")
     if not kis_available():
         st.caption("⚠️ KIS 미연결 — 랭킹 산출 불가"); return
