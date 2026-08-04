@@ -1705,6 +1705,10 @@ def _dol_investor(code):
 
 _DOL_WEIGHTS = {"W2": 35, "W3": 20, "W4": 15, "W5": 10, "W6": 20}   # [V13 기본] 기관35·MA20:20·꼬리15·외인10·거래대금20
 _DOL_CLOSEPOS_BONUS = 8     # [V13.4] 종가 캔들위치 보너스 상한(가중치 무손상·상단마감 가점)
+# [V13.5] 등락률 밴드 — 최적대 +3~+25%. 밖은 부드럽게 감점(제외 아님, 급등주 예외 보존)
+_DOL_CHG_LO         = 3.0   # 이 미만 = 수급 안 실린 약체(감점 시작)
+_DOL_CHG_HI         = 25.0  # 이 초과 = 상한가근접·다음날 상투 위험(감점 시작)
+_DOL_CHG_MAX_CUT    = 0.40  # 감점 상한(최대 40%만 깎음 → 완전히 죽이진 않음)
 _DOL_ORG_REF = 150000       # 기관 순매수(스마트머니) 정규화 기준(주)
 _DOL_FRN_REF = 150000       # 외인 순매수 정규화 기준(주)
 _DOL_VOL_REF = 3_000_000    # [구/폴백] 거래량 정규화 기준(주) — 거래대금 결측 시만
@@ -1812,7 +1816,16 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     if _h > _l > 0 and _close > 0:
         _pos = min(max((_close - _l) / (_h - _l), 0.0), 1.0)
     _cbonus = (_DOL_CLOSEPOS_BONUS * max(_pos - 0.5, 0.0) / 0.5) if _pos is not None else 0.0
-    _total = round(_eff_gate * (0.5 if regime_halve else 1.0) * (_raw + _cbonus), 1)
+    # [V13.5] 등락률 밴드 감점 — 최적대(+3~+25%) 밖이면 부드럽게 배율↓(결측이면 무감점).
+    #   약체(<+3%): -0.05/%p · 과열(>+25%): -0.02/%p, 각각 최대 -40%까지만(급등주 예외 보존).
+    _chg = rec.get("등락률")
+    _bandf = 1.0
+    if _chg is not None:
+        if _chg < _DOL_CHG_LO:
+            _bandf = 1.0 - min((_DOL_CHG_LO - _chg) * 0.05, _DOL_CHG_MAX_CUT)
+        elif _chg > _DOL_CHG_HI:
+            _bandf = 1.0 - min((_chg - _DOL_CHG_HI) * 0.02, _DOL_CHG_MAX_CUT)
+    _total = round(_eff_gate * (0.5 if regime_halve else 1.0) * _bandf * (_raw + _cbonus), 1)
     if turnaround:
         _total = min(round(_total + _TA_BONUS, 1), 100.0)
     _total = min(_total, 100.0)
@@ -1824,6 +1837,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
         return 0.0, "⚪ 제외", "SKIP", {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
                                         "외인(금액)": _f5, "거래대금": _f6,
                                         "종가위치": (round(_pos, 2) if _pos is not None else None),
+                                        "등락률밴드": round(_bandf, 2),
                                         "_hardcut": f"거래대금 {_turn/1e8:,.0f}억 < {_cap} 관문 {_need/1e8:,.0f}억"}
     if   _total >= 80: _grade, _tag = "🔴 즉시타격", "STRIKE"
     elif _total >= 60: _grade, _tag = "🟠 준비",     "READY"
@@ -1832,6 +1846,7 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     return _total, _grade, _tag, {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
                                    "외인(금액)": _f5, "거래대금": _f6,
                                    "종가위치": (round(_pos, 2) if _pos is not None else None),
+                                   "등락률밴드": round(_bandf, 2),
                                    "_mode": "테마" if is_theme_mode else "대형"}
 
 
