@@ -5495,16 +5495,26 @@ def render_stock_drilldown(code, name=""):
     _s2 = (f"② 수급: 외인 {(_frn if _frn is not None else 0):+,} · 기관 {(_org if _org is not None else 0):+,}"
            f"{' ('+_ivsrc+')' if _ivsrc else ''} → {'🟢 양매수' if (_frn and _org and _frn>0 and _org>0) else '🟡 혼조/약함'}")
     _rsi_txt = ("🔥과열" if (_rsi is not None and _rsi>=70) else "❄️과매도" if (_rsi is not None and _rsi<=30) else "중립")
-    _s3 = f"③ 대응: 진입 후 −3% 칼손절 원칙 · RSI {(_rsi if _rsi is not None else 0):.0f}({_rsi_txt}) · 저항 {int(_res):,} 돌파 시 홀딩"
+    _s3 = f"③ 대응: 단타 −2%/스윙 −3% 손절 · RSI {(_rsi if _rsi is not None else 0):.0f}({_rsi_txt}) · 저항 {int(_res):,} 돌파(뚫으면) 시 홀딩"
     st.markdown(f"<div style='background:linear-gradient(135deg,#0f172a 0%,#070a13 100%);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:10px 12px;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55);"
                 f"font-size:12px;color:#cbd5e1;line-height:1.6'>🎯 <b>핵심 시나리오</b><br>{_s1}<br>{_s2}<br>{_s3}</div>",
                 unsafe_allow_html=True)
-    # ── 진입/손절/목표 메트릭 박스 ──
-    _entry = int(_close); _stop = int(_close * 0.97); _t1 = int(_close * 1.03)
+    # ── 🔴 추격 경고 — 20일선 이격 과대(고무줄 끝) 시 진입 금지 배너 ──
+    if isinstance(_disp, (int, float)) and _disp >= 7.0:
+        _lvl = "🔴 심한 과열 — 추격 금지" if _disp >= 12 else "🟠 과열 주의 — 추격 조심"
+        st.markdown(
+            f"<div style='margin:6px 0;padding:8px 12px;border-radius:10px;border:1.5px solid #ef4444;"
+            f"background:rgba(239,68,68,0.10);font-size:12px;font-weight:800;color:#fca5a5'>"
+            f"{_lvl} · 20일선 이격 <b>+{_disp:.1f}%</b> — 고무줄 끝. 눌림목(20일선 근처) 기다리기 권장</div>",
+            unsafe_allow_html=True)
+    # ── 진입/손절/목표 메트릭 박스 ── (단타=−2% / 스윙=−3%)
+    _entry = int(_close); _stop2 = int(_close * 0.98); _stop3 = int(_close * 0.97); _t1 = int(_close * 1.03)
     _e1, _e2, _e3 = st.columns(3)
     _e1.metric("🎯 진입", f"{_entry:,}")
-    _e2.metric("✂️ 손절(−3%)", f"{_stop:,}")
+    _e2.metric("✂️ 손절 −2%(단타)", f"{_stop2:,}", help="15분봉·시가저격 등 급등 추격 진입은 타이트하게 −2%")
     _e3.metric("🚀 목표(+3%)", f"{_t1:,}")
+    st.caption(f"✂️ 손절 기준 — 단타 진입 −2%({_stop2:,}) · 눌림목 스윙 −3%({_stop3:,}). "
+               "급등에 올라탄 거면 −2% 권장(빨리 자르기)")
     # 트리거 태그
     _tags = []
     try:
@@ -5514,11 +5524,32 @@ def render_stock_drilldown(code, name=""):
     _tag_html = " ".join(f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:11px'>{t}</span>" for t in _tags)
     st.markdown(f"<div style='margin-top:2px'>{_tag_html or '<span style=color:#64748b;font-size:11px>뉴스 시그널 없음</span>'}</div>",
                 unsafe_allow_html=True)
-    # 미니 차트(접이식 — 슬림 유지)
-    with st.expander("📈 차트 보기", expanded=False):
+    # 미니 차트(접이식 — 슬림 유지) — [한글 패치] 축·범례·툴팁 모두 한글
+    with st.expander("📈 차트 보기 (종가·이동평균선)", expanded=False):
         try:
             _cols = [c for c in ["종가", "MA5", "MA20", "MA60"] if c in _ind.columns]
-            st.line_chart(_ind[_cols].tail(60), height=160)
+            _cd = _ind[_cols].tail(60).reset_index()
+            _xcol = _cd.columns[0]                       # 날짜 인덱스 컬럼명
+            try:
+                import altair as _alt
+                _long = _cd.melt(_xcol, var_name="지표", value_name="가격").dropna(subset=["가격"])
+                _name_map = {"종가": "종가", "MA5": "5일선", "MA20": "20일선", "MA60": "60일선"}
+                _long["지표"] = _long["지표"].map(lambda x: _name_map.get(x, x))
+                _chart = (_alt.Chart(_long).mark_line().encode(
+                    x=_alt.X(f"{_xcol}:T", title="날짜"),
+                    y=_alt.Y("가격:Q", title="가격(원)", scale=_alt.Scale(zero=False)),
+                    color=_alt.Color("지표:N", title="구분",
+                                     scale=_alt.Scale(domain=["종가", "5일선", "20일선", "60일선"],
+                                                      range=["#e2e8f0", "#f59e0b", "#38bdf8", "#a78bfa"])),
+                    tooltip=[_alt.Tooltip(f"{_xcol}:T", title="날짜"),
+                             _alt.Tooltip("지표:N", title="구분"),
+                             _alt.Tooltip("가격:Q", title="가격", format=",.0f")])
+                    .properties(height=200))
+                st.altair_chart(_chart, use_container_width=True)
+                st.caption("💡 흰선=종가 · 주황=5일선 · 파랑=20일선(기준) · 보라=60일선")
+            except Exception:
+                _rn = {"종가": "종가", "MA5": "5일선", "MA20": "20일선", "MA60": "60일선"}
+                st.line_chart(_ind[_cols].tail(60).rename(columns=_rn), height=160)
         except Exception:
             st.caption("차트 데이터 없음")
     # ── [V13.3 탐험가] 심층 분석 4대 필터: 질적 해자 / 재무 / 안전마진 밸류 / 리스크 시나리오 ──

@@ -564,6 +564,27 @@ def _price_and_turnover(token, key, secret, code, mrkt="J"):
     return None, None, None
 
 
+def _ma20_disparity(token, key, secret, code, px):
+    """현재가의 20일선 이격도(%) — inquire-daily-price 최근 20 종가 평균 기준. 실패 시 None.
+    이격 = (현재가/20일선 −1)×100. 양수 클수록 과열(눌림 위험)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        o = r.json().get("output", [])
+        closes = [_to_int(row.get("stck_clpr")) for row in (o or []) if isinstance(row, dict)]
+        closes = [c for c in closes if c][:20]
+        if len(closes) >= 5 and px:
+            ma20 = sum(closes) / len(closes)
+            if ma20:
+                return round((px / ma20 - 1) * 100, 1)
+    except Exception:
+        pass
+    return None
+
+
 def _prev_3min_high(token, key, secret, code):
     """직전 3분봉(완성) 고가 — inquire-time-itemchartprice(1분봉) 3개 집계. 실패 시 None.
     현재 형성 중 봉을 제외하고, 직전 3분(완성 구간)의 최고가를 반환. '3분봉 전고 돌파' 판정용."""
@@ -1104,13 +1125,28 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
             # 김팀장式 3요건: ①15분 +1%↑ 강양봉 ②거래대금 증가 ③나스닥선물 동조(0선↑)
             if _move >= _BAR15_PCT and _tdelta > 0 and _nq_sync and not sent.get(_key):
                 _nqtxt = (f"나스닥선물 {_nq:+.2f}% 상승동조🟢" if _nq is not None else "나스닥선물 확인불가")
+                # 20일선 이격 — 과열(추격) 자리인지 친절히 안내
+                _disp = _ma20_disparity(token, key, secret, code, px)
                 out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0,
-                            "bar_move": round(_move, 2), "nq": _nq})
+                            "bar_move": round(_move, 2), "nq": _nq, "disp": _disp})
+                _stop = int(px * 0.98)
+                if _disp is None:
+                    _warn = "• 이격: 확인불가 (HTS에서 20일선 위치 확인)"
+                elif _disp >= 12:
+                    _warn = f"• ⚠️ 20일선 이격 +{_disp:.1f}% = 심한 과열! 지금은 추격 자리 — 눌림 기다리기 권장"
+                elif _disp >= 7:
+                    _warn = f"• ⚠️ 20일선 이격 +{_disp:.1f}% = 과열 주의 — 소량·타이트 손절만"
+                else:
+                    _warn = f"• 20일선 이격 +{_disp:.1f}% = 아직 여유 있음(추격 아님)"
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n📊 15분봉 강한 양봉 — {name}\n"
-                              f"방금 15분봉 +{_move:.1f}% 강양봉 확정 · 거래대금 증가 · {_nqtxt}\n"
-                              f"현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                              f"🎯 새 봉 열림 = 지금 진입 판단 · 선물 동조 확인·−2% 손절")
+                              f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
+                              f"{_nqtxt}\n"
+                              f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"{_warn}\n"
+                              f"─────────\n"
+                              f"👉 지금 할 일: HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인\n"
+                              f"✂️ 사면 손절 {_stop:,}원(−2%) 먼저 걸기 · 안 뚫으면 관망")
                 sent[_key] = True
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
