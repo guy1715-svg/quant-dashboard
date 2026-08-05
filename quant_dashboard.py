@@ -6784,9 +6784,136 @@ def render_alert_feed():
         st.caption("💡 오늘 텔레그램으로 나간 모든 알람이 시간순으로 쌓입니다(최신 위) · watcher 재시작 후부터 집계")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.6] 매수 알림 일일 복기 장부 — signal_log를 매일 파일에 박제 → 익일 종가/시가로
+#   자동 대조 → 유형별(시가저격/15분봉) 누적 승률. 장 끝나도 안 사라지는 복기 자산.
+# ═══════════════════════════════════════════════════════════════════
+_SIGNAL_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "signal_history.json")
+
+
+def _signal_history_read():
+    try:
+        with open(_SIGNAL_HISTORY_PATH, "r", encoding="utf-8") as _f:
+            _d = _json_tracker.load(_f)
+            return _d if isinstance(_d, list) else []
+    except (FileNotFoundError, _json_tracker.JSONDecodeError, OSError):
+        return []
+
+
+def _signal_history_write(rows):
+    try:
+        with open(_SIGNAL_HISTORY_PATH, "w", encoding="utf-8") as _f:
+            _json_tracker.dump(rows[-2000:], _f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def archive_today_signals():
+    """오늘 signal_log의 알림들을 파일에 박제(중복 제외). 알림가·유형·종목 보존."""
+    _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
+    if not _sigs:
+        return
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _rows = _signal_history_read()
+    _seen = {(r.get("date"), r.get("code"), r.get("t"), r.get("kind")) for r in _rows}
+    _add = False
+    for _s in _sigs:
+        _key = (_today, _s.get("code"), _s.get("t"), _s.get("kind"))
+        if _key in _seen:
+            continue
+        _rows.append({"date": _today, "t": _s.get("t", ""), "kind": _s.get("kind", ""),
+                      "code": str(_s.get("code", "")), "name": _s.get("name", ""),
+                      "alert_px": int(_s.get("px") or 0),
+                      "close_ret": None, "next_ret": None})
+        _add = True
+    if _add:
+        _signal_history_write(_rows)
+
+
+def backfill_signal_outcomes():
+    """미대조(next_ret=None)·날짜<오늘 알림을 KIS 일봉으로 대조 →
+    close_ret=(당일종가/알림가−1), next_ret=(익일시가/알림가−1). 지연 백필."""
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _rows = _signal_history_read()
+    _dirty = False
+    _cache = {}
+    for _r in _rows:
+        if _r.get("next_ret") is not None or _r.get("date", "") >= _today:
+            continue
+        _ap = _r.get("alert_px") or 0
+        if _ap <= 0:
+            continue
+        try:
+            if _r["code"] not in _cache:
+                _cache[_r["code"]] = fetch_ohlcv(_r["code"], 60)
+            _df = _cache[_r["code"]]
+            if _df is None or _df.empty:
+                continue
+            _idx = [str(d)[:10] for d in _df.index]
+            if _r["date"] in _idx:
+                _di = _idx.index(_r["date"])
+                _r["close_ret"] = round((float(_df.iloc[_di]["종가"]) / _ap - 1) * 100, 2)
+                if _di + 1 < len(_df):
+                    _r["next_ret"] = round((float(_df.iloc[_di + 1]["시가"]) / _ap - 1) * 100, 2)
+                _dirty = True
+            else:
+                _after = [i for i, d in enumerate(_idx) if d > _r["date"]]
+                if _after:
+                    _r["next_ret"] = round((float(_df.iloc[_after[0]]["시가"]) / _ap - 1) * 100, 2)
+                    _dirty = True
+        except Exception:
+            continue
+    if _dirty:
+        _signal_history_write(_rows)
+    return _rows
+
+
+def render_signal_history():
+    """📚 매수 알림 누적 복기 — 유형별(시가저격/15분봉) 당일종가·익일시가 대비 승률. 예외격리."""
+    st.markdown("#### 📚 매수 알림 누적 복기 장부 (일일 성적 자동 박제)")
+    _rows = backfill_signal_outcomes()
+    _done = [r for r in _rows if r.get("next_ret") is not None]
+    _pend = [r for r in _rows if r.get("next_ret") is None]
+    if not _done:
+        st.caption(f"대조 완료된 알림 없음 (대기 {len(_pend)}건) — 오늘 알림은 익일부터 자동 집계·누적됩니다.")
+        return
+    # 유형별 집계(익일 시가 기준 = 종배 익절룰과 직결)
+    _by_kind = {}
+    for _r in _done:
+        _by_kind.setdefault(_r.get("kind") or "기타", []).append(_r)
+    _cols = st.columns(min(len(_by_kind), 4) or 1)
+    for _c, (_k, _v) in zip(_cols, sorted(_by_kind.items())):
+        _nx = [x["next_ret"] for x in _v]
+        _win = sum(1 for x in _nx if x > 0) / len(_nx) * 100
+        _c.metric(f"{_k}", f"익일 {sum(_nx)/len(_nx):+.2f}%", f"승률 {_win:.0f}% · {len(_v)}건")
+    # 전체 요약(당일종가 vs 익일시가 — 오전 반짝이 종가까지 유지됐나 비교)
+    _cl = [r["close_ret"] for r in _done if r.get("close_ret") is not None]
+    _nx = [r["next_ret"] for r in _done]
+    _cl_wr = (sum(1 for x in _cl if x > 0) / len(_cl) * 100) if _cl else 0
+    _nx_wr = sum(1 for x in _nx if x > 0) / len(_nx) * 100
+    st.caption(f"전체 {len(_done)}건 · 당일종가 대비 승률 {_cl_wr:.0f}%(평균 {(sum(_cl)/len(_cl) if _cl else 0):+.2f}%) "
+               f"· 익일시가 대비 승률 {_nx_wr:.0f}%(평균 {sum(_nx)/len(_nx):+.2f}%) · 대기 {len(_pend)}건")
+    with st.expander("🗒️ 최근 알림 기록 (최신 30)", expanded=False):
+        try:
+            import pandas as _pd
+            _tb = _pd.DataFrame(list(reversed(_done))[:30])[
+                ["date", "t", "kind", "name", "alert_px", "close_ret", "next_ret"]]
+            _tb.columns = ["날짜", "시각", "유형", "종목", "알림가", "당일종가%", "익일시가%"]
+            st.dataframe(_tb, use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+    st.caption("💡 당일종가% < 익일시가% 면 '오전 반짝 → 종가 반락'(박스장 특성). "
+               "유형별 승률로 시가저격/15분봉 중 뭐가 실제로 먹히는지 판단하세요.")
+
+
 def render_signal_scoreboard():
     """📍 [V13.2] 오늘 매수 알림 성적 — 알림 왔을 때 샀다면 지금 얼마? 알림가 vs 현재가 수익률.
     watcher 스냅샷 signal_log 기반. 데이터 없으면 skip."""
+    try:
+        archive_today_signals()          # [V13.6] 오늘 알림 파일 박제(복기 누적)
+    except Exception:
+        pass
     _sigs = (_watcher_snapshot() or {}).get("signal_log") or []
     if not _sigs:
         return
@@ -10223,6 +10350,12 @@ with _t_settings:
         render_pick_performance()
     except Exception as _ppe:
         st.caption(f"⚠️ 명중률 패널 일시 비활성: {type(_ppe).__name__}")
+    st.divider()
+    # [V13.6] 매수 알림 누적 복기 장부 — 유형별 승률(시가저격/15분봉) 일일 자동 박제
+    try:
+        render_signal_history()
+    except Exception as _she:
+        st.caption(f"⚠️ 복기 장부 일시 비활성: {type(_she).__name__}")
     st.divider()
 # 기존 변수명 → 새 컨테이너 재바인딩 (아래 with tab_X 블록 내용 100% 보존)
 tab_b = _s_anal     # 🔍 분석 → 딥 스캐너 서브탭(종목 정밀분석)
