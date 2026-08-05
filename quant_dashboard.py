@@ -10178,6 +10178,73 @@ def auto_detect_materials():
     return _out
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _kr_name_code_map():
+    """[V13.8] KRX 상장 종목명→코드 맵(하루 캐시). FDR 상장목록. 실패 시 {}."""
+    try:
+        import FinanceDataReader as _fdr
+        _df = _fdr.StockListing("KRX")
+    except Exception:
+        return {}
+    _name_col = next((c for c in ("Name", "종목명", "name") if c in _df.columns), None)
+    _code_col = next((c for c in ("Code", "Symbol", "종목코드", "code") if c in _df.columns), None)
+    if not _name_col or not _code_col:
+        return {}
+    _m = {}
+    try:
+        for _n, _c in zip(_df[_name_col], _df[_code_col]):
+            _ns = str(_n).strip(); _cs = str(_c).strip().zfill(6)
+            if len(_ns) >= 2 and _cs.isdigit() and len(_cs) == 6:
+                _m[_ns] = _cs
+    except Exception:
+        return {}
+    return _m
+
+
+def extract_stocks_from_text(text, limit=12):
+    """텍스트에서 언급된 KRX 종목명 추출 → [(code, name)]. 긴 이름 우선(부분매칭 오탐 완화)."""
+    if not text:
+        return []
+    _m = _kr_name_code_map()
+    if not _m:
+        return []
+    _found, _seen = [], set()
+    for _name in sorted(_m, key=len, reverse=True):     # 긴 이름부터(포함관계 오탐 완화)
+        if len(_name) < 2:
+            continue
+        if _name in text and _m[_name] not in _seen:
+            _found.append((_m[_name], _name)); _seen.add(_m[_name])
+            if len(_found) >= limit:
+                break
+    return _found
+
+
+def _engine_verdict_line(code, name):
+    """종목 1개 엔진검증 → HTML 한 줄(현재가·점수·✅진입/🔥과열/⛔부적격/🟡관찰). 실패 시 None."""
+    try:
+        _rec, _pr = _analyzer_build_rec(code)
+    except Exception:
+        return None
+    _px = _rec.get("현재가") or 0
+    if not _px:
+        return (f"<div style='font-size:12px;padding:3px 10px;color:#64748b'>"
+                f"{name} <span style='color:#475569'>{code}</span> — 시세 조회 실패</div>")
+    _t, _g, _tg, _fx = _dolpanty_score(_rec, gate_open=True, regime_halve=False)
+    _chg = _rec.get("등락률") or 0.0
+    _mm = _rec.get("MA20") or 0
+    _dp = ((_px / _mm - 1) * 100) if _mm else 0.0
+    _oh = (_chg >= 7.0 or _dp >= 7.0)
+    _v = ("⛔ 부적격(거래대금 미달)" if _fx.get("_hardcut")
+          else "🔥 과열 — 눌림목 대기" if _oh
+          else f"✅ 진입후보 {_g}" if _tg in ("STRIKE", "READY")
+          else f"🟡 관찰 {_g}")
+    _cc = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+    return (f"<div style='display:flex;justify-content:space-between;font-size:12px;padding:3px 10px'>"
+            f"<span style='color:#e2e8f0;font-weight:700'>{name} <span style='color:#64748b'>{code}</span></span>"
+            f"<span style='color:#cbd5e1'>{_px:,} <span style='color:{_cc}'>({_chg:+.1f}%)</span>"
+            f" · 점수 {_t:.0f} · {_v}</span></div>")
+
+
 def render_ripple_map():
     """🦋 나비효과 인과맵 — 뉴스 재료 입력 → 수혜/피해 섹터 + 대장주 엔진검증. 예외 전파 없음."""
     st.markdown("##### 🦋 뉴스 재료 → 수혜 종목 찾기 (나비효과 인과맵)")
@@ -10193,50 +10260,49 @@ def render_ripple_map():
             if _bc.button(f"{_term} ({_cnt}종)", key=f"_mat_{_k}", use_container_width=True,
                           help=f"감지 예: {_samp}"):
                 st.session_state["_ripple_in"] = _term      # 위젯 생성 전 주입 → 자동 조회
-    _txt = st.text_input("뉴스 헤드라인·재료 키워드 (예: 금리인하 / HBM 엔비디아 / 유가급등 / 전쟁)",
-                         key="_ripple_in").strip()
+    _txt = st.text_area(
+        "재료 키워드 또는 브리핑 붙여넣기 (한경TV 정리·퍼플렉시티 답변 통째로 OK)",
+        key="_ripple_in", height=90,
+        placeholder="예: 금리인하 / HBM 엔비디아 / 유가급등\n또는 퍼플렉시티·한경TV 요약을 통째로 붙여넣기").strip()
     st.caption("빠른 재료: " + " · ".join(_v["keywords"][0] for _v in RIPPLE_EFFECT_MAP.values()))
     if not _txt:
-        st.caption("재료 입력 → 돈이 쏠릴 섹터·대장주를 즉시 매핑하고, 각 대장주를 수급/거래대금/과열 엔진으로 검증합니다.")
+        st.caption("재료·브리핑 입력 → ① 글에 언급된 종목 자동 엔진검증  ② 재료→수혜 섹터·대장주 매핑")
         return
-    _hits = detect_ripples(_txt)
+    # ① 텍스트에 언급된 종목 직접 추출 → 엔진 검증(퍼플렉시티가 이미 종목을 말해줄 때 최강)
+    _stocks = extract_stocks_from_text(_txt)
+    if _stocks:
+        st.markdown(f"**🎯 글에서 언급된 종목 {len(_stocks)}개 — 엔진 검증**")
+        for _sc, _sn in _stocks:
+            _line = _engine_verdict_line(_sc, _sn)
+            if _line:
+                st.markdown(_line, unsafe_allow_html=True)
+        st.caption("↑ 붙여넣은 글이 지목한 종목을 우리 엔진(점수·과열·거래대금)으로 검증 — ✅진입후보만 검토.")
+    # ② 재료 키워드 → 섹터·대장주 (감지 근거 키워드 표시 — 왜 매칭됐는지 투명하게)
+    _hits = [(_k, _v, [_kw for _kw in _v["keywords"] if _kw in _txt])
+             for _k, _v in RIPPLE_EFFECT_MAP.items()]
+    _hits = [_h for _h in _hits if _h[2]]
+    _hits.sort(key=lambda _h: len(_h[2]), reverse=True)
     if not _hits:
-        st.info("등록된 인과맵에 매칭되는 재료가 없습니다 (금리/유가/HBM/전쟁/환율/바이오 계열 키워드).")
+        if not _stocks:
+            st.info("등록 재료·종목 매칭 없음 — 재료 키워드(금리/유가/HBM/전쟁/환율/바이오) 또는 종목명이 필요합니다. "
+                    "(일반 시황 문장만으론 매칭 안 됨)")
         return
-    for _key, _v in _hits:
+    st.markdown("**📰 감지된 재료 → 수혜 섹터·대장주**")
+    for _key, _v, _ev in _hits:
         st.markdown(
             f"<div style='border:1px solid #334155;border-radius:10px;padding:10px 13px;margin:6px 0;"
             f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
             f"<div style='font-size:14px;font-weight:900;color:#93c5fd'>🎯 유입: {_v['suhye_sector']}</div>"
             f"<div style='font-size:11.5px;color:#f87171;margin-top:2px'>📉 이탈(피해): {_v['pihae_sector']}</div>"
-            f"<div style='font-size:11.5px;color:#cbd5e1;margin-top:4px'>🧠 {_v['narrative']}</div></div>",
+            f"<div style='font-size:11.5px;color:#cbd5e1;margin-top:4px'>🧠 {_v['narrative']}</div>"
+            f"<div style='font-size:10.5px;color:#eab308;margin-top:3px'>🔎 감지 근거: {', '.join(_ev)}</div></div>",
             unsafe_allow_html=True)
         for _lc, _ln in _v["leaders"]:
-            try:
-                _lrec, _lpr = _analyzer_build_rec(_lc)
-            except Exception:
-                st.caption(f"· {_ln}({_lc}) — 조회 실패"); continue
-            _lpx = _lrec.get("현재가") or 0
-            if not _lpx:
-                st.caption(f"· {_ln}({_lc}) — 시세 조회 실패(장외/휴장)"); continue
-            _lt, _lg, _ltg, _lfx = _dolpanty_score(_lrec, gate_open=True, regime_halve=False)
-            _lchg = _lrec.get("등락률") or 0.0
-            _lmm = _lrec.get("MA20") or 0
-            _ldp = ((_lpx / _lmm - 1) * 100) if _lmm else 0.0
-            _loh = (_lchg >= 7.0 or _ldp >= 7.0)
-            _lv = ("⛔ 부적격(거래대금 미달)" if _lfx.get("_hardcut")
-                   else "🔥 과열 — 눌림목 대기" if _loh
-                   else f"✅ 진입후보 {_lg}" if _ltg in ("STRIKE", "READY")
-                   else f"🟡 관찰 {_lg}")
-            _lcc = "#ef4444" if _lchg < 0 else "#16a34a" if _lchg > 0 else "#94a3b8"
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;font-size:12px;padding:3px 10px'>"
-                f"<span style='color:#e2e8f0;font-weight:700'>{_ln} "
-                f"<span style='color:#64748b'>{_lc}</span></span>"
-                f"<span style='color:#cbd5e1'>{_lpx:,} <span style='color:{_lcc}'>({_lchg:+.1f}%)</span>"
-                f" · 점수 {_lt:.0f} · {_lv}</span></div>", unsafe_allow_html=True)
+            _line = _engine_verdict_line(_lc, _ln)
+            if _line:
+                st.markdown(_line, unsafe_allow_html=True)
     st.caption("💡 인과맵은 '후보 발굴 보조' — ✅진입후보만 실매수 검토, ⛔/🔥는 제외/대기. "
-               "대장주 코드 복사 → 아래 분석기에서 정밀분석.")
+               "감지 근거가 1개뿐이면 우연한 매칭일 수 있으니 참고만.")
 
 
 def render_stock_analyzer():
