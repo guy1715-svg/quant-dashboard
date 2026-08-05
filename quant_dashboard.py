@@ -3769,6 +3769,77 @@ def render_regime_banner():
     return _rg
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V14.0] 거래대금 급증 포착기 — 평소(20일평균) 대비 비정상 급증 종목 조기 포착
+#   "뉴스→종목"(늦음)이 아니라 "거래대금 급증→뉴스로 이유확인"(선점) 순서.
+# ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=150, show_spinner=False)
+def scan_turnover_surge(top=18, min_mult=2.0):
+    """거래대금 상위 종목 중 20일 평균 대비 급증(배수≥min_mult) 포착.
+    반환 [{code,name,px,chg,turnover,mult,tags}] 배수순. 예외 안전."""
+    try:
+        _rank = kis_volume_rank(top) or []
+    except Exception:
+        _rank = []
+    _out = []
+    for _s in _rank:
+        _cd = _s.get("code"); _to = _s.get("turnover") or 0
+        if not _cd or _to <= 0:
+            continue
+        try:
+            _df = fetch_ohlcv(_cd, 30)
+            if _df is None or len(_df) < 5:
+                continue
+            _tv = (_df["종가"] * _df["거래량"]).tail(20)
+            _avg = float(_tv.mean()) if len(_tv) else 0.0
+        except Exception:
+            _avg = 0.0
+        if _avg <= 0:
+            continue
+        _mult = _to / _avg
+        if _mult < min_mult:
+            continue
+        _out.append({**_s, "mult": round(_mult, 1)})
+    _out.sort(key=lambda x: x["mult"], reverse=True)
+    for _s in _out[:6]:               # 상위 급증만 뉴스 첨부(API 절약)
+        try:
+            _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
+        except Exception:
+            _s["tags"] = []
+    return _out
+
+
+def render_turnover_surge():
+    """🚨 거래대금 급증 포착 — 평소 대비 급증 종목 + 뉴스 사유(뉴스보다 먼저 잡는 선점). 예외 전파 없음."""
+    st.markdown(
+        "<div style='font-size:14px;font-weight:900;color:#fbbf24;margin:2px 0'>"
+        "🚨 거래대금 급증 포착 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+        "평소(20일평균) 대비 이상 급증 · 뉴스보다 먼저</span></div>", unsafe_allow_html=True)
+    try:
+        _surge = scan_turnover_surge()
+    except Exception:
+        _surge = []
+    if not _surge:
+        st.caption("현재 평소 대비 뚜렷한 급증(2배↑) 없음 — 장중 자금 쏠리면 자동 포착됩니다.")
+        return
+    for _s in _surge[:6]:
+        _chg = _s.get("chg", 0.0)
+        _cc = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+        _tags = " ".join(
+            f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
+            for _t in (_s.get("tags") or [])) or "<span style='color:#64748b;font-size:10px'>뉴스 확인 필요</span>"
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;"
+            f"padding:5px 10px;border-bottom:1px solid #1e293b'>"
+            f"<span style='font-weight:800;color:#e2e8f0;white-space:nowrap'>{_s.get('name','')} "
+            f"<span style='color:#64748b;font-size:10px'>{_s.get('code','')}</span></span>"
+            f"<span style='white-space:nowrap;color:#cbd5e1;font-size:12px'>{_s.get('px',0):,} "
+            f"<span style='color:{_cc}'>({_chg:+.1f}%)</span> · "
+            f"<b style='color:#fbbf24'>거래대금 {_s.get('mult',0)}배</b></span>"
+            f"<span style='flex:1;text-align:right'>{_tags}</span></div>", unsafe_allow_html=True)
+    st.caption("💡 거래대금 급증 = 세력·자금 유입 신호. 뉴스 태그로 이유 확인 → 종목 분석기에서 진입가·과열 검증 → ✅면 선점.")
+
+
 def fetch_macro_triggers():
     """매크로 3대 트리거 원천 데이터 — NQ선물(08:00 KST 기준 대비)·SOX+반도체 빅테크·WTI.
     yfinance 순수 페치(session_state 미접근). 실패는 항목별 격리."""
@@ -10562,6 +10633,12 @@ with tab_g:
         render_regime_banner()
     except Exception:
         pass
+    # [V14.0] 거래대금 급증 포착 — 뉴스보다 먼저 자금 쏠림 감지(접이식)
+    with st.expander("🚨 거래대금 급증 포착 (뉴스보다 먼저 선점)", expanded=False):
+        try:
+            render_turnover_surge()
+        except Exception as _tse:
+            st.caption(f"⚠️ 급증 포착 일시 비활성: {type(_tse).__name__}")
     _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
