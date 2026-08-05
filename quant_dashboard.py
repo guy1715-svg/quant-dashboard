@@ -4131,6 +4131,11 @@ def render_money_tour_panel():
     else:
         _sig = "🟡 뚜렷한 섹터 대이동 미포착 — 관망"
         _sc = "#64748b"
+    # [V13.8] 장외(정규장 09:00~15:30 밖)엔 KIS 추정 순매수가 전일 마감값 → 기준 라벨로 오해 방지
+    _now_mt = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _pm_mt = _now_mt.hour * 60 + _now_mt.minute
+    if not ((9 * 60) <= _pm_mt <= (15 * 60 + 30)):
+        _sig += " <span style='color:#fbbf24;font-size:11px;font-weight:800'>· 🌙 전일 마감 기준</span>"
     st.markdown(
         f"<div style='background:{_sc}22;border:1px solid {_sc};border-radius:8px;"
         f"padding:6px 12px;margin:6px 0;font-weight:800;color:{_sc};font-size:13px'>{_sig}</div>",
@@ -6116,13 +6121,20 @@ def render_supply_blackhole():
               if _confirmed else
               "<span style='color:#fbbf24;font-size:11px;font-weight:700'>관측 중</span>")
     _, _fresh = _snap_freshness()      # ⏱️ 스냅샷 신선도(낡으면 착시 방지 경고)
+    # [V13.8] 장중/장외 기준 라벨 — KIS 추정 순매수는 정규장(09:00~15:30)만 실시간, 장외엔 전일 마감값.
+    _now_k = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _pm_k = _now_k.hour * 60 + _now_k.minute
+    _live_now = (9 * 60) <= _pm_k <= (15 * 60 + 30)
+    _basis_tag = ("" if _live_now else
+                  "<span style='background:#1e293b;color:#fbbf24;padding:2px 8px;border-radius:6px;"
+                  "font-size:10px;font-weight:800'>🌙 전일 마감 기준</span>")
     st.markdown(
         "<div style='margin:6px 0 14px 0;padding:14px 16px;border-radius:14px;"
         "background:linear-gradient(90deg,rgba(239,68,68,0.10),rgba(15,23,42,0.4),rgba(57,255,20,0.12));"
         "border:1px solid rgba(57,255,20,0.25);box-shadow:0 10px 30px -12px rgba(0,0,0,0.6)'>"
         f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>"
         f"<span style='font-weight:900;font-size:14px;color:#eaffea'>🌪️ 실시간 수급 블랙홀</span>"
-        f"<span style='display:flex;gap:8px;align-items:center'>{_fresh}{_badge}</span></div>"
+        f"<span style='display:flex;gap:8px;align-items:center'>{_basis_tag}{_fresh}{_badge}</span></div>"
         "<div style='display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap'>"
         f"<div style='text-align:center'><div style='color:#94a3b8;font-size:10px'>이탈원</div>"
         f"<div style='font-weight:800;font-size:15px;color:#f87171'>{_from_sec}</div>"
