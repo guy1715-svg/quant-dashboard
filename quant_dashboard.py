@@ -4616,9 +4616,9 @@ def _collect_titles(obj, out, depth=0):
             _collect_titles(_it, out, depth + 1)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_stock_triggers(code, name=""):
-    """종목 뉴스 제목 키워드 파싱 → 변동 사유 태그 리스트(최대 3). 순수 네트워크(캐시 안전)."""
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_news_titles(code):
+    """종목 뉴스 제목 원문 리스트 수집(최대 30). 순수 네트워크·캐시안전. [V13.4-③] 제목단위 판정용."""
     import re as _re_t
     _titles = []
     _hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"}
@@ -4638,9 +4638,16 @@ def fetch_stock_triggers(code, name=""):
             _titles = _re_t.findall(r'class="tit[^"]*"[^>]*>\s*([^<]{4,80})', _r.text)
         except Exception:
             pass
+    return [t.strip() for t in _titles if t and t.strip()]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_stock_triggers(code, name=""):
+    """종목 뉴스 제목 키워드 파싱 → 변동 사유 태그 리스트(최대 3). 순수 네트워크(캐시 안전)."""
+    _titles = _fetch_news_titles(code)
     if not _titles:
         return []
-    _text = " ".join(t.strip() for t in _titles)
+    _text = " ".join(_titles)
     _tags = []
     for _kws, _tag in _TRIGGER_MAP:
         if _tag in _tags:
@@ -4650,6 +4657,52 @@ def fetch_stock_triggers(code, name=""):
         if len(_tags) >= 3:
             break
     return _tags
+
+
+# ── [V13.4-③] 뉴스 촉매 스코어링 모디파이어 (이격 게이팅 + 제목단위 악재 Mute) ──
+_NEWS_S_KWS = (   # S급 호재 → +8 (제목에 포함 시)
+    ("어닝 서프라이즈", "예상 상회", "컨센", "상회", "서프라이즈"),   # 실적 예상상회
+    ("수주", "계약 체결", "공급 계약", "납품", "수출 계약", "대형 계약"),  # 수주·계약
+    ("목표주가 상향", "목표가 상향", "투자의견 상향", "목표주가 올"),      # 목표가 상향
+)
+_NEWS_A_KWS = (   # A급 호재 → +4 (🚀 신고가·급등은 과열유발이라 제외)
+    ("실적", "영업이익", "순이익", "호실적", "흑자전환", "역대 최대"),   # 실적 호조
+    ("증설", "설비투자", "capex", "공장"),                              # 증설·투자
+    ("임상", "FDA", "허가", "승인", "기술수출", "라이선스"),            # 신약·임상
+)
+_NEG_TRIGGER_KWS = ("어닝쇼크", "어닝 쇼크", "유상증자", "횡령", "배임", "소송",
+                    "적자전환", "적자 전환", "투자의견 하향", "목표주가 하향",
+                    "목표가 하향", "감자", "상장폐지", "불성실공시", "분식")
+_NEG_PASS_KWS = ("우려", "전망", "일축", "해소", "극복", "반박", "부인",   # 헤지·해소 맥락
+                 "시설투자", "시설자금", "공장증설", "신설투자")            # 호재성 자금조달 목적
+
+
+def news_score_modifier(code, disp_pct=None):
+    """뉴스 촉매 모디파이어 — (bonus, mute, reason).
+    · 제목 단위로 악재 판정(부정어/호재맥락 있으면 Pass) → 진짜 악재면 mute=True(제외)
+    · S급 +8 / A급 +4 (최대 하나만). 20MA 이격 ≥7%(과열)면 가점 0(고점추격 차단).
+    · 예외 시 (0, False, '') — 절대 매매 방해 안 함."""
+    try:
+        _titles = _fetch_news_titles(code)
+    except Exception:
+        return 0, False, ""
+    if not _titles:
+        return 0, False, ""
+    # ① 악재 Mute — 제목별 개별 판정(덩어리 매칭 금지)
+    for _t in _titles:
+        if any(_n in _t for _n in _NEG_TRIGGER_KWS) and not any(_p in _t for _p in _NEG_PASS_KWS):
+            return 0, True, f"악재 감지: '{_t[:24]}'"
+    # ② 호재 가점 — S급 우선(+8), 없으면 A급(+4)
+    _blob = " ".join(_titles)
+    _bonus, _tag = 0, ""
+    if any(any(_k in _blob for _k in _grp) for _grp in _NEWS_S_KWS):
+        _bonus, _tag = 8, "S급 호재 +8"
+    elif any(any(_k in _blob for _k in _grp) for _grp in _NEWS_A_KWS):
+        _bonus, _tag = 4, "A급 호재 +4"
+    # ③ 이격 게이팅 — 과열(≥7%)이면 가점 무효(상투 방지)
+    if _bonus and disp_pct is not None and disp_pct >= 7.0:
+        return 0, False, f"{_tag} 감지되나 이격 +{disp_pct:.1f}% 과열 → 가점 무효(추격금지)"
+    return _bonus, False, _tag
 
 
 def render_ace_picks():
@@ -5064,6 +5117,23 @@ def render_dolpanty_pick():
     _passed = [c for c in _cands if c["score"] > 0]
     _passed.sort(key=lambda c: (1 if c["ma_ok"] else 0, c["score"]), reverse=True)
     _cands = _passed
+    # [V13.4-③] 상위 5후보만 뉴스 모디파이어(API 절약): 악재 Mute 제외 + 이격 게이팅 가점
+    for _cc in _cands[:5]:
+        _rc = _cc.get("rec", {})
+        _mm = _rc.get("MA20") or 0
+        _dp = ((_rc.get("현재가", 0) / _mm - 1) * 100) if _mm else None
+        try:
+            _nb, _nmute, _nreason = news_score_modifier(_cc["code"], _dp)
+        except Exception:
+            _nb, _nmute, _nreason = 0, False, ""
+        _cc["news_bonus"], _cc["news_mute"], _cc["news_reason"] = _nb, _nmute, _nreason
+        _cc["score_adj"] = 0.0 if _nmute else min(_cc["score"] + _nb, 100.0)
+    _cands = [c for c in _cands if not c.get("news_mute")]      # 진짜 악재 종목 제외
+    # 유효셋업(20MA↑·기본점수≥40)만 뉴스 가점으로 재정렬 — 약체를 뉴스로 구제하지 않음
+    def _pick_rank(c):
+        _valid = c["ma_ok"] and c["score"] >= 40
+        return (1 if _valid else 0, c.get("score_adj", c["score"]) if _valid else c["score"])
+    _cands.sort(key=_pick_rank, reverse=True)
     _pick = _cands[0] if _cands else None
     st.session_state["_today_dol_code"] = _pick["code"] if _pick else None
     # 매크로 리스크오프면 매수 픽 대신 '관망'
@@ -5092,7 +5162,8 @@ def render_dolpanty_pick():
     # [V13.4-①] 확정 시간대(게이트)면 오늘의 확정픽을 익일결과 로깅에 기록(날짜락·1회)
     if _gate:
         try:
-            log_dolpanty_pick(_pick["code"], _pick["name"], _pick["score"], _px)
+            log_dolpanty_pick(_pick["code"], _pick["name"],
+                              _pick.get("score_adj", _pick["score"]), _px)
         except Exception:
             pass
     _tags = []
@@ -5110,6 +5181,14 @@ def render_dolpanty_pick():
     _tcap = "대형" if _px >= _DOL_LARGECAP_PX else "중소형"
     _setup.append(f"💰거래대금 {_turn_v/1e8:,.0f}억({_tcap}·관문통과)")
     _setup.append(f"💹 {_pick['sector']} 유입 +{_pick['net']/1e8:,.0f}억")
+    # [V13.4-③] 뉴스 가점 반영 점수/사유
+    _score_adj = _pick.get("score_adj", _pick["score"])
+    _nbonus = _pick.get("news_bonus", 0)
+    _nreason = _pick.get("news_reason", "")
+    if _nbonus:
+        _setup.append(f"📰 {_nreason}")
+    _score_txt = (f"점수 {_score_adj:.0f}(기본 {_pick['score']:.0f}+뉴스 {_nbonus})"
+                  if _nbonus else f"점수 {_pick['score']:.0f}")
     _basis = " · ".join(_setup)
     _stat = "장중 확정" if _gate else "예비(15:00 이후 확정)"
     # ── 🚦 액션 판정 배너 ──
@@ -5134,7 +5213,7 @@ def render_dolpanty_pick():
         f"<div style='font-size:15px;font-weight:800;color:#e2e8f0'>{_px:,} "
         f"<span style='color:{_chg_c}'>({_chg:+.2f}%)</span></div></div>"
         f"<div style='margin:4px 0 3px'>{_tag_html}</div>"
-        f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#22c55e'>{_stat} · 점수 {_pick['score']:.0f}</b> · {_basis}</div></div>",
+        f"<div style='font-size:11px;color:#cbd5e1'><b style='color:#22c55e'>{_stat} · {_score_txt}</b> · {_basis}</div></div>",
         unsafe_allow_html=True)
     if _chg >= 7.0:
         st.warning(f"🔥 이미 +{_chg:.1f}% 급등 — 종가베팅은 눌림/지지 매집이 원칙. 추격 금물, 반락 대기.")
@@ -9695,6 +9774,17 @@ def render_stock_analyzer():
                  else "🔴 매도 우위/약함")
         _turn = _rec.get("거래대금") or 0
         _hardcut = _fx.get("_hardcut")
+        # [V13.4-③] 뉴스 모디파이어(제목단위 악재 Mute + S/A 호재 가점, 이격≥7% 게이팅)
+        _ma20a = _rec.get("MA20") or 0
+        _disp_an = ((_rec.get("현재가", 0) / _ma20a - 1) * 100) if _ma20a else None
+        try:
+            _nb_a, _nmute_a, _nreason_a = news_score_modifier(_code, _disp_an)
+        except Exception:
+            _nb_a, _nmute_a, _nreason_a = 0, False, ""
+        _total_adj = 0.0 if _nmute_a else min(_total + _nb_a, 100.0)
+        _news_line = (f"<br>📰 뉴스: {_nreason_a}" if _nreason_a else "")
+        _score_disp = (f"{_total_adj:.0f}<span style='font-size:15px;color:#22c55e'> "
+                       f"(기본 {_total:.0f}+뉴스 {_nb_a})</span>" if _nb_a else f"{_total_adj:.0f}")
         st.markdown(
             f"<div style='background:linear-gradient(135deg,#0f172a,#070a13);border:1px solid {_gcol};"
             f"border-radius:14px;padding:14px 18px;margin:8px 0;box-shadow:0 0 18px -8px {_gcol}'>"
@@ -9703,15 +9793,18 @@ def render_stock_analyzer():
             f"<span style='background:{_gcol};color:#fff;padding:3px 12px;border-radius:20px;"
             f"font-size:13px;font-weight:900'>{_grade}</span></div>"
             f"<div style='font-size:38px;font-weight:900;color:{_gcol};line-height:1.1;margin:4px 0'>"
-            f"{_total:.0f}<span style='font-size:16px;color:#64748b'> / 100</span></div>"
+            f"{_score_disp}<span style='font-size:16px;color:#64748b'> / 100</span></div>"
             f"<div style='font-size:12px;color:#cbd5e1;line-height:1.7'>"
             f"💰 수급: 외인 <b>{_frn:+,}</b> · 기관 <b>{_org:+,}</b> → {_lead}"
             f"{' <span style=color:#64748b>('+_rec.get('_ivsrc','')+')</span>' if _rec.get('_ivsrc') else ''}<br>"
             f"📊 거래대금 <b>{_turn/1e8:,.0f}억</b> · 종가위치 <b>{_fx.get('종가위치')}</b>"
-            f" · 20MA점수 <b>{_fx.get('20MA')}</b></div>"
+            f" · 20MA점수 <b>{_fx.get('20MA')}</b>{_news_line}</div>"
             + (f"<div style='margin-top:6px;padding:6px 10px;border-radius:8px;background:rgba(239,68,68,0.12);"
                f"border:1px solid #ef4444;font-size:11.5px;color:#fca5a5;font-weight:700'>"
                f"⛔ 하드컷: {_hardcut} → 종가베팅 부적격(잡주 필터)</div>" if _hardcut else "")
+            + (f"<div style='margin-top:6px;padding:6px 10px;border-radius:8px;background:rgba(239,68,68,0.15);"
+               f"border:1.5px solid #ef4444;font-size:12px;color:#fca5a5;font-weight:800'>"
+               f"🚫 악재 Mute — {_nreason_a} → 종가베팅 제외(신규 진입 대기)</div>" if _nmute_a else "")
             + "</div>", unsafe_allow_html=True)
     st.divider()
     # ── 원샷 정밀분석(차트·타점·뉴스·재무) — 기존 드릴다운 재활용 ──
