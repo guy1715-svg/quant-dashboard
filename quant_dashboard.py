@@ -10148,9 +10148,51 @@ def detect_ripples(text):
             if any(_kw in text for _kw in _v["keywords"])]
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def auto_detect_materials():
+    """[V13.7] 오늘 거래대금 상위 종목들의 뉴스를 스캔 → 인과맵 재료 자동 감지.
+    반환 [(key, 대표키워드, 감지종목수, 샘플종목명)] 감지순. 새 스크래핑 없이 기존 뉴스만 사용."""
+    try:
+        _top = kis_volume_rank(20) or []
+    except Exception:
+        _top = []
+    _tally = {}
+    for _s in _top:
+        _cd = _s.get("code"); _nm = _s.get("name", "")
+        if not _cd:
+            continue
+        try:
+            _titles = _fetch_news_titles(_cd)
+        except Exception:
+            _titles = []
+        if not _titles:
+            continue
+        _blob = " ".join(_titles)
+        for _k, _v in RIPPLE_EFFECT_MAP.items():
+            if any(_kw in _blob for _kw in _v["keywords"]):
+                _e = _tally.setdefault(_k, {"count": 0, "sample": _nm})
+                _e["count"] += 1
+    _out = [(_k, RIPPLE_EFFECT_MAP[_k]["keywords"][0], _d["count"], _d["sample"])
+            for _k, _d in _tally.items()]
+    _out.sort(key=lambda x: x[2], reverse=True)
+    return _out
+
+
 def render_ripple_map():
     """🦋 나비효과 인과맵 — 뉴스 재료 입력 → 수혜/피해 섹터 + 대장주 엔진검증. 예외 전파 없음."""
     st.markdown("##### 🦋 뉴스 재료 → 수혜 종목 찾기 (나비효과 인과맵)")
+    # [V13.7] 오늘 감지된 재료 자동 버튼 — 뉴스 사이트 안 뒤지고 클릭만
+    try:
+        _mats = auto_detect_materials()
+    except Exception:
+        _mats = []
+    if _mats:
+        st.caption("🔥 오늘 감지된 재료(거래대금 상위 종목 뉴스 스캔) — 클릭 시 자동 입력:")
+        _bcols = st.columns(min(len(_mats), 4))
+        for _bc, (_k, _term, _cnt, _samp) in zip(_bcols, _mats[:4]):
+            if _bc.button(f"{_term} ({_cnt}종)", key=f"_mat_{_k}", use_container_width=True,
+                          help=f"감지 예: {_samp}"):
+                st.session_state["_ripple_in"] = _term      # 위젯 생성 전 주입 → 자동 조회
     _txt = st.text_input("뉴스 헤드라인·재료 키워드 (예: 금리인하 / HBM 엔비디아 / 유가급등 / 전쟁)",
                          key="_ripple_in").strip()
     st.caption("빠른 재료: " + " · ".join(_v["keywords"][0] for _v in RIPPLE_EFFECT_MAP.values()))
