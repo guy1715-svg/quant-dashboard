@@ -9391,12 +9391,118 @@ except Exception as _ghe:
 # ── V12.0 4대 핵심 탭 구조조정 (8→4) ──
 #   🌅 장전 브리핑 · 🎯 실전 관제탑(+실전매매) · 📡 딥 스캐너(스윙+홈+분석+전략) · ⚙️ 시스템 설정
 #   기존 with tab_X 블록은 그대로 두고, 컨테이너만 재바인딩해 내용 100% 보존.
+# ═══════════════════════════════════════════════════════════════════
+# [V14.3] 🔍 종목 분석기 — 코드 하나 입력 → 종합점수 + 원샷 정밀분석
+#   텔레그램/리딩방 추천 종목을 즉시 판단. 기존 헬퍼 100% 재활용.
+# ═══════════════════════════════════════════════════════════════════
+def _analyzer_build_rec(code):
+    """분석기용 rec 조립 — kis_get_price(현재가·거래대금·OHLC) + _dol_investor(외인·기관) + MA20."""
+    _pr = kis_get_price(code) or {}
+    _rec = {
+        "현재가":   _pr.get("현재가") or 0,
+        "등락률":   _pr.get("등락률"),
+        "거래량":   _pr.get("거래량") or 0,
+        "거래대금": _pr.get("거래대금") or 0,
+        "시가":     _pr.get("시가") or 0,
+        "고가":     _pr.get("고가") or 0,
+        "저가":     _pr.get("저가") or 0,
+        "MA20": None, "기관": 0, "외인": 0, "_ivsrc": "",
+    }
+    try:
+        _iv = _dol_investor(code) or {}
+        _rec["외인"]  = _to_int(_iv.get("외인")) or 0
+        _rec["기관"]  = _to_int(_iv.get("기관")) or 0
+        _rec["_ivsrc"] = _iv.get("src", "")
+    except Exception:
+        pass
+    try:
+        _ind = calc_indicators(fetch_ohlcv(code, 80))
+        _rec["MA20"] = float(_ind["MA20"].iloc[-1])
+    except Exception:
+        pass
+    return _rec, _pr
+
+
+def render_stock_analyzer():
+    """🔍 종목 분석기 — 종목코드 하나로 종가베팅 종합점수 + 정밀분석(수급·차트·타점·뉴스). 예외 전파 없음."""
+    st.markdown("### 🔍 종목 분석기 — 코드 하나로 원샷 판단")
+    st.caption("텔레그램·리딩방에서 받은 종목코드(6자리)를 넣으면 종합점수 + 외인·기관 수급 + 차트 + 타점을 한 화면에.")
+    _c1, _c2 = st.columns([3, 1], vertical_alignment="bottom")
+    with _c1:
+        _code_in = st.text_input("종목코드 입력 (예: 005930)", key="_analyzer_code",
+                                 placeholder="6자리 숫자 입력 후 Enter").strip()
+    with _c2:
+        st.button("🔍 분석", use_container_width=True, type="primary")   # Enter/버튼 모두 재실행
+    # 최근 분석한 코드 빠른 재조회 칩
+    _hist = st.session_state.get("_analyzer_hist", [])
+    if _hist:
+        st.caption("🕘 최근: " + " · ".join(_hist[:8]))
+    _code = "".join(ch for ch in _code_in if ch.isdigit())[:6]
+    if not _code:
+        st.info("종목코드를 입력하세요. 실시간 수급·현재가는 장 시간대(정규장/NXT)에 가장 정확합니다.")
+        return
+    if len(_code) != 6:
+        st.warning("종목코드는 숫자 6자리입니다 (예: 삼성전자 005930)."); return
+    # 최근 기록 갱신(중복 제거·최신 앞)
+    _hist = [_code] + [c for c in _hist if c != _code]
+    st.session_state["_analyzer_hist"] = _hist[:8]
+    # ── 종합점수(종가베팅 적합도) ──
+    try:
+        _rec, _pr = _analyzer_build_rec(_code)
+    except Exception as _ae:
+        st.error(f"데이터 조회 실패 — {type(_ae).__name__}: {_ae}"); return
+    if not _rec.get("현재가"):
+        st.warning("⚠️ 현재가 조회 실패 — KIS 미연결/장외/휴장 가능. 차트 기반 분석만 아래에 표시됩니다.")
+    else:
+        _total, _grade, _tag, _fx = _dolpanty_score(_rec, gate_open=True, regime_halve=False)
+        _gcol = ("#ef4444" if _tag == "STRIKE" else "#f59e0b" if _tag == "READY"
+                 else "#eab308" if _tag == "WATCH" else "#64748b")
+        _frn, _org = _rec.get("외인", 0), _rec.get("기관", 0)
+        _lead = ("🟢 외인·기관 양매수" if (_frn > 0 and _org > 0)
+                 else "🔵 외인 주도" if _frn > 0 else "🟣 기관 주도" if _org > 0
+                 else "🔴 매도 우위/약함")
+        _turn = _rec.get("거래대금") or 0
+        _hardcut = _fx.get("_hardcut")
+        st.markdown(
+            f"<div style='background:linear-gradient(135deg,#0f172a,#070a13);border:1px solid {_gcol};"
+            f"border-radius:14px;padding:14px 18px;margin:8px 0;box-shadow:0 0 18px -8px {_gcol}'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+            f"<span style='font-size:15px;font-weight:900;color:#e2e8f0'>💯 종가베팅 종합점수</span>"
+            f"<span style='background:{_gcol};color:#fff;padding:3px 12px;border-radius:20px;"
+            f"font-size:13px;font-weight:900'>{_grade}</span></div>"
+            f"<div style='font-size:38px;font-weight:900;color:{_gcol};line-height:1.1;margin:4px 0'>"
+            f"{_total:.0f}<span style='font-size:16px;color:#64748b'> / 100</span></div>"
+            f"<div style='font-size:12px;color:#cbd5e1;line-height:1.7'>"
+            f"💰 수급: 외인 <b>{_frn:+,}</b> · 기관 <b>{_org:+,}</b> → {_lead}"
+            f"{' <span style=color:#64748b>('+_rec.get('_ivsrc','')+')</span>' if _rec.get('_ivsrc') else ''}<br>"
+            f"📊 거래대금 <b>{_turn/1e8:,.0f}억</b> · 종가위치 <b>{_fx.get('종가위치')}</b>"
+            f" · 20MA점수 <b>{_fx.get('20MA')}</b></div>"
+            + (f"<div style='margin-top:6px;padding:6px 10px;border-radius:8px;background:rgba(239,68,68,0.12);"
+               f"border:1px solid #ef4444;font-size:11.5px;color:#fca5a5;font-weight:700'>"
+               f"⛔ 하드컷: {_hardcut} → 종가베팅 부적격(잡주 필터)</div>" if _hardcut else "")
+            + "</div>", unsafe_allow_html=True)
+    st.divider()
+    # ── 원샷 정밀분석(차트·타점·뉴스·재무) — 기존 드릴다운 재활용 ──
+    try:
+        render_stock_drilldown(_code)
+    except Exception as _de:
+        st.error(f"정밀분석 렌더 실패 — {type(_de).__name__}: {_de}")
+
+
 # [V14.2] 화면 정리 — 안 쓰는 탭 숨김 스위치(삭제 아님, True로 바꾸면 즉시 복구).
 _SHOW_REALTRADE = False   # 🛡️ 실전매매 모듈(페이퍼·하이브리드·시장지수·관심종목·현황판) 숨김
 _SHOW_PENSION   = False   # 🏦 연기금 추적(심화분석 서브탭) 숨김
 _SHOW_SWING     = False   # 📡 스윙 스캐너(딥스캐너 서브탭) 숨김
-_t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
-    ["🌅 장전 브리핑", "🎯 실전 관제탑", "📡 딥 스캐너", "⚙️ 시스템 설정"])
+_t_analyzer, _t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
+    ["🔍 종목 분석기", "🌅 장전 브리핑", "🎯 실전 관제탑", "📡 딥 스캐너", "⚙️ 시스템 설정"])
+
+with _t_analyzer:
+    try:
+        render_stock_analyzer()
+    except Exception as _anae:
+        import traceback as _tbana
+        st.error(f"⚠️ 종목 분석기 오류 — {type(_anae).__name__}: {_anae}")
+        st.caption(_tbana.format_exc().splitlines()[-1])
 # V12.0 1.5단계 기능 이관 매핑:
 #   홈 → 실전 관제탑(계좌현황) · 분석 → 딥 스캐너(종목분석) · 전략 → 장전 브리핑(레짐/로테이션)
 with _t_brief:
