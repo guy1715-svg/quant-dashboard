@@ -1990,8 +1990,10 @@ def render_dolpanty_swing_monitor(targets=None):
         except Exception:
             pass
         try:
-            _ind = calc_indicators(fetch_ohlcv(_c, 60))
+            _dfc = fetch_ohlcv(_c, 60); _ind = calc_indicators(_dfc)
             _r["MA20"] = float(_ind["MA20"].iloc[-1])
+            if not _r.get("거래대금"):        # [V14.3] 장전 전일 거래대금 폴백
+                _r["거래대금"] = float(_dfc["종가"].iloc[-1] * _dfc["거래량"].iloc[-1])
         except Exception:
             pass
         try:
@@ -5377,8 +5379,10 @@ def render_dolpanty_pick():
         except Exception:
             pass
         try:
-            _ind = calc_indicators(fetch_ohlcv(_p["code"], 60))
+            _dfp = fetch_ohlcv(_p["code"], 60); _ind = calc_indicators(_dfp)
             _rec["MA20"] = float(_ind["MA20"].iloc[-1])
+            if not _rec.get("거래대금"):     # [V14.3] 장전 전일 거래대금 폴백
+                _rec["거래대금"] = float(_dfp["종가"].iloc[-1] * _dfp["거래량"].iloc[-1])
         except Exception:
             pass
         if not _rec["현재가"]:
@@ -10185,8 +10189,12 @@ def _analyzer_build_rec(code):
     except Exception:
         pass
     try:
-        _ind = calc_indicators(fetch_ohlcv(code, 80))
+        _df = fetch_ohlcv(code, 80); _ind = calc_indicators(_df)
         _rec["MA20"] = float(_ind["MA20"].iloc[-1])
+        # [V14.3] 장전(거래대금 0)엔 전일 거래대금을 유동성 기준으로 폴백 → 8시 선별 가능
+        if not _rec.get("거래대금"):
+            _rec["거래대금"] = float(_df["종가"].iloc[-1] * _df["거래량"].iloc[-1])
+            _rec["_turn_prev"] = True
     except Exception:
         pass
     return _rec, _pr
@@ -10519,7 +10527,7 @@ def render_stock_analyzer():
             f"<div style='font-size:12px;color:#cbd5e1;line-height:1.7'>"
             f"💰 수급: 외인 <b>{_frn:+,}</b> · 기관 <b>{_org:+,}</b> → {_lead}"
             f"{' <span style=color:#64748b>('+_rec.get('_ivsrc','')+')</span>' if _rec.get('_ivsrc') else ''}<br>"
-            f"📊 거래대금 <b>{_turn/1e8:,.0f}억</b> · 종가위치 <b>{_fx.get('종가위치')}</b>"
+            f"📊 거래대금 <b>{_turn/1e8:,.0f}억</b>{'(전일)' if _rec.get('_turn_prev') else ''} · 종가위치 <b>{_fx.get('종가위치')}</b>"
             f" · 20MA점수 <b>{_fx.get('20MA')}</b>{_news_line}</div>"
             + (f"<div style='margin-top:6px;padding:6px 10px;border-radius:8px;background:rgba(239,68,68,0.12);"
                f"border:1px solid #ef4444;font-size:11.5px;color:#fca5a5;font-weight:700'>"
