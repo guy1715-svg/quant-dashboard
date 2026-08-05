@@ -5764,7 +5764,9 @@ def render_stock_drilldown(code, name=""):
             f"{_lvl} · 20일선 이격 <b>+{_disp:.1f}%</b> — 고무줄 끝. 눌림목(20일선 근처) 기다리기 권장</div>",
             unsafe_allow_html=True)
     # ── 진입/손절/목표 메트릭 박스 ── (단타=−2% / 스윙=−3%)
-    _entry = int(_close); _stop2 = int(_close * 0.98); _stop3 = int(_close * 0.97); _t1 = int(_close * 1.03)
+    # [V14.4] 진입/손절/목표는 실시간가 기준(장중·NXT 시간외 반영). 실시간 없으면 일봉 종가 폴백.
+    _lpx = _px if _px else _close
+    _entry = int(_lpx); _stop2 = int(_lpx * 0.98); _stop3 = int(_lpx * 0.97); _t1 = int(_lpx * 1.03)
     _e1, _e2, _e3 = st.columns(3)
     _e1.metric("🎯 진입", f"{_entry:,}")
     _e2.metric("✂️ 손절 −2%(단타)", f"{_stop2:,}", help="15분봉·시가저격 등 급등 추격 진입은 타이트하게 −2%")
