@@ -463,6 +463,9 @@ def sector_moneyflow(token, key, secret):
     return out
 
 
+ACE_AMT_MIN = 5_000_000_000   # [V13.9] 연기금 파일 없을 때 A급 대체 기준: 순매수 500억↑
+
+
 def pension_codes():
     try:
         with open(PENSION_FILE, encoding="utf-8") as f:
@@ -1241,17 +1244,20 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
         need = SNIPER_LARGE if px >= SNIPER_LARGECAP_PX else SNIPER_SMALL
         frn_q, org_q = _investor_est(token, key, secret, code)
         prog_amt, frn_amt, org_amt = (frn_q + org_q) * px, frn_q * px, org_q * px
-        entry_ok = (turn >= need and prog_amt > 0 and frn_amt > 0 and org_amt > 0)
+        # [V13.9] 급등 대장주 역설 해소 — '외인·기관 모두 +'(and)는 갭상승 급등주에서 기관 차익실현(-)에 걸려 탈락.
+        #   → 외인 순매수(+) 필수 & 외인+기관 순매수 합(+)이면 통과(기관 매도해도 외인이 더 크면 진입).
+        entry_ok = (turn >= need and frn_amt > 0 and prog_amt > 0)
         if not entry_ok:
             continue
+        _org_txt = "외인·기관 동반(+)" if org_amt > 0 else "외인 주도(기관 차익실현 中)"
         out.append({"name": name, "code": code, "px": px, "chg": chg,
                     "turnover_eok": round(turn / 1e8, 0),
                     "prog_eok": round(prog_amt / 1e8, 1)})
         if not sent.get(code):
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n🟢 진입 시그널 — {name}\n"
-                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · 프로그램/외인/기관 모두 (+)\n"
-                          f"프로그램 {prog_amt/1e8:+,.0f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+)\n"
+                          f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
     state["entry_sent"] = sent
@@ -1634,21 +1640,30 @@ def main():
                         snap["precursor"] = {"from": outflow[0], "to": inflow[0],
                                              "inflow_eok": round(inflow[1]["net"] / 1e8, 1),
                                              "basis": _basis, "live": _mkt_hours}
-                        key = f"{outflow[0]}>{inflow[0]}"
-                        # 장중에만 텔레그램 발송(장외 새벽 오발 차단) · tour_key도 장중에만 갱신 → 개장 후 첫 전환 정상 발송
-                        if _mkt_hours and st.get("tour_key") != key:
+                        # [V13.9] 도배 차단 — 중복차단 키를 '유입처'만으로(이탈원 꼴찌섹터가 매분 바뀌어도 재발송 안 함).
+                        #   같은 유입처면 60분 쿨다운 후에만 갱신 재발송. 장중에만 발송.
+                        key = inflow[0]
+                        _tour_ts = int(st.get("tour_ts", 0))
+                        _tour_fresh = (int(now.timestamp()) - _tour_ts) >= 3600   # 60분
+                        if _mkt_hours and (st.get("tour_key") != key or _tour_fresh):
                             send_telegram(token_tg, chat_id,
                                           f"{SIG_BUY}\n🚀 전조 시그널!\n자금 {outflow[0]} 이탈 → {inflow[0]} 유입\n"
                                           f"유입 {inflow[1]['net']/1e8:,.0f}억 · {stamp} KST\n폭등 前 선취 후보 — 대시보드 확인")
                             st["tour_key"] = key
-                    # A급(유입 종목 ∩ 연기금)
+                            st["tour_ts"] = int(now.timestamp())
+                    # [V13.9] A급 — 연기금 파일 있으면 (유입 종목 ∩ 연기금), 없으면 '순매수 500억↑' 실용 대체.
+                    #   pension_track_log.json 미존재 시 A급이 영구 0이던 구조적 결함 해소.
                     pens = pension_codes()
+                    _ace_reason = "자금유입 × 연기금 겹침" if pens else "자금유입 상위 · 순매수 500억↑(대금 폭발)"
                     ace_now = []
                     for sname, info in secs.items():
                         if info["net"] <= 0:
                             continue
                         for s in info["stocks"]:
-                            if s["amt"] and s["amt"] > 0 and s["code"] in pens:
+                            if not (s["amt"] and s["amt"] > 0):
+                                continue
+                            _is_ace = (s["code"] in pens) if pens else (s["amt"] >= ACE_AMT_MIN)
+                            if _is_ace:
                                 ace_now.append((s["code"], s["name"], sname, s["amt"]))
                     prev_ace = set(st.get("ace", []))
                     new_ace = [a for a in ace_now if a[0] not in prev_ace]
@@ -1656,7 +1671,7 @@ def main():
                     if new_ace and sev != 2 and _mkt_hours:
                         lines = "\n".join(f"• {n} ({sn}) +{amt/1e8:,.0f}억" for _c, n, sn, amt in new_ace)
                         send_telegram(token_tg, chat_id,
-                                      f"{SIG_BUY_STRONG}\n🥇 A급 종목 신규 포착!\n{lines}\n{stamp} KST\n(자금유입 × 연기금 겹침)")
+                                      f"{SIG_BUY_STRONG}\n🥇 A급 종목 신규 포착!\n{lines}\n{stamp} KST\n({_ace_reason})")
                         st["ace"] = [a[0] for a in ace_now]
                     elif _mkt_hours:
                         st["ace"] = [a[0] for a in ace_now]
