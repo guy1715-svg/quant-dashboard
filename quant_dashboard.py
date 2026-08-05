@@ -614,8 +614,8 @@ def kis_get_token():
             except Exception: pass
     return None
 
-def kis_get_price(ticker):
-    """KIS API 실시간 현재가 조회"""
+def _kis_price_fetch(ticker, mrkt="J"):
+    """KIS 현재가 1회 조회(시장코드 지정). J=KRX정규 · UN=통합(KRX+NXT) · NX=NXT. 실패 시 None."""
     try:
         _token  = kis_get_token()
         if not _token: return None
@@ -627,7 +627,7 @@ def kis_get_price(ticker):
             "appkey":        _key,
             "appsecret":     _secret,
             "tr_id":         "FHKST01010100",
-        }, params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}, timeout=5)
+        }, params={"fid_cond_mrkt_div_code": mrkt, "fid_input_iscd": ticker}, timeout=5)
         _data = _res.json().get("output", {})
         _price = int(_data.get("stck_prpr", 0)) if _data else 0
         if _data and _price > 0:
@@ -644,9 +644,28 @@ def kis_get_price(ticker):
                 "52주저가":  int(_data.get("d250_lwpr", 0)),
                 "PER":       float(_data.get("per", 0)),
                 "PBR":       float(_data.get("pbr", 0)),
+                "_mrkt":     mrkt,
             }
     except Exception:
         pass
+    return None
+
+
+def kis_get_price(ticker):
+    """KIS 실시간 현재가 — [V14.4] NXT 애프터마켓 반영.
+    정규장(09:00~15:30)은 기존 'J'(KRX) 그대로. 그 외 시간엔 NXT 통합(UN→NX) 실시간을
+    우선 시도하고, 실패 시 'J'(정규장 종가)로 폴백 → 15:30 이후 시세 고정 문제 해소.
+    ※ 정규장 시간대 동작은 완전 무손상(회귀 0)."""
+    _now = datetime.utcnow() + timedelta(hours=9)
+    _m = _now.hour * 60 + _now.minute
+    _regular = (9 * 60) <= _m <= (15 * 60 + 30)
+    if _regular:
+        return _kis_price_fetch(ticker, "J")
+    # 장 마감 후·프리마켓: NXT 통합/NXT 실시간 우선 → 안 되면 정규장 마지막가
+    for _mk in ("UN", "NX", "J"):
+        _r = _kis_price_fetch(ticker, _mk)
+        if _r and _r.get("현재가"):
+            return _r
     return None
 
 
@@ -9660,6 +9679,8 @@ def render_stock_analyzer():
         _rec, _pr = _analyzer_build_rec(_code)
     except Exception as _ae:
         st.error(f"데이터 조회 실패 — {type(_ae).__name__}: {_ae}"); return
+    if _pr.get("_mrkt") in ("UN", "NX"):
+        st.caption("🌙 NXT 시간외 실시간 반영 중 (정규장 마감 후 — 넥스트레이드 애프터마켓 시세)")
     if not _rec.get("현재가"):
         st.warning("⚠️ 현재가 조회 실패 — KIS 미연결/장외/휴장 가능. 차트 기반 분석만 아래에 표시됩니다.")
     else:
