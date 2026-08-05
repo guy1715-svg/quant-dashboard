@@ -3692,6 +3692,83 @@ _MACRO_WTI_CRASH = -5.0    # [V6.1] WTI 급락 호재 임계(%) — 기술주 �
 
 
 @st.cache_data(ttl=120, show_spinner=False)
+# ═══════════════════════════════════════════════════════════════════
+# [V13.5] 장중 실시간 레짐 판독기 — 지수 OHLC + 나스닥선물로 TREND/BOX/DOWN 분류
+#   ⚠️ 현실화: VWAP·상승/하락종목수(breadth)·intraday 지수봉 데이터 소스 부재 →
+#      일중 range 내 현재가 위치(pos)로 근사. (breadth API 확보 시 정밀화 가능)
+# ═══════════════════════════════════════════════════════════════════
+def detect_intraday_regime():
+    """장중 레짐 판독 → dict{regime,label,color,idx_chg,pos,nq}. 60초 세션캐시. 예외 시 보수적 BOX."""
+    import time as _t
+    _c = st.session_state.get("_regime_cache")
+    if _c and (_t.time() - _c["ts"] < 60):
+        return _c["val"]
+    try:
+        _tok = kis_get_token()
+        _kp = kis_get_index("0001", _tok) or {}
+        _kq = kis_get_index("1001", _tok) or {}
+    except Exception:
+        _kp = _kq = {}
+
+    def _pos(d):
+        _h = d.get("고가", 0) or 0; _l = d.get("저가", 0) or 0; _cur = d.get("현재", 0) or 0
+        return ((_cur - _l) / (_h - _l)) if _h > _l else None
+    _chgs = [x.get("등락") for x in (_kp, _kq) if isinstance(x.get("등락"), (int, float))]
+    _idx_chg = (sum(_chgs) / len(_chgs)) if _chgs else None
+    _poss = [p for p in (_pos(_kp), _pos(_kq)) if p is not None]
+    _pos_avg = (sum(_poss) / len(_poss)) if _poss else None
+    _nq = None
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        pass
+    if _idx_chg is None:
+        _val = {"regime": "BOX", "label": "🟡 판독 불가(지수 결측) — 보수적 BOX",
+                "color": "#eab308", "idx_chg": None, "pos": None, "nq": _nq}
+        st.session_state["_regime_cache"] = {"ts": _t.time(), "val": _val}
+        return _val
+    # 판정 — DOWN 우선(방어), 그다음 TREND, 나머지 BOX
+    _down = ((_idx_chg <= -1.0)
+             or (_pos_avg is not None and _pos_avg <= 0.25 and _idx_chg < -0.3)
+             or (_nq is not None and _nq <= -0.7 and _idx_chg < 0))
+    _trend = ((_idx_chg >= 0.5)
+              and (_pos_avg is None or _pos_avg >= 0.60)
+              and (_nq is None or _nq >= 0.0))
+    if _down:
+        _rg, _lb, _co = "DOWN", "🔴 하락장 — 신규진입 차단(현금 방어)", "#ef4444"
+    elif _trend:
+        _rg, _lb, _co = "TREND", "🟢 추세장 — 돌파·스윙 정상 가동", "#22c55e"
+    else:
+        _rg, _lb, _co = "BOX", "🟡 박스장 — 돌파 금지·눌림목 단타(+2%)", "#eab308"
+    _val = {"regime": _rg, "label": _lb, "color": _co,
+            "idx_chg": round(_idx_chg, 2),
+            "pos": (round(_pos_avg, 2) if _pos_avg is not None else None), "nq": _nq}
+    st.session_state["_regime_cache"] = {"ts": _t.time(), "val": _val}
+    return _val
+
+
+def render_regime_banner():
+    """🌡️ 장중 레짐 배너 — 오늘 장 성격 + 그에 맞는 매매 지침. 예외 전파 없음. 판독 dict 반환."""
+    try:
+        _rg = detect_intraday_regime()
+    except Exception:
+        return {"regime": "BOX", "label": "판독 오류", "color": "#eab308",
+                "idx_chg": None, "pos": None, "nq": None}
+    _sub = {"TREND": "돌파·시가저격·불타기 OK · 홀딩/스윙 · 익절 +3~5%",
+            "BOX":   "돌파 추격 금지 · 20MA 눌림목만 진입 · +2% 빠른 익절(Hit & Run)",
+            "DOWN":  "🔴 신규 진입 차단 · 현금 방어 · 반등 확인 전까지 관망"}.get(_rg["regime"], "")
+    _meta = (f"코스피/코스닥 평균 {(_rg['idx_chg'] if _rg['idx_chg'] is not None else 0):+.2f}% · "
+             f"일중위치 {_rg['pos']} · 나선 {(_rg['nq'] if _rg['nq'] is not None else 0):+.2f}%")
+    st.markdown(
+        f"<div style='border:2px solid {_rg['color']};border-radius:12px;padding:10px 14px;margin-bottom:8px;"
+        f"background:linear-gradient(90deg,#0b1220,#111c33)'>"
+        f"<div style='font-size:15px;font-weight:900;color:{_rg['color']}'>🌡️ 장중 레짐: {_rg['label']}</div>"
+        f"<div style='font-size:12px;color:#cbd5e1;margin-top:2px'>{_sub}</div>"
+        f"<div style='font-size:10px;color:#64748b;margin-top:2px'>{_meta} · 60초 갱신 · "
+        f"※VWAP/breadth 데이터 부재 → 일중 range 위치로 근사</div></div>", unsafe_allow_html=True)
+    return _rg
+
+
 def fetch_macro_triggers():
     """매크로 3대 트리거 원천 데이터 — NQ선물(08:00 KST 기준 대비)·SOX+반도체 빅테크·WTI.
     yfinance 순수 페치(session_state 미접근). 실패는 항목별 격리."""
@@ -4969,8 +5046,9 @@ def _pick_history_write(rows):
         pass
 
 
-def log_dolpanty_pick(code, name, score, px):
-    """확정 픽을 당일 1회 기록(날짜락 — flip-flop 방지). 이미 오늘 기록 있으면 무시."""
+def log_dolpanty_pick(code, name, score, px, regime="", signal="dolpanty"):
+    """확정 픽을 당일 1회 기록(날짜락 — flip-flop 방지). 이미 오늘 기록 있으면 무시.
+    [V13.5] regime(진입시점 레짐)·signal(신호유형) 태그 추가 → 자가적응 피드백 데이터."""
     if not code or not score:
         return
     _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
@@ -4979,6 +5057,7 @@ def log_dolpanty_pick(code, name, score, px):
         return                        # 오늘 첫 확정픽만 저장(장중 순위 변동 무시)
     _rows.append({"date": _today, "code": str(code), "name": name or "",
                   "score": round(float(score), 1), "px": int(px or 0),
+                  "regime": regime or "", "signal": signal,
                   "open_next": None, "gap": None})
     _pick_history_write(_rows)
 
@@ -5039,6 +5118,15 @@ def render_pick_performance():
     _wr = sum(1 for x in _allg if x > 0) / len(_allg) * 100
     st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {sum(_allg)/len(_allg):+.2f}% "
                f"(대기 {len(_pend)}건)")
+    # [V13.5] 레짐별 승률 — 자가적응 데이터(레짐마다 신호가 먹히는지 검증)
+    _by_rg = {}
+    for _r in _done:
+        _by_rg.setdefault(_r.get("regime") or "미태그", []).append(_r["gap"])
+    if any(k != "미태그" for k in _by_rg):
+        _rg_txt = " · ".join(
+            f"{_k} {sum(1 for x in _v if x>0)/len(_v)*100:.0f}%({len(_v)}건)"
+            for _k, _v in sorted(_by_rg.items()))
+        st.caption(f"🌡️ 레짐별 승률 — {_rg_txt}  ※표본 쌓이면 BOX서 지는 신호 자동 OFF 판단 근거")
     with st.expander("🗒️ 최근 픽 기록 (최신 20)", expanded=False):
         try:
             import pandas as _pd
@@ -5148,6 +5236,20 @@ def render_dolpanty_pick():
             unsafe_allow_html=True)
         st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
         return
+    # [V13.5] 장중 레짐 — DOWN이면 신규진입 차단, BOX면 돌파금지·+2% 단타로 하향
+    try:
+        _regime = detect_intraday_regime()
+    except Exception:
+        _regime = {"regime": "BOX"}
+    if _regime.get("regime") == "DOWN":
+        st.markdown(
+            "<div style='border:2px solid #ef4444;border-radius:12px;padding:12px 14px;"
+            "background:linear-gradient(180deg,#1a0505,#111c33)'>"
+            "<div style='font-size:15px;font-weight:900;color:#fca5a5'>🔴 NO_POSITION — 하락 레짐, 종가베팅 차단</div>"
+            "<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>지수 하락·일중 저점권 — "
+            "<b>신규 진입 금지, 현금 방어.</b> 레짐 🟢/🟡 전환 후 재산출.</div></div>", unsafe_allow_html=True)
+        st.caption(f"참고 후보(매수 아님): {_pick['name'] if _pick else '없음'}")
+        return
     if not _pick:
         st.info("🕒 종가베팅 후보 미형성 — 거래대금 관문(대형 1,000억 / 중소형 500억↑) 통과 종목 없음. "
                 "15:00 이후 수급/종가 확정 시 재산출 (관망)")
@@ -5184,7 +5286,8 @@ def render_dolpanty_pick():
     if _gate:
         try:
             log_dolpanty_pick(_pick["code"], _pick["name"],
-                              _pick.get("score_adj", _pick["score"]), _px)
+                              _pick.get("score_adj", _pick["score"]), _px,
+                              regime=_regime.get("regime", ""), signal="dolpanty")
         except Exception:
             pass
     _tags = []
@@ -5217,8 +5320,10 @@ def render_dolpanty_pick():
         _vd = ("⏸️ 대기", "종가베팅 확정 시간대 아님(15:00~15:30 / 18:00~20:00). 지금은 예비 후보.", "#64748b", "#0f172a")
     elif _chg >= 7.0:
         _vd = ("👀 관찰", f"이미 +{_chg:.1f}% 급등 — 추격 금지. 눌림/지지 매집 대기.", "#f59e0b", "#1a1505")
+    elif _regime.get("regime") == "BOX":
+        _vd = ("🟡 박스장 단타", "박스 레짐 — 돌파추격 금지. 20MA 눌림목만, +2% 빠른 익절(Hit & Run)·손절 타이트.", "#eab308", "#1a1505")
     else:
-        _vd = ("⚡ 지금 진입 검토", "확정 시간대·셋업 유효 — 종가 굳는 것 확인 후 매수, 익일 갭 +1~2% 익절.", "#22c55e", "#052e16")
+        _vd = ("⚡ 지금 진입 검토", "추세 레짐·셋업 유효 — 종가 굳는 것 확인 후 매수, 익일 갭 +1~3% 익절.", "#22c55e", "#052e16")
     st.markdown(
         f"<div style='display:flex;align-items:center;gap:10px;border:2px solid {_vd[2]};border-radius:12px;"
         f"padding:10px 14px;margin-bottom:6px;background:linear-gradient(180deg,{_vd[3]},#111c33)'>"
@@ -10054,6 +10159,11 @@ with tab_g:
         f"display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:900'>{_n}</span>"
         f"<span style='font-size:15px;font-weight:800;color:#e2e8f0'>{_ico} {_txt}</span></div>",
         unsafe_allow_html=True)
+    # [V13.5] 장중 레짐 배너 — 오늘 장 성격(추세/박스/하락)에 맞춘 매매 지침 최상단
+    try:
+        render_regime_banner()
+    except Exception:
+        pass
     _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
