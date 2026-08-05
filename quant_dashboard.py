@@ -6083,8 +6083,38 @@ def render_account_summary():
             st.caption(_dd_msg)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.4-②] 손절 방치 감시(A) + 무단 물타기 감시(B) — 파일 지속저장(세션 휘발 대응)
+# ═══════════════════════════════════════════════════════════════════
+_STOPLOSS_WATCH_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "stoploss_watch.json")
+_HOLDINGS_SNAP_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "holdings_snapshot.json")
+_NEGLECT_MIN = 7        # −3% 이탈 후 방치 판정 분(에스컬레이션 트리거)
+
+
+def _json_read_dict(path):
+    """JSON dict 읽기. 없거나 파싱 실패 시 {}."""
+    try:
+        with open(path, "r", encoding="utf-8") as _f:
+            _d = _json_tracker.load(_f)
+            return _d if isinstance(_d, dict) else {}
+    except (FileNotFoundError, _json_tracker.JSONDecodeError, OSError):
+        return {}
+
+
+def _json_write_dict(path, data):
+    """JSON dict 덮어쓰기. 실패는 조용히 무시."""
+    try:
+        with open(path, "w", encoding="utf-8") as _f:
+            _json_tracker.dump(data, _f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def render_holdings_risk():
-    """🛡️ 보유 종목 리스크 관리 — KIS 잔고 종목만. 목표/손절 표시 + −3% 칼손절 텔레그램."""
+    """🛡️ 보유 종목 리스크 관리 — KIS 잔고 종목만. 목표/손절 표시 + −3% 칼손절 텔레그램.
+    [V13.4-②] +손절 방치(A: −3% N분 미청산) +무단 물타기(B: 손실구간 수량증가) 감시."""
     st.markdown("#### 🛡️ 보유 종목 리스크 관리 (ACTIVE PORTFOLIO)")
     _bal = None
     try:
@@ -6096,11 +6126,47 @@ def render_holdings_risk():
         st.caption("보유 종목 없음 (KIS 계좌번호 미설정이면 잔고 조회 불가) — 신규 진입은 아래 ⚔️ 대기열 참고")
         return
     def _c(v): return "#ef4444" if v < 0 else "#16a34a" if v > 0 else "#94a3b8"
+    # [V13.4-②] 방치·물타기 감시 상태(파일 지속) 로드
+    _today_kst = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _now_ep = datetime.utcnow().timestamp()
+    _slw = _json_read_dict(_STOPLOSS_WATCH_PATH)    # {code:{ts,date,escalated}}
+    _snap = _json_read_dict(_HOLDINGS_SNAP_PATH)    # {code:{qty,avg,date}}
+    _neglect_msgs, _avgdown_msgs = [], []
+    _slw_dirty = _snap_dirty = False
     _tr = []
     for _h in _holds:
         _nm = _h.get("종목명", ""); _cd = _h.get("종목코드", "")
         _avg = int(_h.get("평단가", 0)); _cur = int(_h.get("현재가", 0)); _rt = float(_h.get("수익률", 0))
         _qty = int(_h.get("수량", 0)); _pl = int(_h.get("평가손익", 0))
+        # ── [A] 손절 방치 감시: −3% 최초 이탈시각 파일기록 → N분 방치 시 에스컬레이션 ──
+        if _rt <= -3.0:
+            _w = _slw.get(_cd)
+            if (not _w) or _w.get("date") != _today_kst:
+                _slw[_cd] = {"ts": _now_ep, "date": _today_kst, "escalated": False}
+                _slw_dirty = True
+            else:
+                _elapsed = (_now_ep - _w.get("ts", _now_ep)) / 60.0
+                if _elapsed >= _NEGLECT_MIN:
+                    _neglect_msgs.append((_nm, _rt, int(_elapsed)))
+                    if not _w.get("escalated"):
+                        send_telegram(f"🚨 [2차 경고] {_nm} −3% 손절선 돌파 {int(_elapsed)}분 경과 — "
+                                      f"여전히 방치 중({_rt:+.1f}%)! 즉각 기계적 청산 대응하십시오.")
+                        _w["escalated"] = True; _slw_dirty = True
+        elif _rt > -2.5:
+            if _cd in _slw:
+                _slw.pop(_cd, None); _slw_dirty = True
+        # ── [B] 무단 물타기 감시: 이전 스냅샷 대비 손실구간에서 수량 증가 = 물타기 ──
+        _prev = _snap.get(_cd)
+        if _prev and _prev.get("qty", 0) > 0 and _rt < 0 and _qty > _prev.get("qty", 0):
+            _avgdown_msgs.append((_nm, _rt, _prev.get("qty", 0), _qty))
+            _ak = f"_avgdown_{_cd}_{_qty}"          # 수량 단위 dedup(같은 물량 반복알림 방지)
+            if not st.session_state.get(_ak):
+                send_telegram(f"❌ [교리위반] {_nm} 손실구간({_rt:+.1f}%)에서 물타기 감지 — "
+                              f"수량 {_prev.get('qty',0)}→{_qty}. 추가 진입 즉시 중단하십시오.")
+                st.session_state[_ak] = True
+        # 스냅샷 갱신(감지 후 갱신 순서 — 신규진입은 기록만·경보 없음)
+        if (not _prev) or _prev.get("qty") != _qty or _prev.get("avg") != _avg:
+            _snap[_cd] = {"qty": _qty, "avg": _avg, "date": _today_kst}; _snap_dirty = True
         _tgt = int(_avg * 1.05); _stop = int(_avg * 0.97)
         # −3% 칼손절 텔레그램(중복 방지)
         # −3% 칼손절 알림(1회) / −5% 하드 브레이커 강제청산(EXECUTE_MARKET_SELL)
@@ -6146,6 +6212,32 @@ def render_holdings_risk():
             f"<td style='padding:5px 8px;text-align:right;font-size:11px'>"
             f"<span style='color:#16a34a'>익 {_tgt:,}</span><br><span style='color:#ef4444'>손 {_stop:,}</span></td>"
             f"<td style='padding:5px 8px;text-align:center'>{_stt}</td></tr>")
+    # [V13.4-②] 스냅샷 정리(청산된 종목 제거) + 상단 점멸 경고 배너 렌더 + 파일 저장
+    _live = {_h.get("종목코드", "") for _h in _holds}
+    for _dead in [c for c in _snap if c not in _live]:
+        _snap.pop(_dead, None); _snap_dirty = True
+    for _dead in [c for c in _slw if c not in _live]:
+        _slw.pop(_dead, None); _slw_dirty = True
+    if _neglect_msgs or _avgdown_msgs:
+        st.markdown("<style>@keyframes _blinkr{0%,100%{opacity:1}50%{opacity:.4}}"
+                    ".blinkbox{animation:_blinkr 1s infinite}</style>", unsafe_allow_html=True)
+    for _nm2, _rt2, _mins in _neglect_msgs:
+        st.markdown(
+            f"<div class='blinkbox' style='border:2px solid #ef4444;background:rgba(239,68,68,0.15);"
+            f"border-radius:10px;padding:10px 14px;margin:4px 0;font-weight:800;color:#fca5a5'>"
+            f"🚨 [교리 위반 · 방치 {_mins}분] {_nm2} {_rt2:+.1f}% — −3% 손절선 돌파 후 미청산 방치 중! "
+            f"즉시 기계적 청산하십시오.</div>", unsafe_allow_html=True)
+    for _nm2, _rt2, _pq, _nq in _avgdown_msgs:
+        st.markdown(
+            f"<div class='blinkbox' style='border:2px solid #f97316;background:rgba(249,115,22,0.15);"
+            f"border-radius:10px;padding:10px 14px;margin:4px 0;font-weight:800;color:#fdba74'>"
+            f"❌ [경고 · 물타기] {_nm2} 손실({_rt2:+.1f}%)에서 수량 {_pq}→{_nq} 증가 — "
+            f"물타기는 평단을 낮추는 마법이 아니라 사상자를 배로 늘리는 자살 행위입니다. 추가 진입 즉시 중단.</div>",
+            unsafe_allow_html=True)
+    if _slw_dirty:
+        _json_write_dict(_STOPLOSS_WATCH_PATH, _slw)
+    if _snap_dirty:
+        _json_write_dict(_HOLDINGS_SNAP_PATH, _snap)
     st.markdown(
         "<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:12px;"
         "border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px -12px rgba(0,0,0,0.55)'><thead>"
