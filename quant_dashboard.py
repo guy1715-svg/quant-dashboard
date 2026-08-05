@@ -872,14 +872,23 @@ def kis_get_investor_intraday(ticker):
         _res = _requests.get(
             f"{_kis_base()}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
             headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
-                     "appsecret": _kis_secret(), "tr_id": "HHPTJ04160200", "custtype": "P"},
+                     "appsecret": _kis_secret(), "tr_id": "HHPTJ04160200"},
             params={"MKSC_SHRN_ISCD": ticker}, timeout=5)
         _o2 = _res.json().get("output2", [])
         if isinstance(_o2, list) and _o2:
-            # 시간대별 누적 추정 — 가장 최근(마지막) 항목 = 현재 장중 추정
-            _last = _o2[-1] if isinstance(_o2[-1], dict) else _o2[0]
-            _frn = int(str(_last.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0)
-            _org = int(str(_last.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)
+            # [V14.0] watcher와 동일 로직 — 맨 끝 버킷이 0/0(미집계)일 수 있어, 뒤에서부터 '0이 아닌 최신' 행 채택.
+            #   (기존 _o2[-1] 고정 → 마지막 버킷 0이면 수급 전부 '–'로 누락되던 버그 해소)
+            _last = None
+            for _row in reversed(_o2):
+                if isinstance(_row, dict) and (
+                        int(str(_row.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0) or
+                        int(str(_row.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0)):
+                    _last = _row
+                    break
+            if _last is None and isinstance(_o2[-1], dict):
+                _last = _o2[-1]
+            _frn = int(str(_last.get("frgn_fake_ntby_qty", 0)).replace(",", "") or 0) if isinstance(_last, dict) else 0
+            _org = int(str(_last.get("orgn_fake_ntby_qty", 0)).replace(",", "") or 0) if isinstance(_last, dict) else 0
             if _frn or _org:
                 return {"외인순매수": _frn, "기관순매수": _org}
     except Exception:
