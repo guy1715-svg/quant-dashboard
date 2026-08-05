@@ -4782,6 +4782,99 @@ def news_score_modifier(code, disp_pct=None):
     return _bonus, False, _tag
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.5-②] 7대 안전핀 자동 채점기 — 신호 발생 시 7개 수문 자동판정 → N/7 Go/No-Go
+#   초보 확인부담 0: 지수·이격·거래대금·손익비·나선·시간대·뉴스를 기계가 채점.
+# ═══════════════════════════════════════════════════════════════════
+def score_7gates(code, rec, now_kst=None):
+    """7대 안전핀 채점 → (total:int, verdict, color, gates:list[(name, ok, detail)]). 예외 안전."""
+    _now = now_kst or (datetime.utcnow() + timedelta(hours=9))
+    _px = rec.get("현재가") or 0
+    _ma20 = rec.get("MA20") or 0
+    _turn = rec.get("거래대금") or 0
+    _gates = []
+    # 1) 지수 안전도(-2% 셧다운 아님)
+    try:
+        _sd, _, _kp, _kq = check_index_shutdown()
+    except Exception:
+        _sd, _kp, _kq = True, None, None
+    _gates.append(("지수 안전도", (not _sd),
+                   (f"코스피 {_kp:+.1f}%·코스닥 {_kq:+.1f}%" if isinstance(_kp, (int, float)) else "지수 결측")))
+    # 2) 20MA 이격 <7%(과열 아님)
+    _disp = ((_px / _ma20 - 1) * 100) if _ma20 else None
+    _gates.append(("20MA 이격", (_disp is not None and _disp < 7.0),
+                   (f"{_disp:+.1f}%" if _disp is not None else "MA 결측")))
+    # 3) 거래대금 하드컷(대형 1,000억/중소형 500억)
+    _need = _DOL_TURNOVER_REF if _px >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
+    _gates.append(("거래대금", (_turn >= _need), f"{_turn/1e8:,.0f}억 / {_need/1e8:,.0f}억"))
+    # 4) 손익비 R:R ≥2 (저항선까지 상방 / -3% 하방). 저항 위(신고가)=머리위 저항無 → 통과
+    _res = 0.0
+    try:
+        _ind = calc_indicators(fetch_ohlcv(code, 80)); _res = float(_ind["저항선"].iloc[-1] or 0)
+    except Exception:
+        pass
+    if _px > 0:
+        _down = _px * 0.03
+        if _res <= _px:
+            _g4, _rrtxt = True, "신고가(저항 위)"
+        else:
+            _ratio = (_res - _px) / _down if _down > 0 else 0
+            _g4, _rrtxt = (_ratio >= 2.0), f"{_ratio:.1f}배(저항 {_res:,.0f})"
+    else:
+        _g4, _rrtxt = False, "가격 결측"
+    _gates.append(("손익비 R:R", _g4, _rrtxt))
+    # 5) 나스닥선물 ≥ -0.2%
+    _nq = None
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        pass
+    _gates.append(("나스닥선물", (_nq is not None and _nq >= -0.2),
+                   (f"{_nq:+.2f}%" if _nq is not None else "결측")))
+    # 6) 유효 시간대(09:00~09:15 시가저격 / 14:30~15:30 종배 / 18:00~20:00 NXT)
+    _m = _now.hour * 60 + _now.minute
+    _g6 = ((9*60) <= _m <= (9*60+15)) or ((14*60+30) <= _m <= (15*60+30)) or ((18*60) <= _m <= (20*60))
+    _gates.append(("시간대", _g6, _now.strftime("%H:%M")))
+    # 7) 뉴스 촉매(S/A 호재)
+    _nb = 0
+    try:
+        _nb, _, _ = news_score_modifier(code, _disp)
+    except Exception:
+        pass
+    _gates.append(("뉴스 촉매", (_nb > 0), (f"+{_nb}" if _nb else "없음")))
+    _total = sum(1 for _, _ok, _ in _gates if _ok)
+    if _total >= 7:
+        _v, _c = "STRIKE — 즉시 격발 지원", "#22c55e"
+    elif _total >= 5:
+        _v, _c = "READY — 50% 정찰대만", "#eab308"
+    else:
+        _v, _c = "NO_POSITION — 매수 금지", "#ef4444"
+    return _total, _v, _c, _gates
+
+
+def render_7gate_scorecard(code, rec):
+    """🛡️ 7대 안전핀 채점표 렌더 — N/7 + 항목별 통과. 예외 전파 없음. total 반환."""
+    try:
+        _total, _v, _c, _gates = score_7gates(code, rec)
+    except Exception:
+        return None
+    _chips = "".join(
+        f"<span style='display:inline-block;margin:2px 4px 0 0;padding:2px 8px;border-radius:8px;"
+        f"font-size:11px;background:{'rgba(34,197,94,0.15)' if _ok else 'rgba(239,68,68,0.12)'};"
+        f"color:{'#86efac' if _ok else '#fca5a5'}'>{'✅' if _ok else '❌'} {_n} "
+        f"<span style='color:#64748b'>{_d}</span></span>"
+        for _n, _ok, _d in _gates)
+    st.markdown(
+        f"<div style='border:1.5px solid {_c};border-radius:12px;padding:10px 13px;margin:6px 0;"
+        f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+        f"<span style='font-size:14px;font-weight:900;color:#e2e8f0'>🛡️ 7대 안전핀 채점</span>"
+        f"<span style='background:{_c};color:#fff;padding:2px 11px;border-radius:20px;font-size:12px;"
+        f"font-weight:900'>{_total}/7 · {_v}</span></div>"
+        f"<div style='margin-top:6px'>{_chips}</div></div>", unsafe_allow_html=True)
+    return _total
+
+
 def render_ace_picks():
     """🎯 A급 원톱 — 머니투어 '유입처' × 연기금 '포착' 겹침 종목을 시그널 사유와 함께 최상단 카드.
     예외 전파 없음."""
@@ -5343,6 +5436,24 @@ def render_dolpanty_pick():
         unsafe_allow_html=True)
     if _chg >= 7.0:
         st.warning(f"🔥 이미 +{_chg:.1f}% 급등 — 종가베팅은 눌림/지지 매집이 원칙. 추격 금물, 반락 대기.")
+    # [V13.5-②] 7대 안전핀 채점표 + 확정 시간대 텔레그램 Go/No-Go(당일 1회)
+    _g7_total = None
+    try:
+        _g7_total = render_7gate_scorecard(_pick["code"], _rec)
+    except Exception:
+        pass
+    if _gate and _g7_total is not None:
+        _g7key = f"_g7_tg_{(datetime.utcnow()+timedelta(hours=9)).strftime('%Y-%m-%d')}"
+        if not st.session_state.get(_g7key):
+            _verd = ("🟢🟢 STRIKE 7/7 완벽통과 — 풀규격 격발" if _g7_total >= 7
+                     else f"🟡 READY {_g7_total}/7 — 50% 정찰대만" if _g7_total >= 5
+                     else f"🔴 NO_POSITION {_g7_total}/7 — 매수 금지(자동폐기)")
+            try:
+                if send_telegram(f"🛡️ [종배 확정픽] {_pick['name']} {_px:,}({_chg:+.1f}%)\n"
+                                 f"7대 안전핀: {_verd}\n-2% 스탑로스 장전 필수."):
+                    st.session_state[_g7key] = True
+            except Exception:
+                pass
     if not _gate:
         st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
 
@@ -10039,6 +10150,11 @@ def render_stock_analyzer():
                f"border:1.5px solid #ef4444;font-size:12px;color:#fca5a5;font-weight:800'>"
                f"🚫 악재 Mute — {_nreason_a} → 종가베팅 제외(신규 진입 대기)</div>" if _nmute_a else "")
             + "</div>", unsafe_allow_html=True)
+        # [V13.5-②] 7대 안전핀 자동 채점 — 확인부담 0 (지수·이격·거래대금·손익비·나선·시간대·뉴스)
+        try:
+            render_7gate_scorecard(_code, _rec)
+        except Exception:
+            pass
     st.divider()
     # ── 원샷 정밀분석(차트·타점·뉴스·재무) — 기존 드릴다운 재활용 ──
     try:
