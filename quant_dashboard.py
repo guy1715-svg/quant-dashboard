@@ -644,6 +644,7 @@ def _kis_price_fetch(ticker, mrkt="J"):
                 "52주저가":  int(_data.get("d250_lwpr", 0)),
                 "PER":       float(_data.get("per", 0)),
                 "PBR":       float(_data.get("pbr", 0)),
+                "시총":      _to_int(_data.get("hts_avls")),   # 시가총액(억원) — 규모 분류용
                 "_mrkt":     mrkt,
             }
     except Exception:
@@ -1793,6 +1794,26 @@ def _dolpanty_gate_open(now_kst=None):
     return False, "게이트 밖"
 
 
+# [V14.2] 거래대금 하드컷 — 시가총액 기준(가격기준 프록시 버그 수정). 소부장 배려:
+#   시총 1조↑(우량·얇아도 잡주아님)=300억 / 1조 미만=400억. 시총 결측 시 가격 프록시 폴백.
+_DOL_MCAP_TIER_EOK   = 10000            # 억원 = 시총 1조
+_DOL_TURN_MCAP_LARGE = 30_000_000_000   # 시총 1조↑ 관문 = 300억
+_DOL_TURN_MCAP_SMALL = 40_000_000_000   # 시총 1조 미만 관문 = 400억
+
+
+def _turnover_hardcut_need(rec):
+    """거래대금 하드컷 관문(원)+라벨 — 시가총액 기준. 시총 결측 시 가격 프록시 폴백."""
+    _mc = rec.get("시총") or 0          # 억원
+    if _mc > 0:
+        if _mc >= _DOL_MCAP_TIER_EOK:
+            return _DOL_TURN_MCAP_LARGE, f"대형(시총 {_mc/10000:.1f}조)"
+        return _DOL_TURN_MCAP_SMALL, f"중소형(시총 {_mc/10000:.2f}조)"
+    _close = rec.get("현재가") or 0     # 폴백: 주당가격 프록시
+    if _close >= _DOL_LARGECAP_PX:
+        return _DOL_TURNOVER_REF, "대형(가격프록시)"
+    return _DOL_TURNOVER_SMALL, "중소형(가격프록시)"
+
+
 def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaround=False, auction_buy=False):
     """[V13.0] 돌팬티式 종가 베팅 총점(0~100) — 금액(원) 정규화 + 듀얼트랙 가중치 + 돌파 보너스.
     turnaround=True(14:30 V자 정렬 충족): 게이트 강제 개방 + 특별 가중치 +20(패닉 선취매 예외).
@@ -1864,11 +1885,10 @@ def _dolpanty_score(rec, gate_open, regime_halve, is_theme_mode=False, turnaroun
     if turnaround:
         _total = min(round(_total + _TA_BONUS, 1), 100.0)
     _total = min(_total, 100.0)
-    # [V12.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 무조건 제외(SKIP, total=0)
-    #   대형주(현재가≥5만) 1,000억 / 중소형 500억 미만이면 '가짜 수급 잡주'로 보고 청산.
-    _need = _DOL_TURNOVER_REF if _close >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
+    # [V14.2 하드컷] 거래대금 관문 미달 → 점수·상관없이 제외(SKIP). 시가총액 기준(소부장 배려).
+    #   시총 1조↑=300억 / 1조 미만=400억. 시총 결측 시 가격 프록시 폴백.
+    _need, _cap = _turnover_hardcut_need(rec)
     if _turn < _need:
-        _cap = "대형" if _close >= _DOL_LARGECAP_PX else "중소형"
         return 0.0, "⚪ 제외", "SKIP", {"기관(금액)": _f2, "20MA": _f3, "아래꼬리": _f4,
                                         "외인(금액)": _f5, "거래대금": _f6,
                                         "종가위치": (round(_pos, 2) if _pos is not None else None),
@@ -1966,7 +1986,7 @@ def render_dolpanty_swing_monitor(targets=None):
                 _r["현재가"] = _pr.get("현재가"); _r["등락률"] = _pr.get("등락률")
                 _r["시가"] = _pr.get("시가"); _r["고가"] = _pr.get("고가")
                 _r["저가"] = _pr.get("저가"); _r["거래량"] = _pr.get("거래량")
-                _r["거래대금"] = _pr.get("거래대금")
+                _r["거래대금"] = _pr.get("거래대금"); _r["시총"] = _pr.get("시총") or 0
         except Exception:
             pass
         try:
@@ -3828,16 +3848,20 @@ def render_turnover_surge():
         _tags = " ".join(
             f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
             for _t in (_s.get("tags") or [])) or "<span style='color:#64748b;font-size:10px'>뉴스 확인 필요</span>"
-        st.markdown(
-            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;"
-            f"padding:5px 10px;border-bottom:1px solid #1e293b'>"
+        _rc1, _rc2 = st.columns([7, 1], vertical_alignment="center")
+        _rc1.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 4px'>"
             f"<span style='font-weight:800;color:#e2e8f0;white-space:nowrap'>{_s.get('name','')} "
             f"<span style='color:#64748b;font-size:10px'>{_s.get('code','')}</span></span>"
             f"<span style='white-space:nowrap;color:#cbd5e1;font-size:12px'>{_s.get('px',0):,} "
             f"<span style='color:{_cc}'>({_chg:+.1f}%)</span> · "
             f"<b style='color:#fbbf24'>거래대금 {_s.get('mult',0)}배</b></span>"
             f"<span style='flex:1;text-align:right'>{_tags}</span></div>", unsafe_allow_html=True)
-    st.caption("💡 거래대금 급증 = 세력·자금 유입 신호. 뉴스 태그로 이유 확인 → 종목 분석기에서 진입가·과열 검증 → ✅면 선점.")
+        if _rc2.button("🔍", key=f"_surge_send_{_s.get('code')}", help="종목 분석기로 보내기"):
+            st.session_state["_pending_analyzer_code"] = _s.get("code")   # 위젯 아닌 키 → 안전
+            st.toast(f"🔍 {_s.get('name','')} → 종목 분석기 탭에서 확인하세요")
+    st.caption("💡 거래대금 급증 = 세력·자금 유입 신호. 🔍버튼 → 종목 분석기에서 진입가·과열 검증 → ✅면 선점. "
+               "(강한 급증 3배↑+뉴스는 텔레그램 자동 알림)")
 
 
 def fetch_macro_triggers():
@@ -4875,8 +4899,8 @@ def score_7gates(code, rec, now_kst=None):
     _disp = ((_px / _ma20 - 1) * 100) if _ma20 else None
     _gates.append(("20MA 이격", (_disp is not None and _disp < 7.0),
                    (f"{_disp:+.1f}%" if _disp is not None else "MA 결측")))
-    # 3) 거래대금 하드컷(대형 1,000억/중소형 500억)
-    _need = _DOL_TURNOVER_REF if _px >= _DOL_LARGECAP_PX else _DOL_TURNOVER_SMALL
+    # 3) 거래대금 하드컷(시가총액 기준 — 시총 1조↑ 300억 / 미만 400억)
+    _need, _capL = _turnover_hardcut_need(rec)
     _gates.append(("거래대금", (_turn >= _need), f"{_turn/1e8:,.0f}억 / {_need/1e8:,.0f}억"))
     # 4) 손익비 R:R ≥2 (저항선까지 상방 / -3% 하방). 저항 위(신고가)=머리위 저항無 → 통과
     _res = 0.0
@@ -5341,7 +5365,7 @@ def render_dolpanty_pick():
             _rec.update({"현재가": _pr.get("현재가"), "등락률": _pr.get("등락률"),
                          "시가": _pr.get("시가"), "고가": _pr.get("고가"),
                          "저가": _pr.get("저가"), "거래량": _pr.get("거래량"),
-                         "거래대금": _pr.get("거래대금")})
+                         "거래대금": _pr.get("거래대금"), "시총": _pr.get("시총") or 0})
         except Exception:
             pass
         # [V13.0 동기화] 전략 탭과 동일한 실측 수급 주입 — 외인:0 하드코딩 제거
@@ -10150,6 +10174,7 @@ def _analyzer_build_rec(code):
         "시가":     _pr.get("시가") or 0,
         "고가":     _pr.get("고가") or 0,
         "저가":     _pr.get("저가") or 0,
+        "시총":     _pr.get("시총") or 0,        # 억원 — 규모 분류(거래대금 관문)
         "MA20": None, "기관": 0, "외인": 0, "_ivsrc": "",
     }
     try:
@@ -10280,11 +10305,13 @@ def extract_stocks_from_text(text, limit=12):
     if not _m:
         return []
     _found, _seen = [], set()
-    for _name in sorted(_m, key=len, reverse=True):     # 긴 이름부터(포함관계 오탐 완화)
+    _work = text                                        # 매칭된 이름은 소거 → 포함관계 오탐 차단
+    for _name in sorted(_m, key=len, reverse=True):     # 긴 이름부터(예: 삼성전자 먼저 → '삼성' 오탐 방지)
         if len(_name) < 2:
             continue
-        if _name in text and _m[_name] not in _seen:
+        if _name in _work and _m[_name] not in _seen:
             _found.append((_m[_name], _name)); _seen.add(_m[_name])
+            _work = _work.replace(_name, " ")           # 소거 후 짧은 부분문자열 재매칭 방지
             if len(_found) >= limit:
                 break
     return _found
@@ -10421,6 +10448,10 @@ def render_stock_analyzer():
     """🔍 종목 분석기 — 종목코드 하나로 종가베팅 종합점수 + 정밀분석(수급·차트·타점·뉴스). 예외 전파 없음."""
     st.markdown("### 🔍 종목 분석기 — 코드 하나로 원샷 판단")
     st.caption("텔레그램·리딩방에서 받은 종목코드(6자리)를 넣으면 종합점수 + 외인·기관 수급 + 차트 + 타점을 한 화면에.")
+    # [V14.1] 다른 패널의 '분석기로 보내기' 버튼이 남긴 코드 사전주입(위젯 생성 전)
+    _pend_ac = st.session_state.pop("_pending_analyzer_code", None)
+    if _pend_ac:
+        st.session_state["_analyzer_code"] = _pend_ac
     # [V13.4-⑤] 뉴스 재료 → 수혜 종목 발굴(나비효과 인과맵) — 코드 모를 때 여기서 먼저 찾기
     with st.expander("🦋 뉴스 재료로 종목 찾기 (나비효과 인과맵)", expanded=False):
         try:
@@ -10631,6 +10662,20 @@ with tab_g:
     # [V13.5] 장중 레짐 배너 — 오늘 장 성격(추세/박스/하락)에 맞춘 매매 지침 최상단
     try:
         render_regime_banner()
+    except Exception:
+        pass
+    # [V14.1] 강한 급증(3배↑+뉴스) 텔레그램 자동 푸시 — 대시보드 열려있을 때(당일 1회/종목)
+    try:
+        _sg_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+        for _sg in (scan_turnover_surge() or []):
+            if _sg.get("mult", 0) >= 3.0 and _sg.get("tags"):
+                _sgk = f"_surge_tg_{_sg_today}_{_sg.get('code')}"
+                if not st.session_state.get(_sgk):
+                    if send_telegram(f"🚨 거래대금 급증 포착 — {_sg.get('name','')} "
+                                     f"{_sg.get('px',0):,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_sg.get('mult')}배\n"
+                                     f"사유: {' / '.join(_sg.get('tags') or []) or '뉴스 확인 필요'}\n"
+                                     f"→ 분석기서 과열·안전핀 검증 후 선점(추격 금지)."):
+                        st.session_state[_sgk] = True
     except Exception:
         pass
     # [V14.0] 거래대금 급증 포착 — 뉴스보다 먼저 자금 쏠림 감지(접이식)
