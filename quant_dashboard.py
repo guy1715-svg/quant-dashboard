@@ -9753,10 +9753,117 @@ def _analyzer_build_rec(code):
     return _rec, _pr
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.4-⑤] 결정론적 나비효과 인과맵 — 뉴스 재료 → 수혜/피해 섹터 → 대장주(엔진 검증)
+#   LLM 없이 즉시·무료. 대장주는 반드시 기존 수급/거래대금/과열 엔진 게이트 통과해야 '진입후보' 승격.
+# ═══════════════════════════════════════════════════════════════════
+RIPPLE_EFFECT_MAP = {
+    "RATE_CUT": {
+        "keywords": ["금리인하", "금리 인하", "유동성", "금리 동결", "동결", "피벗"],
+        "suhye_sector": "건설/리츠/고PER 성장주",
+        "pihae_sector": "금융(은행/보험)",
+        "leaders": [("035420", "NAVER"), ("196170", "알테오젠")],
+        "narrative": "금리 인하 기조는 성장 기술주의 미래 할인율 부담을 낮춰 투심을 극대화합니다."},
+    "OIL_SURGE": {
+        "keywords": ["유가급등", "유가 급등", "중동", "호르무즈", "WTI", "이란", "감산"],
+        "suhye_sector": "정유/에너지/조선/방산",
+        "pihae_sector": "항공/내수/고PER 성장주",
+        "leaders": [("042660", "한화오션"), ("034020", "두산에너빌리티")],
+        "narrative": "지정학 리스크로 인한 WTI 급등은 운임 상승 수혜인 조선 및 디펜시브 방산에 호재입니다."},
+    "AI_INFRA": {
+        "keywords": ["HBM", "엔비디아", "데이터센터", "초거대 AI", "10GW", "전력", "AI 반도체"],
+        "suhye_sector": "반도체 장비/전력기기/전선",
+        "pihae_sector": "레거시 IT/구형 플랫폼/2차전지",
+        "leaders": [("042700", "한미반도체"), ("298040", "효성중공업"), ("001440", "대한전선")],
+        "narrative": "AI 데이터센터 폭증은 전력 소비 임계 돌파를 의미하며 초고압 송전망·HBM 장비에 자금 유입."},
+    "WAR_RISK": {
+        "keywords": ["전쟁", "침공", "지정학", "공습", "미사일", "도발"],
+        "suhye_sector": "방산/에너지 안보",
+        "pihae_sector": "고PER 성장주/항공/내수",
+        "leaders": [("012450", "한화에어로스페이스"), ("272210", "한화시스템")],
+        "narrative": "지정학 군사 갈등은 자주포·레이더 등 진성 실적을 동반한 K-방산 수주로 이어집니다."},
+    "FX_SURGE": {
+        "keywords": ["환율급등", "환율 급등", "달러강세", "달러 강세", "원화약세", "고환율"],
+        "suhye_sector": "수출 대형주(자동차/조선)",
+        "pihae_sector": "수입의존주/내수/증권",
+        "leaders": [("005380", "현대차"), ("042660", "한화오션")],
+        "narrative": "달러/원 급등은 환차익 수혜 초대형 수출 대장주로 자금이 대피하게 만듭니다(단, 외인 지수이탈 주의)."},
+    "BIOPH_BOOM": {
+        "keywords": ["비만치료제", "임상", "신약", "FDA", "라이선스", "기술수출"],
+        "suhye_sector": "제약/바이오 우량주",
+        "pihae_sector": "화학/레거시 제조업",
+        "leaders": [("000100", "유한양행"), ("068270", "셀트리온")],
+        "narrative": "글로벌 비만·항암 랠리는 독보적 임상 데이터를 쥔 국내 제약바이오로 투심이 동조됩니다."},
+}
+
+
+def detect_ripples(text):
+    """입력 텍스트에서 재료 키워드 매칭 → [(key, entry)] 리스트."""
+    if not text:
+        return []
+    return [(_k, _v) for _k, _v in RIPPLE_EFFECT_MAP.items()
+            if any(_kw in text for _kw in _v["keywords"])]
+
+
+def render_ripple_map():
+    """🦋 나비효과 인과맵 — 뉴스 재료 입력 → 수혜/피해 섹터 + 대장주 엔진검증. 예외 전파 없음."""
+    st.markdown("##### 🦋 뉴스 재료 → 수혜 종목 찾기 (나비효과 인과맵)")
+    _txt = st.text_input("뉴스 헤드라인·재료 키워드 (예: 금리인하 / HBM 엔비디아 / 유가급등 / 전쟁)",
+                         key="_ripple_in").strip()
+    st.caption("빠른 재료: " + " · ".join(_v["keywords"][0] for _v in RIPPLE_EFFECT_MAP.values()))
+    if not _txt:
+        st.caption("재료 입력 → 돈이 쏠릴 섹터·대장주를 즉시 매핑하고, 각 대장주를 수급/거래대금/과열 엔진으로 검증합니다.")
+        return
+    _hits = detect_ripples(_txt)
+    if not _hits:
+        st.info("등록된 인과맵에 매칭되는 재료가 없습니다 (금리/유가/HBM/전쟁/환율/바이오 계열 키워드).")
+        return
+    for _key, _v in _hits:
+        st.markdown(
+            f"<div style='border:1px solid #334155;border-radius:10px;padding:10px 13px;margin:6px 0;"
+            f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+            f"<div style='font-size:14px;font-weight:900;color:#93c5fd'>🎯 유입: {_v['suhye_sector']}</div>"
+            f"<div style='font-size:11.5px;color:#f87171;margin-top:2px'>📉 이탈(피해): {_v['pihae_sector']}</div>"
+            f"<div style='font-size:11.5px;color:#cbd5e1;margin-top:4px'>🧠 {_v['narrative']}</div></div>",
+            unsafe_allow_html=True)
+        for _lc, _ln in _v["leaders"]:
+            try:
+                _lrec, _lpr = _analyzer_build_rec(_lc)
+            except Exception:
+                st.caption(f"· {_ln}({_lc}) — 조회 실패"); continue
+            _lpx = _lrec.get("현재가") or 0
+            if not _lpx:
+                st.caption(f"· {_ln}({_lc}) — 시세 조회 실패(장외/휴장)"); continue
+            _lt, _lg, _ltg, _lfx = _dolpanty_score(_lrec, gate_open=True, regime_halve=False)
+            _lchg = _lrec.get("등락률") or 0.0
+            _lmm = _lrec.get("MA20") or 0
+            _ldp = ((_lpx / _lmm - 1) * 100) if _lmm else 0.0
+            _loh = (_lchg >= 7.0 or _ldp >= 7.0)
+            _lv = ("⛔ 부적격(거래대금 미달)" if _lfx.get("_hardcut")
+                   else "🔥 과열 — 눌림목 대기" if _loh
+                   else f"✅ 진입후보 {_lg}" if _ltg in ("STRIKE", "READY")
+                   else f"🟡 관찰 {_lg}")
+            _lcc = "#ef4444" if _lchg < 0 else "#16a34a" if _lchg > 0 else "#94a3b8"
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;font-size:12px;padding:3px 10px'>"
+                f"<span style='color:#e2e8f0;font-weight:700'>{_ln} "
+                f"<span style='color:#64748b'>{_lc}</span></span>"
+                f"<span style='color:#cbd5e1'>{_lpx:,} <span style='color:{_lcc}'>({_lchg:+.1f}%)</span>"
+                f" · 점수 {_lt:.0f} · {_lv}</span></div>", unsafe_allow_html=True)
+    st.caption("💡 인과맵은 '후보 발굴 보조' — ✅진입후보만 실매수 검토, ⛔/🔥는 제외/대기. "
+               "대장주 코드 복사 → 아래 분석기에서 정밀분석.")
+
+
 def render_stock_analyzer():
     """🔍 종목 분석기 — 종목코드 하나로 종가베팅 종합점수 + 정밀분석(수급·차트·타점·뉴스). 예외 전파 없음."""
     st.markdown("### 🔍 종목 분석기 — 코드 하나로 원샷 판단")
     st.caption("텔레그램·리딩방에서 받은 종목코드(6자리)를 넣으면 종합점수 + 외인·기관 수급 + 차트 + 타점을 한 화면에.")
+    # [V13.4-⑤] 뉴스 재료 → 수혜 종목 발굴(나비효과 인과맵) — 코드 모를 때 여기서 먼저 찾기
+    with st.expander("🦋 뉴스 재료로 종목 찾기 (나비효과 인과맵)", expanded=False):
+        try:
+            render_ripple_map()
+        except Exception as _rme:
+            st.caption(f"⚠️ 인과맵 일시 비활성: {type(_rme).__name__}")
     _c1, _c2 = st.columns([3, 1], vertical_alignment="bottom")
     with _c1:
         _code_in = st.text_input("종목코드 입력 (예: 005930)", key="_analyzer_code",
