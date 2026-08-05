@@ -9391,6 +9391,10 @@ except Exception as _ghe:
 # ── V12.0 4대 핵심 탭 구조조정 (8→4) ──
 #   🌅 장전 브리핑 · 🎯 실전 관제탑(+실전매매) · 📡 딥 스캐너(스윙+홈+분석+전략) · ⚙️ 시스템 설정
 #   기존 with tab_X 블록은 그대로 두고, 컨테이너만 재바인딩해 내용 100% 보존.
+# [V14.2] 화면 정리 — 안 쓰는 탭 숨김 스위치(삭제 아님, True로 바꾸면 즉시 복구).
+_SHOW_REALTRADE = False   # 🛡️ 실전매매 모듈(페이퍼·하이브리드·시장지수·관심종목·현황판) 숨김
+_SHOW_PENSION   = False   # 🏦 연기금 추적(심화분석 서브탭) 숨김
+_SHOW_SWING     = False   # 📡 스윙 스캐너(딥스캐너 서브탭) 숨김
 _t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
     ["🌅 장전 브리핑", "🎯 실전 관제탑", "📡 딥 스캐너", "⚙️ 시스템 설정"])
 # V12.0 1.5단계 기능 이관 매핑:
@@ -9398,8 +9402,12 @@ _t_brief, _t_command, _t_scanner, _t_settings = st.tabs(
 with _t_brief:
     _b_brief, _b_strat = st.tabs(["🌅 브리핑", "🔄 전략·레짐 로테이션"])
 with _t_command:
-    _c_main, _c_v93 = st.tabs(
-        ["🎯 관제 (장중 매매/리스크)", "🛡️ 실전매매 모듈"])
+    if _SHOW_REALTRADE:
+        _c_main, _c_v93 = st.tabs(
+            ["🎯 관제 (장중 매매/리스크)", "🛡️ 실전매매 모듈"])
+    else:
+        (_c_main,) = st.tabs(["🎯 관제탑 (장중 매매/리스크)"])
+        _c_v93 = None
 with _t_scanner:
     # V12.0 4단계: 금액 기반 거래대금 랭킹보드 (딥스캐너 최상단)
     try:
@@ -9409,7 +9417,11 @@ with _t_scanner:
         _lg_rb.warning("랭킹보드 실패: %s: %s", type(_rbe).__name__, _rbe)
         st.caption("⚠️ 랭킹보드 일시 비활성")
     st.divider()
-    _s_scan, _s_anal = st.tabs(["📡 스윙 스캐너", "🔍 종목 정밀분석(드릴다운)"])
+    if _SHOW_SWING:
+        _s_scan, _s_anal = st.tabs(["📡 스윙 스캐너", "🔍 종목 정밀분석(드릴다운)"])
+    else:
+        (_s_anal,) = st.tabs(["🔍 종목 정밀분석(드릴다운)"])
+        _s_scan = None
 with _t_settings:
     # V12.0 4단계: 실주문 승인 게이트 + 자가진단 (시스템 설정 상단)
     with st.expander("⚠️ 실계좌 실제 주문 격발 (2중 안전 게이트)", expanded=False):
@@ -9438,13 +9450,14 @@ tab_h = _c_v93      # 🛡️ 실전매매
 with tab_f:
     render_morning_briefing_tab()
 
-with tab_h:
-    try:
-        render_v93_trading_tab()
-    except Exception as _v93e:
-        import traceback as _tbv93
-        st.error(f"⚠️ 실전매매 모듈 오류 — {type(_v93e).__name__}: {_v93e}")
-        st.caption(_tbv93.format_exc().splitlines()[-1])
+if tab_h is not None:   # [V14.2] 🛡️ 실전매매 모듈 숨김 시 tab_h=None → 렌더 스킵
+    with tab_h:
+        try:
+            render_v93_trading_tab()
+        except Exception as _v93e:
+            import traceback as _tbv93
+            st.error(f"⚠️ 실전매매 모듈 오류 — {type(_v93e).__name__}: {_v93e}")
+            st.caption(_tbv93.format_exc().splitlines()[-1])
 
 with tab_g:
     # ── 관제탑 헤더: 제목 + 장 상태(정규장/NXT/장외) + KST ──
@@ -9532,9 +9545,15 @@ with tab_g:
     st.divider()
     # ═══ ④ 🔬 전략별 심화 분석 ═══
     _section_title("4", "🔬", "전략별 심화 분석")
-    _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
-        ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
-         "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
+    if _SHOW_PENSION:
+        _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
+            ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
+             "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
+    else:   # [V14.2] 🏦 연기금 추적 숨김
+        _mj_sub, _dp_sub, _mt_sub = st.tabs(
+            ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
+             "🌀 머니투어 (섹터 자금이동)"])
+        _pn_sub = None
     with _mj_sub:
         try:
             render_manju_scalp_monitor()
@@ -9556,13 +9575,14 @@ with tab_g:
             import traceback as _tbmt
             st.error(f"⚠️ 머니투어 패널 오류 — {type(_mte).__name__}: {_mte}")
             st.caption(_tbmt.format_exc().splitlines()[-1])
-    with _pn_sub:
-        try:
-            render_pension_tracker_tab()
-        except Exception as _pne:
-            import traceback as _tbpn
-            st.error(f"⚠️ 연기금 추적 오류 — {type(_pne).__name__}: {_pne}")
-            st.caption(_tbpn.format_exc().splitlines()[-1])
+    if _pn_sub is not None:   # [V14.2] 🏦 연기금 추적 숨김 시 스킵
+        with _pn_sub:
+            try:
+                render_pension_tracker_tab()
+            except Exception as _pne:
+                import traceback as _tbpn
+                st.error(f"⚠️ 연기금 추적 오류 — {type(_pne).__name__}: {_pne}")
+                st.caption(_tbpn.format_exc().splitlines()[-1])
     st.divider()
     # ═══ [하단] ⚙️ 도구 · 📖 도움말 — 매일 보는 정보 아래로(증권사 앱 '더보기/도움말' 관례) ═══
     _section_title("⚙", "🛠️", "도구 · 사용설명서")
@@ -11081,7 +11101,10 @@ def render_day_strike_mode():
                        use_container_width=True, disabled=not _core)
 
 
-with tab_c:
+# [V14.2] 📡 스윙 스캐너 숨김 — tab_c=None이면 빈 슬롯에 렌더 후 아래에서 비움(화면에서만 제거).
+_scan_slot = None if tab_c is not None else st.empty()
+_scan_ctx = tab_c if tab_c is not None else _scan_slot.container()
+with _scan_ctx:
     st.markdown("### 📡 V9.1 단기 스윙 스캐너")
     render_macro_weather()            # 🌍 최상단: 프리마켓 매크로 레짐 판독(1줄 배너)
     # 🌙 야간 타격 · 🔴 전술 모드를 가로 2분할로 콤팩트 배치
@@ -13975,6 +13998,10 @@ def _render_etf_ranking(df_ranked, currency_symbol='원', key_prefix='etf', show
             for _i, row in df_ranked.iloc[3:].iterrows():
                 _render_card(_i, row, in_expander=True)
 
+# [V14.2] 스윙 스캐너 숨김 시: 빈 슬롯에 렌더된 내용을 비워 화면에서 제거
+if _scan_slot is not None:
+    _scan_slot.empty()
+
 
 with tab_d:
     _tab_d1, _tab_d2 = st.tabs(["🔄 전략 로테이션", "⚔️ 실전 운용"])
@@ -14458,8 +14485,13 @@ with _tab_d1:
                                      "채권","레버리지/인버스","배당","국제"], key="us_etf_cat")
     with _erc3:
         if st.button("🔄 새로고침", key="etf_ribbon_refresh", use_container_width=True,
-                     help="현재 시장 랭킹 데이터만 새로 불러옵니다"):
-            (fetch_kr_etf_data if _etf_market == "🇰🇷 국장 ETF" else fetch_us_etf_data).clear()
+                     help="ETF 랭킹 데이터를 새로 불러옵니다"):
+            # [V14.1] 버그수정 — fetch_kr/us_etf_data는 이 지점보다 뒤에 정의된 nested 함수라
+            #   여기서 참조 시 UnboundLocalError 크래시. 전역 캐시 클리어(강제갱신과 동일)로 안전 처리.
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
             st.rerun()
     with _erc4:
         _last_rf = st.session_state.get('_etf_refresh_ts')
