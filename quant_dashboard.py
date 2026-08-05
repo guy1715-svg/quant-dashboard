@@ -5157,6 +5157,27 @@ def render_dolpanty_pick():
         st.warning(f"🟡 관망 — 조건 미달(최상위 후보 {_pick['name']} 점수 {_pick['score']:.0f}"
                    f"{'·20MA 이탈' if not _pick['ma_ok'] else ''}). 뚜렷한 종베 타점 아님.")
         return
+    # [V13.4-④] 과열 눌림목 오버라이드 — 매크로🟢인데 유효후보 전부 과열(진입가능 A급 0개)이면 눌림목 대기
+    def _cand_overheated(c):
+        _r = c.get("rec", {}); _cg = _r.get("등락률") or 0.0; _mm = _r.get("MA20") or 0
+        _dp = ((_r.get("현재가", 0) / _mm - 1) * 100) if _mm else 0.0
+        return (_cg >= 7.0) or (_dp >= 7.0)      # 등락률 또는 20MA 이격 과열
+    _valids = [c for c in _cands if c["ma_ok"] and c["score"] >= 40]
+    if _valids and not [c for c in _valids if not _cand_overheated(c)]:
+        st.markdown(
+            "<div style='border:2px solid #f97316;border-radius:12px;padding:11px 15px;margin-bottom:8px;"
+            "background:linear-gradient(180deg,#2a1505,#111c33);box-shadow:0 0 14px rgba(249,115,22,0.3)'>"
+            "<div style='font-size:15px;font-weight:900;color:#fdba74'>🔥 매크로 양호하나 주도주 과열 — 눌림목(조정) 대기</div>"
+            "<div style='font-size:12px;color:#fed7aa;margin-top:3px'>진입 가능한 비과열 A급 후보 0개"
+            "(전 후보 등락률·20MA 이격 과열). 뇌동 추격 금지 · 눌림목(20일선 근처) 재산출 대기.</div></div>",
+            unsafe_allow_html=True)
+        _oh_key = f"_overheat_wait_{(datetime.utcnow()+timedelta(hours=9)).strftime('%Y-%m-%d')}"
+        if _gate and not st.session_state.get(_oh_key):
+            try:
+                if send_telegram("🔥 매크로 양호하나 주도주 전부 과열 — 진입가능 A급 0개. 눌림목 대기(추격 금지)."):
+                    st.session_state[_oh_key] = True
+            except Exception:
+                pass
     _rec = _pick["rec"]; _px = _rec["현재가"] or 0; _chg = _rec["등락률"] or 0.0
     _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
     # [V13.4-①] 확정 시간대(게이트)면 오늘의 확정픽을 익일결과 로깅에 기록(날짜락·1회)
