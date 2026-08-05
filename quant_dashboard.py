@@ -4869,6 +4869,117 @@ def render_manju_morning_pick():
     st.caption("💡 만쥬식 단타 픽 = ①주도섹터 자금유입 → ②연기금/유입처 중복 → ③수급강도 최상위 · '떠있다=매수' 아님")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.4-①] 돌팬티 픽 익일결과 자동로깅 — 명중률 피드백 루프 (수익 검증 인프라)
+#   매일 확정픽(15:00~15:30 게이트)을 날짜락으로 1건 기록 → 익일 KIS 시초가와
+#   자동 대조 → 점수대별 실제 승률/평균 갭 누적. top1_history 저장 패턴 재사용.
+# ═══════════════════════════════════════════════════════════════════
+_PICK_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "pick_history.json")
+
+
+def _pick_history_read():
+    """pick_history.json 읽기(list). 없거나 파싱 실패 시 []."""
+    try:
+        with open(_PICK_HISTORY_PATH, "r", encoding="utf-8") as _f:
+            _d = _json_tracker.load(_f)
+            return _d if isinstance(_d, list) else []
+    except (FileNotFoundError, _json_tracker.JSONDecodeError, OSError):
+        return []
+
+
+def _pick_history_write(rows):
+    """pick_history.json 덮어쓰기(최근 400건 상한). 실패는 조용히 무시."""
+    try:
+        with open(_PICK_HISTORY_PATH, "w", encoding="utf-8") as _f:
+            _json_tracker.dump(rows[-400:], _f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def log_dolpanty_pick(code, name, score, px):
+    """확정 픽을 당일 1회 기록(날짜락 — flip-flop 방지). 이미 오늘 기록 있으면 무시."""
+    if not code or not score:
+        return
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _rows = _pick_history_read()
+    if any(r.get("date") == _today for r in _rows):
+        return                        # 오늘 첫 확정픽만 저장(장중 순위 변동 무시)
+    _rows.append({"date": _today, "code": str(code), "name": name or "",
+                  "score": round(float(score), 1), "px": int(px or 0),
+                  "open_next": None, "gap": None})
+    _pick_history_write(_rows)
+
+
+def backfill_pick_outcomes():
+    """결과 미기록(open_next=None)·날짜<오늘 인 픽을 KIS 일봉으로 익일 시초가 대조.
+    갭% = (익일 시초가 / 기록시점가 − 1)×100. 대시보드 아무 때나 열려도 지연 백필."""
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _rows = _pick_history_read()
+    _dirty = False
+    for _r in _rows:
+        if _r.get("open_next") is not None or _r.get("date", "") >= _today:
+            continue                  # 이미 대조됨 or 아직 익일 안 옴
+        try:
+            _df = fetch_ohlcv(_r["code"], 60)
+            if _df is None or _df.empty:
+                continue
+            _idx = [str(d)[:10] for d in _df.index]
+            _after = [i for i, d in enumerate(_idx) if d > _r["date"]]
+            if not _after:
+                continue              # 익일 봉 아직 없음(장전/휴장)
+            _ni = _after[0]
+            _open_next = float(_df.iloc[_ni]["시가"])
+            _base = _r.get("px") or float(_df.iloc[max(_ni - 1, 0)]["종가"])
+            if _base > 0 and _open_next > 0:
+                _r["open_next"] = int(_open_next)
+                _r["gap"] = round((_open_next / _base - 1) * 100, 2)
+                _dirty = True
+        except Exception:
+            continue
+    if _dirty:
+        _pick_history_write(_rows)
+    return _rows
+
+
+def render_pick_performance():
+    """📊 돌팬티 픽 명중률 — 점수대별 실제 익일 갭·승률. 예외 전파 없음."""
+    st.markdown("#### 📊 돌팬티 픽 명중률 (익일 시초가 갭 기준)")
+    _rows = backfill_pick_outcomes()
+    _done = [r for r in _rows if r.get("gap") is not None]
+    _pend = [r for r in _rows if r.get("gap") is None]
+    if not _done:
+        st.caption(f"아직 결과 대조된 픽 없음 (대기 {len(_pend)}건) — "
+                   "15:00~15:30 확정 픽이 익일부터 자동 집계됩니다.")
+        return
+    _bands = [("🔴 STRIKE 80+", 80, 999), ("🟠 READY 60~80", 60, 80), ("🟡 WATCH 40~60", 40, 60)]
+    _cols = st.columns(len(_bands))
+    for _c, (_lbl, _lo, _hi) in zip(_cols, _bands):
+        _g = [r["gap"] for r in _done if _lo <= r["score"] < _hi]
+        if _g:
+            _win = sum(1 for x in _g if x > 0) / len(_g) * 100
+            _avg = sum(_g) / len(_g)
+            _c.metric(_lbl, f"{_avg:+.2f}%", f"승률 {_win:.0f}% · {len(_g)}건")
+        else:
+            _c.metric(_lbl, "—", "0건")
+    # 전체 요약
+    _allg = [r["gap"] for r in _done]
+    _wr = sum(1 for x in _allg if x > 0) / len(_allg) * 100
+    st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {sum(_allg)/len(_allg):+.2f}% "
+               f"(대기 {len(_pend)}건)")
+    with st.expander("🗒️ 최근 픽 기록 (최신 20)", expanded=False):
+        try:
+            import pandas as _pd
+            _tb = _pd.DataFrame(list(reversed(_done))[:20])[
+                ["date", "name", "score", "px", "open_next", "gap"]]
+            _tb.columns = ["날짜", "종목", "점수", "기록가", "익일시가", "갭%"]
+            st.dataframe(_tb, use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+    st.caption("💡 갭% = (익일 시초가 / 기록시점가 − 1). 종배 익절룰(익일 시가 +1~2%)과 직결 — "
+               "점수대가 높을수록 승률·평균갭이 우상향해야 알고리즘이 유효합니다.")
+
+
 def render_dolpanty_pick():
     """🌒 오늘의 돌팬티식 종가베팅 픽 — 유입섹터 상위 종목 중 20MA↑·아래꼬리·기관+ 최고점수 자동 선정.
     15:00~20:00 확정 / 그 외 예비. 예외 전파 없음."""
@@ -4959,6 +5070,12 @@ def render_dolpanty_pick():
         return
     _rec = _pick["rec"]; _px = _rec["현재가"] or 0; _chg = _rec["등락률"] or 0.0
     _chg_c = "#ef4444" if _chg < 0 else "#16a34a" if _chg > 0 else "#94a3b8"
+    # [V13.4-①] 확정 시간대(게이트)면 오늘의 확정픽을 익일결과 로깅에 기록(날짜락·1회)
+    if _gate:
+        try:
+            log_dolpanty_pick(_pick["code"], _pick["name"], _pick["score"], _px)
+        except Exception:
+            pass
     _tags = []
     try:
         _tags = fetch_stock_triggers(_pick["code"], _pick["name"])
@@ -9543,6 +9660,12 @@ with _t_settings:
         render_v12_self_diagnostic()
     except Exception as _sde:
         st.caption(f"⚠️ 자가진단 일시 비활성: {type(_sde).__name__}")
+    st.divider()
+    # [V13.4-①] 돌팬티 픽 명중률 — 익일 시초가 갭 자동 대조(수익 검증 인프라)
+    try:
+        render_pick_performance()
+    except Exception as _ppe:
+        st.caption(f"⚠️ 명중률 패널 일시 비활성: {type(_ppe).__name__}")
     st.divider()
 # 기존 변수명 → 새 컨테이너 재바인딩 (아래 with tab_X 블록 내용 100% 보존)
 tab_b = _s_anal     # 🔍 분석 → 딥 스캐너 서브탭(종목 정밀분석)
