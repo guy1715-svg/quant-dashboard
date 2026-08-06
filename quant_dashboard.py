@@ -3791,6 +3791,26 @@ def render_regime_banner():
     return _rg
 
 
+# [V14.9] ETF/ETN/스팩/레버리지·인버스 제외 — 종목 매매 대상 아님(급증·역행·재료 스캔서 배제)
+_ETF_ETN_BRANDS = ("KODEX", "TIGER", "KBSTAR", "ARIRANG", "KOSEF", "KINDEX", "HANARO",
+                   "SOL", "ACE", "RISE", "PLUS", "TIMEFOLIO", "KOACT", "WON", "히어로즈",
+                   "FOCUS", "TREX", "마이다스", "파워", "VITA", "KCGI", "에셋플러스", "BNK",
+                   "마이티", "KIWOOM", "TRUE", "마이스터", "ITF", "TIGERTR")
+_EXCLUDE_KWS = ("레버리지", "인버스", "ETN", "커버드콜", "스팩", "선물지수", "합성", "채권액티브")
+
+
+def _is_etf_or_special(code, name):
+    """ETF·ETN·스팩·레버리지/인버스 여부 — 종목 스캔서 제외용. 브랜드 접두 + 키워드."""
+    if not name:
+        return False
+    _n = str(name).upper().replace(" ", "")
+    if any(_n.startswith(_b) for _b in _ETF_ETN_BRANDS):
+        return True
+    if any(_k in str(name) for _k in _EXCLUDE_KWS):
+        return True
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════
 # [V14.0] 거래대금 급증 포착기 — 평소(20일평균) 대비 비정상 급증 종목 조기 포착
 #   "뉴스→종목"(늦음)이 아니라 "거래대금 급증→뉴스로 이유확인"(선점) 순서.
@@ -3807,6 +3827,8 @@ def scan_turnover_surge(top=18, min_mult=2.0):
     for _s in _rank:
         _cd = _s.get("code"); _to = _s.get("turnover") or 0
         if not _cd or _to <= 0:
+            continue
+        if _is_etf_or_special(_cd, _s.get("name", "")):   # [V14.9] ETF/ETN/스팩 제외
             continue
         try:
             _df = fetch_ohlcv(_cd, 30)
@@ -3879,6 +3901,8 @@ def scan_counter_trend(idx_chg, top=25, min_out=4.0, min_chg=2.0):
         _rank = []
     _cand = []
     for _s in _rank:
+        if _is_etf_or_special(_s.get("code"), _s.get("name", "")):   # [V14.9] ETF/ETN/스팩 제외
+            continue
         _chg = _s.get("chg", 0.0)
         if _chg < min_chg:                       # 실제 상승 종목만
             continue
@@ -3944,6 +3968,74 @@ def render_counter_trend():
             st.toast(f"🔍 {_s.get('name','')} → 종목 분석기 탭에서 확인")
     st.caption("⚠️ 역행주는 리스크오프에 난이도 최상·저승률 — 소액·−2% 타이트손절·빠른익절(+2~3%). "
                "지수 더 빠지면 같이 팔릴 수 있음. 반드시 분석기로 재검증.")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [V14.9] NXT 야간(18~20시) 3대 시나리오 — 보유종목 NXT시세 × 나선 교차판정.
+#   A(나선🟢·NXT↑)=홀딩 / B(나선🔴·NXT↑)=설거지 매도 / C(나선🔴·NXT↓)=지옥문 칼손절.
+# ═══════════════════════════════════════════════════════════════════
+def render_nxt_scenarios():
+    """NXT 야간 보유종목 3대 시나리오 자동판정 + C단계 텔레그램. 18~20시만. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _m = _now.hour * 60 + _now.minute
+    if not ((18 * 60) <= _m <= (20 * 60)):
+        return                                   # NXT 야간 세션만 활성
+    st.markdown(
+        "<div style='font-size:14px;font-weight:900;color:#a78bfa;margin:2px 0'>"
+        "🌙 NXT 야간 시나리오 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+        "보유종목 NXT시세 × 나선 교차판정 · 18~20시</span></div>", unsafe_allow_html=True)
+    try:
+        _bal = kis_get_balance(silent=True)
+        _holds = (_bal or {}).get("holdings", []) if isinstance(_bal, dict) else []
+    except Exception:
+        _holds = []
+    if not _holds:
+        st.caption("보유 종목 없음 — NXT 시나리오 판정 대상 없음."); return
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        _nq = None
+    if _nq is None:
+        st.caption("⏳ 글로벌 데이터 동기화 대기 중 (나선 결측)"); return
+    _today = _now.strftime("%Y-%m-%d")
+    for _h in _holds:
+        _cd = _h.get("종목코드"); _nm = _h.get("종목명", "")
+        _px = 0; _close = 0
+        try:
+            _px = (kis_get_price(_cd) or {}).get("현재가") or 0
+        except Exception:
+            pass
+        try:
+            _dfn = fetch_ohlcv(_cd, 10); _close = float(_dfn["종가"].iloc[-1])
+        except Exception:
+            pass
+        if not _px or not _close:
+            st.caption(f"⏳ {_nm} — NXT 시세 동기화 대기 (야간 미거래 종목일 수 있음 → 탈출 불가 주의)")
+            continue
+        _nchg = (_px / _close - 1) * 100          # 정규장 종가 대비 야간 등락
+        if _nq >= 0 and _nchg > 0:
+            _sc, _msg, _co = ("🟢 A 홀딩", "나선 훈풍 연동 — 정상 궤도 홀딩. +5%↑ 폭등 시 50% 분할익절 수동 대응", "#22c55e")
+        elif _nq < -0.2 and _nchg > 0:
+            _sc, _msg, _co = ("🟡 B 매도권고", "설거지 펌핑 의심(미장 약세인데 야간 강세) — 빨간불일 때 즉각 전량 매도 탈출", "#eab308")
+        elif _nq < -0.2 and _nchg < 0:
+            _sc, _msg, _co = ("🔴 C 칼손절", "지옥문 — 익일 갭하락 확정구역. 20시 마감 전 지정가 −2% 칼손절", "#ef4444")
+            _sk = f"_nxt_c_{_today}_{_cd}"
+            if not st.session_state.get(_sk):
+                if send_telegram(f"🚨 [NXT Scenario C] {_nm} 지옥문 — 나선 {_nq:+.2f}% + NXT {_nchg:+.2f}%\n"
+                                 f"익일 갭하락 확정구역. 20:00 마감 전 지정가 −2% 칼손절 대응!(시장가 금지)"):
+                    st.session_state[_sk] = True
+        else:
+            _sc, _msg, _co = ("⚪ 중립", "나선 애매(−0.2~0%) — 관망·나선 방향 확인", "#64748b")
+        st.markdown(
+            f"<div style='border-left:3px solid {_co};padding:5px 11px;margin:4px 0;"
+            f"background:rgba(255,255,255,0.03);border-radius:0 8px 8px 0'>"
+            f"<span style='font-weight:800;color:#e2e8f0'>{_nm} "
+            f"<span style='color:#64748b;font-size:10px'>{_cd}</span></span> "
+            f"<span style='color:{_co};font-weight:800;font-size:12px'>{_sc}</span> "
+            f"<span style='color:#94a3b8;font-size:11px'>· 나선 {_nq:+.2f}% · NXT {_nchg:+.2f}%</span>"
+            f"<div style='font-size:11px;color:#cbd5e1;margin-top:1px'>{_msg}</div></div>",
+            unsafe_allow_html=True)
+    st.caption("💡 NXT는 시장가 금지 → 지정가 분할주문만. 야간 미거래 종목은 탈출 불가(오버나이트 갭 감수).")
 
 
 def fetch_macro_triggers():
@@ -10400,7 +10492,7 @@ def auto_detect_materials():
     _tally = {}
     for _s in _top:
         _cd = _s.get("code"); _nm = _s.get("name", "")
-        if not _cd:
+        if not _cd or _is_etf_or_special(_cd, _nm):     # [V14.9] ETF/ETN/스팩 제외
             continue
         try:
             _titles = _fetch_news_titles(_cd)
@@ -10871,6 +10963,11 @@ with tab_g:
             render_counter_trend()
         except Exception as _cte:
             st.caption(f"⚠️ 역행주 스캐너 일시 비활성: {type(_cte).__name__}")
+    # [V14.9] NXT 야간 3대 시나리오 — 18~20시 보유종목 자동판정(그 외 시간엔 자동 숨김)
+    try:
+        render_nxt_scenarios()
+    except Exception as _nse:
+        st.caption(f"⚠️ NXT 시나리오 일시 비활성: {type(_nse).__name__}")
     _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
