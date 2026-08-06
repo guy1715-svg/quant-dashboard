@@ -3866,6 +3866,86 @@ def render_turnover_surge():
                "(강한 급증 3배↑+뉴스는 텔레그램 자동 알림)")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V14.4] 역행 강세주 스캐너 — 지수 ↓인데 나 홀로 ↑ + 수급(+). 리스크오프에도 강한 놈만.
+# ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=150, show_spinner=False)
+def scan_counter_trend(idx_chg, top=25, min_out=4.0, min_chg=2.0):
+    """지수 대비 강한 역행 강세주 — 종목등락−지수등락 ≥ min_out%p + 종목 상승 + 수급(+).
+    반환 [{code,name,px,chg,out,frn,org,tags}] 아웃퍼폼순. 예외 안전."""
+    try:
+        _rank = kis_volume_rank(top) or []
+    except Exception:
+        _rank = []
+    _cand = []
+    for _s in _rank:
+        _chg = _s.get("chg", 0.0)
+        if _chg < min_chg:                       # 실제 상승 종목만
+            continue
+        _out = _chg - (idx_chg or 0.0)           # 지수 대비 초과강도(%p)
+        if _out < min_out:
+            continue
+        _cand.append({**_s, "out": round(_out, 1)})
+    _cand.sort(key=lambda x: x["out"], reverse=True)
+    _res = []
+    for _s in _cand[:8]:                          # 상위만 수급·뉴스 확인(API 절약)
+        _frn = _org = 0
+        try:
+            _iv = _dol_investor(_s["code"]) or {}
+            _frn = _to_int(_iv.get("외인")) or 0
+            _org = _to_int(_iv.get("기관")) or 0
+        except Exception:
+            pass
+        if not (_frn > 0 or _org > 0):           # 수급 붙은 것만(데드캣·잡주 거름)
+            continue
+        try:
+            _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
+        except Exception:
+            _s["tags"] = []
+        _res.append({**_s, "frn": _frn, "org": _org})
+    return _res
+
+
+def render_counter_trend():
+    """🔥 역행 강세주 — 지수↓인데 나홀로↑ + 수급. 예외 전파 없음."""
+    try:
+        _rg = detect_intraday_regime()
+        _idx = round(_rg.get("idx_chg") or 0.0, 1)
+    except Exception:
+        _idx = 0.0
+    st.markdown(
+        f"<div style='font-size:14px;font-weight:900;color:#fb7185;margin:2px 0'>"
+        f"🔥 역행 강세주 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+        f"지수 {_idx:+.1f}%인데 나 홀로 강세 + 수급(+) · 리스크오프 예외</span></div>", unsafe_allow_html=True)
+    try:
+        _ct = scan_counter_trend(_idx)
+    except Exception:
+        _ct = []
+    if not _ct:
+        st.caption("현재 수급 붙은 역행 강세주 없음 — 지수 따라 약한 날이거나 강한 역행주 미형성.")
+        return
+    for _s in _ct[:6]:
+        _chg = _s.get("chg", 0.0)
+        _lead = ("🟢 외인·기관" if (_s["frn"] > 0 and _s["org"] > 0)
+                 else "🔵 외인" if _s["frn"] > 0 else "🟣 기관")
+        _tags = " ".join(
+            f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
+            for _t in (_s.get("tags") or [])) or "<span style='color:#64748b;font-size:10px'>뉴스 확인</span>"
+        _rc1, _rc2 = st.columns([7, 1], vertical_alignment="center")
+        _rc1.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 4px'>"
+            f"<span style='font-weight:800;color:#e2e8f0;white-space:nowrap'>{_s.get('name','')} "
+            f"<span style='color:#64748b;font-size:10px'>{_s.get('code','')}</span></span>"
+            f"<span style='white-space:nowrap;color:#cbd5e1;font-size:12px'>"
+            f"<b style='color:#22c55e'>+{_chg:.1f}%</b> · 지수대비 <b style='color:#fb7185'>+{_s['out']:.1f}%p</b> · {_lead}</span>"
+            f"<span style='flex:1;text-align:right'>{_tags}</span></div>", unsafe_allow_html=True)
+        if _rc2.button("🔍", key=f"_ct_send_{_s.get('code')}", help="종목 분석기로 보내기"):
+            st.session_state["_pending_analyzer_code"] = _s.get("code")
+            st.toast(f"🔍 {_s.get('name','')} → 종목 분석기 탭에서 확인")
+    st.caption("⚠️ 역행주는 리스크오프에 난이도 최상·저승률 — 소액·−2% 타이트손절·빠른익절(+2~3%). "
+               "지수 더 빠지면 같이 팔릴 수 있음. 반드시 분석기로 재검증.")
+
+
 def fetch_macro_triggers():
     """매크로 3대 트리거 원천 데이터 — NQ선물(08:00 KST 기준 대비)·SOX+반도체 빅테크·WTI.
     yfinance 순수 페치(session_state 미접근). 실패는 항목별 격리."""
@@ -10686,12 +10766,33 @@ with tab_g:
                         st.session_state[_sgk] = True
     except Exception:
         pass
+    # [V14.4] 역행 강세주 텔레그램 푸시 — 지수대비 +5%p↑ & 외인·기관 양매수 강한 놈만(당일1회/종목)
+    try:
+        _ct_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+        _idx_ct = round((detect_intraday_regime() or {}).get("idx_chg") or 0.0, 1)
+        for _ct in (scan_counter_trend(_idx_ct) or []):
+            if _ct.get("out", 0) >= 5.0 and _ct.get("frn", 0) > 0 and _ct.get("org", 0) > 0:
+                _ctk = f"_ct_tg_{_ct_today}_{_ct.get('code')}"
+                if not st.session_state.get(_ctk):
+                    if send_telegram(f"🔥 역행 강세주 — {_ct.get('name','')} +{_ct.get('chg',0):.1f}% "
+                                     f"(지수대비 +{_ct.get('out',0):.1f}%p) · 외인·기관 양매수\n"
+                                     f"사유: {' / '.join(_ct.get('tags') or []) or '뉴스 확인'}\n"
+                                     f"⚠️ 리스크오프 역행 — 소액·−2% 타이트손절. 분석기 재검증 필수."):
+                        st.session_state[_ctk] = True
+    except Exception:
+        pass
     # [V14.0] 거래대금 급증 포착 — 뉴스보다 먼저 자금 쏠림 감지(접이식)
     with st.expander("🚨 거래대금 급증 포착 (뉴스보다 먼저 선점)", expanded=False):
         try:
             render_turnover_surge()
         except Exception as _tse:
             st.caption(f"⚠️ 급증 포착 일시 비활성: {type(_tse).__name__}")
+    # [V14.4] 역행 강세주 (지수↓ 나홀로↑ + 수급) — 리스크오프에도 강한 놈 발굴(접이식)
+    with st.expander("🔥 역행 강세주 (지수↓인데 나 홀로↑ + 수급)", expanded=False):
+        try:
+            render_counter_trend()
+        except Exception as _cte:
+            st.caption(f"⚠️ 역행주 스캐너 일시 비활성: {type(_cte).__name__}")
     _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
