@@ -5360,9 +5360,9 @@ def _pick_history_write(rows):
         pass
 
 
-def log_dolpanty_pick(code, name, score, px, regime="", signal="dolpanty"):
+def log_dolpanty_pick(code, name, score, px, regime="", signal="dolpanty", nq=None):
     """확정 픽을 당일 1회 기록(날짜락 — flip-flop 방지). 이미 오늘 기록 있으면 무시.
-    [V13.5] regime(진입시점 레짐)·signal(신호유형) 태그 추가 → 자가적응 피드백 데이터."""
+    [V13.5/V14.8] regime·signal·nq(진입시점 나선%) 태그 → 자가적응 피드백 데이터."""
     if not code or not score:
         return
     _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
@@ -5372,6 +5372,7 @@ def log_dolpanty_pick(code, name, score, px, regime="", signal="dolpanty"):
     _rows.append({"date": _today, "code": str(code), "name": name or "",
                   "score": round(float(score), 1), "px": int(px or 0),
                   "regime": regime or "", "signal": signal,
+                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                   "open_next": None, "gap": None})
     _pick_history_write(_rows)
 
@@ -5444,9 +5445,12 @@ def render_pick_performance():
     with st.expander("🗒️ 최근 픽 기록 (최신 20)", expanded=False):
         try:
             import pandas as _pd
-            _tb = _pd.DataFrame(list(reversed(_done))[:20])[
-                ["date", "name", "score", "px", "open_next", "gap"]]
-            _tb.columns = ["날짜", "종목", "점수", "기록가", "익일시가", "갭%"]
+            _df20 = _pd.DataFrame(list(reversed(_done))[:20])
+            for _c in ("regime", "nq"):
+                if _c not in _df20.columns:
+                    _df20[_c] = None
+            _tb = _df20[["date", "name", "score", "regime", "nq", "px", "open_next", "gap"]]
+            _tb.columns = ["날짜", "종목", "점수", "레짐", "나선%", "기록가", "익일시가", "갭%"]
             st.dataframe(_tb, use_container_width=True, hide_index=True)
         except Exception:
             pass
@@ -5603,7 +5607,8 @@ def render_dolpanty_pick():
         try:
             log_dolpanty_pick(_pick["code"], _pick["name"],
                               _pick.get("score_adj", _pick["score"]), _px,
-                              regime=_regime.get("regime", ""), signal="dolpanty")
+                              regime=_regime.get("regime", ""), signal="dolpanty",
+                              nq=_regime.get("nq"))
         except Exception:
             pass
     _tags = []
@@ -5679,6 +5684,14 @@ def render_dolpanty_pick():
                 pass
     if not _gate:
         st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
+    # [V14.8] NXT 야간 전술 경고 — 시장가 금지·미거래 갭리스크(오버나이트 헷지 전제 시 필독)
+    st.markdown(
+        "<div style='border:1.5px solid #f97316;border-radius:8px;padding:7px 11px;margin-top:6px;"
+        "background:rgba(249,115,22,0.10);font-size:11px;color:#fdba74;line-height:1.5'>"
+        "⚠️ <b>NXT 야간(18~20시) 전술 주의</b><br>"
+        "① 이 종목이 <b>NXT 야간거래 대상인지 먼저 확인</b> — 미거래면 밤에 못 팔아 <b>오버나이트 갭 리스크</b>(주성엔지니어링·HPSP 등 일부 미거래)<br>"
+        "② NXT 세션은 <b>시장가 금지 → 지정가 분할주문만</b> (슬리피지 출혈 방지)</div>",
+        unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
