@@ -1292,35 +1292,79 @@ def check_nq_cross(now_kst, state, token_tg, chat_id):
     return nq
 
 
+NQ_SUPPORT_MIN = 15   # 저점 근처에서 신저가 없이 이 분(分)만큼 버티면 '지지(하락 멈춤)' 예고
+
+
 def check_nq_rebound(now_kst, state, token_tg, chat_id):
-    """[V14.5] 나스닥선물 저점 대비 반등(음수권 반등) 알림 — 반도체 대장주 매수타이밍.
-    당일 저점 추적 → 저점 -0.5%↓ 빠진 뒤 +0.4%p 회복 시 1회 알림(새 저점 시 재무장). 08:00~20:00만."""
+    """[V14.5/V14.7] 나스닥선물 2단계 — ①지지(하락 멈춤) 예고 → ②반등 확정. 반도체 선행지표.
+    저점 -0.5%↓ 빠진 뒤: 15분+ 신저가 없으면 🟡지지 예고, +0.4%p 회복하면 🔔반등 확정. 08:00~20:00만."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((8 * 60) <= m <= (20 * 60)):
         return None
     nq = _pct("NQ=F")
     if nq is None:
         return None
+    now_ts = int(now_kst.timestamp())
     today = now_kst.strftime("%Y%m%d")
     r = state.get("nq_reb") or {}
     if r.get("day") != today:
-        r = {"day": today, "low": nq, "alerted": False}
-    if nq < r.get("low", nq):
-        r["low"] = nq; r["alerted"] = False          # 새 저점 → 반등 알림 재무장
+        r = {"day": today, "low": nq, "low_ts": now_ts, "alerted": False, "support": False}
+    if nq < r.get("low", nq):                        # 새 저점 → 지지·반등 둘 다 재무장
+        r["low"] = nq; r["low_ts"] = now_ts; r["alerted"] = False; r["support"] = False
     low = r.get("low", nq); reb = nq - low
-    if low <= -0.5 and reb >= 0.4 and not r.get("alerted"):
-        try:
-            wti = _wti_pct()
-        except Exception:
-            wti = None
-        wti_txt = f" · WTI {wti:+.2f}%" if isinstance(wti, (int, float)) else ""
+    try:
+        wti = _wti_pct()
+    except Exception:
+        wti = None
+    wti_txt = f" · WTI {wti:+.2f}%" if isinstance(wti, (int, float)) else ""
+    # ① 지지(하락 멈춤) 예고 — 저점 -0.5%↓ + 신저가 15분+ 없음 + 아직 반등확정 전(예고일 뿐, 매수 아님)
+    if (low <= -0.5 and not r.get("support") and not r.get("alerted")
+            and reb < 0.4 and (now_ts - r.get("low_ts", now_ts)) >= NQ_SUPPORT_MIN * 60):
         send_telegram(token_tg, chat_id,
-                      f"{SIG_WATCH}\n🔔 나스닥선물 반등 — 저점 {low:+.2f}% → 현재 {nq:+.2f}% (+{reb:.2f}%p)\n"
-                      f"반도체 대장주(삼성전자·SK하이닉스) 반등 주목{wti_txt}\n"
-                      f"{now_kst.strftime('%m/%d %H:%M')} KST · 나선 따라 반도체 반등 초입 가능 — 수급 확인 후 대응")
+                      f"{SIG_WATCH}\n🟡 나스닥선물 하락 멈춤(지지) — 저점 {low:+.2f}% 근처 {NQ_SUPPORT_MIN}분+ 버팀{wti_txt}\n"
+                      f"반도체 대장주 반등 '준비' 단계 (아직 매수 아님 — 반등 확정 대기)\n"
+                      f"{now_kst.strftime('%m/%d %H:%M')} KST")
+        r["support"] = True
+    # ② 반등 확정 — 저점 대비 +0.4%p 회복
+    if low <= -0.5 and reb >= 0.4 and not r.get("alerted"):
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🔔 나스닥선물 반등 확정 — 저점 {low:+.2f}% → 현재 {nq:+.2f}% (+{reb:.2f}%p){wti_txt}\n"
+                      f"반도체 대장주(삼성전자·SK하이닉스) 반등 초입 주목\n"
+                      f"{now_kst.strftime('%m/%d %H:%M')} KST · 나선 따라 반도체 반등 가능 — 수급 확인 후 대응")
         r["alerted"] = True
     state["nq_reb"] = r
     return nq
+
+
+def check_index_rebound(now_kst, state, token_tg, chat_id):
+    """[V14.6] 지수(코스피/코스닥) 오후 저점 대비 반등 알림 — 종가베팅 타이밍.
+    오후 12:00~15:20 집중. 지수 -0.7%↓ 빠진 뒤 +0.3%p 회복 시 1회 알림(새 저점 시 재무장)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((12 * 60) <= m <= (15 * 60 + 20)):     # 오후(점심 후~종가전)만
+        return None
+    kp = _pct("^KS11"); kq = _pct("^KQ11")
+    vals = [x for x in (kp, kq) if x is not None]
+    if not vals:
+        return None
+    idx = sum(vals) / len(vals)
+    today = now_kst.strftime("%Y%m%d")
+    r = state.get("idx_reb") or {}
+    if r.get("day") != today:
+        r = {"day": today, "low": idx, "alerted": False}
+    if idx < r.get("low", idx):
+        r["low"] = idx; r["alerted"] = False       # 새 저점 → 재무장
+    low = r.get("low", idx); reb = idx - low
+    if low <= -0.7 and reb >= 0.3 and not r.get("alerted"):
+        kp_txt = f"코스피 {kp:+.2f}%" if kp is not None else ""
+        kq_txt = f"코스닥 {kq:+.2f}%" if kq is not None else ""
+        _both = " · ".join(x for x in (kp_txt, kq_txt) if x)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🔔 지수 오후 반등 — 저점 {low:+.2f}% → 현재 {idx:+.2f}% (+{reb:.2f}%p)\n"
+                      f"{_both}\n오후 저점 반등 = 종가베팅 타이밍 주목 · 수급(외인·기관)·종목 확인 후 대응\n"
+                      f"{now_kst.strftime('%m/%d %H:%M')} KST")
+        r["alerted"] = True
+    state["idx_reb"] = r
+    return idx
 
 
 # [V13.7] 야간 미장 흐름 알림 — 20:00~익일 08:00(미국장 22:30~05:00 KST 커버).
@@ -1600,6 +1644,11 @@ def main():
                 check_nq_rebound(now, st, token_tg, chat_id)
             except Exception as _nqre:
                 print("나스닥 반등 오류:", _nqre)
+            # [V14.6] 지수(코스피/코스닥) 오후 저점 대비 반등 — 종가베팅 타이밍
+            try:
+                check_index_rebound(now, st, token_tg, chat_id)
+            except Exception as _ixre:
+                print("지수 반등 오류:", _ixre)
             # 🌙 야간 미장 흐름 알림(20:00~08:00) — SOX ±2% 강/약 이벤트(방향별 120분 쿨다운)
             try:
                 check_us_overnight(now, st, token_tg, chat_id)
