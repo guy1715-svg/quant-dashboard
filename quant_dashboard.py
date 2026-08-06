@@ -3974,16 +3974,55 @@ def render_counter_trend():
 # [V14.9] NXT 야간(18~20시) 3대 시나리오 — 보유종목 NXT시세 × 나선 교차판정.
 #   A(나선🟢·NXT↑)=홀딩 / B(나선🔴·NXT↑)=설거지 매도 / C(나선🔴·NXT↓)=지옥문 칼손절.
 # ═══════════════════════════════════════════════════════════════════
+def render_overnight_hold_check():
+    """[V15.0] 15:00~15:30 종가베팅 오버나이트 홀딩 판단 — 나선 방향으로 '밤새 들고갈까' 판정.
+    이 시간엔 야간 시세가 없어 나선(익일 갭 결정)으로 판단. 예외 전파 없음."""
+    st.markdown(
+        "<div style='font-size:14px;font-weight:900;color:#a78bfa;margin:2px 0'>"
+        "🌙 종배 오버나이트 판단 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+        "15:00~15:30 · '밤새 들고 갈까?' 나선 기반</span></div>", unsafe_allow_html=True)
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        _nq = None
+    if _nq is None:
+        st.caption("⏳ 나선(나스닥선물) 데이터 동기화 대기 중"); return
+    # 나선 저점 반등/지지 상태(참고)
+    _reb_txt = ""
+    try:
+        _nr = check_nq_rebound()
+        if _nr and _nr.get("rebound", 0) >= 0.3 and _nr.get("low", 0) <= -0.5:
+            _reb_txt = f" · 저점 {_nr['low']:+.2f}%→반등 중(+{_nr['rebound']:.2f}%p)"
+    except Exception:
+        pass
+    if _nq >= 0.2:
+        _sc, _msg, _co = ("🟢 홀딩 우호", "나선 양호(+) — 익일 갭업 기대. 종배 홀딩·오버나이트 우호", "#22c55e")
+    elif _nq <= -0.3:
+        _sc, _msg, _co = ("🔴 홀딩 위험", "나선 약세(−) — 익일 갭다운 위험. 오버나이트 신중·비중축소 or 당일청산 고려", "#ef4444")
+    else:
+        _sc, _msg, _co = ("🟡 중립", "나선 애매 — 종목 수급·종가 강도로 판단, 소액·타이트", "#eab308")
+    st.markdown(
+        f"<div style='border:2px solid {_co};border-radius:10px;padding:9px 13px;margin:4px 0;"
+        f"background:rgba(255,255,255,0.03)'>"
+        f"<span style='font-size:15px;font-weight:900;color:{_co}'>{_sc}</span> "
+        f"<span style='color:#94a3b8;font-size:12px'>나선 {_nq:+.2f}%{_reb_txt}</span>"
+        f"<div style='font-size:12px;color:#cbd5e1;margin-top:2px'>{_msg}</div></div>", unsafe_allow_html=True)
+    st.caption("💡 종배 = 익일 갭 노림 → 밤새 나선(미국선물)이 방향 결정. 나선 🔴면 갭다운 위험이라 홀딩 신중.")
+
+
 def render_nxt_scenarios():
-    """NXT 야간 보유종목 3대 시나리오 자동판정 + C단계 텔레그램. 18~20시만. 예외 전파 없음."""
+    """15:00~15:30 오버나이트 판단 + NXT 야간(18~20시) 3대 시나리오. 예외 전파 없음."""
     _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
     _m = _now.hour * 60 + _now.minute
-    if not ((18 * 60) <= _m <= (20 * 60)):
-        return                                   # NXT 야간 세션만 활성
+    if (15 * 60) <= _m < (15 * 60 + 30):         # 종배 확정창 — 오버나이트 홀딩 판단(야간 시세 전)
+        render_overnight_hold_check()
+        return
+    if not ((15 * 60 + 30) <= _m <= (20 * 60)):  # NXT 애프터마켓 15:30~20:00 연속 감시
+        return
     st.markdown(
         "<div style='font-size:14px;font-weight:900;color:#a78bfa;margin:2px 0'>"
         "🌙 NXT 야간 시나리오 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
-        "보유종목 NXT시세 × 나선 교차판정 · 18~20시</span></div>", unsafe_allow_html=True)
+        "보유종목 NXT시세 × 나선 교차판정 · 15:30~20:00 연속</span></div>", unsafe_allow_html=True)
     try:
         _bal = kis_get_balance(silent=True)
         _holds = (_bal or {}).get("holdings", []) if isinstance(_bal, dict) else []
