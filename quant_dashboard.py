@@ -4018,6 +4018,55 @@ _MACRO_SOX_CRASH = -5.0   # 반도체 폭락 → 🔴 리스크오프(신규매�
 _MACRO_SOX_WARN  = -3.0   # 반도체 조정 → 🟠 경고(한도 50% HALF_CAPS)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V14.5] 나스닥선물 반등(턴어라운드) 감지 — 하락하다 저점 대비 반등 → 반도체 대장주 매수 타이밍.
+#   기존 check_nq_cross(0선 돌파)만 있고, '음수권 저점 반등'은 없어서 신설. 유가(WTI) 맥락 첨부.
+# ═══════════════════════════════════════════════════════════════════
+_NQ_TRACK_PATH   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nq_track.json")
+_NQ_FALL_MIN     = -0.5   # 저점이 이보다 낮게 빠졌을 때만(의미있는 하락 후 반등)
+_NQ_REBOUND_THR  = 0.4    # 저점 대비 +0.4%p 회복 시 '반등' 판정
+
+
+def check_nq_rebound():
+    """나스닥선물 저점 대비 반등 감지 → 반도체 대장주 반등 타이밍. (dict or None). 텔레그램 1회(당일)."""
+    try:
+        _md = fetch_macro_triggers()
+        _nq = _md.get("nq_pct"); _wti = _md.get("wti_pct")
+        _semi = _md.get("semi") or {}
+    except Exception:
+        return None
+    if _nq is None:
+        return None
+    _sox = (sum(_semi.values()) / len(_semi)) if _semi else None
+    _now = datetime.utcnow() + timedelta(hours=9)
+    _today = _now.strftime("%Y-%m-%d")
+    _d = _json_read_dict(_NQ_TRACK_PATH)
+    if _d.get("date") != _today:
+        _d = {"date": _today, "low": _nq, "alerted": False}
+    if _nq < _d.get("low", _nq):              # 새 저점 → 반등 알림 재무장
+        _d["low"] = _nq; _d["alerted"] = False
+    _low = _d.get("low", _nq)
+    _rebound = _nq - _low
+    _msg = None
+    if _low <= _NQ_FALL_MIN and _rebound >= _NQ_REBOUND_THR and not _d.get("alerted"):
+        _wti_txt = f" · WTI {_wti:+.2f}%" if isinstance(_wti, (int, float)) else ""
+        _sox_txt = f" · SOX {_sox:+.2f}%" if isinstance(_sox, (int, float)) else ""
+        _msg = (f"저점 {_low:+.2f}% → 현재 {_nq:+.2f}% (+{_rebound:.2f}%p 반등)")
+        try:
+            send_telegram(f"🔔 나스닥선물 반등 — {_msg}\n"
+                          f"반도체 대장주(삼성전자·SK하이닉스) 반등 주목{_sox_txt}{_wti_txt}\n"
+                          f"※나선 따라 반도체 반등 초입 가능 — 분석기·수급 확인 후 대응")
+        except Exception:
+            pass
+        _d["alerted"] = True
+    if _msg:
+        _json_write_dict(_NQ_TRACK_PATH, _d)
+    elif _d.get("low") == _nq or _rebound < _NQ_REBOUND_THR:
+        _json_write_dict(_NQ_TRACK_PATH, _d)      # 저점 갱신분 저장
+    return {"nq": _nq, "low": _low, "rebound": round(_rebound, 2),
+            "wti": _wti, "sox": _sox, "alerted_msg": _msg}
+
+
 def _macro_verdict(d):
     """3대 트리거 종합 판정 → (verdict_text, color, block_bool, half_bool).
     K-국장은 반도체 시총 비중이 커 SOX 급락에 종속 동조 → SOX 방어막 편입.
@@ -10750,6 +10799,27 @@ with tab_g:
     # [V13.5] 장중 레짐 배너 — 오늘 장 성격(추세/박스/하락)에 맞춘 매매 지침 최상단
     try:
         render_regime_banner()
+    except Exception:
+        pass
+    # [V14.5] 나스닥선물 상태 + 저점 대비 반등 감지(반도체 대장주 동조) + 텔레그램
+    try:
+        _nqr = check_nq_rebound()
+        if _nqr and _nqr.get("nq") is not None:
+            _nqc = "#ef4444" if _nqr["nq"] < 0 else "#22c55e"
+            _reb = (f" · 저점 {_nqr['low']:+.2f}% → 반등 <b style='color:#22c55e'>+{_nqr['rebound']:.2f}%p</b>"
+                    if _nqr.get("rebound", 0) > 0.1 else "")
+            _wtis = f" · WTI {_nqr['wti']:+.2f}%" if isinstance(_nqr.get("wti"), (int, float)) else ""
+            _soxs = f" · SOX {_nqr['sox']:+.2f}%" if isinstance(_nqr.get("sox"), (int, float)) else ""
+            st.markdown(
+                f"<div style='font-size:11.5px;color:#94a3b8;margin:2px 0 6px'>🛰️ 나스닥선물 "
+                f"<b style='color:{_nqc}'>{_nqr['nq']:+.2f}%</b>{_reb}{_soxs}{_wtis} "
+                f"<span style='color:#64748b'>— 반도체 대장주 동조 지표</span></div>", unsafe_allow_html=True)
+            if _nqr.get("alerted_msg"):
+                st.markdown(
+                    f"<div style='border:1.5px solid #22c55e;border-radius:8px;padding:6px 11px;margin:2px 0 6px;"
+                    f"background:rgba(34,197,94,0.12);font-size:12px;font-weight:800;color:#86efac'>"
+                    f"🔔 나스닥선물 반등! {_nqr['alerted_msg']} — 반도체 대장주(삼성전자·SK하이닉스) 반등 초입 주목</div>",
+                    unsafe_allow_html=True)
     except Exception:
         pass
     # [V14.1] 강한 급증(3배↑+뉴스) 텔레그램 자동 푸시 — 대시보드 열려있을 때(당일 1회/종목)
