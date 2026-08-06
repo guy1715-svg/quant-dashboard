@@ -4052,12 +4052,7 @@ def check_nq_rebound():
         _wti_txt = f" · WTI {_wti:+.2f}%" if isinstance(_wti, (int, float)) else ""
         _sox_txt = f" · SOX {_sox:+.2f}%" if isinstance(_sox, (int, float)) else ""
         _msg = (f"저점 {_low:+.2f}% → 현재 {_nq:+.2f}% (+{_rebound:.2f}%p 반등)")
-        try:
-            send_telegram(f"🔔 나스닥선물 반등 — {_msg}\n"
-                          f"반도체 대장주(삼성전자·SK하이닉스) 반등 주목{_sox_txt}{_wti_txt}\n"
-                          f"※나선 따라 반도체 반등 초입 가능 — 분석기·수급 확인 후 대응")
-        except Exception:
-            pass
+        # [V14.5] 텔레그램은 watcher(백그라운드)가 담당 → 대시보드는 화면 배너만(중복방지)
         _d["alerted"] = True
     if _msg:
         _json_write_dict(_NQ_TRACK_PATH, _d)

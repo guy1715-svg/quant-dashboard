@@ -1292,6 +1292,37 @@ def check_nq_cross(now_kst, state, token_tg, chat_id):
     return nq
 
 
+def check_nq_rebound(now_kst, state, token_tg, chat_id):
+    """[V14.5] 나스닥선물 저점 대비 반등(음수권 반등) 알림 — 반도체 대장주 매수타이밍.
+    당일 저점 추적 → 저점 -0.5%↓ 빠진 뒤 +0.4%p 회복 시 1회 알림(새 저점 시 재무장). 08:00~20:00만."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((8 * 60) <= m <= (20 * 60)):
+        return None
+    nq = _pct("NQ=F")
+    if nq is None:
+        return None
+    today = now_kst.strftime("%Y%m%d")
+    r = state.get("nq_reb") or {}
+    if r.get("day") != today:
+        r = {"day": today, "low": nq, "alerted": False}
+    if nq < r.get("low", nq):
+        r["low"] = nq; r["alerted"] = False          # 새 저점 → 반등 알림 재무장
+    low = r.get("low", nq); reb = nq - low
+    if low <= -0.5 and reb >= 0.4 and not r.get("alerted"):
+        try:
+            wti = _wti_pct()
+        except Exception:
+            wti = None
+        wti_txt = f" · WTI {wti:+.2f}%" if isinstance(wti, (int, float)) else ""
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🔔 나스닥선물 반등 — 저점 {low:+.2f}% → 현재 {nq:+.2f}% (+{reb:.2f}%p)\n"
+                      f"반도체 대장주(삼성전자·SK하이닉스) 반등 주목{wti_txt}\n"
+                      f"{now_kst.strftime('%m/%d %H:%M')} KST · 나선 따라 반도체 반등 초입 가능 — 수급 확인 후 대응")
+        r["alerted"] = True
+    state["nq_reb"] = r
+    return nq
+
+
 # [V13.7] 야간 미장 흐름 알림 — 20:00~익일 08:00(미국장 22:30~05:00 KST 커버).
 US_OVN_SOX_THR = 2.0   # SOX ±2% 돌파 시 야간 알림(내일 아침 반도체 갭 힌트)
 
@@ -1510,7 +1541,7 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--interval", type=int, default=300, help="체크 주기(초), 기본 300=5분")
+    ap.add_argument("--interval", type=int, default=180, help="체크 주기(초), 기본 180=3분")
     ap.add_argument("--notify-worse", action="store_true", help="[구] 악화 알림 플래그(이제 기본 ON)")
     ap.add_argument("--no-worse", action="store_true", help="매크로 악화 알림 끄기(개선만)")
     args = ap.parse_args()
@@ -1564,6 +1595,11 @@ def main():
                 check_nq_cross(now, st, token_tg, chat_id)
             except Exception as _nqe:
                 print("나스닥 크로스 오류:", _nqe)
+            # [V14.5] 나스닥선물 저점 대비 반등(음수권 반등) — 반도체 대장주 매수타이밍
+            try:
+                check_nq_rebound(now, st, token_tg, chat_id)
+            except Exception as _nqre:
+                print("나스닥 반등 오류:", _nqre)
             # 🌙 야간 미장 흐름 알림(20:00~08:00) — SOX ±2% 강/약 이벤트(방향별 120분 쿨다운)
             try:
                 check_us_overnight(now, st, token_tg, chat_id)
