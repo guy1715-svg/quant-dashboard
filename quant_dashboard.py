@@ -5263,10 +5263,14 @@ def score_7gates(code, rec, now_kst=None):
         _sd, _kp, _kq = True, None, None
     _gates.append(("지수 안전도", (not _sd),
                    (f"코스피 {_kp:+.1f}%·코스닥 {_kq:+.1f}%" if isinstance(_kp, (int, float)) else "지수 결측")))
-    # 2) 20MA 이격 <7%(과열 아님)
+    # 2) 20MA 이격 — 20MA 근처~위(눌림) & 과열 아님. 즉 -2%~+7%만 통과.
+    #    [V15.4] 하락추세(20MA 한참 아래, 예:-15%)도 통과시키던 버그 수정 → 떨어지는 칼날에 STRIKE 방지.
     _disp = ((_px / _ma20 - 1) * 100) if _ma20 else None
-    _gates.append(("20MA 이격", (_disp is not None and _disp < 7.0),
-                   (f"{_disp:+.1f}%" if _disp is not None else "MA 결측")))
+    _disp_ok = (_disp is not None and -2.0 <= _disp < 7.0)
+    _disp_tag = (f"{_disp:+.1f}%" if _disp is not None else "MA 결측")
+    if _disp is not None and _disp < -2.0:
+        _disp_tag += "(20MA 이탈·하락추세)"
+    _gates.append(("20MA 이격", _disp_ok, _disp_tag))
     # 3) 거래대금 하드컷(시가총액 기준 — 시총 1조↑ 300억 / 미만 400억)
     _need, _capL = _turnover_hardcut_need(rec)
     _gates.append(("거래대금", (_turn >= _need), f"{_turn/1e8:,.0f}억 / {_need/1e8:,.0f}억"))
