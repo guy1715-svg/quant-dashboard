@@ -949,6 +949,28 @@ def kis_program_trade_by_time(ticker):
         return None
 
 
+def kis_get_orderbook(ticker):
+    """[V15.7] KIS 호가 총잔량 조회 → (총매도잔량, 총매수잔량). 실패 시 None.
+    단타 규칙: 매도잔량 > 매수잔량 1.5~2배 = 상승 확률↑(세력 매집 명분)."""
+    try:
+        _tok = kis_get_token()
+        if not _tok:
+            return None
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            headers={"authorization": f"Bearer {_tok}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "FHKST01010200"},
+            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}, timeout=5)
+        _o = _res.json().get("output1", {}) or {}
+        _ask = _to_int(_o.get("total_askp_rsqn"))
+        _bid = _to_int(_o.get("total_bidp_rsqn"))
+        if _ask and _bid:
+            return (_ask, _bid)
+    except Exception:
+        pass
+    return None
+
+
 def kis_get_investor(ticker):
     """외인/기관 순매수 조회(일별 FHKST01010900 — 장중엔 전일치)"""
     try:
@@ -10999,6 +11021,70 @@ def render_dante_card(code):
                "종배(Track A)와 다른 게임 — 인내심 필요.")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V15.7] 단타 진입 체크리스트 — "지금 자리가 추격인가 눌림인가" 판정(주식단테 노하우).
+#   추격 진입→휩쏘 손절(사용자 실측 손실) 방지용 규율 도구. 신호 생성 아님.
+# ═══════════════════════════════════════════════════════════════════
+def render_daytrade_check(code, rec):
+    """🎯 단타 진입 체크 — 추격/공간/추세/눌림/호가 5항목 판정. 예외 전파 없음."""
+    st.markdown("##### 🎯 단타 진입 체크 (사기 전 — 추격 vs 눌림)")
+    _px = rec.get("현재가") or 0
+    _open = rec.get("시가") or 0
+    _res = _ma5 = _kijun = 0
+    try:
+        _df = fetch_ohlcv(code, 60); _c = _df["종가"]
+        _ma5 = float(_c.rolling(5).mean().iloc[-1])
+        _res = float(_df["고가"].rolling(20).max().iloc[-1])
+        _kijun = (float(_df["고가"].rolling(26).max().iloc[-1])
+                  + float(_df["저가"].rolling(26).min().iloc[-1])) / 2.0
+    except Exception:
+        pass
+    _gap = ((_px / _open - 1) * 100) if _open else 0.0
+    _checks = []
+    _chase = _gap >= 3.0
+    _checks.append(("추격 아님(시가 대비)", (not _chase),
+                    f"시가대비 {_gap:+.1f}%" + (" — 추격!" if _chase else "")))
+    _room = ((_res - _px) / _px * 100) if (_res and _px) else 0.0
+    _rr_ok = (_res <= _px) or (_room >= 5.0)
+    _checks.append(("먹을 공간(저항까지 5%↑)", _rr_ok,
+                    ("신고가(공간 열림)" if _res <= _px else f"저항까지 {_room:.1f}%")))
+    _trend = bool(_kijun and _ma5 and _px > _kijun and _px >= _ma5)
+    _checks.append(("추세(일목기준선+5일선 위)", _trend, "위 안착" if _trend else "이탈/약세"))
+    _pull = (-3.5 <= _gap <= 0.5)
+    _checks.append(("눌림 타점(시가 −3%~0)", _pull,
+                    ("눌림존 ✔" if _pull else "추격존(시가 위)" if _gap > 0.5 else "낙폭과대")))
+    _ob = None
+    try:
+        _ob = kis_get_orderbook(code)
+    except Exception:
+        pass
+    if _ob:
+        _ratio = (_ob[0] / _ob[1]) if _ob[1] else 0
+        _checks.append(("호가 매도>매수(1.5배↑ 유리)", (_ratio >= 1.3), f"매도/매수 {_ratio:.1f}배"))
+    else:
+        _checks.append(("호가 매도>매수", False, "호가 조회 실패/장외"))
+    _n = sum(1 for _, _ok, _ in _checks if _ok)
+    _rows = "".join(
+        f"<div style='display:flex;gap:8px;padding:2px 0;font-size:12px'>"
+        f"<span>{'🟢' if _ok else '🔴'}</span>"
+        f"<span style='width:190px;color:#cbd5e1'>{_nm}</span>"
+        f"<span style='color:#94a3b8'>{_dt}</span></div>"
+        for _nm, _ok, _dt in _checks)
+    if _chase or not _rr_ok:
+        _v, _vc = "🔴 추격/공간부족 — 지금 사지마, 눌림 대기", "#ef4444"
+    elif _pull and _trend and _n >= 4:
+        _v, _vc = "🟢 눌림 진입존 — 검토(기준봉 시가 손절)", "#22c55e"
+    else:
+        _v, _vc = "🟡 애매 — 눌림·호가 확인 후 소액", "#eab308"
+    st.markdown(
+        f"<div style='border:1.5px solid {_vc};border-radius:12px;padding:10px 14px;margin:4px 0;"
+        f"background:linear-gradient(180deg,#0f172a,#111c33)'>{_rows}"
+        f"<div style='margin-top:6px;padding-top:5px;border-top:1px solid #1e293b;"
+        f"font-weight:900;color:{_vc}'>{_v} ({_n}/5)</div></div>", unsafe_allow_html=True)
+    st.caption("💡 단타 원칙(주식단테): 추격 금지 · 시가 −2~3% 눌림(음봉) 매수 → 양봉 매도 · "
+               "기준봉(장대양봉) 시가 이탈 시 손절 · 흐름 깨지면(연속 음봉·기준선 하회) 즉시 손절.")
+
+
 def render_program_vap(code, cur_px=0):
     """[V15.2] 프로그램 수급·평단 판독 — KIS 시간대별 자동조회 시도, 실패 시 엑셀값 수동입력.
     핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음."""
@@ -11177,6 +11263,12 @@ def render_stock_analyzer():
             render_7gate_scorecard(_code, _rec)
         except Exception:
             pass
+    # [V15.7] 단타 진입 체크 — 사기 전 추격/눌림 판정(휩쏘 손절 방지)
+    with st.expander("🎯 단타 진입 체크 (사기 전 — 추격 vs 눌림)", expanded=False):
+        try:
+            render_daytrade_check(_code, _rec)
+        except Exception as _dtce:
+            st.caption(f"⚠️ 단타 진입 체크 일시 비활성: {type(_dtce).__name__}")
     # [V15.2] 프로그램 수급·평단 판독(장막판 유입) — 자동조회 or 엑셀값 수동입력
     with st.expander("💹 프로그램 수급·평단 (장막판 유입 판독)", expanded=False):
         try:
