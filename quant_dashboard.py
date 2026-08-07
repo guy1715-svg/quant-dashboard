@@ -916,6 +916,39 @@ def kis_get_investor_intraday(ticker):
     return None
 
 
+def kis_program_trade_by_time(ticker):
+    """[V15.2] 종목별 프로그램매매 시간대별 추이(당일) 자동 조회 시도. 미지원/실패 시 None.
+    반환 [{'time','qty'(순매수수량),'amt'(순매수대금·원)}] 또는 None. (여러 필드명 방어적 파싱)"""
+    try:
+        _token = kis_get_token()
+        if not _token:
+            return None
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/comp-program-trade-today",
+            headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "FHPPG04650101"},
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}, timeout=6)
+        _j = _res.json()
+        _out = _j.get("output") or _j.get("output1") or _j.get("output2") or []
+        if not isinstance(_out, list) or not _out:
+            return None
+        _rows = []
+        for _r in _out:
+            if not isinstance(_r, dict):
+                continue
+            _time = (_r.get("stck_cntg_hour") or _r.get("bsop_hour") or _r.get("stck_bsop_hour")
+                     or _r.get("hour") or "")
+            _qty = _to_int(_r.get("whol_ntby_qty") or _r.get("prgm_ntby_qty")
+                           or _r.get("ntby_qty") or _r.get("whol_smtm_ntby_qty"))
+            _amt = _to_int(_r.get("whol_ntby_tr_pbmn") or _r.get("prgm_ntby_tr_pbmn")
+                           or _r.get("ntby_tr_pbmn") or _r.get("whol_smtm_ntby_tr_pbmn"))
+            if str(_time):
+                _rows.append({"time": str(_time), "qty": _qty, "amt": _amt})
+        return _rows or None
+    except Exception:
+        return None
+
+
 def kis_get_investor(ticker):
     """외인/기관 순매수 조회(일별 FHKST01010900 — 장중엔 전일치)"""
     try:
@@ -10798,6 +10831,70 @@ def render_ripple_map():
                "감지 근거가 1개뿐이면 우연한 매칭일 수 있으니 참고만.")
 
 
+def render_program_vap(code, cur_px=0):
+    """[V15.2] 프로그램 수급·평단 판독 — KIS 시간대별 자동조회 시도, 실패 시 엑셀값 수동입력.
+    핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음."""
+    st.markdown("##### 💹 프로그램 수급·평단 (스마트머니 · 장막판 유입 판독)")
+    _rows = None
+    try:
+        _rows = kis_program_trade_by_time(code)
+    except Exception:
+        _rows = None
+    _late_amt = None; _avg = None
+    if _rows:
+        def _mn(t):
+            _d = "".join(ch for ch in str(t) if ch.isdigit())
+            return (int(_d[:2]) * 60 + int(_d[2:4])) if len(_d) >= 4 else None
+        _bk = {"오전 09~12": [0, 0], "점심 12~14:30": [0, 0],
+               "오후 14:30~15:10": [0, 0], "막판 15:10~15:30": [0, 0]}
+        for _r in _rows:
+            _m = _mn(_r["time"])
+            if _m is None:
+                continue
+            _q = _r["qty"] or 0; _a = _r["amt"] or 0
+            _k = ("오전 09~12" if _m < 12 * 60 else "점심 12~14:30" if _m < 14 * 60 + 30
+                  else "오후 14:30~15:10" if _m < 15 * 60 + 10 else "막판 15:10~15:30")
+            _bk[_k][0] += _q; _bk[_k][1] += _a
+        _tot_q = sum(v[0] for v in _bk.values()); _tot_a = sum(v[1] for v in _bk.values())
+        _late_amt = _bk["막판 15:10~15:30"][1]
+        if _tot_q:
+            _avg = _tot_a / _tot_q
+            if cur_px and _avg < cur_px / 10:      # 대금 단위(백만) 보정
+                _avg *= 1e6
+        st.caption("✅ KIS 자동 조회 성공")
+        _rowshtml = "".join(
+            f"<tr><td style='padding:3px 8px;color:#cbd5e1'>{_k}</td>"
+            f"<td style='padding:3px 8px;text-align:right;font-weight:700;"
+            f"color:{'#16a34a' if q > 0 else '#ef4444' if q < 0 else '#64748b'}'>{q:+,}주</td></tr>"
+            for _k, (q, a) in _bk.items())
+        st.markdown(f"<table style='width:100%;font-size:12px;border-collapse:collapse'>{_rowshtml}</table>",
+                    unsafe_allow_html=True)
+    else:
+        st.caption("⚠️ KIS 프로그램 시간별 자동조회 미지원/데이터 없음 — HTS #0336 엑셀값 수동 입력")
+        _c1, _c2 = st.columns(2)
+        _late_amt = _c1.number_input("막판(15:10~15:30) 프로그램 순매수 대금(억, +매수/−매도)",
+                                     value=0.0, step=1.0, key=f"_pv_l_{code}") * 1e8
+        _avgin = _c2.number_input("프로그램 전체 평단(원, 엑셀값)", value=0, step=100, key=f"_pv_a_{code}")
+        _avg = _avgin or None
+    _msgs = []
+    if _late_amt is not None and _late_amt > 0:
+        _msgs.append("🟢 장막판 프로그램 유입(+) — 세력 오버나이트 매집 신호(종배 수급 확인)")
+    else:
+        _msgs.append("🔴 장막판 프로그램 유입 없음/유출 — 뇌동매매 금지·관망 (엑셀 '거부'와 동일)")
+    if _avg and cur_px:
+        if cur_px <= _avg * 1.005:
+            _msgs.append(f"🟢 현재가 {cur_px:,} ≤ 프로그램 평단 {_avg:,.0f} 근처 — 상대적 저가(눌림 구간)")
+        else:
+            _msgs.append(f"🟠 현재가 {cur_px:,} > 평단 {_avg:,.0f} ({(cur_px/_avg-1)*100:+.1f}%) — 추격 주의")
+    _co = "#22c55e" if (_late_amt and _late_amt > 0) else "#ef4444"
+    st.markdown(
+        f"<div style='border:1.5px solid {_co};border-radius:10px;padding:9px 13px;margin:6px 0;"
+        f"background:rgba(255,255,255,0.03);font-size:12px;color:#cbd5e1;line-height:1.7'>"
+        + "<br>".join(_msgs) + "</div>", unsafe_allow_html=True)
+    st.caption("💡 장막판 유입 = 세력 오버나이트 매집(종배 핵심). '평단'은 프로그램(외인/기관) 평균단가이지 "
+               "'세력 실제 평단'은 아님(근사) — 맹신 금지.")
+
+
 def render_stock_analyzer():
     """🔍 종목 분석기 — 종목코드 하나로 종가베팅 종합점수 + 정밀분석(수급·차트·타점·뉴스). 예외 전파 없음."""
     st.markdown("### 🔍 종목 분석기 — 코드 하나로 원샷 판단")
@@ -10887,6 +10984,12 @@ def render_stock_analyzer():
             render_7gate_scorecard(_code, _rec)
         except Exception:
             pass
+    # [V15.2] 프로그램 수급·평단 판독(장막판 유입) — 자동조회 or 엑셀값 수동입력
+    with st.expander("💹 프로그램 수급·평단 (장막판 유입 판독)", expanded=False):
+        try:
+            render_program_vap(_code, (_rec.get("현재가") or 0))
+        except Exception as _pve:
+            st.caption(f"⚠️ 프로그램 판독 일시 비활성: {type(_pve).__name__}")
     st.divider()
     # ── 원샷 정밀분석(차트·타점·뉴스·재무) — 기존 드릴다운 재활용 ──
     try:
@@ -10949,6 +11052,18 @@ with _t_settings:
         render_v12_self_diagnostic()
     except Exception as _sde:
         st.caption(f"⚠️ 자가진단 일시 비활성: {type(_sde).__name__}")
+    st.divider()
+    # [V15.3] 오늘 텔레그램 알림 다시 받기 — 당일 1회 중복방지 플래그 리셋
+    st.markdown("#### 🔄 오늘 텔레그램 알림 다시 받기")
+    st.caption("종배 확정픽·급증·역행주·과열·NXT 알림은 '당일 1회'로 중복 차단됨 → 리셋하면 조건 충족 시 재발송.")
+    if st.button("🔄 오늘 알림 리셋 (종배픽·급증·역행·과열·NXT 다시 받기)", key="_reset_alerts"):
+        _pref = ("_g7_tg_", "_surge_tg_", "_ct_tg_", "_overheat_wait_", "_nxt_c_")
+        _cleared = [_k for _k in list(st.session_state.keys())
+                    if any(_k.startswith(_p) for _p in _pref)]
+        for _k in _cleared:
+            st.session_state.pop(_k, None)
+        st.success(f"✅ 알림 {len(_cleared)}개 리셋 완료 — 관제탑 새로고침 시 조건 충족하면 텔레그램 재발송")
+        st.caption("※ 손절·하드브레이커 알림은 안전상 리셋 대상 아님(계속 감시).")
     st.divider()
     # [V13.4-①] 돌팬티 픽 명중률 — 익일 시초가 갭 자동 대조(수익 검증 인프라)
     try:
