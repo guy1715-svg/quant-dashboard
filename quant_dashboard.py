@@ -10835,6 +10835,80 @@ def render_ripple_map():
                "감지 근거가 1개뿐이면 우연한 매칭일 수 있으니 참고만.")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V15.6] 승자 역분석 — 오늘 오른 종목을 우리 엔진이 왜 못 잡았나 복기(놓친 패턴 학습)
+# ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=600, show_spinner=False)
+def scan_winners(top=60, min_chg=3.0, limit=12):
+    """거래대금 상위 중 상승(≥min_chg%) 종목 → 엔진 역분석. 반환 [{code,name,chg,total,reason,tags}]."""
+    try:
+        _rank = kis_volume_rank(top) or []
+    except Exception:
+        _rank = []
+    _up = [_s for _s in _rank
+           if _s.get("code") and not _is_etf_or_special(_s.get("code"), _s.get("name", ""))
+           and (_s.get("chg") or 0) >= min_chg]
+    _up.sort(key=lambda x: x.get("chg", 0), reverse=True)
+    _out = []
+    for _s in _up[:limit]:
+        _cd = _s["code"]
+        try:
+            _rec, _pr = _analyzer_build_rec(_cd)
+        except Exception:
+            continue
+        _px = _rec.get("현재가") or 0
+        _t, _g, _tg, _fx = _dolpanty_score(_rec, gate_open=True, regime_halve=False)
+        _ma = _rec.get("MA20") or 0
+        _disp = ((_px / _ma - 1) * 100) if _ma else 0
+        if _fx.get("_hardcut"):
+            _reason = "⛔ 거래대금 미달로 제외"
+        elif _disp >= 7:
+            _reason = f"🔥 과열(이격 +{_disp:.0f}%) — 관망 처리"
+        elif not (_ma and _px > _ma):
+            _reason = "📉 20MA 이탈 — 관망"
+        elif _t >= 40:
+            _reason = f"✅ 후보 자격 있었음(점수 {_t:.0f}) — 놓쳤거나 관망"
+        else:
+            _reason = f"점수 미달({_t:.0f})"
+        try:
+            _tags = fetch_stock_triggers(_cd, _s.get("name", ""))
+        except Exception:
+            _tags = []
+        _out.append({"code": _cd, "name": _s.get("name", ""), "chg": _s.get("chg", 0),
+                     "total": _t, "reason": _reason, "tags": _tags})
+    return _out
+
+
+def render_winner_postmortem():
+    """🏆 오늘의 승자 역분석 — 오른 종목을 우리 엔진이 왜 못 잡았나. 예외 전파 없음."""
+    st.markdown("#### 🏆 오늘의 승자 역분석 (왜 못 잡았나 · 놓친 패턴 학습)")
+    try:
+        _w = scan_winners()
+    except Exception:
+        _w = []
+    if not _w:
+        st.caption("상승 종목 스캔 대기 — 거래대금 상위 중 +3%↑ 상승주가 집계됩니다(장중/장후).")
+        return
+    for _s in _w:
+        _tags = " ".join(
+            f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
+            for _t in (_s.get("tags") or [])) or "<span style='color:#64748b;font-size:10px'>뉴스 없음(세력성?)</span>"
+        _rc = "#22c55e" if _s["reason"].startswith("✅") else "#f59e0b" if _s["reason"].startswith("🔥") else "#94a3b8"
+        st.markdown(
+            f"<div style='padding:5px 10px;border-bottom:1px solid #1e293b;font-size:12px'>"
+            f"<div style='display:flex;justify-content:space-between'>"
+            f"<span style='font-weight:800;color:#e2e8f0'>{_s['name']} "
+            f"<span style='color:#64748b;font-size:10px'>{_s['code']}</span> "
+            f"<span style='color:#16a34a;font-weight:900'>+{_s['chg']:.1f}%</span></span>"
+            f"<span style='color:{_rc};font-weight:700'>{_s['reason']}</span></div>"
+            f"<div style='margin-top:2px'>왜 올랐나: {_tags}</div></div>", unsafe_allow_html=True)
+    _missed = [_s for _s in _w if _s["reason"].startswith("✅")]
+    _cut = [_s for _s in _w if "거래대금 미달" in _s["reason"]]
+    st.caption(f"⚠️ '후보 자격 있었으나 놓침' {len(_missed)}건 · '거래대금 하드컷 제외' {len(_cut)}건 · "
+               f"과열 관망 {len([s for s in _w if s['reason'].startswith('🔥')])}건. "
+               "며칠 누적해 반복되는 '놓친 이유'가 있으면 그게 개선 포인트(하드컷·선별·인과맵 조정).")
+
+
 def render_program_vap(code, cur_px=0):
     """[V15.2] 프로그램 수급·평단 판독 — KIS 시간대별 자동조회 시도, 실패 시 엑셀값 수동입력.
     핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음."""
@@ -10915,20 +10989,45 @@ def render_stock_analyzer():
             st.caption(f"⚠️ 인과맵 일시 비활성: {type(_rme).__name__}")
     _c1, _c2 = st.columns([3, 1], vertical_alignment="bottom")
     with _c1:
-        _code_in = st.text_input("종목코드 입력 (예: 005930)", key="_analyzer_code",
-                                 placeholder="6자리 숫자 입력 후 Enter").strip()
+        _code_in = st.text_input("종목코드 또는 종목명 (예: 005930 / 삼성전자 / 하이닉스)", key="_analyzer_code",
+                                 placeholder="코드 6자리 또는 종목명 입력 후 Enter").strip()
     with _c2:
         st.button("🔍 분석", use_container_width=True, type="primary")   # Enter/버튼 모두 재실행
     # 최근 분석한 코드 빠른 재조회 칩
     _hist = st.session_state.get("_analyzer_hist", [])
     if _hist:
         st.caption("🕘 최근: " + " · ".join(_hist[:8]))
-    _code = "".join(ch for ch in _code_in if ch.isdigit())[:6]
-    if not _code:
-        st.info("종목코드를 입력하세요. 실시간 수급·현재가는 장 시간대(정규장/NXT)에 가장 정확합니다.")
+    if not _code_in:
+        st.info("종목코드(005930) 또는 종목명(삼성전자·하이닉스)을 입력하세요. 실시간 수급은 장 시간대에 가장 정확합니다.")
         return
-    if len(_code) != 6:
-        st.warning("종목코드는 숫자 6자리입니다 (예: 삼성전자 005930)."); return
+    # [V15.5] 코드 6자리면 그대로, 아니면 종목명→코드 변환(부분일치 후보 선택)
+    _digits = "".join(ch for ch in _code_in if ch.isdigit())
+    _code = None
+    if len(_digits) == 6:
+        _code = _digits
+    else:
+        _nm2c = {}
+        try:
+            _nm2c = _kr_name_code_map()
+        except Exception:
+            _nm2c = {}
+        if not _nm2c:
+            st.warning("종목명 검색 불가(상장목록 로딩 실패) — 6자리 코드로 입력하세요."); return
+        if _code_in in _nm2c:                       # 정확 일치
+            _code = _nm2c[_code_in]
+        else:                                       # 부분 일치
+            _cands = [(_n, _c) for _n, _c in _nm2c.items() if _code_in in _n]
+            _cands.sort(key=lambda x: len(x[0]))    # 짧은 이름 우선(정확도↑)
+            if len(_cands) == 1:
+                _code = _cands[0][1]
+            elif len(_cands) > 1:
+                _pick_nm = st.selectbox(f"'{_code_in}' 검색 결과 {len(_cands)}건 — 선택",
+                                        [f"{_n} ({_c})" for _n, _c in _cands[:20]], key="_analyzer_namepick")
+                _code = _pick_nm.split("(")[-1].replace(")", "").strip()
+            else:
+                st.warning(f"'{_code_in}' — 일치하는 종목 없음. 정확한 이름/코드로 입력하세요."); return
+    if not _code or len(_code) != 6:
+        st.warning("종목 확정 실패 — 코드(6자리) 또는 정확한 종목명으로 입력하세요."); return
     # 최근 기록 갱신(중복 제거·최신 앞)
     _hist = [_code] + [c for c in _hist if c != _code]
     st.session_state["_analyzer_hist"] = _hist[:8]
@@ -11080,6 +11179,12 @@ with _t_settings:
         render_signal_history()
     except Exception as _she:
         st.caption(f"⚠️ 복기 장부 일시 비활성: {type(_she).__name__}")
+    st.divider()
+    # [V15.6] 승자 역분석 — 오늘 오른 종목을 우리 엔진이 왜 못 잡았나(놓친 패턴 학습)
+    try:
+        render_winner_postmortem()
+    except Exception as _wpe:
+        st.caption(f"⚠️ 승자 역분석 일시 비활성: {type(_wpe).__name__}")
     st.divider()
 # 기존 변수명 → 새 컨테이너 재바인딩 (아래 with tab_X 블록 내용 100% 보존)
 tab_b = _s_anal     # 🔍 분석 → 딥 스캐너 서브탭(종목 정밀분석)
