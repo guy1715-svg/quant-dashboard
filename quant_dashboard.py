@@ -3769,6 +3769,84 @@ def detect_intraday_regime():
     return _val
 
 
+def render_topdown_checklist():
+    """[V15.1] 🎯 탑다운 6단계 체크리스트 — 나선→유가/환율→거래대금→장마감세→뉴스→진입.
+    탑다운 원칙: 1·2단계(매크로) 막히면 진입 차단. 예외 전파 없음."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _m = _now.hour * 60 + _now.minute
+    try:
+        _rg = detect_intraday_regime()
+    except Exception:
+        _rg = {}
+    _nq = _rg.get("nq")
+    try:
+        _wti = fetch_macro_triggers().get("wti_pct")
+    except Exception:
+        _wti = None
+    _krw = None
+    try:
+        _krw = (get_index_quotes().get("달러/원") or {}).get("등락")
+    except Exception:
+        pass
+    # 1 나선
+    if _nq is None:
+        s1 = ("🟡", "나선 데이터 대기")
+    elif _nq >= 0:
+        s1 = ("🟢", f"나선 {_nq:+.2f}% (양호)")
+    elif _nq > -0.2:
+        s1 = ("🟡", f"나선 {_nq:+.2f}% (중립)")
+    else:
+        s1 = ("🔴", f"나선 {_nq:+.2f}% (약세)")
+    # 2 유가/환율
+    _w_bad = (_wti is not None and _wti >= 2.0)          # 유가 +2%↑ = 성장주 부담
+    _k_bad = (_krw is not None and _krw >= 0.5)          # 환율 +0.5%↑ = 외인 이탈
+    _w_s = f"{_wti:+.1f}%" if isinstance(_wti, (int, float)) else "—"
+    _k_s = f"{_krw:+.1f}%" if isinstance(_krw, (int, float)) else "—"
+    s2 = (("🔴", f"유가 {_w_s}·환율 {_k_s} (부담)") if (_w_bad or _k_bad)
+          else ("🟢", f"유가 {_w_s}·환율 {_k_s} (안정)"))
+    # 3 거래대금
+    try:
+        _surge = scan_turnover_surge()
+    except Exception:
+        _surge = []
+    s3 = ("✅", f"거래대금 상위 스캔 완료 (급증 {len(_surge)}종)")
+    # 4 장마감 매수세
+    if _m < 15 * 60:
+        s4 = ("⏳", "15:00 이후 종가·매수세 확정 대기")
+    elif _m <= 15 * 60 + 30:
+        s4 = ("✅", "종배 확정창(15:00~15:30) — 픽·7대안전핀 확인")
+    else:
+        s4 = ("⚪", "장마감/야간 — NXT 시나리오 참고")
+    # 5 뉴스/테마
+    try:
+        _mats = auto_detect_materials()
+    except Exception:
+        _mats = []
+    s5 = (("🟡", "감지 재료: " + ", ".join(_x[1] for _x in _mats[:3])) if _mats
+          else ("⚪", "감지 재료 없음 — 인과맵/붙여넣기로 확인"))
+    # 6 진입 (탑다운: 매크로 막히면 차단)
+    _mv = st.session_state.get("_macro_verdict") or {}
+    _block = bool(_mv.get("block")) or (_rg.get("regime") == "DOWN") or (_nq is not None and _nq <= -0.2)
+    s6 = (("🔴", "진입 차단 — 관망 (매크로 불충족)") if _block
+          else ("🟢", "진입 조건 열림 — 종목별 7대 안전핀 확인"))
+    _rows = [("1️⃣ 나선", s1), ("2️⃣ 유가/환율", s2), ("3️⃣ 거래대금", s3),
+             ("4️⃣ 장마감세", s4), ("5️⃣ 뉴스/테마", s5), ("6️⃣ 진입", s6)]
+    _html = "".join(
+        f"<div style='display:flex;gap:8px;padding:2px 0;font-size:12px;align-items:center'>"
+        f"<span style='width:82px;color:#cbd5e1;font-weight:700'>{_lbl}</span>"
+        f"<span>{_ic}</span><span style='color:#94a3b8'>{_txt}</span></div>"
+        for _lbl, (_ic, _txt) in _rows)
+    _vc = "#ef4444" if _block else "#22c55e"
+    _vt = "🔴 오늘은 관망 (매크로 불충족)" if _block else "🟢 진입 준비 OK — 종목 선별 진행"
+    st.markdown(
+        f"<div style='border:2px solid #334155;border-radius:12px;padding:11px 15px;margin-bottom:8px;"
+        f"background:linear-gradient(180deg,#0b1220,#111c33)'>"
+        f"<div style='font-size:14px;font-weight:900;color:#e2e8f0;margin-bottom:4px'>"
+        f"🎯 탑다운 6단계 (오늘 진입 준비도)</div>{_html}"
+        f"<div style='margin-top:6px;padding-top:5px;border-top:1px solid #1e293b;"
+        f"font-weight:900;color:{_vc}'>종합: {_vt}</div></div>", unsafe_allow_html=True)
+
+
 def render_regime_banner():
     """🌡️ 장중 레짐 배너 — 오늘 장 성격 + 그에 맞는 매매 지침. 예외 전파 없음. 판독 dict 반환."""
     try:
@@ -10935,6 +11013,11 @@ with tab_g:
         f"display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:900'>{_n}</span>"
         f"<span style='font-size:15px;font-weight:800;color:#e2e8f0'>{_ico} {_txt}</span></div>",
         unsafe_allow_html=True)
+    # [V15.1] 탑다운 6단계 체크리스트 — 나선→유가/환율→거래대금→장마감→뉴스→진입 (최상단 마스터뷰)
+    try:
+        render_topdown_checklist()
+    except Exception:
+        pass
     # [V13.5] 장중 레짐 배너 — 오늘 장 성격(추세/박스/하락)에 맞춘 매매 지침 최상단
     try:
         render_regime_banner()
