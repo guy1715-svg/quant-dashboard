@@ -10909,6 +10909,96 @@ def render_winner_postmortem():
                "며칠 누적해 반복되는 '놓친 이유'가 있으면 그게 개선 포인트(하드컷·선별·인과맵 조정).")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V13.6] 단테 256 스윙 검증기(Track B) — 개별 종목 6대 조건 판정(역매공파 112).
+#   장기 역배열(저평가) + 112일선 지지 + 볼린저 발산 + 5일선 + 구름대 돌파 = 밥그릇 3번.
+# ═══════════════════════════════════════════════════════════════════
+def _ichimoku_span2(df, period=52, shift=26):
+    """일목 선행스팬2 = (52일 고가최고 + 저가최저)/2를 26일 앞으로 시프트.
+    오늘 구름값 = 26봉 전에 계산된 값(시프트 반영). 실패 시 None."""
+    try:
+        _h = df["고가"].rolling(period).max()
+        _l = df["저가"].rolling(period).min()
+        _s2 = (_h + _l) / 2.0
+        if len(_s2) > shift:
+            return float(_s2.iloc[-1 - shift])
+    except Exception:
+        pass
+    return None
+
+
+def dante_check(code):
+    """단테 256 스윙 6조건 판정 → {count, golden, conds[(name,ok,detail)], px, ma112}. 실패 시 None."""
+    try:
+        _df = fetch_ohlcv(code, 520)      # MA448 + 일목(52+26) 위해 넉넉히
+    except Exception:
+        return None
+    if _df is None or len(_df) < 130:
+        return None
+    _c = _df["종가"]; _px = float(_c.iloc[-1])
+    def _ma(n):
+        return float(_c.rolling(n).mean().iloc[-1]) if len(_c) >= n else None
+    _ma5, _ma112, _ma224, _ma448 = _ma(5), _ma(112), _ma(224), _ma(448)
+    _std = float(_c.rolling(20).std().iloc[-1]); _bbmid = float(_c.rolling(20).mean().iloc[-1])
+    _bbu = _bbmid + 2 * _std
+    _vol20 = float(_df["거래량"].rolling(20).mean().iloc[-1])
+    _turn20 = float((_df["종가"] * _df["거래량"]).rolling(20).mean().iloc[-1])
+    _span2 = _ichimoku_span2(_df)
+    _conds = []
+    _conds.append(("거래량/대금(20일평균 5만주·5억↑)",
+                   bool(_vol20 >= 50000 and _turn20 >= 5e8), f"{_vol20/1e4:.0f}만주·{_turn20/1e8:.0f}억"))
+    _rev = bool(_ma112 and _ma224 and _ma448 and _ma112 < _ma224 < _ma448)
+    _conds.append(("112<224<448 장기 역배열", _rev,
+                   ("역배열(저평가)" if _rev else "데이터부족(448일↑ 필요)" if not _ma448 else "정배열/혼조")))
+    _n112 = bool(_ma112 and 0.95 <= _px / _ma112 <= 1.03)
+    _conds.append(("112일선 근접(95~103%)", _n112, (f"{_px/_ma112*100:.0f}%" if _ma112 else "MA112 없음")))
+    _bb = bool(_bbu and _px >= _bbu * 0.975)
+    _conds.append(("볼린저 상단 근접/돌파", _bb, (f"상단대비 {(_px/_bbu*100-100):+.1f}%" if _bbu else "-")))
+    _m5 = bool(_ma5 and abs(_px / _ma5 - 1) <= 0.025 and _px >= _ma5)
+    _conds.append(("5일선 밀착+위 안착", _m5, (f"5MA대비 {(_px/_ma5*100-100):+.1f}%" if _ma5 else "-")))
+    _cl = bool(_span2 and _px > _span2)
+    _conds.append(("구름대(선행스팬2) 돌파", _cl, (f"종가>{_span2:,.0f}" if _span2 else "구름 없음")))
+    _n = sum(1 for _, _ok, _ in _conds if _ok)
+    return {"count": _n, "golden": _n >= 5, "conds": _conds, "px": _px, "ma112": _ma112}
+
+
+def render_dante_card(code):
+    """🔵 단테 256 스윙 6조건 카드(Track B) — 개별종목 검증. 예외 전파 없음."""
+    st.markdown("##### 🔵 단테 256 스윙 검증 (Track B · 역매공파 112)")
+    try:
+        _d = dante_check(code)
+    except Exception:
+        _d = None
+    if not _d:
+        st.caption("단테 판정 불가 — 장기 데이터 부족(신규상장 등) 또는 조회 실패.")
+        return
+    _chips = "".join(
+        f"<div style='display:flex;gap:8px;padding:2px 0;font-size:12px'>"
+        f"<span>{'🟢' if _ok else '🔴'}</span>"
+        f"<span style='width:210px;color:#cbd5e1'>{_n}</span>"
+        f"<span style='color:#94a3b8'>{_dt}</span></div>"
+        for _n, _ok, _dt in _d["conds"])
+    _cnt = _d["count"]
+    _co = "#eab308" if _cnt >= 5 else "#64748b"
+    st.markdown(
+        f"<div style='border:1.5px solid {_co};border-radius:12px;padding:10px 14px;margin:4px 0;"
+        f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+        f"<div style='font-weight:900;color:#e2e8f0;margin-bottom:4px'>단테 6조건: "
+        f"<span style='color:{_co}'>{_cnt}/6</span></div>{_chips}</div>", unsafe_allow_html=True)
+    if _d["golden"]:
+        _stop = _d.get("ma112")
+        _stop_txt = f" · 손절 112일선({_stop:,.0f}) 이탈" if _stop else ""
+        st.markdown(
+            f"<div style='border:2px solid #f59e0b;border-radius:12px;padding:11px 15px;margin:4px 0;"
+            f"background:linear-gradient(90deg,#2a1f05,#111c33);box-shadow:0 0 14px rgba(245,158,11,0.35);"
+            f"font-weight:900;color:#fcd34d'>🏆 [단테 골든픽] 밥그릇 3번 초입 진입! ({_cnt}/6)"
+            f"<div style='font-size:11.5px;font-weight:400;color:#fde68a;margin-top:3px'>"
+            f"장기 역배열 저평가 + 112일선 지지 + 구름대 돌파 = 스윙 매집→상승 전환 자리{_stop_txt}. "
+            f"※스윙(며칠~몇주 홀딩), 종배/단타와 별개</div></div>", unsafe_allow_html=True)
+    st.caption("💡 단테=중장기 스윙(역매공파 112). 5/6↑=골든픽. 손절은 112일선 이탈, 손익비 좋은 자리. "
+               "종배(Track A)와 다른 게임 — 인내심 필요.")
+
+
 def render_program_vap(code, cur_px=0):
     """[V15.2] 프로그램 수급·평단 판독 — KIS 시간대별 자동조회 시도, 실패 시 엑셀값 수동입력.
     핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음."""
@@ -11093,6 +11183,12 @@ def render_stock_analyzer():
             render_program_vap(_code, (_rec.get("현재가") or 0))
         except Exception as _pve:
             st.caption(f"⚠️ 프로그램 판독 일시 비활성: {type(_pve).__name__}")
+    # [V13.6] 단테 256 스윙 검증(Track B) — 중장기 스윙 후보 6조건 판정
+    with st.expander("🔵 단테 256 스윙 검증 (Track B · 중장기)", expanded=False):
+        try:
+            render_dante_card(_code)
+        except Exception as _dce:
+            st.caption(f"⚠️ 단테 판정 일시 비활성: {type(_dce).__name__}")
     st.divider()
     # ── 원샷 정밀분석(차트·타점·뉴스·재무) — 기존 드릴다운 재활용 ──
     try:
