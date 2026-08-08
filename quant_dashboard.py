@@ -949,28 +949,6 @@ def kis_program_trade_by_time(ticker):
         return None
 
 
-def kis_get_orderbook(ticker):
-    """[V15.7] KIS 호가 총잔량 조회 → (총매도잔량, 총매수잔량). 실패 시 None.
-    단타 규칙: 매도잔량 > 매수잔량 1.5~2배 = 상승 확률↑(세력 매집 명분)."""
-    try:
-        _tok = kis_get_token()
-        if not _tok:
-            return None
-        _res = _requests.get(
-            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
-            headers={"authorization": f"Bearer {_tok}", "appkey": _kis_key(),
-                     "appsecret": _kis_secret(), "tr_id": "FHKST01010200"},
-            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": ticker}, timeout=5)
-        _o = _res.json().get("output1", {}) or {}
-        _ask = _to_int(_o.get("total_askp_rsqn"))
-        _bid = _to_int(_o.get("total_bidp_rsqn"))
-        if _ask and _bid:
-            return (_ask, _bid)
-    except Exception:
-        pass
-    return None
-
-
 def kis_get_investor(ticker):
     """외인/기관 순매수 조회(일별 FHKST01010900 — 장중엔 전일치)"""
     try:
@@ -3976,7 +3954,14 @@ def scan_turnover_surge(top=18, min_mult=2.0):
         _mult = _to / _avg
         if _mult < min_mult:
             continue
-        _out.append({**_s, "mult": round(_mult, 1)})
+        # [V16.0] 5일선/기준선 위 + 이격(추격 여부) — 액션형 신호 판정용
+        _px = _s.get("px") or 0
+        _ma5 = float(_df["종가"].rolling(5).mean().iloc[-1]) if len(_df) >= 5 else 0
+        _ma20 = float(_df["종가"].rolling(20).mean().iloc[-1]) if len(_df) >= 20 else 0
+        _above5 = bool(_ma5 and _px >= _ma5)
+        _disp = ((_px / _ma20 - 1) * 100) if _ma20 else 0.0
+        _out.append({**_s, "mult": round(_mult, 1), "ma5": _ma5,
+                     "above5": _above5, "disp": round(_disp, 1)})
     _out.sort(key=lambda x: x["mult"], reverse=True)
     for _s in _out[:6]:               # 상위 급증만 뉴스 첨부(API 절약)
         try:
@@ -11055,11 +11040,13 @@ def render_daytrade_check(code, rec):
                     ("눌림존 ✔" if _pull else "추격존(시가 위)" if _gap > 0.5 else "낙폭과대")))
     _ob = None
     try:
-        _ob = kis_get_orderbook(code)
+        _ob = kis_get_orderbook(code)      # dict: ask_qty[5]/bid_qty[5]
     except Exception:
         pass
-    if _ob:
-        _ratio = (_ob[0] / _ob[1]) if _ob[1] else 0
+    _askq = sum(_ob["ask_qty"]) if _ob else 0
+    _bidq = sum(_ob["bid_qty"]) if _ob else 0
+    if _askq and _bidq:
+        _ratio = _askq / _bidq
         _checks.append(("호가 매도>매수(1.5배↑ 유리)", (_ratio >= 1.3), f"매도/매수 {_ratio:.1f}배"))
     else:
         _checks.append(("호가 매도>매수", False, "호가 조회 실패/장외"))
@@ -11456,18 +11443,33 @@ with tab_g:
                     unsafe_allow_html=True)
     except Exception:
         pass
-    # [V14.1] 강한 급증(3배↑+뉴스) 텔레그램 자동 푸시 — 대시보드 열려있을 때(당일 1회/종목)
+    # [V16.0] 거래대금 급증 2단계 텔레그램 — 🟡주시(초입) → 🟢진입(5일선위·비과열·진입가 포함)
     try:
         _sg_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
         for _sg in (scan_turnover_surge() or []):
-            if _sg.get("mult", 0) >= 3.0 and _sg.get("tags"):
-                _sgk = f"_surge_tg_{_sg_today}_{_sg.get('code')}"
-                if not st.session_state.get(_sgk):
-                    if send_telegram(f"🚨 거래대금 급증 포착 — {_sg.get('name','')} "
-                                     f"{_sg.get('px',0):,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_sg.get('mult')}배\n"
-                                     f"사유: {' / '.join(_sg.get('tags') or []) or '뉴스 확인 필요'}\n"
-                                     f"→ 분석기서 과열·안전핀 검증 후 선점(추격 금지)."):
-                        st.session_state[_sgk] = True
+            _mult = _sg.get("mult", 0); _px = _sg.get("px", 0) or 0
+            _nm = _sg.get("name", ""); _cd = _sg.get("code")
+            _tagtxt = " / ".join(_sg.get("tags") or []) or "뉴스 확인"
+            _above5 = _sg.get("above5"); _disp = _sg.get("disp", 0)
+            # 2차 진입 신호 — 5일선 위 + 추격 아님(이격<7%) + 급증 → 진입가·손절·1차익절 (바로 실행)
+            if _mult >= 2.0 and _above5 and _disp < 7 and _px:
+                _ek = f"_surge_entry_{_sg_today}_{_cd}"
+                if not st.session_state.get(_ek):
+                    if send_telegram(
+                            f"🟢 [진입 신호] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 · 5일선 위\n"
+                            f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
+                            f"사유: {_tagtxt}  ※소액 분할·손절 필수"):
+                        st.session_state[_ek] = True
+                        st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True  # 주시 중복 방지
+            # 1차 주시 신호 — 강한 급증(2.5배↑)인데 아직 진입조건 미달(과열/5일선 아래) → 예고만
+            elif _mult >= 2.5 and _px:
+                _wk = f"_surge_tg_{_sg_today}_{_cd}"
+                if not st.session_state.get(_wk):
+                    _why = "이미 과열(눌림 대기)" if _disp >= 7 else "5일선 아래(돌파 대기)" if not _above5 else "관찰"
+                    if send_telegram(
+                            f"🟡 [주시] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 — 진입 대기\n"
+                            f"사유: {_tagtxt} · {_why}  ※지금 추격 금지, 진입 조건 충족 시 재알림"):
+                        st.session_state[_wk] = True
     except Exception:
         pass
     # [V14.4] 역행 강세주 텔레그램 푸시 — 지수대비 +5%p↑ & 외인·기관 양매수 강한 놈만(당일1회/종목)
@@ -11477,11 +11479,13 @@ with tab_g:
         for _ct in (scan_counter_trend(_idx_ct) or []):
             if _ct.get("out", 0) >= 5.0 and _ct.get("frn", 0) > 0 and _ct.get("org", 0) > 0:
                 _ctk = f"_ct_tg_{_ct_today}_{_ct.get('code')}"
-                if not st.session_state.get(_ctk):
-                    if send_telegram(f"🔥 역행 강세주 — {_ct.get('name','')} +{_ct.get('chg',0):.1f}% "
-                                     f"(지수대비 +{_ct.get('out',0):.1f}%p) · 외인·기관 양매수\n"
+                _cpx = _ct.get("px", 0) or 0
+                if not st.session_state.get(_ctk) and _cpx:
+                    if send_telegram(f"🔥 [역행 진입후보] {_ct.get('name','')} {_cpx:,}(+{_ct.get('chg',0):.1f}%) "
+                                     f"· 지수대비 +{_ct.get('out',0):.1f}%p · 외인·기관 양매수\n"
+                                     f"진입 {_cpx:,} · 손절 {int(_cpx*0.98):,}(−2%) · 1차익절 {int(_cpx*1.03):,}(+3%)\n"
                                      f"사유: {' / '.join(_ct.get('tags') or []) or '뉴스 확인'}\n"
-                                     f"⚠️ 리스크오프 역행 — 소액·−2% 타이트손절. 분석기 재검증 필수."):
+                                     f"⚠️ 리스크오프 역행=고위험 — 소액·타이트손절 필수."):
                         st.session_state[_ctk] = True
     except Exception:
         pass
