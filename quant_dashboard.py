@@ -5687,7 +5687,7 @@ def backfill_pick_outcomes():
 
 def render_pick_performance():
     """📊 돌팬티 픽 명중률 — 점수대별 실제 익일 갭·승률. 예외 전파 없음."""
-    st.markdown("#### 📊 돌팬티 픽 명중률 (익일 시초가 갭 기준)")
+    st.markdown("#### 🌒 [종배] 돌팬티 픽 명중률 (오버나이트 → 익일 시초가 갭 기준)")
     _rows = backfill_pick_outcomes()
     _done = [r for r in _rows if r.get("gap") is not None]
     _pend = [r for r in _rows if r.get("gap") is None]
@@ -5954,7 +5954,7 @@ def render_dolpanty_pick():
                      else f"🟡 READY {_g7_total}/7 — 50% 정찰대만" if _g7_total >= 5
                      else f"🔴 NO_POSITION {_g7_total}/7 — 매수 금지(자동폐기)")
             try:
-                if send_telegram(f"🛡️ [종배 확정픽] {_pick['name']} {_px:,}({_chg:+.1f}%)\n"
+                if send_telegram(f"🌒[종배·오버나이트→익일 시가 익절] 🛡️ 확정픽 {_pick['name']} {_px:,}({_chg:+.1f}%)\n"
                                  f"7대 안전핀: {_verd}\n-2% 스탑로스 장전 필수."):
                     st.session_state[_g7key] = True
             except Exception:
@@ -7384,7 +7384,7 @@ def backfill_signal_outcomes():
 
 def render_signal_history():
     """📚 매수 알림 누적 복기 — 유형별(시가저격/15분봉) 당일종가·익일시가 대비 승률. 예외격리."""
-    st.markdown("#### 📚 매수 알림 누적 복기 장부 (일일 성적 자동 박제)")
+    st.markdown("#### 🌅 [아침·장중 단타] 매수 알림 누적 복기 (시가저격/15분봉 유형별)")
     _rows = backfill_signal_outcomes()
     _done = [r for r in _rows if r.get("next_ret") is not None]
     _pend = [r for r in _rows if r.get("next_ret") is None]
@@ -10655,6 +10655,48 @@ RIPPLE_EFFECT_MAP = {
         "pihae_sector": "화학/레거시 제조업",
         "leaders": [("000100", "유한양행"), ("068270", "셀트리온")],
         "narrative": "글로벌 비만·항암 랠리는 독보적 임상 데이터를 쥔 국내 제약바이오로 투심이 동조됩니다."},
+    "SPACE_AERO": {
+        "keywords": ["우주", "항공우주", "위성", "로켓", "누리호", "발사체", "스페이스X", "방위우주"],
+        "suhye_sector": "우주항공/위성/방산",
+        "pihae_sector": "고PER 성장주/내수",
+        "leaders": [("012450", "한화에어로스페이스"), ("047810", "한국항공우주"), ("042370", "비츠로넥스텍")],
+        "narrative": "우주·발사체 모멘텀은 위성·방산 수주 스토리로 이어져 우주항공 대장주로 자금 유입."},
+    "POWER_GRID": {
+        "keywords": ["전력기기", "송전", "변압기", "전선", "그리드", "초고압", "전력설비", "HVDC"],
+        "suhye_sector": "전력기기/전선/변압기",
+        "pihae_sector": "레거시 제조/내수",
+        "leaders": [("298040", "효성중공업"), ("267260", "HD현대일렉트릭"), ("010120", "LS ELECTRIC")],
+        "narrative": "AI 데이터센터·전력 수요 폭증 → 송배전 전력설비·초고압 변압기·전선 수주 급증."},
+    "ROBOT": {
+        "keywords": ["로봇", "휴머노이드", "협동로봇", "자동화", "감속기", "액추에이터"],
+        "suhye_sector": "로봇/자동화",
+        "pihae_sector": "저성장 제조",
+        "leaders": [("277810", "레인보우로보틱스"), ("454910", "두산로보틱스")],
+        "narrative": "휴머노이드·협동로봇 상용화 기대로 로봇·부품(감속기 등) 대장주에 성장 프리미엄."},
+    "SHIP": {
+        "keywords": ["조선", "선박", "LNG선", "수주", "해운", "친환경 선박"],
+        "suhye_sector": "조선/조선기자재",
+        "pihae_sector": "내수/경기민감 소비",
+        "leaders": [("009540", "HD한국조선해양"), ("042660", "한화오션"), ("010140", "삼성중공업")],
+        "narrative": "친환경·LNG 선박 수주 사이클 + 운임 상승으로 조선 빅3·기자재로 자금 유입."},
+    "NUKE_SMR": {
+        "keywords": ["원전", "원자력", "SMR", "소형모듈원전", "체코 원전"],
+        "suhye_sector": "원전/원자력 기자재",
+        "pihae_sector": "신재생/태양광",
+        "leaders": [("034020", "두산에너빌리티"), ("052690", "한전기술")],
+        "narrative": "SMR·해외 원전 수주 모멘텀으로 원자력 대장주·기자재에 정책 수혜."},
+    "SEC_BATTERY": {
+        "keywords": ["2차전지", "배터리", "양극재", "리튬", "전고체", "IRA"],
+        "suhye_sector": "2차전지/소재",
+        "pihae_sector": "-",
+        "leaders": [("373220", "LG에너지솔루션"), ("247540", "에코프로비엠"), ("003670", "포스코퓨처엠")],
+        "narrative": "전기차·ESS 수요와 정책(IRA 등) 모멘텀 시 2차전지 셀·양극재로 순환매."},
+    "OPTIC": {
+        "keywords": ["광통신", "광트랜시버", "데이터센터 광", "실리콘포토닉스"],
+        "suhye_sector": "광통신/광부품",
+        "pihae_sector": "레거시 통신장비",
+        "leaders": [("138080", "오이솔루션"), ("094970", "제이엠티")],
+        "narrative": "AI 데이터센터 트래픽 폭증 → 고속 광통신·광트랜시버 수요로 광부품주 수혜."},
 }
 
 
@@ -11100,7 +11142,23 @@ def render_daytrade_check(code, rec):
         f"background:linear-gradient(180deg,#0f172a,#111c33)'>{_rows}"
         f"<div style='margin-top:6px;padding-top:5px;border-top:1px solid #1e293b;"
         f"font-weight:900;color:{_vc}'>{_v} ({_n}/6)</div></div>", unsafe_allow_html=True)
-    st.caption("💡 단타 원칙(주식단테): 추격 금지 · 시가 −2~3% 눌림(음봉) 매수 → 양봉 매도 · "
+    # [V16.5] 구체적 권장 타점 — 눌림 지지(5일선/기준선/시가 중 현재가 아래 최근접)에서 매수
+    _sups = [(_v2, _nm2) for _v2, _nm2 in ((_ma5, "5일선"), (_kijun, "기준선"), (_open, "시가")) if _v2]
+    if _px and _sups:
+        _below = [(_v2, _nm2) for _v2, _nm2 in _sups if _v2 <= _px * 1.003]
+        _entry_px, _entry_nm = (max(_below, key=lambda x: x[0]) if _below
+                                else min(_sups, key=lambda x: x[0]))
+        _stop = int(_entry_px * 0.98); _t1 = int(_entry_px * 1.03); _t2 = int(_entry_px * 1.05)
+        _chase_now = _px > _entry_px * 1.003
+        _head = (f"⚠️ 지금({_px:,})은 추격 — <b>{int(_entry_px):,}({_entry_nm}) 눌림까지 대기</b>"
+                 if _chase_now else f"✅ 지금 {int(_entry_px):,}({_entry_nm}) 지지권 — 진입 검토")
+        st.markdown(
+            f"<div style='border:1.5px solid #38bdf8;border-radius:10px;padding:9px 13px;margin:2px 0;"
+            f"background:rgba(56,189,248,0.08);font-size:12px;color:#cbd5e1;line-height:1.6'>"
+            f"📍 <b>권장 타점</b> — {_head}<br>"
+            f"진입 <b>{int(_entry_px):,}</b> · 손절 <b>{_stop:,}</b>(−2%) · 익절 <b>{_t1:,}</b>(+3%)/<b>{_t2:,}</b>(+5%)</div>",
+            unsafe_allow_html=True)
+    st.caption("💡 단타 원칙(주식단테): 추격 금지 · 시가/5일선 −2~3% 눌림(음봉) 매수 → 양봉 매도 · "
                "기준봉(장대양봉) 시가 이탈 시 손절 · 흐름 깨지면(연속 음봉·기준선 하회) 즉시 손절.")
 
 
@@ -11488,7 +11546,7 @@ with tab_g:
                 _ek = f"_surge_entry_{_sg_today}_{_cd}"
                 if not st.session_state.get(_ek):
                     if send_telegram(
-                            f"🟢 [진입 신호] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 · 5일선 위\n"
+                            f"🌅[장중단타·당일청산] 🟢 [진입 신호] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 · 5일선 위\n"
                             f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
                             f"사유: {_tagtxt}  ※소액 분할·손절 필수"):
                         st.session_state[_ek] = True
@@ -11513,7 +11571,7 @@ with tab_g:
                 _ctk = f"_ct_tg_{_ct_today}_{_ct.get('code')}"
                 _cpx = _ct.get("px", 0) or 0
                 if not st.session_state.get(_ctk) and _cpx:
-                    if send_telegram(f"🔥 [역행 진입후보] {_ct.get('name','')} {_cpx:,}(+{_ct.get('chg',0):.1f}%) "
+                    if send_telegram(f"🌅[장중·역행 고위험] 🔥 [역행 진입후보] {_ct.get('name','')} {_cpx:,}(+{_ct.get('chg',0):.1f}%) "
                                      f"· 지수대비 +{_ct.get('out',0):.1f}%p · 외인·기관 양매수\n"
                                      f"진입 {_cpx:,} · 손절 {int(_cpx*0.98):,}(−2%) · 1차익절 {int(_cpx*1.03):,}(+3%)\n"
                                      f"사유: {' / '.join(_ct.get('tags') or []) or '뉴스 확인'}\n"
