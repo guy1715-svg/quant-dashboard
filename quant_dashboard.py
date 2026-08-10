@@ -4031,6 +4031,105 @@ def render_turnover_surge():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# [V16.7] 내일 아침 후보 스캐너 — 장마감 후(15:30~) 오늘 종가 확정 데이터로
+#   종배 원리(거래대금 상위 + 5일선 위 + 전고/신고가 근접 + 과열 아님)를 채점해
+#   "내일 아침 대응 후보"를 미리 선점. NXT 창(17시 등)에 "지금 종배 못 봐?"의 실전 답.
+# ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=300, show_spinner=False)
+def scan_tomorrow_candidates(top=50):
+    """장마감 후 오늘 종가 확정 데이터로 '내일 아침 후보' 채점.
+    반환 [{code,name,px,chg,turnover,grade,score,disp,entry,reasons,tags}] 점수순. 예외 안전."""
+    try:
+        _rank = kis_volume_rank(top) or []
+    except Exception:
+        _rank = []
+    _out = []
+    for _s in _rank:
+        _cd = _s.get("code"); _to = _s.get("turnover") or 0; _px = _s.get("px") or 0
+        _chg = _s.get("chg", 0.0)
+        if not _cd or _to <= 0 or _px <= 0:
+            continue
+        if _is_etf_or_special(_cd, _s.get("name", "")):
+            continue
+        try:
+            _df = fetch_ohlcv(_cd, 70)
+            if _df is None or len(_df) < 20:
+                continue
+            _c = _df["종가"]
+            _ma5 = float(_c.rolling(5).mean().iloc[-1])
+            _ma20 = float(_c.rolling(20).mean().iloc[-1])
+            _prevhigh20 = float(_c.iloc[-21:-1].max()) if len(_c) >= 21 else float(_c.max())
+            _high60 = float(_c.iloc[:-1].max())
+        except Exception:
+            continue
+        _disp = ((_px / _ma20 - 1) * 100) if _ma20 else 0.0
+        _above5 = bool(_ma5 and _px >= _ma5)
+        _near_prevhigh = bool(_prevhigh20 and _px >= _prevhigh20 * 0.99)  # 전고 돌파/근접
+        _new_high = bool(_high60 and _px >= _high60)                      # 60일 신고가
+        _not_overheat = bool(-2.0 <= _disp < 8.0)                          # 과열(추격) 아님
+        _reasons, _score = [], 0
+        if _above5:       _score += 1; _reasons.append("5일선 위")
+        if _near_prevhigh:_score += 2; _reasons.append("전고 돌파/근접")
+        if _new_high:     _score += 1; _reasons.append("신고가")
+        if _not_overheat: _score += 1; _reasons.append("과열 아님")
+        else:             _reasons.append(f"⚠과열 이격{_disp:+.0f}%")
+        if _chg > 0:      _score += 1
+        # 거래대금 상위는 이미 랭킹 진입으로 충족(가점 1)
+        _score += 1
+        _grade = "🟢강력" if _score >= 6 else "🟡관심" if _score >= 4 else "⚪보류"
+        # 내일 관전 진입가: 5일선(눌림 지지) — 없으면 종가 −2%
+        _entry = int(_ma5) if _ma5 and _ma5 <= _px else int(_px * 0.98)
+        _out.append({"code": _cd, "name": _s.get("name", ""), "px": _px, "chg": _chg,
+                     "turnover": _to, "grade": _grade, "score": _score, "disp": round(_disp, 1),
+                     "entry": _entry, "reasons": _reasons})
+    _out.sort(key=lambda x: (x["score"], x["turnover"]), reverse=True)
+    for _s in _out[:8]:
+        try:
+            _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
+        except Exception:
+            _s["tags"] = []
+    return _out
+
+
+def render_tomorrow_prep():
+    """🌅 내일 아침 후보 — 장마감 후(15:30~) 종가 확정 기준 선점 리스트. 예외 전파 없음.
+    NXT 창(15:30~20:00)에만 노출 — 그 외 시간엔 자동 숨김."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _m = _now.hour * 60 + _now.minute
+    if not ((15 * 60 + 30) <= _m <= (20 * 60)):   # 마감후~야간에만
+        return
+    st.markdown(
+        "<div style='font-size:14px;font-weight:900;color:#fbbf24;margin:2px 0'>"
+        "🌅 내일 아침 후보 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+        "오늘 종가 확정 기준 · 종배 원리 채점 · 지금 미리 선점</span></div>", unsafe_allow_html=True)
+    try:
+        _cands = scan_tomorrow_candidates()
+    except Exception as _e:
+        st.caption(f"⚠️ 후보 스캔 일시 비활성: {type(_e).__name__}"); return
+    _cands = [c for c in _cands if c["score"] >= 4][:8]   # 🟡관심 이상만
+    if not _cands:
+        st.caption("오늘 종가 기준 뚜렷한 후보(전고돌파+5일선+과열아님) 없음 — 무리한 종배는 쉬는 게 정답."); return
+    for _c in _cands:
+        _cc = "#ef4444" if _c["chg"] < 0 else "#16a34a" if _c["chg"] > 0 else "#94a3b8"
+        _tags = " ".join(
+            f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
+            for _t in (_c.get("tags") or [])) or ""
+        st.markdown(
+            f"<div style='padding:4px 6px;border-left:3px solid {_cc};margin:3px 0;background:#0f172a;border-radius:4px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px'>"
+            f"<span style='font-weight:800;color:#e2e8f0'>{_c['grade']} {_c['name']} "
+            f"<span style='color:#64748b;font-size:10px'>{_c['code']}</span></span>"
+            f"<span style='color:#cbd5e1;font-size:12px'>{_c['px']:,} "
+            f"<span style='color:{_cc}'>({_c['chg']:+.1f}%)</span></span></div>"
+            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>"
+            f"📍내일 관전 진입 {_c['entry']:,}(5일선 눌림) · 손절 {int(_c['entry']*0.98):,}(−2%) · "
+            f"1차익절 {int(_c['entry']*1.03):,}(+3%) · <b style='color:#fbbf24'>{' · '.join(_c['reasons'])}</b>"
+            f"{'<br>'+_tags if _tags else ''}</div></div>", unsafe_allow_html=True)
+    st.caption("💡 이건 '확정 매수'가 아니라 내일 아침 관전 후보야. 내일 09시 시가·수급 재확인 → "
+               "5일선 눌림에서 분할 진입(추격 금지). 갭 +3%↑ 뜨면 과열 → 눌림 기다리거나 스킵.")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # [V14.4] 역행 강세주 스캐너 — 지수 ↓인데 나 홀로 ↑ + 수급(+). 리스크오프에도 강한 놈만.
 # ═══════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=150, show_spinner=False)
@@ -11035,6 +11134,68 @@ def dante_check(code):
     return {"count": _n, "golden": _n >= 5, "conds": _conds, "px": _px, "ma112": _ma112}
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V16.6] 강세 종배(돌파형) 판정 — 정통 종가베팅(주식단테): 장대양봉·볼린저상단·거래량폭발·매물대돌파.
+#   돌팬티(눌림형)와 별개 트랙. 과열 허용(강세 지속 노림). 고위험 → 소액·분산·아침청산.
+# ═══════════════════════════════════════════════════════════════════
+def render_strong_close_bet(code, rec):
+    """🌒 강세 종배 판정 — 돌파형 6조건. 예외 전파 없음."""
+    st.markdown("##### 🌒 강세 종배 판정 (돌파형 · 내일 오를 강한 종목 선점)")
+    _px = rec.get("현재가") or 0; _o = rec.get("시가") or 0
+    _h = rec.get("고가") or 0; _l = rec.get("저가") or 0; _vol = rec.get("거래량") or 0
+    try:
+        _df = fetch_ohlcv(code, 260); _c = _df["종가"]
+    except Exception:
+        _df = None
+    if _df is None or len(_df) < 60 or not _px:
+        st.caption("판정 불가 — 장기 데이터 부족 또는 시세 결측."); return
+    _std = float(_c.rolling(20).std().iloc[-1])
+    _bbu = float(_c.rolling(20).mean().iloc[-1]) + 2 * _std
+    _ma224 = float(_c.rolling(224).mean().iloc[-1]) if len(_c) >= 224 else None
+    _prevhigh = float(_df["고가"].iloc[-61:-1].max()) if len(_df) >= 61 else float(_df["고가"].max())
+    _volavg = float(_df["거래량"].rolling(20).mean().iloc[-1]) if len(_df) >= 20 else 0
+    _nq = None
+    try:
+        _nq = fetch_macro_triggers().get("nq_pct")
+    except Exception:
+        pass
+    _conds = []
+    _body = ((_px - _o) / _o * 100) if _o else 0
+    _conds.append(("장대 양봉 마감(몸통 +3%↑)", (_px > _o and _body >= 3.0), f"몸통 {_body:+.1f}%"))
+    _pos = ((_px - _l) / (_h - _l)) if _h > _l else 0
+    _conds.append(("종가 고가 근처(0.7↑ 강한 마감)", (_pos >= 0.7), f"종가위치 {_pos:.2f}"))
+    _conds.append(("볼린저 상단 돌파(우수생)", bool(_bbu and _px >= _bbu), f"BB상단 {_bbu:,.0f}"))
+    _vr = (_vol / _volavg) if _volavg else 0
+    _conds.append(("거래량 폭발(20일평균 2배↑)", (_vr >= 2.0), f"{_vr:.1f}배"))
+    _brk = bool((_ma224 and _px > _ma224) or (_prevhigh and _px >= _prevhigh * 0.99))
+    _conds.append(("매물대/224·전고 돌파", _brk,
+                   ("224선 위" if (_ma224 and _px > _ma224) else "전고 근처/돌파" if (_prevhigh and _px >= _prevhigh*0.99) else "미돌파")))
+    _conds.append(("나선 우호(익일 갭업)", (_nq is not None and _nq >= 0),
+                   (f"나선 {_nq:+.2f}%" if _nq is not None else "결측")))
+    _n = sum(1 for _, _ok, _ in _conds if _ok)
+    _co = "#eab308" if _n >= 5 else "#64748b"
+    _chips = "".join(
+        f"<div style='display:flex;gap:8px;padding:2px 0;font-size:12px'><span>{'🟢' if _ok else '🔴'}</span>"
+        f"<span style='width:210px;color:#cbd5e1'>{_nm}</span><span style='color:#94a3b8'>{_dt}</span></div>"
+        for _nm, _ok, _dt in _conds)
+    st.markdown(
+        f"<div style='border:1.5px solid {_co};border-radius:12px;padding:10px 14px;margin:4px 0;"
+        f"background:linear-gradient(180deg,#0f172a,#111c33)'>"
+        f"<div style='font-weight:900;color:#e2e8f0;margin-bottom:4px'>강세 종배 6조건: "
+        f"<span style='color:{_co}'>{_n}/6</span></div>{_chips}</div>", unsafe_allow_html=True)
+    if _n >= 5:
+        st.markdown(
+            f"<div style='border:2px solid #f59e0b;border-radius:12px;padding:11px 15px;margin:4px 0;"
+            f"background:linear-gradient(90deg,#2a1f05,#111c33);box-shadow:0 0 14px rgba(245,158,11,0.35);"
+            f"font-weight:900;color:#fcd34d'>🌒 [강세 종배 격발] 돌파형 확정! ({_n}/6)"
+            f"<div style='font-size:11.5px;font-weight:400;color:#fde68a;margin-top:3px'>"
+            f"진입 {_px:,}(종가) · 손절 {int(_px*0.98):,}(−2%) · 목표 익일 아침 +5% 청산<br>"
+            f"⚠️ 고위험 — 3종목 분산·다음날 아침 일괄청산·−2% 칼손절 필수(과열이라 갭다운 위험)</div></div>",
+            unsafe_allow_html=True)
+    st.caption("💡 강세 종배(주식단테): 장대양봉으로 매물대 거래량 터뜨리며 돌파+볼린저 상단=우수생. "
+               "과열이어도 강세 지속 노림. 돌팬티(눌림형)와 반대 — 소액·분산·아침청산 규율 절대 필수.")
+
+
 def render_dante_card(code):
     """🔵 단테 256 스윙 6조건 카드(Track B) — 개별종목 검증. 예외 전파 없음."""
     st.markdown("##### 🔵 단테 256 스윙 검증 (Track B · 역매공파 112)")
@@ -11352,6 +11513,12 @@ def render_stock_analyzer():
             render_program_vap(_code, (_rec.get("현재가") or 0))
         except Exception as _pve:
             st.caption(f"⚠️ 프로그램 판독 일시 비활성: {type(_pve).__name__}")
+    # [V16.6] 강세 종배(돌파형) — 15:00~15:30 종가 강세주 오버나이트 선점 판정
+    with st.expander("🌒 강세 종배 판정 (돌파형 · 내일 오를 강한 종목)", expanded=False):
+        try:
+            render_strong_close_bet(_code, _rec)
+        except Exception as _sbe:
+            st.caption(f"⚠️ 강세 종배 판정 일시 비활성: {type(_sbe).__name__}")
     # [V13.6] 단테 256 스윙 검증(Track B) — 중장기 스윙 후보 6조건 판정
     with st.expander("🔵 단테 256 스윙 검증 (Track B · 중장기)", expanded=False):
         try:
@@ -11596,6 +11763,11 @@ with tab_g:
         render_nxt_scenarios()
     except Exception as _nse:
         st.caption(f"⚠️ NXT 시나리오 일시 비활성: {type(_nse).__name__}")
+    # [V16.7] 내일 아침 후보 — 마감후(15:30~20:00) 오늘 종가 확정 기준 선점(그 외 시간엔 자동 숨김)
+    try:
+        render_tomorrow_prep()
+    except Exception as _tpe:
+        st.caption(f"⚠️ 내일 후보 스캔 일시 비활성: {type(_tpe).__name__}")
     _section_title("1", "🚦", "오늘 매매 가능? · 매크로 신호등")
     try:
         render_macro_triggers_panel()
