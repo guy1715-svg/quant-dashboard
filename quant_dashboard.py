@@ -705,6 +705,30 @@ def kis_volume_rank(top=60):
 
 
 @st.cache_data(ttl=180, show_spinner=False)
+def kis_5min_volume_ratio(code):
+    """[V16.2] 최근 5분 거래량 / 직전 5분 거래량 배수 — 5분봉 초입 폭증 포착. 실패 시 None.
+    분봉(1분) 거래량(cntg_vol) 최근 10개로 최근5분/직전5분 비교."""
+    try:
+        _tok = kis_get_token()
+        if not _tok:
+            return None
+        _res = _requests.get(
+            f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            headers={"authorization": f"Bearer {_tok}", "appkey": _kis_key(),
+                     "appsecret": _kis_secret(), "tr_id": "FHKST03010200"},
+            params={"fid_etc_cls_code": "", "fid_cond_mrkt_div_code": "J",
+                    "fid_input_iscd": code, "fid_input_hour_1": "",
+                    "fid_pw_data_incu_yn": "N"}, timeout=6)
+        _o2 = _res.json().get("output2", []) or []      # 최신순
+        _vols = [_to_int(_r.get("cntg_vol")) for _r in _o2[:10]]
+        if len(_vols) < 10:
+            return None
+        _recent5 = sum(_vols[:5]); _prev5 = sum(_vols[5:10])
+        return (_recent5 / _prev5) if _prev5 > 0 else None
+    except Exception:
+        return None
+
+
 def kis_intraday_minute(code, max_pages=14):
     """[V13.2] 당일 1분봉 시계열(시각·종가) — inquire-time-itemchartprice 페이징. 실패 시 None.
     알림 타점을 시간축 차트에 찍어 '신호 정확도'를 눈으로 보기 위함."""
@@ -11047,9 +11071,17 @@ def render_daytrade_check(code, rec):
     _bidq = sum(_ob["bid_qty"]) if _ob else 0
     if _askq and _bidq:
         _ratio = _askq / _bidq
-        _checks.append(("호가 매도>매수(1.5배↑ 유리)", (_ratio >= 1.3), f"매도/매수 {_ratio:.1f}배"))
+        _checks.append(("호가 매도≥매수 2배(세력 명분)", (_ratio >= 2.0), f"매도/매수 {_ratio:.1f}배"))
     else:
-        _checks.append(("호가 매도>매수", False, "호가 조회 실패/장외"))
+        _checks.append(("호가 매도≥매수 2배", False, "호가 조회 실패/장외"))
+    # [V16.2] 5분봉 거래량 직전 대비 2배↑ (초입 폭증 — 선점)
+    _vr = None
+    try:
+        _vr = kis_5min_volume_ratio(code)
+    except Exception:
+        pass
+    _checks.append(("5분봉 거래량 직전 2배↑", (_vr is not None and _vr >= 2.0),
+                    (f"{_vr:.1f}배" if _vr is not None else "분봉 조회 실패/장외")))
     _n = sum(1 for _, _ok, _ in _checks if _ok)
     _rows = "".join(
         f"<div style='display:flex;gap:8px;padding:2px 0;font-size:12px'>"
@@ -11059,15 +11091,15 @@ def render_daytrade_check(code, rec):
         for _nm, _ok, _dt in _checks)
     if _chase or not _rr_ok:
         _v, _vc = "🔴 추격/공간부족 — 지금 사지마, 눌림 대기", "#ef4444"
-    elif _pull and _trend and _n >= 4:
+    elif _pull and _trend and _n >= 5:
         _v, _vc = "🟢 눌림 진입존 — 검토(기준봉 시가 손절)", "#22c55e"
     else:
-        _v, _vc = "🟡 애매 — 눌림·호가 확인 후 소액", "#eab308"
+        _v, _vc = "🟡 애매 — 눌림·호가·5분봉 확인 후 소액", "#eab308"
     st.markdown(
         f"<div style='border:1.5px solid {_vc};border-radius:12px;padding:10px 14px;margin:4px 0;"
         f"background:linear-gradient(180deg,#0f172a,#111c33)'>{_rows}"
         f"<div style='margin-top:6px;padding-top:5px;border-top:1px solid #1e293b;"
-        f"font-weight:900;color:{_vc}'>{_v} ({_n}/5)</div></div>", unsafe_allow_html=True)
+        f"font-weight:900;color:{_vc}'>{_v} ({_n}/6)</div></div>", unsafe_allow_html=True)
     st.caption("💡 단타 원칙(주식단테): 추격 금지 · 시가 −2~3% 눌림(음봉) 매수 → 양봉 매도 · "
                "기준봉(장대양봉) 시가 이탈 시 손절 · 흐름 깨지면(연속 음봉·기준선 하회) 즉시 손절.")
 
@@ -11335,7 +11367,7 @@ with _t_settings:
     st.markdown("#### 🔄 오늘 텔레그램 알림 다시 받기")
     st.caption("종배 확정픽·급증·역행주·과열·NXT 알림은 '당일 1회'로 중복 차단됨 → 리셋하면 조건 충족 시 재발송.")
     if st.button("🔄 오늘 알림 리셋 (종배픽·급증·역행·과열·NXT 다시 받기)", key="_reset_alerts"):
-        _pref = ("_g7_tg_", "_surge_tg_", "_ct_tg_", "_overheat_wait_", "_nxt_c_")
+        _pref = ("_g7_tg_", "_surge_tg_", "_surge_entry_", "_ct_tg_", "_overheat_wait_", "_nxt_c_")
         _cleared = [_k for _k in list(st.session_state.keys())
                     if any(_k.startswith(_p) for _p in _pref)]
         for _k in _cleared:
