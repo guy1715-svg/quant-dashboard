@@ -4066,23 +4066,36 @@ def scan_tomorrow_candidates(top=50):
         _above5 = bool(_ma5 and _px >= _ma5)
         _near_prevhigh = bool(_prevhigh20 and _px >= _prevhigh20 * 0.99)  # 전고 돌파/근접
         _new_high = bool(_high60 and _px >= _high60)                      # 60일 신고가
-        _not_overheat = bool(-2.0 <= _disp < 8.0)                          # 과열(추격) 아님
         _reasons, _score = [], 0
         if _above5:       _score += 1; _reasons.append("5일선 위")
         if _near_prevhigh:_score += 2; _reasons.append("전고 돌파/근접")
         if _new_high:     _score += 1; _reasons.append("신고가")
-        if _not_overheat: _score += 1; _reasons.append("과열 아님")
-        else:             _reasons.append(f"⚠과열 이격{_disp:+.0f}%")
         if _chg > 0:      _score += 1
         # 거래대금 상위는 이미 랭킹 진입으로 충족(가점 1)
         _score += 1
-        _grade = "🟢강력" if _score >= 6 else "🟡관심" if _score >= 4 else "⚪보류"
-        # 내일 관전 진입가: 5일선(눌림 지지) — 없으면 종가 −2%
-        _entry = int(_ma5) if _ma5 and _ma5 <= _px else int(_px * 0.98)
+        # [V16.8] 이격(과열) 3단 게이트 — 추격 손실 방지가 최우선.
+        #   ≥20%: 🔴추격주의(아무리 강해도 강력 금지, 진입가 X)
+        #   8~20%: 🟡과열주의(눌림 대기 전제)  /  <8%: 정상(종배 적합, 가점)
+        if _disp >= 20.0:
+            _oh = "hard"; _reasons.append(f"🔴이격{_disp:+.0f}% 과열")
+        elif _disp >= 8.0:
+            _oh = "soft"; _reasons.append(f"⚠이격{_disp:+.0f}%")
+        else:
+            _oh = "no"; _score += 1; _reasons.append("과열 아님")
+        if _oh == "hard":
+            _grade = "🔴추격주의"
+        elif _oh == "soft":
+            _grade = "🟡관심" if _score >= 4 else "⚪보류"
+        else:
+            _grade = "🟢강력" if _score >= 6 else "🟡관심" if _score >= 4 else "⚪보류"
+        # 내일 관전 진입가: 5일선(눌림 지지) — 과열hard는 진입가 없음(관망)
+        _entry = 0 if _oh == "hard" else (int(_ma5) if _ma5 and _ma5 <= _px else int(_px * 0.98))
+        _ohrank = {"no": 2, "soft": 1, "hard": 0}[_oh]                    # 과열 아닌 놈 우선 정렬
         _out.append({"code": _cd, "name": _s.get("name", ""), "px": _px, "chg": _chg,
                      "turnover": _to, "grade": _grade, "score": _score, "disp": round(_disp, 1),
-                     "entry": _entry, "reasons": _reasons})
-    _out.sort(key=lambda x: (x["score"], x["turnover"]), reverse=True)
+                     "entry": _entry, "overheat": _oh, "ohrank": _ohrank,
+                     "ma5": int(_ma5) if _ma5 else 0, "reasons": _reasons})
+    _out.sort(key=lambda x: (x["ohrank"], x["score"], x["turnover"]), reverse=True)
     for _s in _out[:8]:
         try:
             _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
@@ -4106,27 +4119,38 @@ def render_tomorrow_prep():
         _cands = scan_tomorrow_candidates()
     except Exception as _e:
         st.caption(f"⚠️ 후보 스캔 일시 비활성: {type(_e).__name__}"); return
-    _cands = [c for c in _cands if c["score"] >= 4][:8]   # 🟡관심 이상만
+    _cands = [c for c in _cands if c["score"] >= 4 or c["overheat"] == "hard"][:8]
     if not _cands:
         st.caption("오늘 종가 기준 뚜렷한 후보(전고돌파+5일선+과열아님) 없음 — 무리한 종배는 쉬는 게 정답."); return
+    _has_clean = any(c["overheat"] == "no" for c in _cands)
     for _c in _cands:
         _cc = "#ef4444" if _c["chg"] < 0 else "#16a34a" if _c["chg"] > 0 else "#94a3b8"
+        _oh = _c["overheat"]
+        _border = "#ef4444" if _oh == "hard" else "#eab308" if _oh == "soft" else _cc
         _tags = " ".join(
             f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
             for _t in (_c.get("tags") or [])) or ""
+        if _oh == "hard":     # 🔴추격주의 — 진입가 X, 관망 안내
+            _line = (f"🚫 <b style='color:#f87171'>추격금지</b> · 이격 이미 과열({_c['disp']:+.0f}%) — "
+                     f"내일 갭업 시 매수 <b>X</b>. 5일선({_c['ma5']:,})까지 큰 눌림 올 때만 재검토")
+        else:
+            _pull = "5일선 눌림" if _oh == "no" else f"⚠눌림 대기({_c['disp']:+.0f}% 과열)"
+            _line = (f"📍내일 관전 진입 {_c['entry']:,}({_pull}) · 손절 {int(_c['entry']*0.98):,}(−2%) · "
+                     f"1차익절 {int(_c['entry']*1.03):,}(+3%)")
         st.markdown(
-            f"<div style='padding:4px 6px;border-left:3px solid {_cc};margin:3px 0;background:#0f172a;border-radius:4px'>"
+            f"<div style='padding:4px 6px;border-left:3px solid {_border};margin:3px 0;background:#0f172a;border-radius:4px'>"
             f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px'>"
             f"<span style='font-weight:800;color:#e2e8f0'>{_c['grade']} {_c['name']} "
             f"<span style='color:#64748b;font-size:10px'>{_c['code']}</span></span>"
             f"<span style='color:#cbd5e1;font-size:12px'>{_c['px']:,} "
             f"<span style='color:{_cc}'>({_c['chg']:+.1f}%)</span></span></div>"
-            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>"
-            f"📍내일 관전 진입 {_c['entry']:,}(5일선 눌림) · 손절 {int(_c['entry']*0.98):,}(−2%) · "
-            f"1차익절 {int(_c['entry']*1.03):,}(+3%) · <b style='color:#fbbf24'>{' · '.join(_c['reasons'])}</b>"
+            f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>{_line} · "
+            f"<b style='color:#fbbf24'>{' · '.join(_c['reasons'])}</b>"
             f"{'<br>'+_tags if _tags else ''}</div></div>", unsafe_allow_html=True)
-    st.caption("💡 이건 '확정 매수'가 아니라 내일 아침 관전 후보야. 내일 09시 시가·수급 재확인 → "
-               "5일선 눌림에서 분할 진입(추격 금지). 갭 +3%↑ 뜨면 과열 → 눌림 기다리거나 스킵.")
+    if not _has_clean:
+        st.caption("⚠️ 오늘 후보 대부분이 이미 과열(이격 큼) — 추격 진입 금물. 눌림 없으면 그냥 쉬는 게 정답.")
+    st.caption("💡 '확정 매수' 아님 = 내일 아침 관전 후보. 🟢강력(과열 아님)만 실전 눌림 진입 대상, "
+               "🔴추격주의는 절대 갭 추격 금지. 내일 09시 시가·수급 재확인 후 5일선 눌림에서만 분할 진입.")
 
 
 # ═══════════════════════════════════════════════════════════════════
