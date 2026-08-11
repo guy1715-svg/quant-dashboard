@@ -1298,13 +1298,14 @@ def _manju_save_lineup(pairs):
 
 
 def _manju_entry_ok(rec):
-    """진입(초록) 3대 조건 — 거래대금 ≥ 300억 AND 프로그램·외인·기관 추정금액 모두 양수(+).
-    화면 '진입' 시그널과 텔레그램 발송의 단일 기준."""
+    """진입(초록) 조건 — [V17.1] watcher check_entries와 동일 기준으로 통일(폰↔화면 일치).
+    거래대금 ≥ 300억 AND 외인 순매수(+) AND 외인+기관 합(+).
+    (V13.9 이유: 갭상승 급등주는 기관이 차익실현(-)이라 '기관도 +' 필수면 대장주가 탈락 →
+     외인(+) 필수 & 합(+)이면 통과. 기존 대시보드는 이 완화가 반영 안 돼 폰과 딴소리였음.)"""
     _turn = rec.get("거래대금") or 0
-    _prog = rec.get("프로그램금액") or 0
     _frn  = rec.get("외인추정금액") or 0
     _org  = rec.get("기관추정금액") or 0
-    return bool(_turn >= _MANJU_TURNOVER_REF and _prog > 0 and _frn > 0 and _org > 0)
+    return bool(_turn >= _MANJU_TURNOVER_REF and _frn > 0 and (_frn + _org) > 0)
 
 
 def _manju_notify_entries(valid_rows, now_kst):
@@ -1323,11 +1324,30 @@ def _manju_notify_entries(valid_rows, now_kst):
                 continue
             _px, _chg = r.get("현재가") or 0, r.get("등락률") or 0.0
             _to = r.get("거래대금") or 0
-            _ok = send_telegram(
-                f"🟢 진입 시그널 — {r.get('name')}\n"
-                f"거래대금 {_to/1e8:,.0f}억(300억↑) · 프로그램/외인/기관 모두 (+)\n"
-                f"현재가 {_px:,} ({_chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
+            # [V17.1] 과열 게이트 — watcher check_entries와 동일(chg≥5% 또는 20MA 이격≥7% → 관찰).
+            #   추격 방지: 이미 오른 뒤 뜨는 진입신호를 '매수'가 아닌 '눌림 대기'로 강등.
+            _disp = None
+            try:
+                _df20 = fetch_ohlcv(_code, 30)
+                if _df20 is not None and len(_df20) >= 20 and _px > 0:
+                    _ma20v = float(_df20["종가"].rolling(20).mean().iloc[-1])
+                    if _ma20v > 0:
+                        _disp = (_px / _ma20v - 1) * 100
+            except Exception:
+                pass
+            _overheat = (_chg >= 5.0) or (_disp is not None and _disp >= 7.0)
+            _dtxt = f" · 20MA 이격 {_disp:+.1f}%" if _disp is not None else ""
+            if _overheat:
+                _msg = (f"🟡 관찰(과열) — {r.get('name')}\n"
+                        f"이미 +{_chg:.1f}% 급등{_dtxt} — 추격 금지, 눌림(20MA/전고 지지) 대기\n"
+                        f"거래대금 {_to/1e8:,.0f}억 · 현재가 {_px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                        f"※눌림 와서 과열 풀리면 진입 재검토")
+            else:
+                _msg = (f"🟢 진입 시그널 — {r.get('name')}\n"
+                        f"거래대금 {_to/1e8:,.0f}억(300억↑) · 외인·순매수 합 (+){_dtxt}\n"
+                        f"현재가 {_px:,} ({_chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                        f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
+            _ok = send_telegram(_msg)
             if _ok:
                 _sent[_code] = True
         st.session_state["_manju_tg_sent"] = _sent
@@ -1336,12 +1356,13 @@ def _manju_notify_entries(valid_rows, now_kst):
 
 
 def _manju_sniper(rec, now_kst=None):
-    """🎯 09:10 시가저격 배지 판정 — KST 09:00~09:10 내 당일 누적 거래대금이 임계 돌파 시 활성.
+    """🎯 09:15 시가저격 배지 판정 — KST 09:00~09:15 내 당일 누적 거래대금이 임계 돌파 시 활성.
+    [V17.1] 창을 watcher check_snipers(09:15)와 일치시킴 — 09:10~09:15 폰 신호를 화면서 확인 가능.
     대형주/중소형주 탄력성 필터: 대형주(현재가≥5만) 300억, 중소형주 150억(완화).
     반환 (active:bool, badge_html:str, need_won:int)."""
     _n = now_kst or (datetime.utcnow() + timedelta(hours=9))
     _mins = _n.hour * 60 + _n.minute
-    _in_window = (9 * 60) <= _mins <= (9 * 60 + 10)
+    _in_window = (9 * 60) <= _mins <= (9 * 60 + 15)
     _to = rec.get("거래대금") or 0
     _px = rec.get("현재가") or 0
     _need = _MANJU_TURNOVER_REF if _px >= _MANJU_LARGECAP_PX else _MANJU_SNIPER_SMALL
@@ -1350,7 +1371,7 @@ def _manju_sniper(rec, now_kst=None):
     if _active:
         _badge = ("<span style='background:linear-gradient(90deg,#f59e0b,#fbbf24);color:#1a1505;"
                   "padding:2px 9px;border-radius:10px;font-size:11px;font-weight:900;"
-                  "box-shadow:0 0 10px rgba(251,191,36,0.5)'>🎯 09:10 시가저격 완료</span>")
+                  "box-shadow:0 0 10px rgba(251,191,36,0.5)'>🎯 09:15 시가저격 완료</span>")
     else:
         _badge = ""
     return _active, _badge, _need
@@ -3969,7 +3990,8 @@ def scan_turnover_surge(top=18, min_mult=2.0):
             _df = fetch_ohlcv(_cd, 30)
             if _df is None or len(_df) < 5:
                 continue
-            _tv = (_df["종가"] * _df["거래량"]).tail(20)
+            # [V17.1] 급증 배수 기준선에서 '오늘(급증 당일)' 바 제외 — 분모 부풀림 방지(과소탐지 수정)
+            _tv = (_df["종가"] * _df["거래량"]).iloc[-21:-1]
             _avg = float(_tv.mean()) if len(_tv) else 0.0
         except Exception:
             _avg = 0.0
@@ -4584,9 +4606,11 @@ def send_telegram(text):
         _tok, _cid = _tg_creds()
         if not _tok or not _cid:
             return False
-        _requests.get(f"https://api.telegram.org/bot{_tok}/sendMessage",
-                      params={"chat_id": _cid, "text": text}, timeout=6)
-        return True
+        # [V17.1] 실제 전송 성공 확인 — HTTP 200 + ok:true 일 때만 True(400/429/초과에도
+        #   성공 처리되어 dedup 잠기고 신호가 조용히 유실되던 버그 수정).
+        _rp = _requests.get(f"https://api.telegram.org/bot{_tok}/sendMessage",
+                            params={"chat_id": _cid, "text": text}, timeout=6)
+        return bool(_rp.status_code == 200 and (_rp.json() or {}).get("ok"))
     except Exception:
         return False
 
@@ -5364,10 +5388,12 @@ _NEG_PASS_KWS = ("우려", "전망", "일축", "해소", "극복", "반박", "�
                  "시설투자", "시설자금", "공장증설", "신설투자")            # 호재성 자금조달 목적
 
 
-def news_score_modifier(code, disp_pct=None):
+def news_score_modifier(code, disp_pct=None, overheat_mute=True):
     """뉴스 촉매 모디파이어 — (bonus, mute, reason).
     · 제목 단위로 악재 판정(부정어/호재맥락 있으면 Pass) → 진짜 악재면 mute=True(제외)
-    · S급 +8 / A급 +4 (최대 하나만). 20MA 이격 ≥7%(과열)면 가점 0(고점추격 차단).
+    · S급 +8 / A급 +4 (최대 하나만).
+    · overheat_mute=True(기본·아침단타/분석기): 20MA 이격 ≥7%면 가점 0(고점추격 차단).
+    · overheat_mute=False(종배 트랙, V17.0): 이격 게이팅 안 함 — 강한 돌파는 오히려 호재.
     · 예외 시 (0, False, '') — 절대 매매 방해 안 함."""
     try:
         _titles = _fetch_news_titles(code)
@@ -5386,8 +5412,8 @@ def news_score_modifier(code, disp_pct=None):
         _bonus, _tag = 8, "S급 호재 +8"
     elif any(any(_k in _blob for _k in _grp) for _grp in _NEWS_A_KWS):
         _bonus, _tag = 4, "A급 호재 +4"
-    # ③ 이격 게이팅 — 과열(≥7%)이면 가점 무효(상투 방지)
-    if _bonus and disp_pct is not None and disp_pct >= 7.0:
+    # ③ 이격 게이팅 — 아침단타 트랙만: 과열(≥7%)이면 가점 무효(상투 방지). 종배는 미적용(V17.0).
+    if overheat_mute and _bonus and disp_pct is not None and disp_pct >= 7.0:
         return 0, False, f"{_tag} 감지되나 이격 +{disp_pct:.1f}% 과열 → 가점 무효(추격금지)"
     return _bonus, False, _tag
 
@@ -5410,13 +5436,22 @@ def score_7gates(code, rec, now_kst=None):
         _sd, _kp, _kq = True, None, None
     _gates.append(("지수 안전도", (not _sd),
                    (f"코스피 {_kp:+.1f}%·코스닥 {_kq:+.1f}%" if isinstance(_kp, (int, float)) else "지수 결측")))
-    # 2) 20MA 이격 — 20MA 근처~위(눌림) & 과열 아님. 즉 -2%~+7%만 통과.
-    #    [V15.4] 하락추세(20MA 한참 아래, 예:-15%)도 통과시키던 버그 수정 → 떨어지는 칼날에 STRIKE 방지.
+    # 2) 20MA 이격 — [V17.1] 트랙별 이격 게이트.
+    #    · 아침 시가저격창(09:00~09:15) = 눌림/추격주의 → -2%~+7%만 통과(과열 차단 유지).
+    #    · 종배창(14:30~15:30)·NXT = 오버나이트 모멘텀(V17.0 백테 근거) → 상단 무제한, 하단(-2%)만 차단.
+    #    [V15.4] 하락추세(20MA 한참 아래)는 양 트랙 공통 차단 → 떨어지는 칼날 STRIKE 방지.
+    _mm7 = _now.hour * 60 + _now.minute
+    _is_morning7 = (9 * 60) <= _mm7 <= (9 * 60 + 15)
     _disp = ((_px / _ma20 - 1) * 100) if _ma20 else None
-    _disp_ok = (_disp is not None and -2.0 <= _disp < 7.0)
+    if _is_morning7:
+        _disp_ok = (_disp is not None and -2.0 <= _disp < 7.0)
+    else:
+        _disp_ok = (_disp is not None and _disp >= -2.0)         # 종배: 강세 돌파 허용
     _disp_tag = (f"{_disp:+.1f}%" if _disp is not None else "MA 결측")
     if _disp is not None and _disp < -2.0:
         _disp_tag += "(20MA 이탈·하락추세)"
+    elif (not _is_morning7) and _disp is not None and _disp >= 15.0:
+        _disp_tag += "(고변동·소액)"
     _gates.append(("20MA 이격", _disp_ok, _disp_tag))
     # 3) 거래대금 하드컷(시가총액 기준 — 시총 1조↑ 300억 / 미만 400억)
     _need, _capL = _turnover_hardcut_need(rec)
@@ -5452,7 +5487,8 @@ def score_7gates(code, rec, now_kst=None):
     # 7) 뉴스 촉매(S/A 호재)
     _nb = 0
     try:
-        _nb, _, _ = news_score_modifier(code, _disp)
+        # 종배창에선 이격 과열로 뉴스 가점을 무효화하지 않음(V17.1) — 아침 시가저격창만 과열 mute.
+        _nb, _, _ = news_score_modifier(code, _disp, overheat_mute=_is_morning7)
     except Exception:
         pass
     _gates.append(("뉴스 촉매", (_nb > 0), (f"+{_nb}" if _nb else "없음")))

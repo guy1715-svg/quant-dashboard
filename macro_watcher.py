@@ -194,9 +194,13 @@ _ALERT_FEED = []      # [V13.2] 모든 텔레그램 알람의 당일 버퍼 — 
 def send_telegram(token, chat_id, text):
     _ok = False
     try:
-        requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
-                     params={"chat_id": chat_id, "text": text}, timeout=8)
-        _ok = True
+        # [V17.1] 실제 전송 성공 여부 확인 — HTTP 200 + Telegram JSON ok:true 일 때만 성공.
+        #   (기존엔 예외만 없으면 성공 처리 → 400/429/메시지초과에도 dedup 잠겨 신호 유실)
+        _r = requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
+                          params={"chat_id": chat_id, "text": text}, timeout=8)
+        _ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
+        if not _ok:
+            print(f"텔레그램 전송 실패: HTTP {_r.status_code} {_r.text[:200]}")
     except Exception as e:
         print("텔레그램 전송 실패:", e)
     # 발송 성공/실패 무관하게 피드에 기록(대시보드에서 오늘 알람 타임라인으로 표시)
@@ -698,9 +702,10 @@ def _kospi_fut_session(now_kst):
     return "휴장"
 
 
-def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
-    반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단."""
+    반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단.
+    [V16.9 다이어트] sev==2(리스크오프)면 텔레그램 발송 억제 — 규제와 모순되는 매수 신호 차단(스냅샷엔 남김)."""
     m = now_kst.hour * 60 + now_kst.minute
     # [V13.2 투트랙] 마의 구간(09:00~09:15)은 초단타 시가저격 전용 — 창을 09:15까지 확대(기존 09:10)
     in_window = (9 * 60) <= m <= (9 * 60 + 15)
@@ -728,6 +733,12 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
                    "전고 미돌파(관망)" if _p3h is not None else "분봉 확인불가")
             out.append({"name": name, "code": code, "px": px, "chg": chg,
                         "turnover_eok": round(turn / 1e8, 0), "cap": cap, "breakout": _broke})
+            if sev == 2:                        # [V16.9] 리스크오프 — 매수 신호 억제(모순 방지). 스냅샷만.
+                continue
+            # [V17.1] 낙폭과대 급락주(떨어지는 칼) 차단 — 거래대금만으로 격발되던 sniper에 방향 게이트 추가.
+            _sdisp = _ma20_disparity(token, key, secret, code, px)
+            if _sdisp is not None and _sdisp <= -10.0 and (chg or 0) < -1.0:
+                continue                        # 20MA -10%↓ + 하락 중 = 시가저격 매수 보류
             if not sent.get(code):              # 당일 첫 돌파만 발송
                 _stop = int(px * 0.98); _res = _recent_high(token, key, secret, code)
                 if _res and _res > px:
@@ -736,7 +747,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
                 else:
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 send_telegram(token_tg, chat_id,
-                              f"{SIG_BUY}\n🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
+                              f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
                               f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk}\n"
                               f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                               f"─── 가격표 ───\n"
@@ -805,7 +816,7 @@ SUPPLY_FLIP_CONFIRM = 2         # 연속 확인 루프 수
 SUPPLY_BUY_DROP_CUT = -3.0      # 매수전환 하락 컷(%)
 
 
-def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """[이원화] 텔레그램은 '음(-)→양(+) 확정 전환'만(격발용). 대시보드 속보판엔 종목별 추세(관측용) 제공.
     반환 (flips, watch):
       flips = 이번에 양전 확정된 종목(텔레그램 발송분)
@@ -870,11 +881,12 @@ def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lin
             if (pend.get(kb + "_negseen") and pend.get(kb + "_upc", 0) >= SUPPLY_FLIP_CONFIRM
                     and not sent.get(kb + "_up")):
                 flips.append({"name": name, "code": code, "who": who, "dir": "up", "net_eok": round(cur / 1e8, 1)})
-                send_telegram(token_tg, chat_id,
-                              f"{SIG_BUY}\n🔄 {who} 수급 전환(+) — {name}\n"
-                              f"{who} 순매수 음(-)→양(+) 전환 (완충대 통과·{SUPPLY_FLIP_CONFIRM}루프 확인)\n"
-                              f"{who} 순매수 {cur/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n{hint_up}")
-                sent[kb + "_up"] = True
+                if sev != 2:              # [V17.1] 리스크오프면 매수전환 텔레그램 억제(스냅샷엔 유지·해제 시 재발송)
+                    send_telegram(token_tg, chat_id,
+                                  f"{SIG_BUY}\n🔄 {who} 수급 전환(+) — {name}\n"
+                                  f"{who} 순매수 음(-)→양(+) 전환 (완충대 통과·{SUPPLY_FLIP_CONFIRM}루프 확인)\n"
+                                  f"{who} 순매수 {cur/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n{hint_up}")
+                    sent[kb + "_up"] = True
             # 매도전환(양→음): 완충대 음수 → 연속 카운트(하락컷 없음 — 급락 중 이탈은 유효)
             _dn_ok = (cur <= -_TH)
             pend[kb + "_dnc"] = (pend.get(kb + "_dnc", 0) + 1) if _dn_ok else 0
@@ -929,7 +941,7 @@ def _market_investor():
     return None, None, None
 
 
-def check_market_supply_turn(now_kst, state, token_tg, chat_id):
+def check_market_supply_turn(now_kst, state, token_tg, chat_id, sev=1):
     """[시장 전체] 코스피 기관·외인 순매수 음↔양 전환 알림 — 순환매/시장 바닥·꼭지 신호.
     방향·주체별 당일 1회. 반환 스냅샷용 dict 또는 None."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -946,7 +958,7 @@ def check_market_supply_turn(now_kst, state, token_tg, chat_id):
     _stamp = now_kst.strftime("%H:%M")
 
     def _emit(cond_up, cond_dn, key, who, val):
-        if cond_up and not sent.get(key + "_up"):
+        if cond_up and sev != 2 and not sent.get(key + "_up"):   # [V17.1] 리스크오프 매수 억제
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY}\n📈 시장 전체 {who} 순매수 전환(+) — 코스피\n"
                           f"코스피 {who} 순매수 음(-)→양(+) 전환\n"
@@ -979,7 +991,7 @@ SECTOR_LEADERS = {
 }
 
 
-def check_sector_leaders(token, key, secret, now_kst, state, token_tg, chat_id, market_positive):
+def check_sector_leaders(token, key, secret, now_kst, state, token_tg, chat_id, market_positive, sev=1):
     """[2-Tier + Confluence] 6대 섹터 대장주 실측 수급 관측(속보판) + 시장·섹터 '정렬' 시에만 텔레그램.
     개별 대장주 단순 양전 알림은 발송 안 함(소음 차단). market_positive=시장 전체 양전 여부.
     반환: 관측용 리스트 [{sector,name,code,net_eok,positive}]."""
@@ -1004,7 +1016,7 @@ def check_sector_leaders(token, key, secret, now_kst, state, token_tg, chat_id, 
             if _best is None or _net > _best[0]:
                 _best = (_net, name, code, px, chg)
         # Confluence: 시장 전체 양전 + 이 섹터 대장 양전 정렬 → 섹터별 당일 1회
-        if _best and _best[0] >= 0 and market_positive and not sent.get(sector):
+        if _best and _best[0] >= 0 and market_positive and sev != 2 and not sent.get(sector):   # [V17.1] 리스크오프 매수(강) 억제
             _net, _nm, _cd, _px, _chg = _best
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n🎯 [정렬 신호] 시장 + {sector} 대장 동시 양전!\n"
@@ -1048,7 +1060,7 @@ def _tail_ok(o, h, l, c, ratio=0.33):
     return bool(rng > 0 and (min(o, c) - l) >= rng * ratio)
 
 
-def check_turnaround(token, key, secret, now_kst, state, token_tg, chat_id):
+def check_turnaround(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V6.1-B] 14:15~15:20 정렬 대기 + 15:20 동시호가 타격 2단계 폰 알림(대시보드 불필요).
     4대 정렬: ①패닉셀(당일저점≤-7%) ②나스닥선물≥-0.5% ③매도둔화(순매수 기울기0↑) ④아래꼬리 지지.
     반환: 스냅샷용 리스트."""
@@ -1079,14 +1091,14 @@ def check_turnaround(token, key, secret, now_kst, state, token_tg, chat_id):
             continue
         out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0})
         _ps = f"{px:,} ({(chg or 0):+.2f}%)"
-        if not _strike and not sent.get(code + "_wait"):
+        if not _strike and sev != 2 and not sent.get(code + "_wait"):   # [V17.1] 리스크오프 매수 억제
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY}\n🔥 14:30 턴어라운드 정렬 — {name}\n"
                           f"패닉셀 멈춤+나스닥선물 반등+지지 정렬\n"
                           f"현재가 {_ps} · {now_kst.strftime('%H:%M')} KST\n"
                           f"⏳ 지금은 관망 · 15:20 정각 동시호가 대기 (섣부른 진입 금지)")
             sent[code + "_wait"] = True
-        if _strike and not sent.get(code + "_strike"):
+        if _strike and sev != 2 and not sent.get(code + "_strike"):   # [V17.1] 리스크오프 매수(강) 억제
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n⏰ 지금 타격 — {name} (15:20 동시호가)\n"
                           f"TURNAROUND_STRIKE 정렬 확정\n"
@@ -1106,7 +1118,7 @@ _NXT_JUMP_PCT = 1.5          # 야간 시작가(16시경) 대비 상승 몸통 �
 _NXT_MIN_TURN = 5_000_000_000  # NXT 야간 누적거래대금 바닥값 50억(얇은 유동성 노이즈 컷)
 
 
-def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """넥장(넥스트레이드 야간) 급등 타점 — 16:00~19:50, 라인업 종목을 'NX' 시장코드로 야간 조회.
     야간 시작가 대비 +1.5%↑ AND 거래대금 50억↑·증가 시 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트.
     ※ 수급 확인 불가(야간 미제공) — 가격/거래대금 기반 급등 신호."""
@@ -1134,12 +1146,13 @@ def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineu
                 and _tdelta > 0 and not sent.get(code)):
             out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0,
                         "night_move": round(_move, 2), "turnover_eok": round(turn / 1e8, 0)})
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🌙 넥장 급등 타점 — {name}\n"
-                          f"야간 시작가 대비 +{_move:.1f}% · NXT 거래대금 {turn/1e8:,.0f}억\n"
-                          f"현재가 {px:,} (전일 {(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                          f"⚠️ 야간=수급확인 불가·유동성 얇음 → 소액·−2% 손절 필수 · 추격 금지")
-            sent[code] = True
+            if sev != 2:              # [V17.1] 리스크오프면 야간 매수 억제(스냅샷엔 유지)
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_BUY}\n🌙[야간·NXT소액] 넥장 급등 타점 — {name}\n"
+                              f"야간 시작가 대비 +{_move:.1f}% · NXT 거래대금 {turn/1e8:,.0f}억\n"
+                              f"현재가 {px:,} (전일 {(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"⚠️ 야간=수급확인 불가·유동성 얇음 → 소액·−2% 손절 필수 · 추격 금지")
+                sent[code] = True
     state["nxt_base"], state["nxt_sent"] = base, sent
     return out
 
@@ -1148,7 +1161,7 @@ def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineu
 _BAR15_PCT = 1.0   # 15분 구간 상승 몸통 기준(%) — 김팀장 2%는 대형주엔 빡세 1.0%부터(조정 가능)
 
 
-def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """15분봉 강한 양봉 확정 감지 — 15분 경계(09:15,09:30…)마다 직전 15분 구간 상승/거래대금 증가 판정.
     강한 양봉 마감 시 '다음 봉 진입' 알림(종목·봉별 당일 1회). ※ 현재가·거래대금 기반 근사(진짜 캔들 아님).
     반환: 스냅샷용 리스트."""
@@ -1204,20 +1217,21 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
                                  f"🔻 돌파 후 하락 매도: {_resell:,}원 (뚫었다 다시 이 밑이면 매도)")
                 else:
                     _res_line = "🚀 저항 위 = 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
-                send_telegram(token_tg, chat_id,
-                              f"{SIG_BUY}\n📊 15분봉 강한 양봉 — {name}\n"
-                              f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
-                              f"{_nqtxt}\n"
-                              f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                              f"{_warn}\n"
-                              f"─── 가격표 ───\n"
-                              f"🎯 매수가(현재): {_buy:,}원\n"
-                              f"✂️ 손절가: {_stop:,}원 (−2%)\n"
-                              f"{_res_line}\n"
-                              f"─────────\n"
-                              f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
-                sent[_key] = True
-                _log_signal(state, now_kst, "15분봉", name, code, px)
+                if sev != 2:          # [V17.1] 리스크오프면 15분봉 매수 억제(스냅샷엔 유지)
+                    send_telegram(token_tg, chat_id,
+                                  f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 15분봉 강한 양봉 — {name}\n"
+                                  f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
+                                  f"{_nqtxt}\n"
+                                  f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                                  f"{_warn}\n"
+                                  f"─── 가격표 ───\n"
+                                  f"🎯 매수가(현재): {_buy:,}원\n"
+                                  f"✂️ 손절가: {_stop:,}원 (−2%)\n"
+                                  f"{_res_line}\n"
+                                  f"─────────\n"
+                                  f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
+                    sent[_key] = True
+                    _log_signal(state, now_kst, "15분봉", name, code, px)
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
             mark[code] = {"bidx": _bidx, "px": px, "turn": turn or 0}
@@ -1225,10 +1239,11 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
     return out
 
 
-def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup):
+def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """진입(초록) 3-조건 상시 감시 — 라인업, 제로아워(09:00~10:00) 창.
     조건: 거래대금 ≥ 임계(대형300/중소150억) AND 프로그램·외인·기관 추정금액 모두 (+).
-    신규 충족 종목만 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트."""
+    신규 충족 종목만 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트.
+    [V16.9 다이어트] sev==2(리스크오프) 또는 낙폭과대 급락주(이격≤-10%+하락)면 발송 억제(스냅샷엔 남김)."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (10 * 60)):            # 만쥬 제로아워 밖 → 감시 안 함
         return []
@@ -1250,14 +1265,36 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup)
         if not entry_ok:
             continue
         _org_txt = "외인·기관 동반(+)" if org_amt > 0 else "외인 주도(기관 차익실현 中)"
+        # [V16.1] 과열 게이트 — 이미 +5%↑ 급등 or 20MA 이격 7%↑면 '매수(강)' 대신 '관찰(눌림 대기)'.
+        #   추격 방지: 수급 확인형 신호는 늦어서 이미 오른 뒤 뜸 → 과열이면 눌림에서 재진입.
+        _disp = None
+        try:
+            _disp = _ma20_disparity(token, key, secret, code, px)
+        except Exception:
+            pass
+        _overheat = ((chg is not None and chg >= 5.0) or (_disp is not None and _disp >= 7.0))
+        # [V16.9] 낙폭과대 급락주(떨어지는 칼) — 이격 -10%↓ + 당일 하락. 수급(+)이어도 추격 금지.
+        _falling = (_disp is not None and _disp <= -10.0 and (chg or 0) < -1.0)
+        _disp_txt = f" · 20MA 이격 {_disp:+.1f}%" if _disp is not None else ""
         out.append({"name": name, "code": code, "px": px, "chg": chg,
                     "turnover_eok": round(turn / 1e8, 0),
                     "prog_eok": round(prog_amt / 1e8, 1)})
-        if not sent.get(code):
+        if sev == 2 or _falling:               # [V16.9] 리스크오프·낙폭과대 → 매수 신호 억제(모순/추격 방지)
+            continue
+        if _overheat:
+            _wkey = "w_" + code
+            if not sent.get(_wkey):
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_WATCH}\n🟡 관찰(과열) — {name}\n"
+                              f"이미 +{(chg or 0):.1f}% 급등{_disp_txt} — 추격 금지, 눌림(20MA/전고 지지) 대기\n"
+                              f"수급: 외인 {frn_amt/1e8:+,.0f}억 · 거래대금 {turn/1e8:,.0f}억 · {px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                              f"※눌림 와서 과열 풀리면 '진입 시그널' 재발송")
+                sent[_wkey] = True
+        elif not sent.get(code):
             send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY_STRONG}\n🟢 진입 시그널 — {name}\n"
-                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+)\n"
-                          f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                          f"{SIG_BUY_STRONG}\n🌅[아침단타·당일청산] 🟢 진입 시그널 — {name}\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt}\n"
+                          f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
     state["entry_sent"] = sent
@@ -1275,14 +1312,19 @@ def check_nq_cross(now_kst, state, token_tg, chat_id):
         return None
     _prev = state.get("nq_prev")
     _now_ts = int(now_kst.timestamp())
+    # [V16.9 다이어트] 0선 데드밴드 — |nq| < 0.15%면 '돌파'로 안 침(0.00% 근처 진동 무시).
+    #   + 반전 가드: 직전 반대방향 크로스로부터 30분 이내면 발송 안 함(양↔음 핑퐁 차단).
+    _NQ_DEAD = 0.15
+    _last_cross_ts = max(int(state.get("nq_up_ts", 0)), int(state.get("nq_dn_ts", 0)))
+    _reversal_ok = (_now_ts - _last_cross_ts) >= 1800
     if _prev is not None:
-        if _prev < 0 <= nq and (_now_ts - int(state.get("nq_up_ts", 0))) >= 7200:
+        if _prev < 0 <= nq and nq >= _NQ_DEAD and _reversal_ok and (_now_ts - int(state.get("nq_up_ts", 0))) >= 7200:
             send_telegram(token_tg, chat_id,
                           f"{SIG_INFO}\n📈 나스닥선물 양전(+) — 0선 상향 돌파\n"
                           f"나스닥100 선물 {nq:+.2f}% (음→양 전환)\n"
                           f"{now_kst.strftime('%m/%d %H:%M')} KST · 익일 갭상승 힌트·위험선호 회복")
             state["nq_up_ts"] = _now_ts
-        elif _prev >= 0 > nq and (_now_ts - int(state.get("nq_dn_ts", 0))) >= 7200:
+        elif _prev >= 0 > nq and nq <= -_NQ_DEAD and _reversal_ok and (_now_ts - int(state.get("nq_dn_ts", 0))) >= 7200:
             send_telegram(token_tg, chat_id,
                           f"{SIG_CAUTION}\n📉 나스닥선물 음전(-) — 0선 하향 돌파\n"
                           f"나스닥100 선물 {nq:+.2f}% (양→음 전환)\n"
@@ -1383,6 +1425,9 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
     if sox is None:
         return None
     _now_ts = int(now_kst.timestamp())
+    # [V16.9 다이어트] '밤당 1회(방향별)' — 같은 SOX 약세/강세를 새벽 내내 반복 발송하던 스팸 제거.
+    #   밤 id: 새벽(08시 이전)은 전날 저녁 세션 소속 → 전일 날짜로 묶음.
+    _night = (now_kst - datetime.timedelta(days=1)).strftime("%Y%m%d") if m <= 8 * 60 else now_kst.strftime("%Y%m%d")
 
     def _semis_txt():
         _parts = []
@@ -1393,20 +1438,20 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
         return " · ".join(_parts)
 
     _nqtxt = f"나스닥선물 {nq:+.2f}%" if nq is not None else "나스닥선물 확인불가"
-    if sox >= US_OVN_SOX_THR and (_now_ts - int(state.get("us_ovn_up_ts", 0))) >= 7200:
+    if sox >= US_OVN_SOX_THR and state.get("us_ovn_up_night") != _night:
         _semis = _semis_txt()
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY}\n🌙🟢 미장 반도체 강세 — SOX {sox:+.2f}%\n"
                       f"{_nqtxt}" + (f" · {_semis}" if _semis else "") + "\n"
                       f"{now_kst.strftime('%m/%d %H:%M')} KST · 내일 아침 반도체 갭상승 우호")
-        state["us_ovn_up_ts"] = _now_ts
-    elif sox <= -US_OVN_SOX_THR and (_now_ts - int(state.get("us_ovn_dn_ts", 0))) >= 7200:
+        state["us_ovn_up_night"] = _night
+    elif sox <= -US_OVN_SOX_THR and state.get("us_ovn_dn_night") != _night:
         _semis = _semis_txt()
         send_telegram(token_tg, chat_id,
                       f"{SIG_CAUTION}\n🌙🔴 미장 반도체 약세 — SOX {sox:+.2f}%\n"
                       f"{_nqtxt}" + (f" · {_semis}" if _semis else "") + "\n"
                       f"{now_kst.strftime('%m/%d %H:%M')} KST · 내일 아침 갭하락 주의·종배 비중 축소")
-        state["us_ovn_dn_ts"] = _now_ts
+        state["us_ovn_dn_night"] = _night
     return sox
 
 
@@ -1485,7 +1530,8 @@ def send_interval_brief(now_kst, state, token_tg, chat_id, snap):
     _last = state.get("interval_brief_ts", 0)
     if state.get("interval_brief_day") != today:
         _last = 0
-    if (int(now_kst.timestamp()) - int(_last)) < 1800:      # 30분 쿨다운
+        state["interval_brief_sig"] = None            # 날짜 바뀌면 시그니처도 초기화
+    if (int(now_kst.timestamp()) - int(_last)) < 1800:      # 30분 쿨다운(발송 최소 간격)
         return
     macro = snap.get("macro") or {}
     sev = macro.get("sev")
@@ -1498,7 +1544,13 @@ def send_interval_brief(now_kst, state, token_tg, chat_id, snap):
     _entry_n = len(snap.get("entries") or [])
     _top = snap.get("top_pick") or {}
     _topn = f"{_top.get('name')}(+{_top.get('amt_eok'):,.0f}억)" if _top else "—"
-    _msg = (f"{SIG_INFO}\n📋 30분 요약 브리핑 · {now_kst.strftime('%H:%M')} KST\n"
+    # [V16.9 다이어트] 상태가 바뀔 때만 발송 — sev·자금흐름·A급수·진입수·원톱이 직전과 같으면 침묵.
+    #   → 하루 11개 '리스크오프·0종' 복붙 스팸 제거. (첫 브리핑은 항상 1회 발송)
+    _sig = f"{sev}|{_flow}|{_ace_n}|{_entry_n}|{_topn}|{1 if macro.get('overheat') else 0}"
+    if state.get("interval_brief_sig") == _sig:
+        state["interval_brief_ts"] = int(now_kst.timestamp())   # 침묵해도 타이머는 갱신(다음 판정 30분 뒤)
+        return
+    _msg = (f"{SIG_INFO}\n📋 요약 브리핑(변동) · {now_kst.strftime('%H:%M')} KST\n"
             f"매크로: {_mtxt}\n"
             f"수급흐름: {_flow}\n"
             f"A급 {_ace_n}종 · 진입후보 {_entry_n}종 · 원톱 {_topn}")
@@ -1507,6 +1559,7 @@ def send_interval_brief(now_kst, state, token_tg, chat_id, snap):
     if send_telegram(token_tg, chat_id, _msg):
         state["interval_brief_ts"] = int(now_kst.timestamp())
         state["interval_brief_day"] = today
+        state["interval_brief_sig"] = _sig
 
 
 def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on):
@@ -1577,8 +1630,18 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
             _best = max(perf, key=lambda p: p["chg"]); _worst = min(perf, key=lambda p: p["chg"])
             lines.append(f"■ 라인업 성적: 최고 {_best['name']} {_best['chg']:+.2f}% / "
                          f"최저 {_worst['name']} {_worst['chg']:+.2f}%")
-    lines += ["", "🧭 복기 체크(초보): ①신호 뜬 종목 실제로 올랐나? ②안 뜬 걸 감으로 샀다면 반성",
-              "   ③손절 원칙 지켰나? — 신호+원칙만 반복하면 실력 늡니다. 오늘도 수고했어요 👏"]
+    # [V16.9 다이어트] 한 줄 결론 — "오늘 뭘 했어야 했나"를 국면·신호 기준으로 명확히.
+    _sev_hi = j.get("sev_hi", 1)
+    _real = bool(_snp or _ent or _ace)     # 실제 액션 가능 신호가 하나라도 떴나
+    if _sev_hi >= 2:
+        _verdict = "🔴 오늘 결론: 리스크오프 — 무포지션이 정답. 매수(강) 신호 떠도 규제 우선(관망)."
+    elif _real:
+        _verdict = "🟢 오늘 결론: 진입 신호 있던 날 — 신호 종목만, 눌림 진입·−2% 손절 지켰으면 성공."
+    else:
+        _verdict = "🟡 오늘 결론: 뚜렷한 진입 신호 없던 날 — 안 산 게 정답. 감으로 산 게 있다면 반성."
+    lines += ["", _verdict,
+              "🧭 복기 체크(초보): ①신호 종목 실제로 올랐나? ②감으로 산 것 없나? ③손절 지켰나?",
+              "   신호+원칙만 반복하면 실력 늡니다. 오늘도 수고했어요 👏"]
     if send_telegram(token_tg, chat_id, "\n".join(lines)):
         state["review_day"] = today
 
@@ -1610,6 +1673,12 @@ def main():
             now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
             stamp = now.strftime("%m/%d %H:%M")
             journal_reset_if_needed(st, now.strftime("%Y%m%d"))   # 날짜 바뀌면 일지 초기화
+
+            # [V15.8] 주말(토/일) 국장·NXT·미선물 휴장 — 알림 전면 스킵(스팸 방지). 월0~금4, 토5·일6.
+            if now.weekday() >= 5:
+                print(f"[{stamp}] 주말 휴장 — 알림 대기")
+                time.sleep(max(60, args.interval))
+                continue
 
             # 1) 매크로
             sev, mtext, mdetail = compute_macro()
@@ -1683,7 +1752,7 @@ def main():
             }
             # 시장 전체(코스피) 기관·외인 전환 알림 — 네이버 소스(KIS 무관, 정규장만)
             try:
-                snap["market_supply"] = check_market_supply_turn(now, st, token_tg, chat_id)
+                snap["market_supply"] = check_market_supply_turn(now, st, token_tg, chat_id, sev)
             except Exception as _mse:
                 print("시장수급 체크 오류:", _mse)
             # 시장 전체 양전 여부(외인+기관 합 ≥ 0) → 2-Tier 대장주 정렬 판정에 사용
@@ -1725,17 +1794,20 @@ def main():
                         snap["precursor"] = {"from": outflow[0], "to": inflow[0],
                                              "inflow_eok": round(inflow[1]["net"] / 1e8, 1),
                                              "basis": _basis, "live": _mkt_hours}
-                        # [V13.9] 도배 차단 — 중복차단 키를 '유입처'만으로(이탈원 꼴찌섹터가 매분 바뀌어도 재발송 안 함).
-                        #   같은 유입처면 60분 쿨다운 후에만 갱신 재발송. 장중에만 발송.
+                        # [V16.3] 도배 차단 — '섹터별' 60분 쿨다운(바이오↔방산 번갈아 떠도 각각 1회/시간).
+                        #   기존 단일 tour_key는 유입처가 매분 flip-flop하면 매번 재발송되던 버그.
+                        _today3 = now.strftime("%Y%m%d")
                         key = inflow[0]
-                        _tour_ts = int(st.get("tour_ts", 0))
-                        _tour_fresh = (int(now.timestamp()) - _tour_ts) >= 3600   # 60분
-                        if _mkt_hours and (st.get("tour_key") != key or _tour_fresh):
+                        _tour = st.get("tour_sent") or {}
+                        if _tour.get("_day") != _today3:
+                            _tour = {"_day": _today3}
+                        _last = int(_tour.get(key, 0))
+                        if _mkt_hours and (int(now.timestamp()) - _last) >= 3600:   # 섹터별 60분
                             send_telegram(token_tg, chat_id,
                                           f"{SIG_BUY}\n🚀 전조 시그널!\n자금 {outflow[0]} 이탈 → {inflow[0]} 유입\n"
                                           f"유입 {inflow[1]['net']/1e8:,.0f}억 · {stamp} KST\n폭등 前 선취 후보 — 대시보드 확인")
-                            st["tour_key"] = key
-                            st["tour_ts"] = int(now.timestamp())
+                            _tour[key] = int(now.timestamp())
+                        st["tour_sent"] = _tour
                     # [V13.9] A급 — 연기금 파일 있으면 (유입 종목 ∩ 연기금), 없으면 '순매수 500억↑' 실용 대체.
                     #   pension_track_log.json 미존재 시 A급이 영구 0이던 구조적 결함 해소.
                     pens = pension_codes()
@@ -1750,16 +1822,22 @@ def main():
                             _is_ace = (s["code"] in pens) if pens else (s["amt"] >= ACE_AMT_MIN)
                             if _is_ace:
                                 ace_now.append((s["code"], s["name"], sname, s["amt"]))
-                    prev_ace = set(st.get("ace", []))
-                    new_ace = [a for a in ace_now if a[0] not in prev_ace]
-                    # A급도 같은 KIS 추정 순매수 기반 → 장외 새벽 오발 차단(장중에만 발송·상태 갱신)
+                    # [V16.3] A급 종목별 '당일 1회' 발송 — 순간 리스트 이탈→재진입 시 재발송되던 버그 수정.
+                    #   기존 prev_ace(직전 스냅) 방식은 종목이 잠깐 빠지면 '신규'로 오인 → 재알림. 당일 sent set으로 고정.
+                    _today3 = now.strftime("%Y%m%d")
+                    _ace_sent = st.get("ace_sent") or {}
+                    if _ace_sent.get("_day") != _today3:
+                        _ace_sent = {"_day": _today3}
+                    new_ace = [a for a in ace_now if a[0] not in _ace_sent]
                     if new_ace and sev != 2 and _mkt_hours:
                         lines = "\n".join(f"• {n} ({sn}) +{amt/1e8:,.0f}억" for _c, n, sn, amt in new_ace)
                         send_telegram(token_tg, chat_id,
                                       f"{SIG_BUY_STRONG}\n🥇 A급 종목 신규 포착!\n{lines}\n{stamp} KST\n({_ace_reason})")
-                        st["ace"] = [a[0] for a in ace_now]
-                    elif _mkt_hours:
-                        st["ace"] = [a[0] for a in ace_now]
+                        for _c, _n2, _sn, _amt in new_ace:
+                            _ace_sent[_c] = True
+                    if _mkt_hours:
+                        st["ace_sent"] = _ace_sent
+                        st["ace"] = [a[0] for a in ace_now]     # 스냅샷용 현재 A급 목록
                     print(f"           수급: 유입 {inflow[0] if inflow else '-'} / 이탈 {outflow[0] if outflow else '-'} · A급 {len(ace_now)}")
 
                     # 스냅샷 수급/A급 채우기 (억원 단위)
@@ -1806,40 +1884,40 @@ def main():
                     # 09:10 시가저격 — 라인업 거래대금 임계 돌파 시 종목별 1회 텔레그램
                     try:
                         snap["snipers"] = check_snipers(tok, kis_key, kis_secret, now, st,
-                                                        token_tg, chat_id, _lineup)
+                                                        token_tg, chat_id, _lineup, sev)
                     except Exception as _se:
                         print("시가저격 체크 오류:", _se)
                     # 진입 3-조건 상시 알림 — 제로아워(09~10) 거래대금+수급 모두(+) 충족 시 텔레그램
                     try:
                         snap["entries"] = check_entries(tok, kis_key, kis_secret, now, st,
-                                                        token_tg, chat_id, _lineup)
+                                                        token_tg, chat_id, _lineup, sev)
                     except Exception as _ee:
                         print("진입 체크 오류:", _ee)
                     # 수급 전환(격발용 텔레그램) + 추세 관측(대시보드용) 이원화
                     try:
                         snap["supply_turns"], snap["supply_watch"] = check_supply_turn(
-                            tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
+                            tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
                     except Exception as _ste:
                         print("수급전환 체크 오류:", _ste)
                     # 14:30 V자 턴어라운드 — 정렬 대기 + 15:20 동시호가 타격(폰 자동)
                     try:
-                        snap["turnaround"] = check_turnaround(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                        snap["turnaround"] = check_turnaround(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _tae:
                         print("턴어라운드 체크 오류:", _tae)
                     # 김팀장式 15분봉 강한 양봉 확정 → 다음 봉 진입 신호
                     try:
-                        snap["bar15"] = check_bar15(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
+                        snap["bar15"] = check_bar15(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
                     except Exception as _b15e:
                         print("15분봉 체크 오류:", _b15e)
                     # 넥장(넥스트레이드 야간 16~20시) 급등 타점 — NX 시장코드·가격/거래대금 기반
                     try:
-                        snap["nxt_after"] = check_nxt_after(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup)
+                        snap["nxt_after"] = check_nxt_after(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
                     except Exception as _nxe:
                         print("넥장 체크 오류:", _nxe)
                     # 2-Tier 대장주 관측 + 시장·섹터 정렬 시에만 텔레그램(Confluence)
                     try:
                         snap["sector_leaders"] = check_sector_leaders(
-                            tok, kis_key, kis_secret, now, st, token_tg, chat_id, _mkt_pos)
+                            tok, kis_key, kis_secret, now, st, token_tg, chat_id, _mkt_pos, sev)
                     except Exception as _sle:
                         print("섹터대장 체크 오류:", _sle)
 
