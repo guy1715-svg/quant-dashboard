@@ -4007,8 +4007,21 @@ def scan_turnover_surge(top=18, min_mult=2.0):
         _ma20 = float(_df["종가"].rolling(20).mean().iloc[-1]) if len(_df) >= 20 else 0
         _above5 = bool(_ma5 and _px >= _ma5)
         _disp = ((_px / _ma20 - 1) * 100) if _ma20 else 0.0
+        # [V17.5] 일목균형표 기준선(26) — 추세전환 초입 포착용(거래대금보다 선행).
+        #   kij_cross=어제 종가는 기준선 아래인데 현재가가 위로 '방금 돌파'. kij_near=±2% '걸침'.
+        _kijun = None
+        if len(_df) >= 26:
+            _hh = float(_df["고가"].rolling(26).max().iloc[-1])
+            _ll = float(_df["저가"].rolling(26).min().iloc[-1])
+            if _hh > 0 and _ll > 0:
+                _kijun = (_hh + _ll) / 2
+        _prevc = float(_df["종가"].iloc[-2]) if len(_df) >= 2 else _px
+        _kij_cross = bool(_kijun and _px and _prevc < _kijun <= _px)   # 방금 상향 돌파
+        _kij_near = bool(_kijun and _px and abs(_px / _kijun - 1) <= 0.02)  # ±2% 걸침
         _out.append({**_s, "mult": round(_mult, 1), "ma5": _ma5,
-                     "above5": _above5, "disp": round(_disp, 1)})
+                     "above5": _above5, "disp": round(_disp, 1),
+                     "kijun": int(_kijun) if _kijun else 0,
+                     "kij_cross": _kij_cross, "kij_near": _kij_near})
     _out.sort(key=lambda x: x["mult"], reverse=True)
     for _s in _out[:6]:               # 상위 급증만 뉴스 첨부(API 절약)
         try:
@@ -11850,7 +11863,7 @@ with tab_g:
     # [V17.4] 거래대금 급증 3단계 — 🟢조기포착(초입) → 🟢진입 → 🟡주시. + 짝꿍매매(순환매).
     try:
         _sg_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
-        _surge_list = scan_turnover_surge(min_mult=1.5) or []      # [V17.4] 조기 포착 위해 1.5배부터
+        _surge_list = scan_turnover_surge(min_mult=1.2) or []      # [V17.5] 기준선 조기포착 위해 1.2배부터
         for _sg in _surge_list:
             _mult = _sg.get("mult", 0); _px = _sg.get("px", 0) or 0
             _nm = _sg.get("name", ""); _cd = _sg.get("code")
@@ -11868,14 +11881,20 @@ with tab_g:
                         st.session_state[_ek] = True
                         st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
                         st.session_state[f"_surge_early_{_sg_today}_{_cd}"] = True
-            # B) 🟢 조기 포착(초입) — [V17.4] 급증 1.5~2배 + 5일선 위 + 비과열 + 등락 1.5~8%(막 오르기 시작)
-            elif _mult >= 1.5 and _above5 and _disp < 7 and _px and 1.5 <= _chg <= 8:
+            # B) 🟢 조기 포착(초입) — [V17.5] 일목 기준선 돌파/근접 기반(거래대금보다 선행).
+            #    기준선 방금 돌파 or ±2% 걸침 + 거래대금 붙기 시작(1.2배↑) + 비과열 + 초입 등락(-1~+8%).
+            elif _px and (_sg.get("kij_cross") or _sg.get("kij_near")) and _disp < 7 \
+                    and _mult >= 1.2 and -1.0 <= _chg <= 8.0:
                 _ek2 = f"_surge_early_{_sg_today}_{_cd}"
                 if not st.session_state.get(_ek2):
+                    _kt = "기준선 방금 돌파✅" if _sg.get("kij_cross") else "기준선 걸침(±2%)"
+                    _kj = _sg.get("kijun", 0)
                     if send_telegram(
-                            f"🌅[장중단타] 🟢 [조기 포착·초입] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배(막 붙는 중)\n"
+                            f"🌅[장중단타] 🟢 [조기 포착·기준선] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배(막 붙는 중)\n"
+                            f"일목 {_kt}"
+                            + (f" (기준선 {_kj:,})" if _kj else "") + "\n"
                             f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
-                            f"사유: {_tagtxt}  ※초입 신호=빠르지만 가짜 가능 → 소액·거래대금 계속 붙는지 확인"):
+                            f"사유: {_tagtxt}  ※기준선 돌파=추세전환 초입(빠름) · 거래대금 계속 붙는지 확인·소액"):
                         st.session_state[_ek2] = True
                         st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
             # C) 🟡 주시 — 강한 급증(2.5배↑)인데 진입조건 미달(과열/5일선 아래), 등락<15%(너무 늦은 건 컷)
