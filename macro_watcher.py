@@ -807,6 +807,66 @@ def _program_net(token, key, secret, code):
     return None
 
 
+def _program_cum(token, key, secret, code):
+    """종목 당일 프로그램 누적 순매수 (금액원, 수량주) — 최신(맨 앞) 비영 행. 실패 시 (None,None)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/comp-program-trade-today",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": PROGRAM_TR_ID},
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=6)
+        j = r.json()
+        rows = j.get("output") or j.get("output1") or j.get("output2") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            _a = _to_int(row.get("whol_smtn_ntby_tr_pbmn"))
+            _q = _to_int(row.get("whol_smtn_ntby_qty"))
+            if _a or _q:
+                return _a, _q
+    except Exception:
+        pass
+    return None, None
+
+
+# [V17.3] 프로그램 누적 시간대 기록 — KIS API는 최근 수분 스냅샷만 줘 하루 시간대 분할 불가.
+#   watcher가 3분마다 라인업 종목의 '누적 순매수'를 파일에 적립 → 대시보드가 오전/오후 추세 판독.
+PROG_HIST_FILE = os.path.join(BASE, "program_history.json")
+
+
+def log_program_history(now_kst, token, key, secret, lineup):
+    """정규장(09:00~15:30) 동안 라인업 종목의 프로그램 누적 순매수를 시계열로 적립. 예외 전파 없음."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (15 * 60 + 30)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    try:
+        with open(PROG_HIST_FILE, encoding="utf-8") as f:
+            hist = json.load(f)
+    except Exception:
+        hist = {}
+    if hist.get("day") != today:
+        hist = {"day": today, "codes": {}}
+    codes = hist.setdefault("codes", {})
+    for code, _name in lineup:
+        try:
+            _a, _q = _program_cum(token, key, secret, code)
+        except Exception:
+            _a = _q = None
+        if _a is None and _q is None:
+            continue
+        ser = codes.setdefault(code, [])
+        if not ser or (m - ser[-1][0]) >= 3:          # 최소 3분 간격 적립(중복 방지)
+            ser.append([m, int(_a or 0), int(_q or 0)])
+            codes[code] = ser[-200:]                   # 하루 상한
+    try:
+        with open(PROG_HIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(hist, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 # [V13.2 오신호 차단] 수급 전환 격발 임계 —
 #   ① 완충대: |순매수 금액| ≥ 20억 넘어야 인정(0선 근처 +0.0억 진동 무시)
 #   ② 2루프 연속 확인: 조건이 연속 2회 유지돼야 발송(단발 스파이크 무시)
@@ -1893,6 +1953,11 @@ def main():
                                                         token_tg, chat_id, _lineup, sev)
                     except Exception as _ee:
                         print("진입 체크 오류:", _ee)
+                    # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
+                    try:
+                        log_program_history(now, tok, kis_key, kis_secret, _lineup)
+                    except Exception as _phe:
+                        print("프로그램 이력 적립 오류:", _phe)
                     # 수급 전환(격발용 텔레그램) + 추세 관측(대시보드용) 이원화
                     try:
                         snap["supply_turns"], snap["supply_watch"] = check_supply_turn(

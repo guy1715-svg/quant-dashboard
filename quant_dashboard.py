@@ -11366,10 +11366,85 @@ def render_daytrade_check(code, rec):
                "기준봉(장대양봉) 시가 이탈 시 손절 · 흐름 깨지면(연속 음봉·기준선 하회) 즉시 손절.")
 
 
+_PROG_HIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "program_history.json")
+
+
+def _load_program_history(code):
+    """watcher가 적립한 오늘자 프로그램 누적 시계열 [[분,누적금액원,누적수량], ...] 반환. 없으면 None."""
+    try:
+        with open(_PROG_HIST_FILE, encoding="utf-8") as _f:
+            _h = json.load(_f)
+        _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y%m%d")
+        if _h.get("day") != _today:
+            return None
+        _s = (_h.get("codes") or {}).get(str(code))
+        return _s if (_s and len(_s) >= 2) else None
+    except Exception:
+        return None
+
+
+def _render_program_from_history(code, series, cur_px):
+    """watcher 적립 시계열로 진짜 오전/점심/오후/막판 시간대 순유입(누적 델타) + 종배 추세 판정."""
+    _series = sorted(series, key=lambda x: x[0])
+
+    def _cum_at(_lim):                                # 시각 ≤ _lim 인 마지막 누적(금액,수량)
+        _last = None
+        for _m, _a, _q in _series:
+            if _m <= _lim:
+                _last = (_a, _q)
+            else:
+                break
+        return _last
+    st.caption("✅ 프로그램 시간대 추세 (watcher 적립 · 하루 누적 델타)")
+    _bounds = [("오전 09~12", 12 * 60), ("점심 12~14:30", 14 * 60 + 30),
+               ("오후 14:30~15:10", 15 * 60 + 10), ("막판 15:10~15:30", 15 * 60 + 30)]
+    _prev = (0, 0); _rows_html = ""; _buckets = {}
+    _last_seen = _series[-1][0]
+    for _name, _end in _bounds:
+        _c = _cum_at(_end)
+        if _c is None or _end > _last_seen + 3:       # 아직 도달 안 한 미래 구간 → 표시 보류
+            _rows_html += (f"<tr><td style='padding:3px 8px;color:#64748b'>{_name}</td>"
+                           f"<td style='padding:3px 8px;text-align:right;color:#64748b'>—(대기)</td></tr>")
+            continue
+        _da = _c[0] - _prev[0]                         # 구간 순유입(금액 델타)
+        _prev = _c; _buckets[_name] = _da
+        _col = '#16a34a' if _da > 0 else '#ef4444' if _da < 0 else '#64748b'
+        _rows_html += (f"<tr><td style='padding:3px 8px;color:#cbd5e1'>{_name}</td>"
+                       f"<td style='padding:3px 8px;text-align:right;font-weight:700;color:{_col}'>"
+                       f"{_da/1e8:+,.0f}억</td></tr>")
+    st.markdown(f"<table style='width:100%;font-size:12px;border-collapse:collapse'>{_rows_html}</table>",
+                unsafe_allow_html=True)
+    # 종배 추세 판정 — 오전 매집 후 오후/막판 이탈이면 종배 부적합
+    _am = _buckets.get("오전 09~12", 0)
+    _pm = _buckets.get("오후 14:30~15:10", 0) + _buckets.get("막판 15:10~15:30", 0) + _buckets.get("점심 12~14:30", 0)
+    _late = _buckets.get("막판 15:10~15:30")
+    if _late is not None and _late > 0:
+        _v = "🟢 <b>막판 프로그램 유입(+)</b> — 세력 오버나이트 매집 = 종배 우호"
+    elif _am > 0 and _pm < 0:
+        _v = "🔴 <b>오전 매집 → 오후 이탈</b> — 세력 빠지는 중 = <b>종배 부적합</b> (진입 금지)"
+    elif _am < 0 and _pm < 0:
+        _v = "🔴 종일 프로그램 이탈 — 종배 부적합"
+    elif _late is None:
+        _v = "⏳ 막판(15:10~) 데이터 대기 — 추세만 참고, 15:10 이후 재확인"
+    else:
+        _v = "🟠 막판 유입 없음/미약 — 종배 신중(관망)"
+    st.markdown(f"<div style='font-size:12px;color:#e2e8f0;margin-top:3px'>{_v}</div>", unsafe_allow_html=True)
+    st.caption("💡 핵심은 '방향'이야 — 오전에 샀어도 오후·막판에 팔면 종배 X. 막판까지 매집 지속이어야 오버나이트 안전.")
+
+
 def render_program_vap(code, cur_px=0):
     """[V15.2] 프로그램 수급·평단 판독 — KIS 시간대별 자동조회 시도, 실패 시 엑셀값 수동입력.
-    핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음."""
+    핵심: 장막판(15:10~15:30) 프로그램 유입 여부 + 프로그램 평단 대비 현재가. 예외 전파 없음.
+    [V17.3] watcher 적립 시계열이 있으면 진짜 시간대별 추세(오전/오후) 우선 표시."""
     st.markdown("##### 💹 프로그램 수급·평단 (스마트머니 · 장막판 유입 판독)")
+    # [V17.3] watcher가 하루 적립한 시계열이 있으면 → 진짜 시간대 추세로 종배 판정(우선)
+    _hist = _load_program_history(code)
+    if _hist:
+        try:
+            _render_program_from_history(code, _hist, cur_px)
+            return
+        except Exception:
+            pass
     _rows = None
     try:
         _rows = kis_program_trade_by_time(code)
