@@ -11403,17 +11403,16 @@ def render_program_vap(code, cur_px=0):
         #   각 행은 개장부터 누적 → 신뢰 가능한 건 (a)현재 누적 총합 (b)창 안에서의 델타뿐.
         #   4버킷 배분은 창 밖 구간을 왜곡(오전 데이터 소실 시 오배분)하므로 폐기 →
         #   '현재 누적' + '장막판(15:10~) 델타(창이 커버할 때만)'로 정직 표기.
+        # ⚠️ 이 API 응답은 '최근 스냅샷 창'(수분)만 담김 → 하루 시간대(오전/점심/막판) 분할 불가.
+        #   신뢰 가능: (a)현재 누적 총합 (b)조회창 안 순유입(최근 흐름·방향). 마감창이면 그게 곧 장막판.
         _late_ready = False
-        _tot_q = _tot_a = 0; _win_lo = _lat_m = None
+        _tot_q = _tot_a = 0; _win_lo = _lat_m = None; _flow_a = None
         if _pts:
             _lat_m, _tot_q, _tot_a = _pts[-1]              # 최신 행 = 현재 누적
             _win_lo = _pts[0][0]                           # 조회창 시작 시각
-            _base_a = None
-            for _mm, _q, _a in _pts:                       # 15:10 이전 마지막 누적 = 막판 기준선
-                if _mm <= 15 * 60 + 10:
-                    _base_a = _a
-            if _base_a is not None and _lat_m >= 15 * 60 + 10:
-                _late_amt = _tot_a - _base_a; _late_ready = True
+            _flow_a = _tot_a - _pts[0][2]                  # 조회창 내 순유입(최근 흐름)
+            if _lat_m >= 15 * 60 + 10:                     # 마감창이면 최근 흐름 = 장막판 유입
+                _late_amt = _flow_a; _late_ready = True
         if _tot_q:
             _avg = _tot_a / _tot_q
             if cur_px and _avg < cur_px / 10:      # 대금 단위(백만) 보정
@@ -11425,12 +11424,13 @@ def render_program_vap(code, cur_px=0):
             f"<div style='font-size:12px;color:#cbd5e1'>현재 누적 프로그램 순매수 "
             f"<b style='color:{_tc}'>{_tot_q:+,}주 ({_tot_a/1e8:+,.0f}억)</b>"
             f"<span style='color:#64748b'> · 조회창 {_wl}</span></div>", unsafe_allow_html=True)
-        if _late_ready:
-            _lc = '#16a34a' if (_late_amt or 0) > 0 else '#ef4444'
-            st.markdown(f"<div style='font-size:12px;color:#cbd5e1'>장막판(15:10~) 순유입 "
-                        f"<b style='color:{_lc}'>{_late_amt/1e8:+,.0f}억</b></div>", unsafe_allow_html=True)
-        else:
-            st.caption("⏳ 장막판(15:10~15:30) 구간은 조회창 밖 — 마감 무렵 재확인(지금은 누적만 유효).")
+        if _flow_a is not None:
+            _fc = '#16a34a' if _flow_a > 0 else '#ef4444' if _flow_a < 0 else '#64748b'
+            _flabel = "장막판 순유입" if _late_ready else "최근 흐름(조회창)"
+            st.markdown(f"<div style='font-size:12px;color:#cbd5e1'>{_flabel} "
+                        f"<b style='color:{_fc}'>{_flow_a/1e8:+,.1f}억</b></div>", unsafe_allow_html=True)
+        st.caption("ℹ️ KIS 프로그램 API는 '하루 전체'가 아니라 최근 수분 스냅샷만 제공 → 오전/점심/막판 "
+                   "시간대 분할은 불가. '현재 누적'과 '최근 흐름' 방향으로만 판단(마감 무렵=장막판).")
     else:
         st.caption("⚠️ KIS 프로그램 시간별 자동조회 미지원/데이터 없음 — HTS #0336 엑셀값 수동 입력")
         _c1, _c2 = st.columns(2)
