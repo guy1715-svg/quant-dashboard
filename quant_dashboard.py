@@ -11847,33 +11847,72 @@ with tab_g:
                     unsafe_allow_html=True)
     except Exception:
         pass
-    # [V16.0] 거래대금 급증 2단계 텔레그램 — 🟡주시(초입) → 🟢진입(5일선위·비과열·진입가 포함)
+    # [V17.4] 거래대금 급증 3단계 — 🟢조기포착(초입) → 🟢진입 → 🟡주시. + 짝꿍매매(순환매).
     try:
         _sg_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
-        for _sg in (scan_turnover_surge() or []):
+        _surge_list = scan_turnover_surge(min_mult=1.5) or []      # [V17.4] 조기 포착 위해 1.5배부터
+        for _sg in _surge_list:
             _mult = _sg.get("mult", 0); _px = _sg.get("px", 0) or 0
             _nm = _sg.get("name", ""); _cd = _sg.get("code")
+            _chg = _sg.get("chg", 0)
             _tagtxt = " / ".join(_sg.get("tags") or []) or "뉴스 확인"
             _above5 = _sg.get("above5"); _disp = _sg.get("disp", 0)
-            # 2차 진입 신호 — 5일선 위 + 추격 아님(이격<7%) + 급증 → 진입가·손절·1차익절 (바로 실행)
-            if _mult >= 2.0 and _above5 and _disp < 7 and _px:
+            # A) 🟢 진입 — 급증 2배↑ + 5일선 위 + 비과열(이격<7%) + 초입~중반(등락<12%)
+            if _mult >= 2.0 and _above5 and _disp < 7 and _px and _chg < 12:
                 _ek = f"_surge_entry_{_sg_today}_{_cd}"
                 if not st.session_state.get(_ek):
                     if send_telegram(
-                            f"🌅[장중단타·당일청산] 🟢 [진입 신호] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 · 5일선 위\n"
+                            f"🌅[장중단타·당일청산] 🟢 [진입 신호] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배 · 5일선 위\n"
                             f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
                             f"사유: {_tagtxt}  ※소액 분할·손절 필수"):
                         st.session_state[_ek] = True
-                        st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True  # 주시 중복 방지
-            # 1차 주시 신호 — 강한 급증(2.5배↑)인데 아직 진입조건 미달(과열/5일선 아래) → 예고만
-            elif _mult >= 2.5 and _px:
+                        st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
+                        st.session_state[f"_surge_early_{_sg_today}_{_cd}"] = True
+            # B) 🟢 조기 포착(초입) — [V17.4] 급증 1.5~2배 + 5일선 위 + 비과열 + 등락 1.5~8%(막 오르기 시작)
+            elif _mult >= 1.5 and _above5 and _disp < 7 and _px and 1.5 <= _chg <= 8:
+                _ek2 = f"_surge_early_{_sg_today}_{_cd}"
+                if not st.session_state.get(_ek2):
+                    if send_telegram(
+                            f"🌅[장중단타] 🟢 [조기 포착·초입] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배(막 붙는 중)\n"
+                            f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
+                            f"사유: {_tagtxt}  ※초입 신호=빠르지만 가짜 가능 → 소액·거래대금 계속 붙는지 확인"):
+                        st.session_state[_ek2] = True
+                        st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
+            # C) 🟡 주시 — 강한 급증(2.5배↑)인데 진입조건 미달(과열/5일선 아래), 등락<15%(너무 늦은 건 컷)
+            elif _mult >= 2.5 and _px and _chg < 15.0:
                 _wk = f"_surge_tg_{_sg_today}_{_cd}"
                 if not st.session_state.get(_wk):
                     _why = "이미 과열(눌림 대기)" if _disp >= 7 else "5일선 아래(돌파 대기)" if not _above5 else "관찰"
                     if send_telegram(
-                            f"🟡 [주시] {_nm} {_px:,}({_sg.get('chg',0):+.1f}%) · 거래대금 {_mult}배 — 진입 대기\n"
+                            f"🟡 [주시] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배 — 진입 대기\n"
                             f"사유: {_tagtxt} · {_why}  ※지금 추격 금지, 진입 조건 충족 시 재알림"):
                         st.session_state[_wk] = True
+        # [V17.4] 짝꿍매매 — 대장 급등(+18%↑, 상한가급)이면 같은 이름그룹 짝꿍주(순환매 후보) 포착.
+        #   "금호건설 상한가 → 금호전기도 간다" 식. 상한가로 대장을 죽이지 말고 짝꿍으로 낙수 노림.
+        _pair_leaders = [s for s in _surge_list if s.get("chg", 0) >= 18.0]
+        if _pair_leaders:
+            _nmap = _kr_name_code_map()
+            for _ld in _pair_leaders:
+                _lname = _ld.get("name", ""); _lcode = _ld.get("code")
+                _leadk = f"_pairlead_{_sg_today}_{_lcode}"
+                if st.session_state.get(_leadk) or len(_lname) < 2:
+                    continue
+                st.session_state[_leadk] = True                    # 대장별 1회만 스캔(API 절약)
+                _pref = _lname[:2]
+                _mates = [(n, c) for n, c in _nmap.items()
+                          if n != _lname and n.startswith(_pref)][:5]
+                for _mn, _mc in _mates:
+                    _pr = kis_get_price(_mc)
+                    if not _pr:
+                        continue
+                    _mchg = _pr.get("등락률", 0); _mpx = _pr.get("현재가", 0); _mturn = _pr.get("거래대금", 0)
+                    # 짝꿍 후보 = 아직 안 간 놈(등락 0.5~12%) + 거래대금 관심(30억↑) → 순환매 낙수 여지
+                    if 0.5 <= _mchg < 12 and _mturn >= 3_000_000_000 and _mpx:
+                        send_telegram(
+                            f"🔗 [짝꿍매매] 대장 {_lname} +{_ld.get('chg',0):.0f}%(상한가급) → 짝꿍 {_mn} {_mpx:,}({_mchg:+.1f}%)\n"
+                            f"같은 이름그룹 순환매 후보 — 대장 강할 때 짝꿍으로 낙수 기대(거래대금 {_mturn/1e8:,.0f}억 붙는 중)\n"
+                            f"진입 {_mpx:,} · 손절 {int(_mpx*0.98):,}(−2%) · 1차익절 {int(_mpx*1.03):,}(+3%)\n"
+                            f"⚠️ 확인 필수: 진짜 연관 종목인지·거래대금 계속 붙는지 · 소액·추격 금지")
     except Exception:
         pass
     # [V14.4] 역행 강세주 텔레그램 푸시 — 지수대비 +5%p↑ & 외인·기관 양매수 강한 놈만(당일1회/종목)
