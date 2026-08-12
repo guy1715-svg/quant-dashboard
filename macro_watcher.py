@@ -779,29 +779,29 @@ def _investor_est(token, key, secret, code):
     return 0, 0
 
 
-# [V13.2] 종목별 '진짜' 프로그램매매 순매수 금액(원) — program-trade-by-stock. 실패 시 None(가짜 안 씀).
-#   ⚠️ tr_id/필드는 KIS 실전 응답 보고 조정 필요할 수 있음. 실패하면 UI에 '—(미연동)'으로 정직 표기.
-PROGRAM_TR_ID = "FHPPG04650200"       # 종목별 프로그램매매추이(당일). 응답 이상 시 이 값부터 점검.
+# [V17.2] 종목별 프로그램매매 순매수 금액(원) — 진단(diag_program_trade)으로 실전 검증한 엔드포인트.
+#   기존 program-trade-by-stock/FHPPG04650200은 rt_cd=2(FID_INPUT_DATE_1 없음)로 거부됐음 →
+#   대시보드와 동일한 comp-program-trade-today/FHPPG04650101로 통일. 실값 필드: whol_smtn_ntby_tr_pbmn(원).
+PROGRAM_TR_ID = "FHPPG04650101"       # 프로그램매매 종합현황(당일 시간대별). 실전 검증 완료.
 
 
 def _program_net(token, key, secret, code):
-    """종목 당일 프로그램 순매수 '금액(원)' — 최신 비영(非零) 행. 실패 시 None."""
+    """종목 당일 프로그램 순매수 '금액(원)' — 최신 시간대(맨 앞) 누적 순매수대금. 실패 시 None."""
     try:
-        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/program-trade-by-stock",
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/comp-program-trade-today",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": PROGRAM_TR_ID},
-                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=6)
         j = r.json()
         rows = j.get("output") or j.get("output1") or j.get("output2") or []
         if isinstance(rows, dict):
             rows = [rows]
-        for row in rows:                          # 최신(맨 앞)부터 비영 값 채택
+        for row in rows:                          # 최신(맨 앞)부터 비영 값 채택 — 이미 원(元) 단위
             if not isinstance(row, dict):
                 continue
-            for _f in ("whol_ntby_tr_pbmn", "whol_smtm_ntby_tr_pbmn", "whol_ntby_qty_pbmn"):
-                _v = _to_int(row.get(_f))
-                if _v:
-                    return _v * 1_000_000 if abs(_v) < 1e7 else _v   # 백만원 단위면 원으로 환산
+            _v = _to_int(row.get("whol_smtn_ntby_tr_pbmn"))
+            if _v:
+                return _v                         # whol_smtn_ntby_tr_pbmn = 프로그램 순매수 대금(원)
     except Exception:
         pass
     return None

@@ -960,12 +960,13 @@ def kis_program_trade_by_time(ticker):
         for _r in _out:
             if not isinstance(_r, dict):
                 continue
-            _time = (_r.get("stck_cntg_hour") or _r.get("bsop_hour") or _r.get("stck_bsop_hour")
+            _time = (_r.get("bsop_hour") or _r.get("stck_cntg_hour") or _r.get("stck_bsop_hour")
                      or _r.get("hour") or "")
-            _qty = _to_int(_r.get("whol_ntby_qty") or _r.get("prgm_ntby_qty")
-                           or _r.get("ntby_qty") or _r.get("whol_smtm_ntby_qty"))
-            _amt = _to_int(_r.get("whol_ntby_tr_pbmn") or _r.get("prgm_ntby_tr_pbmn")
-                           or _r.get("ntby_tr_pbmn") or _r.get("whol_smtm_ntby_tr_pbmn"))
+            # [V17.2] 실전 검증 필드명 우선 — whol_smtn_ntby_*(smtN). 기존 파서는 smtM 오타라 항상 0이었음.
+            _qty = _to_int(_r.get("whol_smtn_ntby_qty") or _r.get("whol_ntby_qty")
+                           or _r.get("prgm_ntby_qty") or _r.get("ntby_qty"))
+            _amt = _to_int(_r.get("whol_smtn_ntby_tr_pbmn") or _r.get("whol_ntby_tr_pbmn")
+                           or _r.get("prgm_ntby_tr_pbmn") or _r.get("ntby_tr_pbmn"))
             if str(_time):
                 _rows.append({"time": str(_time), "qty": _qty, "amt": _amt})
         return _rows or None
@@ -4358,42 +4359,31 @@ def render_nxt_scenarios():
 
 
 def fetch_macro_triggers():
-    """매크로 3대 트리거 원천 데이터 — NQ선물(08:00 KST 기준 대비)·SOX+반도체 빅테크·WTI.
+    """매크로 3대 트리거 원천 데이터 — NQ선물(전일종가 대비·watcher와 통일)·SOX+반도체 빅테크·WTI.
     yfinance 순수 페치(session_state 미접근). 실패는 항목별 격리."""
     import yfinance as _yf
     import datetime as _dmt
     _out = {"ok": False}
     # ① 나스닥 선물 — 08:00 KST 기준점 대비 현재 등락(%)
     try:
+        # [V17.1] NQ 기준값을 watcher(_pct: last/previous_close)와 통일 → 전일 미국 종가 대비.
+        #   기존엔 08:00 KST 바 기준이라 경계선(±0.2/+0.5)에서 watcher와 sev가 엇갈렸음.
         _t = _yf.Ticker("NQ=F")
-        _cur = None
+        _cur, _ref, _refsrc = None, None, "전일종가"
         try:
-            _cur = float(_t.fast_info.last_price)
+            _fi = _t.fast_info
+            _cur = float(_fi.last_price)
+            _ref = float(_fi.previous_close)          # watcher와 동일 기준
         except Exception:
             pass
-        _ref, _refsrc = None, "전일종가"
-        try:
-            _hi = _t.history(period="2d", interval="15m")
-            if _hi is not None and not _hi.empty:
-                _idx = _hi.index
-                try:
-                    _idx = _idx.tz_convert("Asia/Seoul")
-                except Exception:
-                    _idx = _idx.tz_localize("UTC").tz_convert("Asia/Seoul")
-                _now = _dmt.datetime.utcnow() + _dmt.timedelta(hours=9)
-                _today = _now.date()
-                _cands = [float(_hi["Close"].iloc[_i]) for _i, _ts in enumerate(_idx)
-                          if _ts.date() == _today and _ts.hour == 8]
-                if _cands:
-                    _ref, _refsrc = _cands[0], "08:00 KST"
-                if _cur is None:
-                    _cur = float(_hi["Close"].dropna().iloc[-1])
-        except Exception:
-            pass
-        if _ref is None:
+        if not _ref or not _cur:                      # 폴백 — 일봉 종가 2개로 last/prev 재구성
             try:
                 _hd = _t.history(period="5d", interval="1d")
-                _ref = float(_hd["Close"].dropna().iloc[-1])
+                _c = _hd["Close"].dropna()
+                if _cur is None and len(_c) >= 1:
+                    _cur = float(_c.iloc[-1])
+                if not _ref and len(_c) >= 2:
+                    _ref = float(_c.iloc[-2])
             except Exception:
                 pass
         if _cur and _ref:
