@@ -603,6 +603,33 @@ def _ma20_disparity(token, key, secret, code, px):
     return None
 
 
+SCORECARD_FILE = os.path.join(BASE, "signal_scorecard.json")
+
+
+def _scorecard_append(now_kst, kind, code, name, px):
+    """[V17.6] 신호별 자동 성적표(대시보드 공유 파일)에 적립 — 종류별 날짜당 1회. 예외 전파 없음."""
+    if not code or not kind or not px:
+        return
+    today = now_kst.strftime("%Y-%m-%d")
+    cd = str(code).zfill(6)
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
+    except Exception:
+        rows = []
+    if any(r.get("date") == today and r.get("kind") == kind and r.get("code") == cd for r in rows):
+        return
+    rows.append({"date": today, "t": now_kst.strftime("%H:%M"), "kind": kind,
+                 "code": cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None})
+    try:
+        with open(SCORECARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(rows[-2000:], f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def _log_signal(state, now_kst, kind, name, code, px):
     """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
     today = now_kst.strftime("%Y%m%d")
@@ -613,6 +640,10 @@ def _log_signal(state, now_kst, kind, name, code, px):
         {"t": now_kst.strftime("%H:%M"), "kind": kind, "name": name, "code": code, "px": px})
     sl["items"] = sl["items"][-120:]          # 최근 120건만 유지
     state["signal_log"] = sl
+    try:
+        _scorecard_append(now_kst, kind, code, name, px)   # [V17.6] 다중일 성적표에도 적립
+    except Exception:
+        pass
 
 
 def _recent_high(token, key, secret, code, days=20):
@@ -1357,6 +1388,7 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                           f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
+            _log_signal(state, now_kst, "진입", name, code, px)   # [V17.6] 성적표 적립
     state["entry_sent"] = sent
     return out
 

@@ -5890,6 +5890,114 @@ def render_pick_performance():
                "점수대가 높을수록 승률·평균갭이 우상향해야 알고리즘이 유효합니다.")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [V17.6] 신호별 자동 성적표 — 모든 신호(시가저격/진입/조기포착/짝꿍/15분봉…)의
+#   +1·+3거래일 수익률을 자동 대조 → 신호 종류별 승률·손익비. watcher와 공유 파일.
+# ═══════════════════════════════════════════════════════════════════
+_SCORECARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_scorecard.json")
+
+
+def _scorecard_read():
+    try:
+        with open(_SCORECARD_PATH, "r", encoding="utf-8") as _f:
+            _d = _json_tracker.load(_f)
+            return _d if isinstance(_d, list) else []
+    except Exception:
+        return []
+
+
+def _scorecard_write(rows):
+    try:
+        with open(_SCORECARD_PATH, "w", encoding="utf-8") as _f:
+            _json_tracker.dump(rows[-2000:], _f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def scorecard_log(kind, code, name, px):
+    """신호 발생 기록(성적표용) — 종류별 날짜당 1회. px=진입시점가. 예외 전파 없음."""
+    if not code or not kind or not px:
+        return
+    _now = datetime.utcnow() + timedelta(hours=9)
+    _today = _now.strftime("%Y-%m-%d")
+    _cd = str(code).zfill(6)
+    _rows = _scorecard_read()
+    if any(r.get("date") == _today and r.get("kind") == kind and r.get("code") == _cd for r in _rows):
+        return
+    _rows.append({"date": _today, "t": _now.strftime("%H:%M"), "kind": kind,
+                  "code": _cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None})
+    _scorecard_write(_rows)
+
+
+def _scorecard_backfill():
+    """결과 미기록 신호를 일봉으로 +1/+3거래일 종가 수익률 대조."""
+    _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+    _rows = _scorecard_read()
+    _dirty = False
+    for _r in _rows:
+        if _r.get("r1") is not None or _r.get("date", "") >= _today or not _r.get("px"):
+            continue
+        try:
+            _df = fetch_ohlcv(_r["code"], 60)
+            if _df is None or _df.empty:
+                continue
+            _idx = [str(d)[:10] for d in _df.index]
+            _after = [i for i, d in enumerate(_idx) if d > _r["date"]]
+            if not _after:
+                continue
+            _base = _r["px"]
+            _c1 = float(_df.iloc[_after[0]]["종가"])
+            if _base > 0 and _c1 > 0:
+                _r["r1"] = round((_c1 / _base - 1) * 100, 2)
+                if len(_after) >= 3:
+                    _c3 = float(_df.iloc[_after[2]]["종가"])
+                    _r["r3"] = round((_c3 / _base - 1) * 100, 2)
+                _dirty = True
+        except Exception:
+            continue
+    if _dirty:
+        _scorecard_write(_rows)
+    return _rows
+
+
+def render_signal_scorecard():
+    """📊 신호별 자동 성적표 — 종류별 승률·손익비(+1거래일 종가 기준). 예외 전파 없음."""
+    st.markdown("#### 📊 신호별 자동 성적표 <span style='font-size:11px;color:#94a3b8'>"
+                "(신호 다음 거래일 종가 수익률 · 어떤 신호가 진짜 먹히나)</span>", unsafe_allow_html=True)
+    try:
+        _rows = _scorecard_backfill()
+    except Exception as _e:
+        st.caption(f"⚠️ 성적표 집계 일시 오류: {type(_e).__name__}"); return
+    _done = [r for r in _rows if r.get("r1") is not None]
+    _pend = [r for r in _rows if r.get("r1") is None]
+    if not _done:
+        st.caption(f"아직 결과 대조된 신호 없음 (대기 {len(_pend)}건) — 신호 발생 **다음 거래일부터** 자동 집계됩니다.")
+        return
+    _by = {}
+    for _r in _done:
+        _by.setdefault(_r.get("kind", "기타"), []).append(_r["r1"])
+    try:
+        import pandas as _pd
+        _tbl = []
+        for _k, _v in sorted(_by.items(), key=lambda kv: -len(kv[1])):
+            _n = len(_v); _win = sum(1 for x in _v if x > 0) / _n * 100
+            _w = [x for x in _v if x > 0]; _l = [x for x in _v if x <= 0]
+            _aw = sum(_w) / len(_w) if _w else 0.0; _al = sum(_l) / len(_l) if _l else 0.0
+            _rr = (_aw / abs(_al)) if _al < 0 else float("inf")
+            _grade = "🟢" if (_win >= 55 and (_rr == float("inf") or _rr >= 1.5)) else \
+                     "🔴" if _win < 45 else "🟡"
+            _tbl.append({"": _grade, "신호": _k, "건수": _n, "승률": f"{_win:.0f}%",
+                         "평균": f"{sum(_v)/_n:+.2f}%", "손익비": ("∞" if _rr == float("inf") else f"{_rr:.2f}")})
+        st.dataframe(_pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+    except Exception:
+        pass
+    _all = [r["r1"] for r in _done]
+    st.caption(f"전체 {len(_done)}건 · 승률 {sum(1 for x in _all if x>0)/len(_all)*100:.0f}% · "
+               f"평균 {sum(_all)/len(_all):+.2f}% (대기 {len(_pend)}건)")
+    st.caption("💡 🟢(승률55%+·손익비1.5+)=비중↑ · 🔴(승률45%↓)=OFF 검토 · 표본 30건↑부터 신뢰. "
+               "우리가 만든 신호가 진짜 돈 되는지 데이터로 가려집니다.")
+
+
 def render_dolpanty_pick():
     """🌒 오늘의 돌팬티식 종가베팅 픽 — 유입섹터 상위 종목 중 20MA↑·아래꼬리·기관+ 최고점수 자동 선정.
     15:00~20:00 확정 / 그 외 예비. 예외 전파 없음."""
@@ -11760,6 +11868,12 @@ with _t_settings:
         st.success(f"✅ 알림 {len(_cleared)}개 리셋 완료 — 관제탑 새로고침 시 조건 충족하면 텔레그램 재발송")
         st.caption("※ 손절·하드브레이커 알림은 안전상 리셋 대상 아님(계속 감시).")
     st.divider()
+    # [V17.6] 신호별 자동 성적표 — 모든 신호 종류의 +1거래일 수익률로 승률·손익비 집계
+    try:
+        render_signal_scorecard()
+    except Exception as _sce:
+        st.caption(f"⚠️ 성적표 일시 비활성: {type(_sce).__name__}")
+    st.divider()
     # [V13.4-①] 돌팬티 픽 명중률 — 익일 시초가 갭 자동 대조(수익 검증 인프라)
     try:
         render_pick_performance()
@@ -11881,6 +11995,7 @@ with tab_g:
                         st.session_state[_ek] = True
                         st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
                         st.session_state[f"_surge_early_{_sg_today}_{_cd}"] = True
+                        scorecard_log("급증진입", _cd, _nm, _px)
             # B) 🟢 조기 포착(초입) — [V17.5] 일목 기준선 돌파/근접 기반(거래대금보다 선행).
             #    기준선 방금 돌파 or ±2% 걸침 + 거래대금 붙기 시작(1.2배↑) + 비과열 + 초입 등락(-1~+8%).
             elif _px and (_sg.get("kij_cross") or _sg.get("kij_near")) and _disp < 7 \
@@ -11897,6 +12012,7 @@ with tab_g:
                             f"사유: {_tagtxt}  ※기준선 돌파=추세전환 초입(빠름) · 거래대금 계속 붙는지 확인·소액"):
                         st.session_state[_ek2] = True
                         st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
+                        scorecard_log("조기포착", _cd, _nm, _px)
             # C) 🟡 주시 — 강한 급증(2.5배↑)인데 진입조건 미달(과열/5일선 아래), 등락<15%(너무 늦은 건 컷)
             elif _mult >= 2.5 and _px and _chg < 15.0:
                 _wk = f"_surge_tg_{_sg_today}_{_cd}"
@@ -11927,11 +12043,12 @@ with tab_g:
                     _mchg = _pr.get("등락률", 0); _mpx = _pr.get("현재가", 0); _mturn = _pr.get("거래대금", 0)
                     # 짝꿍 후보 = 아직 안 간 놈(등락 0.5~12%) + 거래대금 관심(30억↑) → 순환매 낙수 여지
                     if 0.5 <= _mchg < 12 and _mturn >= 3_000_000_000 and _mpx:
-                        send_telegram(
+                        if send_telegram(
                             f"🔗 [짝꿍매매] 대장 {_lname} +{_ld.get('chg',0):.0f}%(상한가급) → 짝꿍 {_mn} {_mpx:,}({_mchg:+.1f}%)\n"
                             f"같은 이름그룹 순환매 후보 — 대장 강할 때 짝꿍으로 낙수 기대(거래대금 {_mturn/1e8:,.0f}억 붙는 중)\n"
                             f"진입 {_mpx:,} · 손절 {int(_mpx*0.98):,}(−2%) · 1차익절 {int(_mpx*1.03):,}(+3%)\n"
-                            f"⚠️ 확인 필수: 진짜 연관 종목인지·거래대금 계속 붙는지 · 소액·추격 금지")
+                            f"⚠️ 확인 필수: 진짜 연관 종목인지·거래대금 계속 붙는지 · 소액·추격 금지"):
+                            scorecard_log("짝꿍", _mc, _mn, _mpx)
     except Exception:
         pass
     # [V14.4] 역행 강세주 텔레그램 푸시 — 지수대비 +5%p↑ & 외인·기관 양매수 강한 놈만(당일1회/종목)
