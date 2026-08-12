@@ -11404,6 +11404,31 @@ def render_dante_card(code):
 def render_daytrade_check(code, rec):
     """🎯 단타 진입 체크 — 추격/공간/추세/눌림/호가 5항목 판정. 예외 전파 없음."""
     st.markdown("##### 🎯 단타 진입 체크 (사기 전 — 추격 vs 눌림)")
+    # [V17.7] 회전율(거래대금/시총) 세력 감지 — 소형주는 raw 거래대금보다 회전율이 세력 개입을 정확히 잡음.
+    #   회전율 = 오늘 손바뀜된 물량이 시총의 몇 %인지. 대형주는 낮은 게 정상, 소형주 10%+면 세력 집중.
+    _pw_turn = rec.get("거래대금") or 0
+    _pw_mc = rec.get("시총") or 0             # 억원
+    if _pw_turn and _pw_mc:
+        _tr = _pw_turn / (_pw_mc * 1e8) * 100
+        _small = _pw_mc < 5000                 # 시총 5,000억 미만 = 소형~중소형
+        if _tr >= 30:
+            _pj, _pc = "🔴 세력 폭발(회전율 극대) — 이미 크게 돌았을 수 있음(설거지 경계)", "#ef4444"
+        elif _tr >= 10:
+            _pj, _pc = "🟢 세력 개입 강함 — 시총 대비 큰 손바뀜(자금 집중)", "#22c55e"
+        elif _tr >= 3:
+            _pj, _pc = "🟡 자금 관심 유입 중", "#eab308"
+        else:
+            _pj, _pc = "⚪ 평범한 회전 — 세력 신호 약함", "#64748b"
+        _sz = "소형·중소형" if _small else "대형(회전율 낮은 게 정상)"
+        st.markdown(
+            f"<div style='border-left:3px solid {_pc};padding:5px 11px;margin:3px 0 6px;"
+            f"background:rgba(255,255,255,0.03);border-radius:0 8px 8px 0'>"
+            f"<span style='font-weight:800;color:{_pc}'>🕵️ 세력 회전율 {_tr:.1f}%</span> "
+            f"<span style='color:#94a3b8;font-size:11px'>· 거래대금 {_pw_turn/1e8:,.0f}억 / 시총 {_pw_mc:,.0f}억 ({_sz})</span>"
+            f"<div style='font-size:11.5px;color:#cbd5e1;margin-top:1px'>{_pj}</div></div>",
+            unsafe_allow_html=True)
+        st.caption("💡 회전율=거래대금/시총. 소형주 10%+ = 세력 손바뀜(대형주 '300억'보다 정확). "
+                   "30%+ 극대는 이미 크게 돈 뒤일 수 있어 설거지 주의 · 소액·칼손절.")
     _px = rec.get("현재가") or 0
     _open = rec.get("시가") or 0
     _res = _ma5 = _kijun = 0
