@@ -10751,6 +10751,54 @@ def _fetch_briefing_us(symbols):
     return _out
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def scan_theme_leadership():
+    """[V18.1] RIPPLE_EFFECT_MAP 13 매크로 테마를 대장주 평균 등락률로 랭킹.
+    반환 [{key, sector, avg, narrative, leaders:[(name,chg,px)]}] 평균 등락 내림차순. 예외 안전."""
+    _out = []
+    for _key, _v in RIPPLE_EFFECT_MAP.items():
+        _rows = []
+        for _cd, _nm in (_v.get("leaders") or []):
+            try:
+                _pr = kis_get_price(_cd)
+                if _pr and _pr.get("현재가"):
+                    _rows.append((_nm, float(_pr.get("등락률", 0)), int(_pr["현재가"])))
+            except Exception:
+                pass
+        if not _rows:
+            continue
+        _avg = sum(r[1] for r in _rows) / len(_rows)
+        _out.append({"key": _key, "sector": _v.get("suhye_sector", ""),
+                     "narrative": _v.get("narrative", ""), "avg": round(_avg, 2),
+                     "leaders": sorted(_rows, key=lambda x: -x[1])})
+    _out.sort(key=lambda x: x["avg"], reverse=True)
+    return _out
+
+
+def render_theme_leadership():
+    """🔥 오늘 주도 테마 랭킹 — 매크로 13테마 대장주 평균 등락 기준. 예외 전파 없음."""
+    st.markdown("##### 🔥 오늘 주도 테마 랭킹 <span style='font-size:11px;color:#94a3b8'>"
+                "(매크로 13테마 · 대장주 평균 등락)</span>", unsafe_allow_html=True)
+    if not kis_available():
+        st.caption("⚠️ KIS 미연결 — 테마 랭킹 불가"); return
+    _themes = scan_theme_leadership()
+    if not _themes:
+        st.caption("테마 시세 조회 실패/장외 — 장중에 확인하세요."); return
+    for _t in _themes[:6]:
+        _c = "#e94560" if _t["avg"] > 0 else "#3b82f6" if _t["avg"] < 0 else "#94a3b8"
+        _ld = " · ".join(f"{_n}<span style='color:{'#e94560' if _ch>0 else '#3b82f6'}'>({_ch:+.1f}%)</span>"
+                         for _n, _ch, _px in _t["leaders"][:3])
+        st.markdown(
+            f"<div style='border-left:3px solid {_c};padding:5px 11px;margin:3px 0;"
+            f"background:rgba(255,255,255,0.03);border-radius:0 8px 8px 0'>"
+            f"<span style='font-weight:800;color:#e2e8f0'>{_t['sector']}</span> "
+            f"<span style='color:{_c};font-weight:800'>평균 {_t['avg']:+.2f}%</span>"
+            f"<div style='font-size:11.5px;color:#cbd5e1;margin-top:1px'>대장: {_ld}</div></div>",
+            unsafe_allow_html=True)
+    st.caption("💡 우리 13개 매크로 테마 기준(FINUP처럼 세부 테마는 아님). "
+               "여기서 오늘 강한 매크로 방향+대장주 빠르게 → 대장주 코드를 🔍종목 분석기에 넣어 검증.")
+
+
 def render_morning_briefing_tab():
     """🌅 모닝 브리핑 탭 — 밤사이 글로벌 선행지표 + 3개 사이트 실제 임베드.
     별도 서버 불필요(앱 내장 KIS/yfinance 재활용)."""
@@ -10823,14 +10871,24 @@ def render_morning_briefing_tab():
     _bt0, _bt1, _bt2, _bt3 = st.tabs(
         ["🔥 주도테마(FINUP)", "🌐 글로벌 마켓(LongShortNow)", "🔮 야간선물(eSignal)", "📰 속보(saveticker)"])
     with _bt0:
-        # [V18.0] FINUP 주도 테마 — 오늘 대장 테마 + 테마 내 대장주 랭킹(브라우저 직접 로딩).
-        _fin = st.radio("FINUP 뷰", ["테마로그(주도테마)", "테마 히트맵"], horizontal=True,
-                        key="_finup_view", label_visibility="collapsed")
-        _finurl = ("https://finance.finup.co.kr/lab/themelog" if _fin.startswith("테마로그")
-                   else "https://finance.finup.co.kr")
-        _components.iframe(_finurl, height=720, scrolling=True)
-        st.caption("🔥 오늘 대장 테마 + 대장주 한눈에 · 여기서 주도테마 발견 → 대장주 코드를 "
-                   "🔍종목 분석기에 넣어 검증(안전핀·회전율·재료). 임베드 차단 시 새 창에서 열기.")
+        # [V18.1] 우리 자체 주도 테마 랭킹(KIS 데이터) — FINUP은 로그인 필요·iframe 로그인 불가라 새 창 링크로.
+        try:
+            render_theme_leadership()
+        except Exception as _tle:
+            st.caption(f"⚠️ 테마 랭킹 일시 비활성: {type(_tle).__name__}")
+        st.divider()
+        st.markdown("###### 🔎 세부 테마(화장품·호남반도체 등)는 FINUP에서 — 로그인 필요·새 창")
+        try:
+            _c1, _c2 = st.columns(2)
+            _c1.link_button("🔥 FINUP 테마로그 열기", "https://finance.finup.co.kr/lab/themelog",
+                            use_container_width=True)
+            _c2.link_button("📊 FINUP 테마 히트맵 열기", "https://finance.finup.co.kr",
+                            use_container_width=True)
+        except Exception:
+            st.markdown("[🔥 FINUP 테마로그](https://finance.finup.co.kr/lab/themelog) · "
+                        "[📊 FINUP 히트맵](https://finance.finup.co.kr)")
+        st.caption("FINUP은 iframe 안에서 로그인이 안 돼(보안) → 새 창에서 로그인해 세부 테마 발견 → "
+                   "대장주 코드를 🔍종목 분석기에 넣어 검증(안전핀·회전율·재료).")
     with _bt1:
         _components.iframe("https://longshortnow.com/global-market", height=680, scrolling=True)
     with _bt2:
