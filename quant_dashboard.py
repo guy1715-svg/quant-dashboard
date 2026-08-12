@@ -11380,17 +11380,33 @@ def render_program_vap(code, cur_px=0):
         def _mn(t):
             _d = "".join(ch for ch in str(t) if ch.isdigit())
             return (int(_d[:2]) * 60 + int(_d[2:4])) if len(_d) >= 4 else None
-        _bk = {"오전 09~12": [0, 0], "점심 12~14:30": [0, 0],
-               "오후 14:30~15:10": [0, 0], "막판 15:10~15:30": [0, 0]}
+        # [V17.2] 각 행은 '그 시각까지의 누적' 프로그램 순매수(qty·amt). 버킷별 순유입은
+        #   누적 델타로 계산해야 함(기존엔 누적행을 전부 합산해 ~30배 과대계상 버그).
+        _pts = []
         for _r in _rows:
             _m = _mn(_r["time"])
             if _m is None:
                 continue
-            _q = _r["qty"] or 0; _a = _r["amt"] or 0
-            _k = ("오전 09~12" if _m < 12 * 60 else "점심 12~14:30" if _m < 14 * 60 + 30
-                  else "오후 14:30~15:10" if _m < 15 * 60 + 10 else "막판 15:10~15:30")
-            _bk[_k][0] += _q; _bk[_k][1] += _a
-        _tot_q = sum(v[0] for v in _bk.values()); _tot_a = sum(v[1] for v in _bk.values())
+            _pts.append((_m, _r["qty"] or 0, _r["amt"] or 0))
+        _pts.sort(key=lambda x: x[0])                     # 시각 오름차순
+
+        def _cum_at(_lim):
+            """시각 ≤ _lim 인 마지막(최신) 누적 (qty, amt). 해당 시각 데이터 없으면 직전 유지·없으면 (0,0)."""
+            _last = (0, 0)
+            for _mm, _q, _a in _pts:
+                if _mm <= _lim:
+                    _last = (_q, _a)
+                else:
+                    break
+            return _last
+        _bk = {}
+        _pq, _pa = 0, 0                                    # 하루 시작 = 0에서 출발
+        for _name, _end in (("오전 09~12", 12 * 60), ("점심 12~14:30", 14 * 60 + 30),
+                            ("오후 14:30~15:10", 15 * 60 + 10), ("막판 15:10~15:30", 15 * 60 + 30)):
+            _qe, _ae = _cum_at(_end)
+            _bk[_name] = [_qe - _pq, _ae - _pa]            # 버킷 순유입 = 누적 델타
+            _pq, _pa = _qe, _ae
+        _tot_q, _tot_a = _pq, _pa                          # 최종 누적(= 델타 합)
         _late_amt = _bk["막판 15:10~15:30"][1]
         if _tot_q:
             _avg = _tot_a / _tot_q
