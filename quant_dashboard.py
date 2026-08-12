@@ -11375,7 +11375,7 @@ def render_program_vap(code, cur_px=0):
         _rows = kis_program_trade_by_time(code)
     except Exception:
         _rows = None
-    _late_amt = None; _avg = None
+    _late_amt = None; _avg = None; _late_ready = True   # 수동입력 경로는 항상 판정(True)
     if _rows:
         def _mn(t):
             _d = "".join(ch for ch in str(t) if ch.isdigit())
@@ -11399,27 +11399,38 @@ def render_program_vap(code, cur_px=0):
                 else:
                     break
             return _last
-        _bk = {}
-        _pq, _pa = 0, 0                                    # 하루 시작 = 0에서 출발
-        for _name, _end in (("오전 09~12", 12 * 60), ("점심 12~14:30", 14 * 60 + 30),
-                            ("오후 14:30~15:10", 15 * 60 + 10), ("막판 15:10~15:30", 15 * 60 + 30)):
-            _qe, _ae = _cum_at(_end)
-            _bk[_name] = [_qe - _pq, _ae - _pa]            # 버킷 순유입 = 누적 델타
-            _pq, _pa = _qe, _ae
-        _tot_q, _tot_a = _pq, _pa                          # 최종 누적(= 델타 합)
-        _late_amt = _bk["막판 15:10~15:30"][1]
+        # [V17.2] 이 엔드포인트는 '당일 전체'가 아니라 최근 ~30행(약 2.5h) 롤링 창.
+        #   각 행은 개장부터 누적 → 신뢰 가능한 건 (a)현재 누적 총합 (b)창 안에서의 델타뿐.
+        #   4버킷 배분은 창 밖 구간을 왜곡(오전 데이터 소실 시 오배분)하므로 폐기 →
+        #   '현재 누적' + '장막판(15:10~) 델타(창이 커버할 때만)'로 정직 표기.
+        _late_ready = False
+        _tot_q = _tot_a = 0; _win_lo = _lat_m = None
+        if _pts:
+            _lat_m, _tot_q, _tot_a = _pts[-1]              # 최신 행 = 현재 누적
+            _win_lo = _pts[0][0]                           # 조회창 시작 시각
+            _base_a = None
+            for _mm, _q, _a in _pts:                       # 15:10 이전 마지막 누적 = 막판 기준선
+                if _mm <= 15 * 60 + 10:
+                    _base_a = _a
+            if _base_a is not None and _lat_m >= 15 * 60 + 10:
+                _late_amt = _tot_a - _base_a; _late_ready = True
         if _tot_q:
             _avg = _tot_a / _tot_q
             if cur_px and _avg < cur_px / 10:      # 대금 단위(백만) 보정
                 _avg *= 1e6
         st.caption("✅ KIS 자동 조회 성공")
-        _rowshtml = "".join(
-            f"<tr><td style='padding:3px 8px;color:#cbd5e1'>{_k}</td>"
-            f"<td style='padding:3px 8px;text-align:right;font-weight:700;"
-            f"color:{'#16a34a' if q > 0 else '#ef4444' if q < 0 else '#64748b'}'>{q:+,}주</td></tr>"
-            for _k, (q, a) in _bk.items())
-        st.markdown(f"<table style='width:100%;font-size:12px;border-collapse:collapse'>{_rowshtml}</table>",
-                    unsafe_allow_html=True)
+        _tc = '#16a34a' if _tot_q > 0 else '#ef4444' if _tot_q < 0 else '#64748b'
+        _wl = f"{_win_lo//60:02d}:{_win_lo%60:02d}~{_lat_m//60:02d}:{_lat_m%60:02d}" if _win_lo is not None else "—"
+        st.markdown(
+            f"<div style='font-size:12px;color:#cbd5e1'>현재 누적 프로그램 순매수 "
+            f"<b style='color:{_tc}'>{_tot_q:+,}주 ({_tot_a/1e8:+,.0f}억)</b>"
+            f"<span style='color:#64748b'> · 조회창 {_wl}</span></div>", unsafe_allow_html=True)
+        if _late_ready:
+            _lc = '#16a34a' if (_late_amt or 0) > 0 else '#ef4444'
+            st.markdown(f"<div style='font-size:12px;color:#cbd5e1'>장막판(15:10~) 순유입 "
+                        f"<b style='color:{_lc}'>{_late_amt/1e8:+,.0f}억</b></div>", unsafe_allow_html=True)
+        else:
+            st.caption("⏳ 장막판(15:10~15:30) 구간은 조회창 밖 — 마감 무렵 재확인(지금은 누적만 유효).")
     else:
         st.caption("⚠️ KIS 프로그램 시간별 자동조회 미지원/데이터 없음 — HTS #0336 엑셀값 수동 입력")
         _c1, _c2 = st.columns(2)
@@ -11428,7 +11439,9 @@ def render_program_vap(code, cur_px=0):
         _avgin = _c2.number_input("프로그램 전체 평단(원, 엑셀값)", value=0, step=100, key=f"_pv_a_{code}")
         _avg = _avgin or None
     _msgs = []
-    if _late_amt is not None and _late_amt > 0:
+    if not _late_ready:
+        _msgs.append("⏳ 장막판(15:10~15:30) 판정 전 — 현재는 누적만 유효. 마감 무렵 재확인.")
+    elif _late_amt is not None and _late_amt > 0:
         _msgs.append("🟢 장막판 프로그램 유입(+) — 세력 오버나이트 매집 신호(종배 수급 확인)")
     else:
         _msgs.append("🔴 장막판 프로그램 유입 없음/유출 — 뇌동매매 금지·관망 (엑셀 '거부'와 동일)")
