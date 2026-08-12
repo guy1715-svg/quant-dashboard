@@ -10818,9 +10818,19 @@ def render_morning_briefing_tab():
         "<tbody>" + "".join(_trs) + "</tbody></table>",
         unsafe_allow_html=True)
 
-    # ── 실제 사이트 임베드(원하신 3개 사이트 그대로) ──
+    # ── 실제 사이트 임베드(원하신 사이트 그대로) ──
     st.markdown("#### 📊 실시간 사이트 뷰어")
-    _bt1, _bt2, _bt3 = st.tabs(["🌐 글로벌 마켓(LongShortNow)", "🔮 야간선물(eSignal)", "📰 속보(saveticker)"])
+    _bt0, _bt1, _bt2, _bt3 = st.tabs(
+        ["🔥 주도테마(FINUP)", "🌐 글로벌 마켓(LongShortNow)", "🔮 야간선물(eSignal)", "📰 속보(saveticker)"])
+    with _bt0:
+        # [V18.0] FINUP 주도 테마 — 오늘 대장 테마 + 테마 내 대장주 랭킹(브라우저 직접 로딩).
+        _fin = st.radio("FINUP 뷰", ["테마로그(주도테마)", "테마 히트맵"], horizontal=True,
+                        key="_finup_view", label_visibility="collapsed")
+        _finurl = ("https://finance.finup.co.kr/lab/themelog" if _fin.startswith("테마로그")
+                   else "https://finance.finup.co.kr")
+        _components.iframe(_finurl, height=720, scrolling=True)
+        st.caption("🔥 오늘 대장 테마 + 대장주 한눈에 · 여기서 주도테마 발견 → 대장주 코드를 "
+                   "🔍종목 분석기에 넣어 검증(안전핀·회전율·재료). 임베드 차단 시 새 창에서 열기.")
     with _bt1:
         _components.iframe("https://longshortnow.com/global-market", height=680, scrolling=True)
     with _bt2:
@@ -11019,6 +11029,34 @@ def _kr_name_code_map():
             _ns = str(_n).strip(); _cs = str(_c).strip().zfill(6)
             if len(_ns) >= 2 and _cs.isdigit() and len(_cs) == 6:
                 _m[_ns] = _cs
+    except Exception:
+        return {}
+    return _m
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _kr_marcap_map():
+    """[V17.8] KRX 종목코드→시가총액(원) 맵(1시간 캐시). FDR 상장목록 Marcap. 실패 시 {}.
+    회전율(거래대금/시총) 세력 감지용 — per-종목 API 없이 시총 조회."""
+    try:
+        import FinanceDataReader as _fdr
+        _df = _fdr.StockListing("KRX")
+    except Exception:
+        return {}
+    _code_col = next((c for c in ("Code", "Symbol", "종목코드", "code") if c in _df.columns), None)
+    _mc_col = next((c for c in ("Marcap", "MarketCap", "시가총액", "Marketcap") if c in _df.columns), None)
+    if not _code_col or not _mc_col:
+        return {}
+    _m = {}
+    try:
+        for _c, _v in zip(_df[_code_col], _df[_mc_col]):
+            _cs = str(_c).strip().zfill(6)
+            try:
+                _mv = float(_v)
+            except Exception:
+                continue
+            if _cs.isdigit() and len(_cs) == 6 and _mv > 0:
+                _m[_cs] = _mv
     except Exception:
         return {}
     return _m
@@ -12002,7 +12040,7 @@ with tab_g:
     # [V17.4] 거래대금 급증 3단계 — 🟢조기포착(초입) → 🟢진입 → 🟡주시. + 짝꿍매매(순환매).
     try:
         _sg_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
-        _surge_list = scan_turnover_surge(min_mult=1.2) or []      # [V17.5] 기준선 조기포착 위해 1.2배부터
+        _surge_list = scan_turnover_surge(top=40, min_mult=1.2) or []   # [V17.8] top40 — 소형주 세력 포착 위해 확대
         for _sg in _surge_list:
             _mult = _sg.get("mult", 0); _px = _sg.get("px", 0) or 0
             _nm = _sg.get("name", ""); _cd = _sg.get("code")
@@ -12027,14 +12065,25 @@ with tab_g:
                     and _mult >= 1.2 and -1.0 <= _chg <= 8.0:
                 _ek2 = f"_surge_early_{_sg_today}_{_cd}"
                 if not st.session_state.get(_ek2):
+                    # [V17.9] 뉴스(재료) 연계 — 재료 강도로 '지속 승자 vs 기술적 단발' 구분. 악재면 스킵.
+                    _nb, _nmute = 0, False
+                    try:
+                        _nb, _nmute, _ = news_score_modifier(_cd, _disp, overheat_mute=False)
+                    except Exception:
+                        pass
+                    if _nmute:
+                        continue          # 악재 감지 → 조기포착 스킵(가짜 상승 회피)
+                    _mat = ("🔥재료 강함(S급)=지속력↑" if _nb >= 8 else
+                            "🟢재료 있음(A급)" if _nb >= 4 else
+                            "⚠️재료 미확인=기술적 단발 주의")
                     _kt = "기준선 방금 돌파✅" if _sg.get("kij_cross") else "기준선 걸침(±2%)"
                     _kj = _sg.get("kijun", 0)
                     if send_telegram(
                             f"🌅[장중단타] 🟢 [조기 포착·기준선] {_nm} {_px:,}({_chg:+.1f}%) · 거래대금 {_mult}배(막 붙는 중)\n"
                             f"일목 {_kt}"
-                            + (f" (기준선 {_kj:,})" if _kj else "") + "\n"
+                            + (f" (기준선 {_kj:,})" if _kj else "") + f" · {_mat}\n"
                             f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
-                            f"사유: {_tagtxt}  ※기준선 돌파=추세전환 초입(빠름) · 거래대금 계속 붙는지 확인·소액"):
+                            f"사유: {_tagtxt}  ※기준선 돌파=추세전환 초입 · 재료 없으면 단발 주의·소액"):
                         st.session_state[_ek2] = True
                         st.session_state[f"_surge_tg_{_sg_today}_{_cd}"] = True
                         scorecard_log("조기포착", _cd, _nm, _px)
@@ -12074,6 +12123,40 @@ with tab_g:
                             f"진입 {_mpx:,} · 손절 {int(_mpx*0.98):,}(−2%) · 1차익절 {int(_mpx*1.03):,}(+3%)\n"
                             f"⚠️ 확인 필수: 진짜 연관 종목인지·거래대금 계속 붙는지 · 소액·추격 금지"):
                             scorecard_log("짝꿍", _mc, _mn, _mpx)
+        # [V17.8] 소형주 세력 알림 — 회전율(거래대금/시총) 기반. 소형주 세력 개입을 raw 거래대금보다 정확히.
+        #   시총<5000억 + 회전율 10~40%(개입~폭발 전) + 5일선 위 + 아직 안 터짐(등락<15%) → 극소액 대상.
+        _mcmap = _kr_marcap_map()
+        if _mcmap:
+            for _sg in _surge_list:
+                _cd = _sg.get("code"); _px = _sg.get("px", 0) or 0; _chg = _sg.get("chg", 0)
+                _to = _sg.get("turnover") or 0
+                _mc = _mcmap.get(str(_cd).zfill(6))
+                if not (_mc and _px and _to):
+                    continue
+                _tr = _to / _mc * 100                    # 회전율 %
+                _mc_eok = _mc / 1e8
+                if _mc_eok < 5000 and 10 <= _tr < 40 and _sg.get("above5") and _chg < 15:
+                    _pk = f"_power_{_sg_today}_{_cd}"
+                    if not st.session_state.get(_pk):
+                        # [V17.9] 뉴스 연계 — 재료 강도로 세력의 '진짜 vs 설거지' 판단 보조. 악재면 스킵.
+                        _nb2, _nmute2 = 0, False
+                        try:
+                            _nb2, _nmute2, _ = news_score_modifier(_cd, _sg.get("disp", 0), overheat_mute=False)
+                        except Exception:
+                            pass
+                        if _nmute2:
+                            continue      # 악재 감지 → 소형주 세력 스킵(설거지 확률↑)
+                        _mat2 = ("🔥재료 강함(S급)=진짜 세력 가능성↑" if _nb2 >= 8 else
+                                 "🟢재료 있음(A급)" if _nb2 >= 4 else
+                                 "⚠️재료 미확인=순수 수급/테마(설거지 주의)")
+                        _nm = _sg.get("name", ""); _tag = " / ".join(_sg.get("tags") or []) or "재료 확인"
+                        if send_telegram(
+                                f"🕵️ [소형주 세력] {_nm} {_px:,}({_chg:+.1f}%) · 회전율 {_tr:.0f}% · 시총 {_mc_eok:,.0f}억\n"
+                                f"시총 대비 큰 손바뀜=세력 개입(거래대금 {_to/1e8:,.0f}억) · 5일선 위 · {_mat2}\n"
+                                f"진입 {_px:,} · 손절 {int(_px*0.98):,}(−2%) · 1차익절 {int(_px*1.03):,}(+3%)\n"
+                                f"사유: {_tag}  ⚠️ 소형주=유동성·설거지 위험 · 극소액·칼손절"):
+                            st.session_state[_pk] = True
+                            scorecard_log("소형주세력", _cd, _nm, _px)
     except Exception:
         pass
     # [V14.4] 역행 강세주 텔레그램 푸시 — 지수대비 +5%p↑ & 외인·기관 양매수 강한 놈만(당일1회/종목)
