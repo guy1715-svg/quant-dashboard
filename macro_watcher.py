@@ -733,6 +733,313 @@ def _kospi_fut_session(now_kst):
     return "휴장"
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# [V18.4] DART 실시간 공시 감시 — 금감원 전자공시 OpenAPI. 공시는 기사보다 정확·선행.
+#   수주·계약·실적·특허 = 호재 / 유증·감자·소송·거래정지 = 악재. 무료 키(open.dart.fss.or.kr).
+# ══════════════════════════════════════════════════════════════════════════
+def read_dart_key():
+    """DART OpenAPI 키 탐색 — 환경변수 → secrets.toml. 없으면 None."""
+    for _n in ("DART_API_KEY", "DART_KEY", "OPENDART_KEY", "DART_APP_KEY", "DART_APPKEY"):
+        if os.environ.get(_n):
+            return os.environ[_n].strip()
+    _al = {"dart_api_key", "dart_key", "opendart_key", "dart_appkey", "dart"}
+    try:
+        import tomllib
+        with open(SECRETS_FILE, "rb") as f:
+            _d = tomllib.load(f)
+        _found = [None]
+
+        def _w(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if isinstance(v, dict):
+                        _w(v)
+                    elif str(k).lower() in _al and isinstance(v, str) and not _found[0]:
+                        _found[0] = v.strip()
+        if isinstance(_d, dict):
+            _w(_d)
+        if _found[0]:
+            return _found[0]
+    except Exception:
+        pass
+    try:
+        with open(SECRETS_FILE, encoding="utf-8") as f:
+            for line in f:
+                if "=" in line and line.split("=", 1)[0].strip().lower() in _al:
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return None
+
+
+_DART_POS = ("공급계약체결", "단일판매", "수주", "기술이전", "특허권취득", "품목허가", "임상시험결과",
+             "자기주식취득결정", "무상증자결정")
+# [V18.8] 악재는 '진짜 중대'만 — 안내/조정 류 오탐 제거(전환가액조정 등 잡음 컷)
+_DART_NEG = ("유상증자결정", "감자결정", "상장폐지", "매매거래정지", "감사의견거절", "감사의견한정",
+             "횡령", "배임", "회생절차", "관리종목지정", "불성실공시법인지정", "영업정지")
+# [V18.6/8] 형식·노이즈 공시 제외 — 증권발행실적·안내·정기보고서·가액조정 등(재료 아님)
+_DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "투자설명서", "일괄신고", "자산유동화",
+              "소액공모", "합병등종료", "조회공시", "자율공시)", "주식등의대량보유", "특정증권",
+              "의결권대리행사", "가액조정", "안내공시", "부속명세", "결산", "감사보고서",
+              "사업보고서", "분기보고서", "반기보고서", "주주총회", "주식명의개서", "권리행사")
+# 실적 공시(내용 판단 불가 → V18.8부터 발송 OFF, 노이즈 폭주 방지)
+_DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
+
+
+def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None):
+    """DART 당일 신규 공시 폴링 → 호재 공시는 우리 엔진(거래대금·이격)으로 교차검증해 '진입후보 선정'.
+    악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음."""
+    if not dart_key:
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((7 * 60) <= m <= (17 * 60)):        # 장전~마감후 공시창(07:00~17:00)
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("dart_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    try:
+        r = requests.get("https://opendart.fss.or.kr/api/list.json",
+                         params={"crtfc_key": dart_key, "bgn_de": today, "end_de": today,
+                                 "page_no": "1", "page_count": "100",
+                                 "sort": "date", "sort_mth": "desc"}, timeout=8)
+        j = r.json()
+    except Exception:
+        return
+    _status = j.get("status")
+    if _status not in ("000", "013"):           # 013=데이터없음 / 그 외=키·한도 오류
+        if not state.get("dart_err_warned"):
+            send_telegram(token_tg, chat_id, f"⚠️ DART 공시 조회 실패 (status={_status}, {j.get('message','')}) — 키 확인")
+            state["dart_err_warned"] = True
+        return
+    state["dart_err_warned"] = False
+    _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    for _it in (j.get("list") or []):
+        _rcp = _it.get("rcept_no")
+        _stock = (_it.get("stock_code") or "").strip()
+        if not _rcp or not _stock or sent.get(_rcp):
+            continue                            # 신규·상장사(종목코드 有)만
+        _nm = _it.get("report_nm", "") or ""
+        _corp = _it.get("corp_name", "")
+        if any(k in _nm for k in _DART_SKIP):     # [V18.6] 형식·노이즈 공시 제외(증권발행실적 등)
+            sent[_rcp] = True
+            continue
+        _neg = any(k in _nm for k in _DART_NEG)
+        _pos = any(k in _nm for k in _DART_POS)
+        _perf = any(k in _nm for k in _DART_PERF)  # [V18.6] 진짜 잠정실적만(증권발행실적 오탐 제거)
+        if not (_neg or _pos or _perf):
+            continue
+        sent[_rcp] = True
+        _url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={_rcp}"
+        # ── 악재/실적은 정보 알림 ──
+        if _neg:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_CAUTION}\n📢 [DART 악재공시] {_corp}({_stock})\n{_nm}\n"
+                          f"⚠️ 유증/감자/소송 등 악재성 — 보유 시 점검·신규 진입 주의\n{_url}")
+            continue
+        if _perf and not (_pos or _neg):
+            continue                            # [V18.8] 실적 공시 발송 OFF — 내용판단 불가·노이즈 폭주 방지
+        # ── 호재 공시 → 우리 엔진으로 교차검증 후 '종목 선정' ──
+        _px = _chg = _turn = None
+        if _tok:
+            try:
+                _px, _chg, _turn = _price_and_turnover(_tok, kis_key, kis_secret, _stock)
+            except Exception:
+                pass
+        if not _px:                             # 장외/거래 전 → 선점 후보(재료만)
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_BUY}\n🎯 [공시 발굴·선점] {_corp}({_stock})\n"
+                          f"공시: {_nm} (호재 재료)\n"
+                          f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 후 소액 진입\n{_url}")
+            continue
+        _disp = None
+        try:
+            _disp = _ma20_disparity(_tok, kis_key, kis_secret, _stock, _px)
+        except Exception:
+            pass
+        _dtxt = f" · 이격 {_disp:+.0f}%" if _disp is not None else ""
+        _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
+        if _turn and _turn < 3_000_000_000:      # [V18.6] 거래대금 30억↓ = 거래 안 붙음 → 발송 안 함(소음 제거)
+            continue                              # 소형주 수주라도 거래 붙어야 의미 → 급증스캔이 잡음
+        _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
+        if _overheat:                            # 이미 급등 → 추격 금지
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [공시·과열] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
+            continue
+        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 살아있음 + 비과열
+        _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
+                      f"공시: {_nm} (호재·선행 재료)\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억 · 비과열 ✅\n"
+                      f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
+                      f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
+        _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
+    state["dart_sent"] = sent
+
+
+# [V18.3] 종목 뉴스 재료 등급 — watcher 시가저격/진입에 뉴스 확인 연계(악재 스킵·재료 태그).
+_NEWS_S_KW = ("수주", "계약 체결", "공급 계약", "납품", "수출 계약", "어닝 서프라이즈",
+              "예상 상회", "컨센 상회", "목표주가 상향", "목표가 상향", "투자의견 상향", "기술수출", "FDA 승인")
+_NEWS_A_KW = ("실적", "영업이익", "순이익", "흑자전환", "역대 최대", "호실적", "신약", "임상")
+_NEWS_NEG_KW = ("무산", "해지", "철회", "횡령", "배임", "상장폐지", "감자", "유상증자", "적자전환",
+                "소송", "불성실공시", "분식", "거래정지", "관리종목", "리콜")
+
+
+def _news_grade(code):
+    """종목 뉴스 재료 등급 — 네이버 모바일 뉴스 제목 키워드. 반환 (grade, is_bad).
+    grade: 'S'/'A'/'none'. is_bad: 악재 감지. 실패 시 ('none', False) — 매매 방해 안 함."""
+    titles = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize=15&page=1",
+                         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
+                         timeout=5)
+        _j = r.json()
+
+        def _walk(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str):
+                        titles.append(v)
+                    else:
+                        _walk(v)
+            elif isinstance(o, list):
+                for it in o:
+                    _walk(it)
+        _walk(_j)
+    except Exception:
+        return "none", False
+    if not titles:
+        return "none", False
+    for t in titles:
+        if any(n in t for n in _NEWS_NEG_KW):
+            return "none", True                # 제목 하나라도 악재 → 악재 판정
+    blob = " ".join(titles)
+    if any(k in blob for k in _NEWS_S_KW):
+        return "S", False
+    if any(k in blob for k in _NEWS_A_KW):
+        return "A", False
+    return "none", False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# [V18.7] 조기 포착·급증진입을 watcher로 이관 — 대시보드 없이 상시 텔레그램(초입 신호).
+#   거래대금 랭킹 → 일봉 셋업(기준선·5일선·이격·급증배수) → 조기포착/급증진입 판정 + 뉴스.
+# ══════════════════════════════════════════════════════════════════════════
+_EARLY_ETF_KW = ("ETN", "ETF", "선물", "레버리지", "인버스", "KODEX", "TIGER", "PLUS",
+                 "ACE", "SOL", "KBSTAR", "리츠", "스팩", "채권")
+
+
+def _volume_rank(token, key, secret, top=40):
+    """당일 거래대금 상위 종목 — volume-rank(FHPST01710000). [{code,name,px,chg,turnover}]. 실패 시 []."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/volume-rank",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPST01710000"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20171",
+                                 "fid_input_iscd": "0000", "fid_div_cls_code": "0",
+                                 "fid_blng_cls_code": "3", "fid_trgt_cls_code": "111111111",
+                                 "fid_trgt_exls_cls_code": "000000", "fid_input_price_1": "",
+                                 "fid_input_price_2": "", "fid_vol_cnt": "", "fid_input_date_1": ""},
+                         timeout=6)
+        out = r.json().get("output", []) or []
+        rows = []
+        for x in out[:top]:
+            if not isinstance(x, dict):
+                continue
+            cd = str(x.get("mksc_shrn_iscd", "")).zfill(6)
+            px = _to_int(x.get("stck_prpr"))
+            if not (cd.isdigit() and len(cd) == 6 and px):
+                continue
+            rows.append({"code": cd, "name": x.get("hts_kor_isnm", cd), "px": px,
+                         "chg": float(str(x.get("prdy_ctrt", 0)).replace(",", "") or 0),
+                         "turnover": _to_int(x.get("acml_tr_pbmn"))})
+        return rows
+    except Exception:
+        return []
+
+
+def _daily_setup(token, key, secret, code, px):
+    """일봉 셋업 — inquire-daily-price 최근 30일. ma5/ma20/이격/기준선(26)/돌파·근접/5일선위/20일평균거래대금."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)]
+        if len(rows) < 26:
+            return None
+        clpr = [_to_int(x.get("stck_clpr")) for x in rows]     # 최신순
+        hgpr = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lwpr = [_to_int(x.get("stck_lwpr")) for x in rows]
+        vol = [_to_int(x.get("acml_vol")) for x in rows]
+        if not all(clpr[:26]):
+            return None
+        ma5 = sum(clpr[:5]) / 5.0
+        ma20 = sum(clpr[:20]) / 20.0
+        kijun = ((max(hgpr[:26]) + min(lwpr[:26])) / 2.0) if (all(hgpr[:26]) and all(lwpr[:26])) else 0
+        prevc = clpr[1] if len(clpr) >= 2 else px
+        _turns = [clpr[i] * vol[i] for i in range(1, min(21, len(clpr))) if clpr[i] and vol[i]]
+        turnavg = (sum(_turns) / len(_turns)) if _turns else 0
+        return {"ma5": ma5, "ma20": ma20,
+                "disp": ((px / ma20 - 1) * 100) if ma20 else 0,
+                "above5": bool(ma5 and px >= ma5),
+                "kij_cross": bool(kijun and prevc < kijun <= px),
+                "kij_near": bool(kijun and abs(px / kijun - 1) <= 0.02),
+                "turnavg": turnavg}
+    except Exception:
+        return None
+
+
+def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V18.7] 조기 포착(기준선 초입)·급증진입 — 거래대금 랭킹 상시 스캔. 09:00~15:20, 리스크오프 억제."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("early_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if sent.get(cd) or not px or not turn:
+            continue
+        if any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if not (-2.0 <= chg <= 15.0) or turn < 3_000_000_000:   # 급락·이미급등·거래미미 사전 컷(일봉조회 절약)
+            continue
+        _budget += 1
+        if _budget > 22:                          # API 절약(루프당 일봉조회 상한)
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or ds["turnavg"] <= 0:
+            continue
+        mult = turn / ds["turnavg"]; disp = ds["disp"]; above5 = ds["above5"]
+        if mult >= 2.0 and above5 and disp < 7 and chg < 12:
+            _kind, _label, _kt = "급증진입", "🟢 [진입 신호·거래대금]", ""
+        elif (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
+            _kind, _label = "조기포착", "🟢 [조기 포착·기준선]"
+            _kt = " · 일목 " + ("기준선 돌파✅" if ds["kij_cross"] else "기준선 걸침(±2%)")
+        else:
+            continue
+        _ng, _nbad = _news_grade(cd)               # 뉴스 재료 확인(악재 스킵)
+        if _nbad:
+            continue
+        _mat = "🔥재료 강함(S급)" if _ng == "S" else "🟢재료 있음(A급)" if _ng == "A" else "⚠️재료 미확인"
+        _stop = int(px * 0.98); _t1 = int(px * 1.03)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🌅[장중단타·당일청산] {_label} {nm} {px:,}({chg:+.1f}%) · 거래대금 {mult:.1f}배{_kt}\n"
+                         f"{_mat} · 20MA 이격 {disp:+.0f}%\n"
+                         f"진입 {px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
+                         f"⚠️ 초입 신호=빠르지만 가짜 가능 · 소액·거래대금 계속 붙는지 확인"):
+            sent[cd] = True
+            _log_signal(state, now_kst, _kind, nm, cd, px)
+    state["early_sent"] = sent
+
+
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
     반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단.
@@ -771,6 +1078,12 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
             if _sdisp is not None and _sdisp <= -10.0 and (chg or 0) < -1.0:
                 continue                        # 20MA -10%↓ + 하락 중 = 시가저격 매수 보류
             if not sent.get(code):              # 당일 첫 돌파만 발송
+                # [V18.3] 뉴스 재료 확인 — 악재면 시가저격 스킵, 재료 등급은 메시지에 표기
+                _ng, _nbad = _news_grade(code)
+                if _nbad:
+                    continue                    # 악재 감지 → 시가저격 매수 보류
+                _mattxt = ("🔥재료 강함(S급)" if _ng == "S" else "🟢재료 있음(A급)" if _ng == "A"
+                           else "⚠️재료 미확인(기술적)")
                 _stop = int(px * 0.98); _res = _recent_high(token, key, secret, code)
                 if _res and _res > px:
                     _res_line = (f"🚀 돌파 홀딩 기준: {_res:,}원 (뚫으면 계속 보유)\n"
@@ -779,7 +1092,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
-                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk}\n"
+                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}\n"
                               f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                               f"─── 가격표 ───\n"
                               f"🎯 매수가(현재): {px:,}원\n"
@@ -1382,9 +1695,15 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                               f"※눌림 와서 과열 풀리면 '진입 시그널' 재발송")
                 sent[_wkey] = True
         elif not sent.get(code):
+            # [V18.3] 뉴스 재료 확인 — 악재면 진입 스킵, 재료 등급은 메시지에 표기
+            _eng, _ebad = _news_grade(code)
+            if _ebad:
+                continue                          # 악재 감지 → 진입 보류
+            _emat = ("🔥재료 강함(S급)" if _eng == "S" else "🟢재료 있음(A급)" if _eng == "A"
+                     else "⚠️재료 미확인(순수 수급)")
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n🌅[아침단타·당일청산] 🟢 진입 시그널 — {name}\n"
-                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt}\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt} · {_emat}\n"
                           f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
@@ -1755,7 +2074,9 @@ def main():
             print(f"⚠️ secrets.toml 없음: {SECRETS_FILE}")
         else:
             print(f"⚠️ secrets.toml 있으나 KIS 키(KIS_APP_KEY/KIS_APP_SECRET 등) 못 찾음")
-    print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급(전조/A급) {'ON' if kis_on else 'OFF'}")
+    dart_key = read_dart_key()                    # [V18.4] DART 공시 감시 키(없으면 자동 OFF)
+    print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급 {'ON' if kis_on else 'OFF'} · "
+          f"DART공시 {'ON' if dart_key else 'OFF(키없음)'}")
     send_telegram(token_tg, chat_id,
                   f"📡 감시 시작 — 국면 개선·전조·A급 알림 대기중\n수급 감시 {'ON' if kis_on else 'OFF(KIS키 없음)'}")
 
@@ -1815,6 +2136,11 @@ def main():
                 check_us_overnight(now, st, token_tg, chat_id)
             except Exception as _uoe:
                 print("야간 미장 알림 오류:", _uoe)
+            # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
+            try:
+                check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret)
+            except Exception as _dqe:
+                print("DART 공시 감시 오류:", _dqe)
             print(f"[{stamp}] 매크로 sev={sev} {mtext} | {mdetail}")
 
             # [1단계] 웹 속보판용 스냅샷 — 매크로는 항상, 수급/A급은 KIS ON일 때 채운다.
@@ -1985,6 +2311,11 @@ def main():
                                                         token_tg, chat_id, _lineup, sev)
                     except Exception as _ee:
                         print("진입 체크 오류:", _ee)
+                    # [V18.7] 조기 포착·급증진입 — 대시보드 없이 거래대금 랭킹 상시 스캔(초입 신호)
+                    try:
+                        check_early_catch(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _ece:
+                        print("조기 포착 오류:", _ece)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
