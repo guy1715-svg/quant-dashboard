@@ -5859,8 +5859,8 @@ def log_dolpanty_pick(code, name, score, px, regime="", signal="dolpanty", nq=No
         return
     _today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
     _rows = _pick_history_read()
-    if any(r.get("date") == _today for r in _rows):
-        return                        # 오늘 첫 확정픽만 저장(장중 순위 변동 무시)
+    if any(r.get("date") == _today and r.get("code") == str(code) for r in _rows):
+        return                        # [V19.4] 종목별 당일 1회(원톱+분산 2·3위 각각 기록·상황체크 감시)
     _rows.append({"date": _today, "code": str(code), "name": name or "",
                   "score": round(float(score), 1), "px": int(px or 0),
                   "regime": regime or "", "signal": signal,
@@ -6284,6 +6284,44 @@ def render_dolpanty_pick():
                 pass
     if not _gate:
         st.caption("⏳ 15:00~15:30 / 18:00~20:00(NXT) 확정 — 종가·수급 굳은 뒤 최종 매수, 익일 시초 갭 +1~2% 익절")
+    # [V19.4] 분산 후보 2·3위 — 원톱 몰빵 대신 2-3종목 소액 분산(갭다운 꼬리 -30% 리스크 완화)
+    try:
+        _div = [c for c in _valids if c["code"] != _pick["code"] and not _cand_overheated(c)][:2]
+    except Exception:
+        _div = []
+    if _div:
+        st.markdown("<div style='font-size:13px;font-weight:800;color:#86efac;margin:9px 0 2px'>"
+                    "🌒 분산 후보 (2·3위 — 소액 분산용)</div>", unsafe_allow_html=True)
+        for _i, _c in enumerate(_div, start=2):
+            _cr = _c.get("rec", {}); _cpx = _cr.get("현재가") or 0; _cch = _cr.get("등락률") or 0.0
+            _cc2 = "#ef4444" if _cch < 0 else "#16a34a" if _cch > 0 else "#94a3b8"
+            st.markdown(
+                f"<div style='border-left:3px solid #22c55e;padding:4px 10px;margin:2px 0;"
+                f"background:rgba(34,197,94,0.06);border-radius:0 6px 6px 0;font-size:12px'>"
+                f"<b style='color:#e2e8f0'>{_i}위 {_c['name']}</b> "
+                f"<span style='color:#64748b;font-size:10px'>{_c['code']}·{_c.get('sector','')}</span> "
+                f"<span style='color:{_cc2}'>{_cpx:,}({_cch:+.1f}%)</span> · "
+                f"점수 {_c.get('score_adj', _c['score']):.0f} · 진입 {_cpx:,}·손절 {int(_cpx*0.98):,}(−2%)·익절 {int(_cpx*1.03):,}(+3%)"
+                f"</div>", unsafe_allow_html=True)
+        st.caption("💡 원톱 몰빵 대신 원톱+2·3위 각 극소액 분산 → 한 종목 갭다운 꼬리 리스크 완화. 연휴 앞엔 특히 분산·소액.")
+        if _gate:
+            _divkey = f"_div_tg_{(datetime.utcnow()+timedelta(hours=9)).strftime('%Y-%m-%d')}"
+            for _c in _div:                          # 분산 후보도 로깅(상황체크 감시)
+                try:
+                    log_dolpanty_pick(_c["code"], _c["name"], _c.get("score_adj", _c["score"]),
+                                      _c.get("rec", {}).get("현재가") or 0,
+                                      regime=_regime.get("regime", ""), signal="dolpanty_div",
+                                      nq=_regime.get("nq"))
+                except Exception:
+                    pass
+            if not st.session_state.get(_divkey):
+                _dvtxt = " · ".join(f"{_c['name']} {(_c.get('rec',{}).get('현재가') or 0):,}" for _c in _div)
+                try:
+                    if send_telegram(f"🌒[종배 분산 후보 2·3위] {_dvtxt}\n"
+                                     f"원톱({_pick['name']})과 함께 각 극소액 분산 권장 — 갭다운 리스크 완화·연휴엔 특히 소액."):
+                        st.session_state[_divkey] = True
+                except Exception:
+                    pass
     # [V14.8] NXT 야간 전술 경고 — 시장가 금지·미거래 갭리스크(오버나이트 헷지 전제 시 필독)
     st.markdown(
         "<div style='border:1.5px solid #f97316;border-radius:8px;padding:7px 11px;margin-top:6px;"
