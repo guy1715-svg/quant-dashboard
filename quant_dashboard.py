@@ -4136,6 +4136,13 @@ def scan_tomorrow_candidates(top=50):
             _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
         except Exception:
             _s["tags"] = []
+        # [V18.3] 뉴스 재료 등급 + 악재 감지 — 종배 후보 선정에 뉴스 반영(악재는 render에서 제외)
+        try:
+            _nb, _nmute, _ = news_score_modifier(_s["code"], _s.get("disp", 0), overheat_mute=False)
+        except Exception:
+            _nb, _nmute = 0, False
+        _s["news_grade"] = "S" if _nb >= 8 else "A" if _nb >= 4 else "none"
+        _s["news_bad"] = bool(_nmute)
     return _out
 
 
@@ -4154,17 +4161,22 @@ def render_tomorrow_prep():
         _cands = scan_tomorrow_candidates()
     except Exception as _e:
         st.caption(f"⚠️ 후보 스캔 일시 비활성: {type(_e).__name__}"); return
-    _cands = [c for c in _cands if c["score"] >= 4][:8]
+    # [V18.3] 악재 감지 종목은 종배 후보에서 제외(뉴스 확인 반영)
+    _bad = [c for c in _cands if c.get("news_bad") and c["score"] >= 4]
+    _cands = [c for c in _cands if c["score"] >= 4 and not c.get("news_bad")][:8]
     if not _cands:
         st.caption("오늘 종가 기준 뚜렷한 후보(전고돌파+5일선+거래대금) 없음 — 무리한 종배는 쉬는 게 정답."); return
     for _c in _cands:
         _cc = "#ef4444" if _c["chg"] < 0 else "#16a34a" if _c["chg"] > 0 else "#94a3b8"
         _oh = _c["overheat"]                       # "hot"(초고변동) / "no"
         _border = "#f59e0b" if _oh == "hot" else _cc
+        _ng = _c.get("news_grade", "none")
+        _matb = ("🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "⚪재료미확인")
         _tags = " ".join(
             f"<span style='background:#1e293b;color:#93c5fd;padding:1px 6px;border-radius:6px;font-size:10px'>{_t}</span>"
             for _t in (_c.get("tags") or [])) or ""
-        _warn = " · <b style='color:#f59e0b'>⚠고변동(갭다운 꼬리)·소액</b>" if _oh == "hot" else ""
+        _warn = f" · <b>{_matb}</b>"
+        _warn += " · <b style='color:#f59e0b'>⚠고변동(갭다운 꼬리)·소액</b>" if _oh == "hot" else ""
         _line = (f"📍종배 진입 {_c['entry']:,}(종가) · 손절 {int(_c['entry']*0.98):,}(−2%) · "
                  f"익일 시가 청산 목표{_warn}")
         st.markdown(
@@ -4177,9 +4189,11 @@ def render_tomorrow_prep():
             f"<div style='font-size:11px;color:#94a3b8;margin-top:2px'>{_line} · "
             f"<b style='color:#fbbf24'>{' · '.join(_c['reasons'])}</b>"
             f"{'<br>'+_tags if _tags else ''}</div></div>", unsafe_allow_html=True)
+    if _bad:
+        st.caption("🚫 악재 감지로 제외: " + ", ".join(f"{c['name']}" for c in _bad[:5]) + " (뉴스에 악재 포착 → 종배 부적합)")
     st.caption("💡 종배(오버나이트) = 모멘텀 게임. 백테스트상 '강한 돌파(높은 이격)'가 익일 갭을 더 먹음 → "
-               "강세일수록 후보 상위. 단 진입은 종배 확정픽(15:00~15:30 종가)에서, 밤에 보는 이 리스트는 참고용. "
-               "⚠️고변동주는 갭다운 꼬리(-30%) 있으니 반드시 소액·분산. 리스크오프면 매수 자체 보류.")
+               "강세일수록 후보 상위. 🔥재료S/🟢재료A는 지속력↑, ⚪재료미확인은 기술적 단발 주의. "
+               "진입은 종배 확정픽(15:00~15:30 종가)에서. ⚠️고변동주 소액·분산. 리스크오프면 매수 보류.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -5419,6 +5433,52 @@ def news_score_modifier(code, disp_pct=None, overheat_mute=True):
     if overheat_mute and _bonus and disp_pct is not None and disp_pct >= 7.0:
         return 0, False, f"{_tag} 감지되나 이격 +{disp_pct:.1f}% 과열 → 가점 무효(추격금지)"
     return _bonus, False, _tag
+
+
+def render_ai_news_verdict(code, name=""):
+    """[V18.2] 🤖 AI 뉴스 판정 — Gemini가 뉴스 제목을 '읽고' 재료 강도/호재악재/신선도/지속성 판정.
+    키워드 매칭(제목 단어)과 달리 맥락 이해('수주 무산'↔'수주 체결' 구분). 온디맨드(버튼). 예외 전파 없음."""
+    _key = st.session_state.get("_gemini_key") or ""
+    _model = st.session_state.get("_gemini_model") or "models/gemini-2.5-flash"
+    st.markdown("##### 🤖 AI 뉴스 판정 <span style='font-size:11px;color:#94a3b8'>"
+                "(Gemini가 뉴스 본문 맥락 이해 · 키워드 매칭과 다름)</span>", unsafe_allow_html=True)
+    if not _key:
+        st.caption("🔑 Gemini API 키 필요 — '시스템 설정 → 🛠️ 시스템 백엔드'에서 입력하면 활성화."); return
+    _ck = f"_ainews_{code}"
+    if st.button("🤖 이 종목 뉴스 AI 판정", key=f"_ainews_btn_{code}"):
+        try:
+            _titles = _fetch_news_titles(code)
+        except Exception:
+            _titles = []
+        if not _titles:
+            st.session_state[_ck] = "뉴스 없음 — 판정 불가(재료 미확인 종목)."
+        else:
+            _prompt = (
+                f"너는 한국 주식 단타/종배 트레이더의 뉴스 분석 보조야. 아래는 '{name}({code})'의 "
+                f"최근 뉴스 제목들이야. 제목에 근거해(추측 금지) 아래 형식으로 간결히 판정해줘:\n\n"
+                f"【재료 강도】 S급(대형 확정호재)/A급(호재)/B급(약함)/없음/악재 중 하나\n"
+                f"【핵심 재료】 한 줄 — 무슨 재료인가\n"
+                f"【호재/악재】 호재/악재/중립 + 이유(예: '수주 무산'이면 악재)\n"
+                f"【신선도】 오늘 새 재료 / 과거 반복 / 불명\n"
+                f"【지속성】 단발성 / 지속가능 — 왜\n"
+                f"【트레이더 코멘트】 한 줄 — 추격주의/눌림대기/재료약해 스킵 등\n\n"
+                f"뉴스 제목들:\n" + "\n".join("- " + _t for _t in _titles[:15]))
+            with st.spinner("Gemini 뉴스 분석 중..."):
+                try:
+                    import google.generativeai as _genai
+                    _genai.configure(api_key=_key)
+                    _mdl = _genai.GenerativeModel(_model)
+                    _res = _mdl.generate_content(_prompt)
+                    st.session_state[_ck] = _res.text
+                except Exception as _e:
+                    st.session_state[_ck] = f"⚠️ AI 호출 실패: {type(_e).__name__} — {str(_e)[:120]}"
+    _txt = st.session_state.get(_ck)
+    if _txt:
+        st.markdown(f"<div style='background:#0f172a;border:1px solid #334155;border-radius:10px;"
+                    f"padding:10px 14px;font-size:12.5px;color:#e2e8f0;white-space:pre-wrap;line-height:1.6'>"
+                    f"{_txt}</div>", unsafe_allow_html=True)
+        st.caption("💡 AI 판정도 제목 기반이라 100%는 아냐 — 힌트로 쓰고 큰돈은 원문 확인. "
+                   "거래대금(왕)이 먼저 움직였는지 확인 후 재료 품질 검증용.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -9967,12 +10027,13 @@ with st.sidebar:
     # ── 🛠️ 시스템 백엔드 및 API 설정 (평소 숨김 — Gemini 키·모델·강제 새로고침 격리) ──
     with st.expander("🛠️ 시스템 백엔드 및 API 설정", expanded=False):
         gemini_key = st.text_input("🔑 Gemini API 키", type="password",
+                                    key="_gemini_key",   # [V18.2] 세션 공유 — 다른 탭(AI 뉴스 판정)에서 재사용
                                     help="aistudio.google.com에서 발급")
         model_name = st.selectbox("Gemini 모델", [
             "models/gemini-2.5-flash",
             "models/gemini-2.5-pro",
             "models/gemini-2.0-flash",
-        ], help="Flash: 빠름·하루 500회 무료 / Pro: 정밀분석·하루 25회 무료")
+        ], key="_gemini_model", help="Flash: 빠름·하루 500회 무료 / Pro: 정밀분석·하루 25회 무료")
         st.caption(f"마지막 업데이트: {datetime.now().strftime('%H:%M:%S')}")
         if st.button("🔄 강제 새로고침", use_container_width=True):
             st.cache_data.clear()
@@ -11902,6 +11963,12 @@ def render_stock_analyzer():
             render_program_vap(_code, (_rec.get("현재가") or 0))
         except Exception as _pve:
             st.caption(f"⚠️ 프로그램 판독 일시 비활성: {type(_pve).__name__}")
+    # [V18.2] AI 뉴스 판정 — Gemini가 뉴스 본문 맥락 이해(키워드 매칭 한계 극복). 온디맨드.
+    with st.expander("🤖 AI 뉴스 판정 (Gemini 뉴스 읽기)", expanded=False):
+        try:
+            render_ai_news_verdict(_code, _rec.get("name", ""))
+        except Exception as _anve:
+            st.caption(f"⚠️ AI 뉴스 판정 일시 비활성: {type(_anve).__name__}")
     # [V16.6] 강세 종배(돌파형) — 15:00~15:30 종가 강세주 오버나이트 선점 판정
     with st.expander("🌒 강세 종배 판정 (돌파형 · 내일 오를 강한 종목)", expanded=False):
         try:
@@ -12226,11 +12293,12 @@ with tab_g:
                 _ctk = f"_ct_tg_{_ct_today}_{_ct.get('code')}"
                 _cpx = _ct.get("px", 0) or 0
                 if not st.session_state.get(_ctk) and _cpx:
-                    if send_telegram(f"🌅[장중·역행 고위험] 🔥 [역행 진입후보] {_ct.get('name','')} {_cpx:,}(+{_ct.get('chg',0):.1f}%) "
+                    _cwarn = ("리스크오프 역행=고위험" if _idx_ct < 0 else "역행 강세(지수보다 강함)")
+                    if send_telegram(f"🌅[장중·역행] 🔥 [역행 진입후보] {_ct.get('name','')} {_cpx:,}(+{_ct.get('chg',0):.1f}%) "
                                      f"· 지수대비 +{_ct.get('out',0):.1f}%p · 외인·기관 양매수\n"
                                      f"진입 {_cpx:,} · 손절 {int(_cpx*0.98):,}(−2%) · 1차익절 {int(_cpx*1.03):,}(+3%)\n"
                                      f"사유: {' / '.join(_ct.get('tags') or []) or '뉴스 확인'}\n"
-                                     f"⚠️ 리스크오프 역행=고위험 — 소액·타이트손절 필수."):
+                                     f"⚠️ {_cwarn} — 소액·타이트손절 필수."):
                         st.session_state[_ctk] = True
     except Exception:
         pass
