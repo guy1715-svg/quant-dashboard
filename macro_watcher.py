@@ -1048,6 +1048,132 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
     state["early_sent"] = sent
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# [V20.0] 종가베팅 픽을 watcher로 이관 — 대시보드 없이 장 마감 직전 자동 선정·발송.
+#   거래대금 상위 → 20MA↑·비과열·악재無 → 원톱 + 분산 2·3위. pick_history.json 공유
+#   (대시보드 backfill_pick_outcomes/명중률이 그대로 익일 갭 대조·집계).
+# ══════════════════════════════════════════════════════════════════════════
+PICK_FILE = os.path.join(BASE, "pick_history.json")
+
+
+def _pick_read():
+    try:
+        with open(PICK_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _pick_write(rows):
+    try:
+        with open(PICK_FILE, "w", encoding="utf-8") as f:
+            json.dump(rows[-400:], f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
+    """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유)."""
+    if not code or not score:
+        return
+    today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
+    rows = _pick_read()
+    if any(r.get("date") == today and r.get("code") == str(code) for r in rows):
+        return
+    rows.append({"date": today, "code": str(code), "name": name or "",
+                 "score": round(float(score), 1), "px": int(px or 0),
+                 "regime": "", "signal": signal,
+                 "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
+                 "open_next": None, "gap": None})
+    _pick_write(rows)
+
+
+def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None):
+    """[V20.0] 종가베팅 픽 — 15:05~15:22 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
+    원톱 + 분산 2·3위 텔레그램 1회/일. 리스크오프(sev2)면 관망 통지. pick_history.json 로깅."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60 + 5) <= m <= (15 * 60 + 22)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
+        return
+    if sev == 2:
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
+                         "매크로 🟢 전환·낙폭 진정 후 재산출."):
+            state["dolpanty_pick_day"] = today
+        return
+    cands = []
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn:
+            continue
+        if any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if turn < 50_000_000_000:                    # 거래대금 500억 미달 컷
+            continue
+        if chg >= 7.0:                               # 이미 과열 — 추격 금지
+            continue
+        _budget += 1
+        if _budget > 24:                             # API 절약(루프당 일봉조회 상한)
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        disp = ds["disp"]
+        if px <= ds["ma20"]:                          # 20MA↑ 필수(종배 정석)
+            continue
+        if disp >= 7.0:                               # 20MA 이격 과열
+            continue
+        ng, nbad = _news_grade(cd)                    # 악재 종목 제외
+        if nbad:
+            continue
+        score = 40.0                                  # 거래대금 관문 통과 기본
+        if ds.get("above5"):
+            score += 8
+        if ds.get("kij_cross"):
+            score += 12
+        elif ds.get("kij_near"):
+            score += 6
+        if ng == "S":
+            score += 10
+        elif ng == "A":
+            score += 6
+        if 0 <= disp <= 3:                            # 20일선 눌림 근처(과열 아닌 초입) 가점
+            score += 5
+        cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
+                      "turn": turn, "disp": disp, "score": score, "ng": ng})
+    if not cands:
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 후보 미형성 — 거래대금 500억↑·20MA↑·비과열 통과 종목 없음(관망)."):
+            state["dolpanty_pick_day"] = today
+        print("[종배픽] 후보 0종 — 관망")
+        return
+    cands.sort(key=lambda c: c["score"], reverse=True)
+    pick = cands[0]
+    div = cands[1:3]
+    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
+    for c in div:
+        _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
+    _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
+    _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
+    _divtxt = ("\n🌒 분산 2·3위: "
+               + " · ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in div)) if div else ""
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {pick['name']} "
+                     f"{pick['px']:,}({pick['chg']:+.1f}%)\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}\n"
+                     f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
+                     f"{_divtxt}\n"
+                     f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산\n"
+                     f"밤사이 나스닥·SOX 방향으로 익일 갭 가늠 · 8시 NXT는 목표(+3%)때만 · 청산은 9시 시가"):
+        state["dolpanty_pick_day"] = today
+        _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
+    print(f"[종배픽] 후보 {len(cands)}종 · 원톱 {pick['name']}({pick['score']:.0f}) · 분산 {len(div)}종")
+
+
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
     반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단.
@@ -2324,6 +2450,11 @@ def main():
                         check_early_catch(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _ece:
                         print("조기 포착 오류:", _ece)
+                    # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
+                    try:
+                        check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _dpe:
+                        print("종배픽 오류:", _dpe)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
