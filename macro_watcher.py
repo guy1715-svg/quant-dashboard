@@ -2196,6 +2196,8 @@ def main():
     ap.add_argument("--interval", type=int, default=180, help="체크 주기(초), 기본 180=3분")
     ap.add_argument("--notify-worse", action="store_true", help="[구] 악화 알림 플래그(이제 기본 ON)")
     ap.add_argument("--no-worse", action="store_true", help="매크로 악화 알림 끄기(개선만)")
+    ap.add_argument("--force-pick", action="store_true",
+                    help="종가베팅 픽을 시간창 무시하고 지금 즉시 1회 발송 후 종료(수동 강제)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -2203,6 +2205,20 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.force_pick:                           # [V20.0] 수동 강제 — 시간창·당일락 무시하고 즉시 종배픽
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 종배픽 강제 실행 불가"); sys.exit(1)
+        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _now = _now.replace(hour=15, minute=15)   # 시간창(15:05~15:22) 안으로 강제
+        st = load_state()
+        st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
+        _tok = kis_token(kis_key, kis_secret)
+        _sev, _, _ = compute_macro()
+        print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준")
+        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev)
+        save_state(st)
+        sys.exit(0)
     if not kis_on:
         if not os.path.exists(SECRETS_FILE):
             print(f"⚠️ secrets.toml 없음: {SECRETS_FILE}")
