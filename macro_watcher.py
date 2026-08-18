@@ -305,9 +305,17 @@ def compute_macro():
     # [SOX 방어막] K-국장은 반도체 시총 비중 커 SOX 급락에 종속 동조 → −5% 폭락=차단 / −3% 조정=경고
     sox_crash = (sox is not None and sox <= -5.0)
     sox_warn  = (sox is not None and sox <= -3.0)
-    if riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash:
+    # [SOX 예외] 나스닥이 '완만한 음전'(NQ_BLOCK~-0.8%)뿐인데 SOX가 강세(+1%↑)면 반도체 장세로 보고
+    #   리스크오프→중립으로 완화(반도체 선별 서치 허용). WTI 리스크오프·SOX 폭락·나스닥 급락(-0.8%↓)은 차단 유지.
+    sox_strong = (sox is not None and sox >= 1.0)
+    nq_mild = (nq is not None and NQ_BLOCK >= nq > -0.8)
+    sox_rescue = (nq_mild and sox_strong and semi_sync and not riskoff and not sox_crash)
+    if (riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash) and not sox_rescue:
         sev = 2
         text = "🔴 리스크오프 · 신규매수 차단" + (f" (반도체 폭락 SOX {sox:+.1f}%)" if sox_crash else "")
+    elif sox_rescue:
+        sev = 1
+        text = f"🟠 나스닥 약보합({nq:+.1f}%)이나 SOX 강세({sox:+.1f}%) — 반도체 선별 진입"
     elif (nq is not None and nq >= NQ_GO) and semi_sync and not sox_warn:
         sev, text = 0, "🟢 진입 허용 (매크로 3대 양호)"
     elif sox_warn:
