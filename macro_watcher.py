@@ -1105,6 +1105,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             state["dolpanty_pick_day"] = today
         return
     cands = []
+    raw = []                                          # [검증] 필터 통과 여부 무관 거래대금 상위(그림자 로깅용)
     _budget = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
@@ -1114,6 +1115,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             continue
         if turn < 50_000_000_000:                    # 거래대금 500억 미달 컷
             continue
+        raw.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn})
         if chg >= 7.0:                               # 이미 과열 — 추격 금지
             continue
         if chg < -2.0:                               # 하락 과대(떨어지는 칼) — 종배 제외
@@ -1147,7 +1149,19 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             score += 5
         cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
                       "turn": turn, "disp": disp, "score": score, "ng": ng})
+    def _log_shadow(exclude=()):
+        # [검증] 그림자 픽 — 거래대금 상위 3종을 텔레그램 없이 로깅만. 대시보드 백필이 익일 갭 대조.
+        #   실제 발송픽(dolpanty)과 성적 비교 → "필터가 거른 게 실제로 안 떴나" 검증 데이터.
+        _sh = [c for c in sorted(raw, key=lambda x: x["turn"], reverse=True)
+               if c["code"] not in exclude][:3]
+        for c in _sh:
+            _log_pick(now_kst, c["code"], c["name"], 30.0, c["px"], nq, "dolpanty_shadow")
+        if _sh:
+            print(f"[종배픽] 그림자 로깅 {len(_sh)}종: "
+                  + ", ".join(f"{c['name']}({c['chg']:+.1f}%)" for c in _sh))
+
     if not cands:
+        _log_shadow()                                # 관망 날에도 검증 데이터 축적
         if send_telegram(token_tg, chat_id,
                          "🌒[종배] 후보 미형성 — 거래대금 500억↑·20MA↑·비과열 통과 종목 없음(관망)."):
             state["dolpanty_pick_day"] = today
@@ -1159,6 +1173,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
     for c in div:
         _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
+    _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 실제픽 제외한 상위주 그림자 로깅
     _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
     _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
     _divtxt = ("\n🌒 분산 2·3위: "

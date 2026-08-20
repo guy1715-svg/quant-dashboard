@@ -5904,11 +5904,19 @@ def render_pick_performance():
     """📊 돌팬티 픽 명중률 — 점수대별 실제 익일 갭·승률. 예외 전파 없음."""
     st.markdown("#### 🌒 [종배] 돌팬티 픽 명중률 (오버나이트 → 익일 시초가 갭 기준)")
     _rows = backfill_pick_outcomes()
-    _done = [r for r in _rows if r.get("gap") is not None]
-    _pend = [r for r in _rows if r.get("gap") is None]
+    # [검증] 그림자 픽(dolpanty_shadow)은 실제 명중률에서 분리 — 실제픽만 집계, 그림자는 하단 비교줄
+    _real_rows = [r for r in _rows if r.get("signal") != "dolpanty_shadow"]
+    _shadow_rows = [r for r in _rows if r.get("signal") == "dolpanty_shadow"]
+    _done = [r for r in _real_rows if r.get("gap") is not None]
+    _pend = [r for r in _real_rows if r.get("gap") is None]
     if not _done:
         st.caption(f"아직 결과 대조된 픽 없음 (대기 {len(_pend)}건) — "
                    "15:00~15:30 확정 픽이 익일부터 자동 집계됩니다.")
+        _sd = [r["gap"] for r in _shadow_rows if r.get("gap") is not None]
+        if _sd:
+            _sw = sum(1 for x in _sd if x > 0) / len(_sd) * 100
+            st.caption(f"🌫️ 그림자(관망 후보) {len(_sd)}건 · 승률 {_sw:.0f}% · 평균 갭 {sum(_sd)/len(_sd):+.2f}% "
+                       "— 실제픽 생기면 성적 비교로 필터 검증")
         return
     _bands = [("🔴 STRIKE 80+", 80, 999), ("🟠 READY 60~80", 60, 80), ("🟡 WATCH 40~60", 40, 60)]
     _cols = st.columns(len(_bands))
@@ -5923,8 +5931,18 @@ def render_pick_performance():
     # 전체 요약
     _allg = [r["gap"] for r in _done]
     _wr = sum(1 for x in _allg if x > 0) / len(_allg) * 100
-    st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {sum(_allg)/len(_allg):+.2f}% "
+    _real_avg = sum(_allg) / len(_allg)
+    st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {_real_avg:+.2f}% "
                f"(대기 {len(_pend)}건)")
+    # [검증] 실제픽 vs 그림자(필터 탈락 상위주) 비교 — 필터가 밥값 하는지 숫자로 확인
+    _sd = [r["gap"] for r in _shadow_rows if r.get("gap") is not None]
+    if _sd:
+        _sw = sum(1 for x in _sd if x > 0) / len(_sd) * 100
+        _sd_avg = sum(_sd) / len(_sd)
+        _edge = _real_avg - _sd_avg
+        _verd = "✅ 필터 유효(실제픽 우위)" if _edge > 0 else "⚠️ 필터 재검토(그림자가 더 나음)"
+        st.caption(f"🌫️ 그림자(관망 후보) {len(_sd)}건 · 승률 {_sw:.0f}% · 평균 갭 {_sd_avg:+.2f}% "
+                   f"→ 실제픽−그림자 갭차 {_edge:+.2f}%p · {_verd}")
     # [V13.5] 레짐별 승률 — 자가적응 데이터(레짐마다 신호가 먹히는지 검증)
     _by_rg = {}
     for _r in _done:
