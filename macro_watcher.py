@@ -322,8 +322,17 @@ def compute_macro():
         sev, text = 1, f"🟠 경고 · 반도체 조정(SOX {sox:+.1f}%) — 한도 50%"
     else:
         sev, text = 1, "🟡 중립 · 선별 진입"
-    detail = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
-              if None not in (nq, sox, wti) else "일부 데이터 대기")
+    _us = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
+           if None not in (nq, sox, wti) else "미국지표 대기")
+    # [V20.1] 코스피 주간(^KS11)·야간 프록시(EWY 美상장 한국ETF)·원달러 환율 추가.
+    #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
+    ks = _pct("^KS11")
+    ewy = _pct("EWY")
+    fxl, fxc = _level("USDKRW=X")
+    _kr = ("코스피 " + (f"{ks:+.2f}%" if ks is not None else "—")
+           + " · 야간(EWY) " + (f"{ewy:+.2f}%" if ewy is not None else "—")
+           + " · 환율 " + (f"{fxl:,.0f}({fxc:+.2f}%)" if (fxl is not None and fxc is not None) else "—"))
+    detail = _us + " | " + _kr
     return sev, text, detail
 
 
