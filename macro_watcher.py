@@ -333,7 +333,7 @@ def compute_macro():
     #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
     #   코스피는 fast_info.previous_close가 튀는 케이스(+5%대 오류) 있어 히스토리 기반으로 산출.
     ks = _hist_pct("^KS11")
-    if ks is not None and abs(ks) > 8.0:              # 코스피 하루 ±8% 초과=데이터 이상 → 표기 제외
+    if ks is not None and abs(ks) > 4.0:              # 코스피 하루 ±4% 초과=데이터 이상(서킷급 아니면 없음) → 표기 제외
         ks = None
     ewy = _pct("EWY")
     fxl, fxc = _level("USDKRW=X")
