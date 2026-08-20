@@ -1108,10 +1108,12 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
 
 
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None):
-    """[V20.0] 종가베팅 픽 — 15:05~15:22 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
-    원톱 + 분산 2·3위 텔레그램 1회/일. 리스크오프(sev2)면 관망 통지. pick_history.json 로깅."""
+    """[V20.2] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
+    창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 15:20 종가데이터로 확정되나,
+    창을 넓혀 15:22를 놓쳐도 NXT 시간대에 픽을 받을 수 있게 함(하루 1회). 리스크오프(sev2)면 관망."""
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((15 * 60 + 5) <= m <= (15 * 60 + 22)):
+    # 정규장 마감권(15:05~15:30) 또는 NXT 야간(18:00~19:50). 그 사이 휴장 갭(15:30~18:00)은 스킵.
+    if not (((15 * 60 + 5) <= m <= (15 * 60 + 30)) or ((18 * 60) <= m <= (19 * 60 + 50))):
         return
     today = now_kst.strftime("%Y%m%d")
     if state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
