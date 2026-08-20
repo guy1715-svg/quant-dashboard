@@ -1116,6 +1116,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             continue
         if chg >= 7.0:                               # 이미 과열 — 추격 금지
             continue
+        if chg < -2.0:                               # 하락 과대(떨어지는 칼) — 종배 제외
+            continue
         _budget += 1
         if _budget > 24:                             # API 절약(루프당 일봉조회 상한)
             break
