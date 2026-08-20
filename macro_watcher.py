@@ -285,14 +285,19 @@ def _pct(sym):
     return None
 
 
-def _wti_pct():
+def _hist_pct(sym):
+    """일봉 종가 2개로 전일대비% — fast_info.previous_close가 튀는 지수(코스피 등)용 안정 산출."""
     try:
-        h = yf.Ticker("CL=F").history(period="5d")["Close"].dropna()
+        h = yf.Ticker(sym).history(period="5d")["Close"].dropna()
         if len(h) >= 2:
             return (float(h.iloc[-1]) / float(h.iloc[-2]) - 1) * 100
     except Exception:
         pass
     return None
+
+
+def _wti_pct():
+    return _hist_pct("CL=F")
 
 
 def compute_macro():
@@ -326,13 +331,17 @@ def compute_macro():
            if None not in (nq, sox, wti) else "미국지표 대기")
     # [V20.1] 코스피 주간(^KS11)·야간 프록시(EWY 美상장 한국ETF)·원달러 환율 추가.
     #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
-    ks = _pct("^KS11")
+    #   코스피는 fast_info.previous_close가 튀는 케이스(+5%대 오류) 있어 히스토리 기반으로 산출.
+    ks = _hist_pct("^KS11")
+    if ks is not None and abs(ks) > 8.0:              # 코스피 하루 ±8% 초과=데이터 이상 → 표기 제외
+        ks = None
     ewy = _pct("EWY")
     fxl, fxc = _level("USDKRW=X")
     _kr = ("코스피 " + (f"{ks:+.2f}%" if ks is not None else "—")
            + " · 야간(EWY) " + (f"{ewy:+.2f}%" if ewy is not None else "—")
            + " · 환율 " + (f"{fxl:,.0f}({fxc:+.2f}%)" if (fxl is not None and fxc is not None) else "—"))
-    detail = _us + " | " + _kr
+    # 미국(밤)/한국 두 그룹으로 줄 분리 — 한눈에 구분되게(heartbeat·텔레그램 공통)
+    detail = f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr}"
     return sev, text, detail
 
 
@@ -2317,7 +2326,9 @@ def main():
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret)
             except Exception as _dqe:
                 print("DART 공시 감시 오류:", _dqe)
-            print(f"[{stamp}] 매크로 sev={sev} {mtext} | {mdetail}")
+            print(f"[{stamp}] 매크로 sev={sev} {mtext}")
+            for _dl in mdetail.split("\n"):           # 미국/한국 그룹을 들여쓰기해 한눈에 구분
+                print(f"           {_dl}")
 
             # [1단계] 웹 속보판용 스냅샷 — 매크로는 항상, 수급/A급은 KIS ON일 때 채운다.
             snap = {
