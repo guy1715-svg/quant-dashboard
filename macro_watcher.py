@@ -1107,16 +1107,18 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
-def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None):
-    """[V20.2] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
-    창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 15:20 종가데이터로 확정되나,
-    창을 넓혀 15:22를 놓쳐도 NXT 시간대에 픽을 받을 수 있게 함(하루 1회). 리스크오프(sev2)면 관망."""
+def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False):
+    """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
+    창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 정규장 거래대금 랭킹 기준이나,
+    NXT 시간대(18:00~19:50)엔 각 후보의 현재가를 NX(넥스트레이드)로 실시간 갱신 — 종가 아닌 실시간가로 판정.
+    force=True: 시간창·당일락 무시(수동 강제). 리스크오프(sev2)면 관망."""
     m = now_kst.hour * 60 + now_kst.minute
     # 정규장 마감권(15:05~15:30) 또는 NXT 야간(18:00~19:50). 그 사이 휴장 갭(15:30~18:00)은 스킵.
-    if not (((15 * 60 + 5) <= m <= (15 * 60 + 30)) or ((18 * 60) <= m <= (19 * 60 + 50))):
+    if not force and not (((15 * 60 + 5) <= m <= (15 * 60 + 30)) or ((18 * 60) <= m <= (19 * 60 + 50))):
         return
+    _in_nxt = (18 * 60) <= m <= (19 * 60 + 50)       # NXT 야간창이면 실시간 NX가로 갱신
     today = now_kst.strftime("%Y%m%d")
-    if state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
+    if not force and state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
         return
     if sev == 2:
         if send_telegram(token_tg, chat_id,
@@ -1135,6 +1137,10 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             continue
         if turn < 50_000_000_000:                    # 거래대금 500억 미달 컷
             continue
+        if _in_nxt:                                  # NXT 야간 — 종가 대신 넥스트레이드 실시간가로 갱신
+            _npx, _nchg, _nturn = _price_and_turnover(token, key, secret, cd, mrkt="NX")
+            if _npx:
+                px, chg = _npx, _nchg                # 현재가·등락은 NXT 실시간(거래대금은 정규장 랭킹 유지)
         raw.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn})
         if chg >= 7.0:                               # 이미 과열 — 추격 금지
             continue
@@ -1177,8 +1183,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         for c in _sh:
             _log_pick(now_kst, c["code"], c["name"], 30.0, c["px"], nq, "dolpanty_shadow")
         if _sh:
-            print(f"[종배픽] 그림자 로깅 {len(_sh)}종: "
-                  + ", ".join(f"{c['name']}({c['chg']:+.1f}%)" for c in _sh))
+            print(f"[종배픽] 그림자 로깅 {len(_sh)}종({'NXT실시간' if _in_nxt else '종가'}): "
+                  + ", ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in _sh))
 
     if not cands:
         _log_shadow()                                # 관망 날에도 검증 데이터 축적
@@ -1196,11 +1202,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 실제픽 제외한 상위주 그림자 로깅
     _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
     _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
+    _pbasis = "NXT 실시간가" if _in_nxt else "종가"       # 가격 기준 표기
     _divtxt = ("\n🌒 분산 2·3위: "
                + " · ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in div)) if div else ""
     if send_telegram(token_tg, chat_id,
                      f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {pick['name']} "
-                     f"{pick['px']:,}({pick['chg']:+.1f}%)\n"
+                     f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
@@ -2246,14 +2253,19 @@ def main():
     if args.force_pick:                           # [V20.0] 수동 강제 — 시간창·당일락 무시하고 즉시 종배픽
         if not kis_on:
             print("⚠️ KIS 키 없음 — 종배픽 강제 실행 불가"); sys.exit(1)
-        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-        _now = _now.replace(hour=15, minute=15)   # 시간창(15:05~15:22) 안으로 강제
+        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)   # 실제 현재시각 사용
+        _m = _now.hour * 60 + _now.minute
+        # NXT 야간창(18:00~19:50)이면 실제 시각 그대로 → NX 실시간가 판정. 그 외엔 종가 기준(15:15로 표기).
+        _nxt_now = (18 * 60) <= _m <= (19 * 60 + 50)
+        if not _nxt_now:
+            _now = _now.replace(hour=15, minute=15)   # 정규장 종가 기준 판정
         st = load_state()
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
         _tok = kis_token(kis_key, kis_secret)
         _sev, _, _ = compute_macro()
-        print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준")
-        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev)
+        print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준"
+              + (" · NXT 실시간가" if _nxt_now else " · 종가"))
+        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True)
         save_state(st)
         sys.exit(0)
     if not kis_on:
