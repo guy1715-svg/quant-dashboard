@@ -2485,12 +2485,27 @@ def check_index_shutdown() -> tuple:
             return True, "🔴 지수 데이터 장애 — 수동 확인 요망 (신규매수 차단)", None, None
         _kospi_chg  = round(float(_kp_raw), 2)
         _kosdaq_chg = round(float(_kq_raw), 2)
-        if _kospi_chg <= -2.0 or _kosdaq_chg <= -2.0:
+        # [V20.3] 시장별 분리 — 코스피=대형주 / 코스닥=중소형·성장. 한쪽만 급락은 차별화 장세로 구분.
+        _kp_crash = _kospi_chg <= -2.0
+        _kq_crash = _kosdaq_chg <= -2.0
+        if _kp_crash and _kq_crash:                       # 둘 다 급락 = 진짜 리스크오프 → 전면 차단
             _reason = (
-                f"🚨 지수 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
-                f"(-2.0% 급락) | 개별 지지선 무효 / 신규 매수 차단"
+                f"🚨 전면 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
+                f"(둘 다 -2%↓) | 리스크오프 · 신규 매수 전면 차단"
             )
             return True, _reason, _kospi_chg, _kosdaq_chg
+        if _kp_crash:                                     # 코스피(대형주)만 급락 → 대형주 차단
+            _reason = (
+                f"🚨 대형주 셧다운 — 코스피 {_kospi_chg:+.2f}% (-2%↓) / 코스닥 {_kosdaq_chg:+.2f}% "
+                f"| 대형주 신규매수 차단 (코스닥/소형주는 선별)"
+            )
+            return True, _reason, _kospi_chg, _kosdaq_chg
+        if _kq_crash:                                     # 코스닥(중소형)만 급락 → 차별화, 대형주는 허용
+            _reason = (
+                f"🟠 차별화 장세 — 코스닥 {_kosdaq_chg:+.2f}% (-2%↓) / 코스피 {_kospi_chg:+.2f}% 양호 "
+                f"| 소형주·코스닥 주의 · 대형주는 선별 진입 가능(전면 차단 아님)"
+            )
+            return False, _reason, _kospi_chg, _kosdaq_chg
         return False, "", _kospi_chg, _kosdaq_chg
     except Exception as _e:
         _lg.warning("check_index_shutdown 예외: %s: %s", type(_e).__name__, _e)
@@ -5904,11 +5919,19 @@ def render_pick_performance():
     """📊 돌팬티 픽 명중률 — 점수대별 실제 익일 갭·승률. 예외 전파 없음."""
     st.markdown("#### 🌒 [종배] 돌팬티 픽 명중률 (오버나이트 → 익일 시초가 갭 기준)")
     _rows = backfill_pick_outcomes()
-    _done = [r for r in _rows if r.get("gap") is not None]
-    _pend = [r for r in _rows if r.get("gap") is None]
+    # [검증] 그림자 픽(dolpanty_shadow)은 실제 명중률에서 분리 — 실제픽만 집계, 그림자는 하단 비교줄
+    _real_rows = [r for r in _rows if r.get("signal") != "dolpanty_shadow"]
+    _shadow_rows = [r for r in _rows if r.get("signal") == "dolpanty_shadow"]
+    _done = [r for r in _real_rows if r.get("gap") is not None]
+    _pend = [r for r in _real_rows if r.get("gap") is None]
     if not _done:
         st.caption(f"아직 결과 대조된 픽 없음 (대기 {len(_pend)}건) — "
                    "15:00~15:30 확정 픽이 익일부터 자동 집계됩니다.")
+        _sd = [r["gap"] for r in _shadow_rows if r.get("gap") is not None]
+        if _sd:
+            _sw = sum(1 for x in _sd if x > 0) / len(_sd) * 100
+            st.caption(f"🌫️ 그림자(관망 후보) {len(_sd)}건 · 승률 {_sw:.0f}% · 평균 갭 {sum(_sd)/len(_sd):+.2f}% "
+                       "— 실제픽 생기면 성적 비교로 필터 검증")
         return
     _bands = [("🔴 STRIKE 80+", 80, 999), ("🟠 READY 60~80", 60, 80), ("🟡 WATCH 40~60", 40, 60)]
     _cols = st.columns(len(_bands))
@@ -5923,8 +5946,18 @@ def render_pick_performance():
     # 전체 요약
     _allg = [r["gap"] for r in _done]
     _wr = sum(1 for x in _allg if x > 0) / len(_allg) * 100
-    st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {sum(_allg)/len(_allg):+.2f}% "
+    _real_avg = sum(_allg) / len(_allg)
+    st.caption(f"전체 {len(_done)}건 · 승률 {_wr:.0f}% · 평균 갭 {_real_avg:+.2f}% "
                f"(대기 {len(_pend)}건)")
+    # [검증] 실제픽 vs 그림자(필터 탈락 상위주) 비교 — 필터가 밥값 하는지 숫자로 확인
+    _sd = [r["gap"] for r in _shadow_rows if r.get("gap") is not None]
+    if _sd:
+        _sw = sum(1 for x in _sd if x > 0) / len(_sd) * 100
+        _sd_avg = sum(_sd) / len(_sd)
+        _edge = _real_avg - _sd_avg
+        _verd = "✅ 필터 유효(실제픽 우위)" if _edge > 0 else "⚠️ 필터 재검토(그림자가 더 나음)"
+        st.caption(f"🌫️ 그림자(관망 후보) {len(_sd)}건 · 승률 {_sw:.0f}% · 평균 갭 {_sd_avg:+.2f}% "
+                   f"→ 실제픽−그림자 갭차 {_edge:+.2f}%p · {_verd}")
     # [V13.5] 레짐별 승률 — 자가적응 데이터(레짐마다 신호가 먹히는지 검증)
     _by_rg = {}
     for _r in _done:
@@ -20346,7 +20379,9 @@ with tab_e:
         _sd_check, _sd_msg, _kp, _kq = check_index_shutdown()
         if _sd_check:
             st.error(_sd_msg)
-        elif _kp <= -1.0 or _kq <= -1.0:
+        elif _sd_msg:                       # 차별화 장세 advisory(코스닥만 급락 등) — 차단 아님, 안내
+            st.warning(_sd_msg)
+        elif isinstance(_kp, (int, float)) and (_kp <= -1.0 or _kq <= -1.0):
             st.warning(f"⚠️ 지수 주의 — 코스피 {_kp:+.2f}% / 코스닥 {_kq:+.2f}%")
 
         if kis_available():
