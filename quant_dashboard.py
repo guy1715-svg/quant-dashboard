@@ -2485,12 +2485,27 @@ def check_index_shutdown() -> tuple:
             return True, "🔴 지수 데이터 장애 — 수동 확인 요망 (신규매수 차단)", None, None
         _kospi_chg  = round(float(_kp_raw), 2)
         _kosdaq_chg = round(float(_kq_raw), 2)
-        if _kospi_chg <= -2.0 or _kosdaq_chg <= -2.0:
+        # [V20.3] 시장별 분리 — 코스피=대형주 / 코스닥=중소형·성장. 한쪽만 급락은 차별화 장세로 구분.
+        _kp_crash = _kospi_chg <= -2.0
+        _kq_crash = _kosdaq_chg <= -2.0
+        if _kp_crash and _kq_crash:                       # 둘 다 급락 = 진짜 리스크오프 → 전면 차단
             _reason = (
-                f"🚨 지수 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
-                f"(-2.0% 급락) | 개별 지지선 무효 / 신규 매수 차단"
+                f"🚨 전면 셧다운 — 코스피 {_kospi_chg:+.2f}% / 코스닥 {_kosdaq_chg:+.2f}% "
+                f"(둘 다 -2%↓) | 리스크오프 · 신규 매수 전면 차단"
             )
             return True, _reason, _kospi_chg, _kosdaq_chg
+        if _kp_crash:                                     # 코스피(대형주)만 급락 → 대형주 차단
+            _reason = (
+                f"🚨 대형주 셧다운 — 코스피 {_kospi_chg:+.2f}% (-2%↓) / 코스닥 {_kosdaq_chg:+.2f}% "
+                f"| 대형주 신규매수 차단 (코스닥/소형주는 선별)"
+            )
+            return True, _reason, _kospi_chg, _kosdaq_chg
+        if _kq_crash:                                     # 코스닥(중소형)만 급락 → 차별화, 대형주는 허용
+            _reason = (
+                f"🟠 차별화 장세 — 코스닥 {_kosdaq_chg:+.2f}% (-2%↓) / 코스피 {_kospi_chg:+.2f}% 양호 "
+                f"| 소형주·코스닥 주의 · 대형주는 선별 진입 가능(전면 차단 아님)"
+            )
+            return False, _reason, _kospi_chg, _kosdaq_chg
         return False, "", _kospi_chg, _kosdaq_chg
     except Exception as _e:
         _lg.warning("check_index_shutdown 예외: %s: %s", type(_e).__name__, _e)
@@ -20364,7 +20379,9 @@ with tab_e:
         _sd_check, _sd_msg, _kp, _kq = check_index_shutdown()
         if _sd_check:
             st.error(_sd_msg)
-        elif _kp <= -1.0 or _kq <= -1.0:
+        elif _sd_msg:                       # 차별화 장세 advisory(코스닥만 급락 등) — 차단 아님, 안내
+            st.warning(_sd_msg)
+        elif isinstance(_kp, (int, float)) and (_kp <= -1.0 or _kq <= -1.0):
             st.warning(f"⚠️ 지수 주의 — 코스피 {_kp:+.2f}% / 코스닥 {_kq:+.2f}%")
 
         if kis_available():
