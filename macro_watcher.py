@@ -812,9 +812,11 @@ _DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "�
 _DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
 
 
-def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None):
+def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None, sev=1):
     """DART 당일 신규 공시 폴링 → 호재 공시는 우리 엔진(거래대금·이격)으로 교차검증해 '진입후보 선정'.
-    악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음."""
+    악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음.
+    [V20.5] 승률 개선: 계약 해지/철회=악재 재분류 · 거래대금 0/미미=선점만 · 리스크오프(sev2)=강매수 억제 ·
+            하락과대(-3%↓)·낙폭과대(이격-15%↓)=강매수 금지(관망)."""
     if not dart_key:
         return
     m = now_kst.hour * 60 + now_kst.minute
@@ -853,6 +855,14 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _neg = any(k in _nm for k in _DART_NEG)
         _pos = any(k in _nm for k in _DART_POS)
         _perf = any(k in _nm for k in _DART_PERF)  # [V18.6] 진짜 잠정실적만(증권발행실적 오탐 제거)
+        # [V20.5 버그수정] 호재 키워드라도 '해지·철회·취소·무산·불발·중단' 붙으면 계약 무산 = 악재로 재분류
+        #   예: "단일판매공급계약해지" → '단일판매'로 호재 오탐 → 실제론 악재
+        if _pos and any(k in _nm for k in ("해지", "철회", "취소", "무산", "불발", "중단")):
+            _pos = False
+            _neg = True
+        # [V20.5] '매매거래정지해제'=거래재개(악재 아님) → 악재 오탐 제거
+        if _neg and ("매매거래정지" in _nm) and ("해제" in _nm):
+            _neg = False
         if not (_neg or _pos or _perf):
             continue
         sent[_rcp] = True
@@ -885,15 +895,33 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             pass
         _dtxt = f" · 이격 {_disp:+.0f}%" if _disp is not None else ""
         _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
-        if _turn and _turn < 3_000_000_000:      # [V18.6] 거래대금 30억↓ = 거래 안 붙음 → 발송 안 함(소음 제거)
-            continue                              # 소형주 수주라도 거래 붙어야 의미 → 급증스캔이 잡음
+        # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '선점'으로만(장전 0억 강매수 오발 차단)
+        if (not _turn) or _turn < 5_000_000_000:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_BUY}\n🎯 [공시 발굴·선점] {_corp}({_stock})\n"
+                          f"공시: {_nm} (호재 재료)\n"
+                          f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
+                          f"🔥 거래 붙는지 확인 후 소액 — 아직 강신호 아님\n{_url}")
+            continue
         _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
         if _overheat:                            # 이미 급등 → 추격 금지
             send_telegram(token_tg, chat_id,
                           f"{SIG_WATCH}\n📢 [공시·과열] {_corp}({_stock})\n"
                           f"공시: {_nm}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
             continue
-        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 살아있음 + 비과열
+        # [V20.5 버그3] 리스크오프(sev2) = 강매수 억제(모순 방지) — 관망 정보만
+        if sev == 2:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [공시·리스크오프 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} — 매크로 리스크오프라 강매수 보류(재료만 참고)\n{_url}")
+            continue
+        # [V20.5 버그4] 하락과대(-3%↓)·낙폭과대(이격 -15%↓) = 떨어지는 칼 → 강매수 금지, 관망
+        if ((_chg or 0) <= -3.0) or (_disp is not None and _disp <= -15.0):
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [공시·하락중 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
+            continue
+        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
@@ -2337,7 +2365,7 @@ def main():
                 print("야간 미장 알림 오류:", _uoe)
             # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
             try:
-                check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret)
+                check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
             except Exception as _dqe:
                 print("DART 공시 감시 오류:", _dqe)
             print(f"[{stamp}] 매크로 sev={sev} {mtext}")
