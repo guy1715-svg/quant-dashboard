@@ -1069,6 +1069,16 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         _, _, _mdetail = compute_macro()
     except Exception:
         _mdetail = ""
+    # [V22.4] 오늘 거래대금 상위 20종 주입 — 뉴스 테마 vs 실제 자금 몰린 종목 교차(거래대금이 먼저)
+    _vtok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _vrank_txt = ""
+    try:
+        if _vtok:
+            _vr = _volume_rank(_vtok, kis_key, kis_secret, top=20)
+            _vrank_txt = "\n".join(f"- {s['name']}({s['code']}) {s['chg']:+.1f}% 거래대금 {s['turnover']/1e8:,.0f}억"
+                                   for s in _vr if s.get("turnover"))
+    except Exception as _vre:
+        print("거래대금랭킹 주입 오류:", _vre)
     report = None
     if gemini_key:
         _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(각 줄 앞 [출처 시각] — 증권/세계/산업). "
@@ -1082,7 +1092,11 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "★★중요2: 주가는 팩트보다 '개인투자자(개미) 군중심리'로 움직여. 각 재료가 개미에게 어떤 감정"
                    "(공포/탐욕/추격/기대/실망)을 유발할지, 그래서 내일 수급이 몰릴지(매수 유입) 빠질지(회피) 예측해. "
                    "단, 심리는 추정이니 실측·차트와 충돌하면 무리한 낙관 금지.★★\n"
+                   "★★중요3: [오늘 거래대금 상위]가 오늘 실제 자금이 몰린 종목이야. 뉴스 테마가 여기 상위 종목과 겹치면 "
+                   "'실제 수급 확인=강한 재료', 뉴스만 있고 거래대금 상위에 없으면 '재료만·자금 미유입=약함'으로 판정해. "
+                   "거래대금 상위인데 관련 뉴스 없으면 '숨은 주도주'로 이유를 추정해봐.★★\n"
                    f"[실측 시장데이터]\n{_mdetail}\n\n"
+                   f"[오늘 거래대금 상위]\n{_vrank_txt or '(조회 실패)'}\n\n"
                    f"[뉴스]\n{_batch}\n\n"
                    "[출력: 텔레그램용·간결·이모지]\n"
                    "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄, 실측 기준)\n"
@@ -1098,8 +1112,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     if report:
         _verify = ""
         try:
-            _vtok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
-            _verify = _verify_news_picks(_vtok, kis_key, kis_secret, report)
+            _verify = _verify_news_picks(_vtok, kis_key, kis_secret, report)   # 위에서 만든 토큰 재사용
             if _verify:
                 print("[저녁뉴스] 차트검증 첨부 완료")
         except Exception as _ve:
