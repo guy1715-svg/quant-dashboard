@@ -890,20 +890,28 @@ _GEMINI_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash",
 
 
 def _gemini_generate(gkey, prompt):
-    """Gemini 텍스트 생성 — 모델 후보 순차 시도. 실패/미설치 시 None."""
+    """Gemini 텍스트 생성 — 모델 후보 순차 시도. 실패/미설치 시 None(진단 출력)."""
     try:
         import google.generativeai as genai
+    except Exception as _ie:
+        print(f"[Gemini 진단] 라이브러리 미설치 → py -m pip install google-generativeai  ({_ie})")
+        return None
+    try:
         genai.configure(api_key=gkey)
-        for _mn in _GEMINI_MODELS:
-            try:
-                _resp = genai.GenerativeModel(_mn).generate_content(prompt)
-                _txt = getattr(_resp, "text", None)
-                if _txt:
-                    return _txt.strip()
-            except Exception:
-                continue
-    except Exception:
-        pass
+    except Exception as _ce:
+        print(f"[Gemini 진단] 설정 오류: {_ce}")
+        return None
+    _errs = []
+    for _mn in _GEMINI_MODELS:
+        try:
+            _resp = genai.GenerativeModel(_mn).generate_content(prompt)
+            _txt = getattr(_resp, "text", None)
+            if _txt:
+                return _txt.strip()
+            _errs.append(f"{_mn}:빈응답")
+        except Exception as _ge:
+            _errs.append(f"{_mn}:{type(_ge).__name__}")
+    print(f"[Gemini 진단] 전 모델 실패 — {' / '.join(_errs)[:250]}")
     return None
 
 
