@@ -1071,12 +1071,20 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         _mdetail = ""
     # [V22.4] 오늘 거래대금 상위 20종 주입 — 뉴스 테마 vs 실제 자금 몰린 종목 교차(거래대금이 먼저)
     _vtok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
-    _vrank_txt = ""
+    _vrank_txt = ""; _vlead_news = ""
     try:
         if _vtok:
             _vr = _volume_rank(_vtok, kis_key, kis_secret, top=20)
             _vrank_txt = "\n".join(f"- {s['name']}({s['code']}) {s['chg']:+.1f}% 거래대금 {s['turnover']/1e8:,.0f}억"
                                    for s in _vr if s.get("turnover"))
+            # [V22.5] 역방향 — 거래대금 상위 8종의 종목뉴스 조회(돈 몰린 이유·모멘텀 지속성 분석용)
+            _lead = []
+            for s in [x for x in _vr if x.get("turnover")][:8]:
+                _tt = _stock_news_titles(s["code"], 3)
+                if _tt:
+                    _lead.append(f"● {s['name']}({s['code']}) {s['chg']:+.1f}%·{s['turnover']/1e8:,.0f}억: "
+                                 + " / ".join(_tt[:3]))
+            _vlead_news = "\n".join(_lead)
     except Exception as _vre:
         print("거래대금랭킹 주입 오류:", _vre)
     report = None
@@ -1095,12 +1103,16 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "★★중요3: [오늘 거래대금 상위]가 오늘 실제 자금이 몰린 종목이야. 뉴스 테마가 여기 상위 종목과 겹치면 "
                    "'실제 수급 확인=강한 재료', 뉴스만 있고 거래대금 상위에 없으면 '재료만·자금 미유입=약함'으로 판정해. "
                    "거래대금 상위인데 관련 뉴스 없으면 '숨은 주도주'로 이유를 추정해봐.★★\n"
+                   "★★중요4: [거래대금 주도주 뉴스]는 오늘 실제 돈이 몰린 종목의 뉴스야. 각 종목이 오늘 왜 올랐는지(재료), "
+                   "그 모멘텀이 단발인지 며칠 갈지(지속성), 내일도 자금이 더 들어올지 판정해. 이게 '정답(자금)을 먼저 보고 이유를 찾는' 방식이야.★★\n"
                    f"[실측 시장데이터]\n{_mdetail}\n\n"
                    f"[오늘 거래대금 상위]\n{_vrank_txt or '(조회 실패)'}\n\n"
+                   f"[거래대금 주도주 뉴스]\n{_vlead_news or '(조회 실패)'}\n\n"
                    f"[뉴스]\n{_batch}\n\n"
                    "[출력: 텔레그램용·간결·이모지]\n"
                    "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄, 실측 기준)\n"
                    "🧠 시장심리: (내일 개미 심리 방향 — 공포/탐욕/관망 중 + 자금 몰릴 섹터 vs 회피할 섹터, 1~2줄)\n"
+                   "💰 거래대금 주도주 모멘텀: (오늘 자금 몰린 상위 종목 2~3개 — 각: 종목 · 오른 이유 · 지속성(단발/며칠+) · 내일 추격가능?)\n"
                    "🌙 내일 시황 브리핑\n"
                    "📌 주목 테마 TOP 3 — 각: 테마 · 대장주(반드시 종목명 옆에 6자리 종목코드 괄호로! 예: 두산에너빌리티(034020)) · "
                    "재료강도(상/중/하) · 지속성(단발/며칠) · 개미심리(몰릴/빠질) · 선반영주의\n"
