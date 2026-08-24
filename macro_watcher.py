@@ -1755,6 +1755,68 @@ def check_sector_leaders(token, key, secret, now_kst, state, token_tg, chat_id, 
     return observe
 
 
+# ── [V21.3] 장전 예열 스캔(08:00~08:55) — NXT 프리마켓/예상체결가로 09시 갭 미리 포착 ──
+_PREMKT_START, _PREMKT_END = 8 * 60, 8 * 60 + 55
+_PREMKT_GAP_UP, _PREMKT_GAP_DN = 2.0, -2.0
+
+
+def _expected_price(token, key, secret, code):
+    """장전 동시호가 예상체결가·예상등락% — inquire-price(antc_cnpr/antc_cntg_prdy_ctrt).
+    필드 없으면 (None,None) → 호출부가 NXT로 대체. KIS 제공 여부 실전 검증용."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            ap = _to_int(o.get("antc_cnpr"))                  # 예상체결가
+            ac = o.get("antc_cntg_prdy_ctrt")                 # 예상체결 전일대비율
+            if ap:
+                return ap, float(str(ac or 0).replace(",", "") or 0)
+    except Exception:
+        pass
+    return None, None
+
+
+def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
+    """[V21.3] 장전 예열 스캔(08:00~08:55) — 라인업을 NXT 프리마켓/예상체결가로 조회.
+    갭업(+2%↑)=09시 시가저격 주목 예고 / 갭다운(-2%↓)=보유 대응 경고. 종목별 당일 1회.
+    ※ 매수 신호 아님(관망/경계 등급) — 개장 후 거래대금·수급 확인이 원칙."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_PREMKT_START <= m <= _PREMKT_END):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("premkt_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    for code, name in lineup:
+        if sent.get(code):
+            continue
+        # 1) NXT 프리마켓 실가(08:00~08:50) 우선
+        px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt="NX")
+        _src = "NXT"
+        if not (px and chg is not None):
+            _ap, _ac = _expected_price(token, key, secret, code)   # 2) NXT 미거래 → 예상체결가
+            if _ap and _ac is not None:
+                px, chg, _src = _ap, _ac, "예상체결"
+        if not (px and chg is not None):
+            continue
+        if chg >= _PREMKT_GAP_UP:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n🌅 [장전 예열] {name} 갭업 {chg:+.1f}% ({_src})\n"
+                          f"현재 {px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                          f"👀 09시 시가저격 주목 후보 — 개장 후 거래대금·수급 확인 후 대응(추격 금지)")
+            sent[code] = True
+        elif chg <= _PREMKT_GAP_DN:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_CAUTION}\n🌅 [장전 예열] {name} 갭다운 {chg:+.1f}% ({_src})\n"
+                          f"현재 {px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                          f"⚠️ 보유 시 09시 대응 준비 — 갭다운 출발 가능")
+            sent[code] = True
+    state["premkt_sent"] = sent
+
+
 # ── [V6.1-B] 14:30 V자 턴어라운드 (watcher 이관) ──
 TA_UNIVERSE = [("005930", "삼성전자"), ("000660", "SK하이닉스"), ("042700", "한미반도체"),
                ("196170", "알테오젠"), ("068270", "셀트리온"), ("207940", "삼성바이오로직스"),
@@ -2658,6 +2720,11 @@ def main():
                     # 라인업 핫리로드(manju_watchlist.json) — 파일만 고치면 재시작 없이 반영
                     _lineup = load_lineup()
                     snap["lineup"] = [[c, n] for c, n in _lineup]   # 대시보드 동기화용(GitHub 스냅샷에 실림)
+                    # [V21.3] 장전 예열 스캔(08:00~08:55) — NXT 프리마켓/예상체결가로 09시 갭 미리 포착
+                    try:
+                        check_premarket(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
+                    except Exception as _pme:
+                        print("장전 예열 오류:", _pme)
                     # 09:10 시가저격 — 라인업 거래대금 임계 돌파 시 종목별 1회 텔레그램
                     try:
                         snap["snipers"] = check_snipers(tok, kis_key, kis_secret, now, st,
@@ -2768,7 +2835,7 @@ def main():
         _kn = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _km = _kn.hour * 60 + _kn.minute
         # 15분봉 경계·시가저격·턴어라운드 정확도 위해 정규장(09:00~15:22)은 60초, 마감복기 60초
-        _tight = (((8 * 60 + 40) <= _km <= (15 * 60 + 22))
+        _tight = (((8 * 60) <= _km <= (15 * 60 + 22))          # [V21.3] 장전 예열(08:00~) 위해 08시부터 60초
                   or ((15 * 60 + 30) <= _km <= (15 * 60 + 50))
                   or ((16 * 60) <= _km <= (19 * 60 + 50)))   # 넥장 급등 타점 정확도 위해 야간도 60초
         _iv = 60 if _tight else args.interval
