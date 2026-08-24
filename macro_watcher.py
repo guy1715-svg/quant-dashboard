@@ -888,7 +888,7 @@ def _rss_news(per_feed=15):
     return arts
 
 
-_GEMINI_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
+_GEMINI_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro")   # flash 우선(빠름)·pro 폴백
 
 
 def _gemini_generate(gkey, prompt):
@@ -907,7 +907,7 @@ def _gemini_generate(gkey, prompt):
     for _mn in _GEMINI_MODELS:
         try:
             _resp = genai.GenerativeModel(_mn).generate_content(
-                prompt, request_options={"timeout": 25})   # 무한 대기 방지
+                prompt, request_options={"timeout": 60})   # 큰 프롬프트 대비(무한대기 방지)
             _txt = getattr(_resp, "text", None)
             if _txt:
                 return _txt.strip()
@@ -919,6 +919,54 @@ def _gemini_generate(gkey, prompt):
 
 
 _NEWS_KEYWORDS = ("특징주", "수주", "실적", "신약 임상", "정책 수혜")
+
+
+def _stock_news_titles(code, n=10):
+    """종목 최근 뉴스 제목 리스트 — 네이버 모바일 뉴스 API. 실패 시 []."""
+    titles = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={n}&page=1",
+                         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
+                         timeout=5)
+        _j = r.json()
+
+        def _w(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str):
+                        titles.append(v)
+                    else:
+                        _w(v)
+            elif isinstance(o, list):
+                for it in o:
+                    _w(it)
+        _w(_j)
+    except Exception:
+        pass
+    # 중복 제거·상한
+    _out = []
+    for t in titles:
+        if t not in _out:
+            _out.append(t)
+    return _out[:n]
+
+
+def _gemini_stock_news_verdict(gemini_key, code, name):
+    """[V21.7] 종배 확정픽 AI 뉴스판정 — 최근 뉴스 제목을 Gemini가 읽고 오버나이트 적합성 한 줄.
+    반환: '\\n🤖 AI뉴스: ...' or ''. Gemini/뉴스 없으면 빈 문자열(무영향)."""
+    if not gemini_key:
+        return ""
+    _titles = _stock_news_titles(code, 10)
+    if not _titles:
+        return ""
+    _prompt = (f"종목 {name}({code})의 최근 뉴스 제목이야. "
+               "종가배팅(오늘 종가 매수→내일 아침 시가에 익절하는 오버나이트 단타)에 적합한지 딱 한 줄로 판정해.\n"
+               "[뉴스제목]\n" + "\n".join("- " + t for t in _titles) + "\n"
+               "[출력 형식·한 줄]: 판정(호재/중립/악재) · 재료강도(상/중/하) · "
+               "오버나이트적합(적합/주의/부적합) · 핵심이유(짧게). "
+               "이미 재료로 급등해 차익실현 위험이면 '주의', 악재면 '부적합'.")
+    _v = _gemini_generate(gemini_key, _prompt)
+    return f"\n🤖 AI뉴스: {_v.strip()}" if _v else ""
 
 
 def _verify_news_picks(token, key, secret, report):
@@ -1464,7 +1512,8 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
-def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False):
+def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
+                        gemini_key=None):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
     창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 정규장 거래대금 랭킹 기준이나,
     NXT 시간대(18:00~19:50)엔 각 후보의 현재가를 NX(넥스트레이드)로 실시간 갱신 — 종가 아닌 실시간가로 판정.
@@ -1586,12 +1635,18 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
     _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
     _pbasis = "NXT 실시간가" if _in_nxt else "종가"       # 가격 기준 표기
+    # [V21.7] 확정픽 AI 뉴스판정(Gemini) — 최종 1종만 뉴스 본문 읽어 오버나이트 적합성 첨부(비용 미미)
+    _ai_news = ""
+    try:
+        _ai_news = _gemini_stock_news_verdict(gemini_key, pick["code"], pick["name"])
+    except Exception:
+        pass
     _divtxt = ("\n🌒 분산 2·3위: "
                + " · ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in div)) if div else ""
     if send_telegram(token_tg, chat_id,
                      f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {pick['name']} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
-                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
                      f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산\n"
@@ -2732,9 +2787,11 @@ def main():
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
         _tok = kis_token(kis_key, kis_secret)
         _sev, _, _ = compute_macro()
+        _gk_fp = read_gemini_key()                # AI 뉴스판정용
         print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준"
               + (" · NXT 실시간가" if _nxt_now else " · 종가"))
-        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True)
+        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
+                            gemini_key=_gk_fp)
         save_state(st)
         sys.exit(0)
     if not kis_on:
@@ -3006,7 +3063,8 @@ def main():
                         print("조기 포착 오류:", _ece)
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
-                        check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                        check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
+                                            gemini_key=gemini_key)
                     except Exception as _dpe:
                         print("종배픽 오류:", _dpe)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
