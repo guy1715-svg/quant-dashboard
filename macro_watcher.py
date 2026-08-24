@@ -1052,6 +1052,11 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         return
     print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건")
     _batch = "\n".join(arts[:60])
+    # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
+    try:
+        _, _, _mdetail = compute_macro()
+    except Exception:
+        _mdetail = ""
     report = None
     if gemini_key:
         _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(각 줄 앞 [출처 시각] — 증권/세계/산업). "
@@ -1059,6 +1064,10 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "한국 증시는 미국장·반도체 글로벌·지정학·환율에 크게 좌우되니 "
                    "★[세계] 뉴스가 내일 한국장(코스피/코스닥)에 미칠 영향을 반드시 반영해★ 내일 주목 종목/테마를 골라줘. "
                    "이미 오늘 크게 오른 재료는 sell-the-news 주의, 불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
+                   "★★중요: 아래 [실측 시장데이터]가 실제 현재 수치야. 뉴스에서 '유가 상승·환율 급등' 같은 방향을 "
+                   "네 마음대로 추론하지 말고, 반드시 이 실측값을 우선해. 뉴스 서사와 실측이 다르면(예: 지정학 우려 뉴스지만 "
+                   "WTI 실제 하락) 실측을 따르고 그 괴리를 명시해.★★\n"
+                   f"[실측 시장데이터]\n{_mdetail}\n\n"
                    f"[뉴스]\n{_batch}\n\n"
                    "[출력: 텔레그램용·간결·이모지]\n"
                    "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄)\n"
