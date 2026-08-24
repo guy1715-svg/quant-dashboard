@@ -988,6 +988,10 @@ def _verify_news_picks(token, key, secret, report):
     if not (token and report):
         return ""
     import re as _re
+    # [V22.0] '종목명(코드)' 쌍에서 이름 맵 추출 → 검증줄에 코드 대신 종목명 표시
+    _name_map = {}
+    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&]{2,20}?)\s*\((\d{6})\)", report):
+        _name_map.setdefault(_cd, _nm.strip())
     _codes = []
     for _c in _re.findall(r"\(?(\d{6})\)?", report):        # 괄호 안/밖 6자리
         if _c not in _codes:
@@ -1011,7 +1015,8 @@ def _verify_news_picks(token, key, secret, report):
                 _vd = "💤거래 저조(관심 유입 확인 필요)"
             else:
                 _vd = "✅거래 받쳐줌(내일 주목)"
-            _lines.append(f"• {_cd} {_px:,}({(_chg or 0):+.1f}%)·{_dt}·{_tk} → {_vd}")
+            _dn = _name_map.get(_cd, _cd)              # 종목명(없으면 코드)
+            _lines.append(f"• {_dn} {_px:,}({(_chg or 0):+.1f}%)·{_dt}·{_tk} → {_vd}")
         except Exception:
             continue
     if not _lines:
