@@ -1908,6 +1908,7 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     if mark.get("_day") != today: mark = {"_day": today}
     if sent.get("_day") != today: sent = {"_day": today}
     out = []
+    _vrank_b15 = None                                # [V21.1] 주도주 교차검증용 거래대금 랭킹(지연조회)
     for code, name in lineup:
         px, chg, turn = _price_and_turnover(token, key, secret, code)
         if not px:
@@ -1944,11 +1945,15 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                                  f"🔻 돌파 후 하락 매도: {_resell:,}원 (뚫었다 다시 이 밑이면 매도)")
                 else:
                     _res_line = "🚀 저항 위 = 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
-                if sev != 2:          # [V17.1] 리스크오프면 15분봉 매수 억제(스냅샷엔 유지)
+                # [V21.1 주도주 교차검증] 당일 거래대금 랭킹(top40) 밖 = 비주도주 → 15분봉 매수 억제(손절 확률↑)
+                if _vrank_b15 is None:
+                    _vrank_b15 = {s["code"] for s in _volume_rank(token, key, secret, top=40)}
+                _is_leader = code in _vrank_b15
+                if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
                     send_telegram(token_tg, chat_id,
                                   f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 15분봉 강한 양봉 — {name}\n"
                                   f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
-                                  f"{_nqtxt}\n"
+                                  f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內)\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                                   f"{_warn}\n"
                                   f"─── 가격표 ───\n"
@@ -1958,6 +1963,8 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                                   f"─────────\n"
                                   f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
                     sent[_key] = True
+                elif sev != 2 and not _is_leader:
+                    sent[_key] = True             # 비주도주 — 발송 억제(중복 방지 위해 마킹만)
                     _log_signal(state, now_kst, "15분봉", name, code, px)
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
