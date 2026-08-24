@@ -194,15 +194,24 @@ _ALERT_FEED = []      # [V13.2] 모든 텔레그램 알람의 당일 버퍼 — 
 def send_telegram(token, chat_id, text):
     _ok = False
     try:
-        # [V17.1] 실제 전송 성공 여부 확인 — HTTP 200 + Telegram JSON ok:true 일 때만 성공.
-        #   (기존엔 예외만 없으면 성공 처리 → 400/429/메시지초과에도 dedup 잠겨 신호 유실)
-        _r = requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
-                          params={"chat_id": chat_id, "text": text}, timeout=8)
-        _ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
-        if not _ok:
-            print(f"텔레그램 전송 실패: HTTP {_r.status_code} {_r.text[:200]}")
+        # [V21.8] POST 방식 + 4096자 초과 자동 분할 — 긴 브리핑(뉴스+차트검증)도 안전 전송.
+        #   (기존 GET은 긴 한글 URL 초과로 전송 실패/누락 발생)
+        _chunks = []
+        _t = text or ""
+        while _t:
+            _chunks.append(_t[:3900]); _t = _t[3900:]
+        _ok = True
+        for _c in _chunks:
+            _r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                               data={"chat_id": chat_id, "text": _c}, timeout=8)
+            _seg_ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
+            if not _seg_ok:
+                print(f"텔레그램 전송 실패: HTTP {_r.status_code} {_r.text[:200]}")
+                _ok = False
+                break
     except Exception as e:
         print("텔레그램 전송 실패:", e)
+        _ok = False
     # 발송 성공/실패 무관하게 피드에 기록(대시보드에서 오늘 알람 타임라인으로 표시)
     try:
         _n = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
@@ -853,11 +862,10 @@ def _naver_news(cid, csec, query, display=10):
 
 # [V21.5] RSS 폴백 — 네이버 검색 스코프 없거나 실패 시 국내 경제 RSS로 뉴스 수집(키 불필요).
 _RSS_FEEDS = (
-    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),         # 국내 증권(재료 밀집)
-    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),         # 국내 경제
-    ("연합국제", "https://www.yna.co.kr/rss/international.xml"),    # 세계(미국장·지정학·중국·유가)
-    ("연합산업", "https://www.yna.co.kr/rss/industry.xml"),        # 산업(반도체·기업 글로벌)
-)
+    ("증권", "https://www.yna.co.kr/rss/market.xml"),         # 국내 증권(재료 밀집) — 핵심
+    ("세계", "https://www.yna.co.kr/rss/international.xml"),   # 세계 메인(미국장·지정학·중국·유가)
+    ("산업", "https://www.yna.co.kr/rss/industry.xml"),       # 산업(반도체·기업 글로벌)
+)   # [V21.9] 경제 일반(정치·부고 노이즈) 제외 — 증권+세계+산업만(사용자 요청)
 
 
 def _rss_news(per_feed=15):
@@ -879,8 +887,13 @@ def _rss_news(per_feed=15):
                     break
                 _t = (_it.findtext("title") or "").strip()
                 _d = _re.sub(r"<[^>]+>", "", _it.findtext("description") or "").strip()
+                _pd = _it.findtext("pubDate") or ""       # 시각 태그(최근 뉴스 우선용)
+                _tm = ""
+                _mt = _re.search(r"(\d{2}:\d{2}):", _pd)
+                if _mt:
+                    _tm = _mt.group(1)
                 if _t:
-                    arts.append({"title": _t, "description": _d, "src": _nm})
+                    arts.append({"title": _t, "description": _d, "src": _nm, "time": _tm})
                     _cnt += 1
             print(f"[RSS 진단] {_nm} {_cnt}건")
         except Exception as _e:
@@ -1035,13 +1048,14 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     # 2) 네이버 0건(스코프 없음/실패) → RSS 폴백(키 불필요, 국내+세계 피드별 골고루)
     if not arts:
         _src = "RSS"
-        for it in _rss_news(15):
+        for it in _rss_news(18):
             _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
             _d = it.get("description", "")
             _k = _t[:40]
             if not _t or _k in seen:
                 continue
-            seen.add(_k); arts.append(f"[{it.get('src', '')}] {_t} :: {_d}")   # 소스 태그(국내/세계 구분)
+            _tg = f"{it.get('src', '')} {it.get('time', '')}".strip()
+            seen.add(_k); arts.append(f"[{_tg}] {_t} :: {_d}")   # [출처 시각] 태그(최근·구분)
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
@@ -1049,9 +1063,10 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     _batch = "\n".join(arts[:60])
     report = None
     if gemini_key:
-        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(국내 증권/경제 + [연합국제]세계·[연합산업]글로벌 산업)야. "
-                   "한국 증시는 미국장·반도체 글로벌·지정학·환율에 크게 좌우되니, "
-                   "★세계 뉴스가 내일 한국장(코스피/코스닥)에 미칠 영향을 반드시 반영해★ 내일 주목 종목/테마를 골라줘. "
+        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(각 줄 앞 [출처 시각] — 증권/세계/산업). "
+                   "★장 마감(15:30) 이후 나온 최근 뉴스일수록 내일 갭·수급에 더 직접적이니 우선 고려해★ "
+                   "한국 증시는 미국장·반도체 글로벌·지정학·환율에 크게 좌우되니 "
+                   "★[세계] 뉴스가 내일 한국장(코스피/코스닥)에 미칠 영향을 반드시 반영해★ 내일 주목 종목/테마를 골라줘. "
                    "이미 오늘 크게 오른 재료는 sell-the-news 주의, 불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
                    f"[뉴스]\n{_batch}\n\n"
                    "[출력: 텔레그램용·간결·이모지]\n"
