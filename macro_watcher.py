@@ -1222,7 +1222,17 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         print("[종배픽] 후보 0종 — 관망")
         return
     cands.sort(key=lambda c: c["score"], reverse=True)
-    # [V20.6] 확정픽 최소점수 50 — 40 겨우 넘긴 애매한 픽(예: 삼성생명 54→월 -11%)은 강신호 금지.
+    # [V20.7] 금요일 종배 억제 — 금요일 픽은 주말(3일 밤) 홀딩이라 주말 이벤트 리스크 폭증
+    #   (예: 삼성생명 금 +10%→월 -11%). 확정픽 발송 금지, 그림자만 로깅(검증 데이터 유지).
+    if now_kst.weekday() == 4:                    # 월0~금4 · 금요일
+        _log_shadow()
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 금요일 — 종가베팅 억제(주말 3일 홀딩=이벤트 리스크). "
+                         "월요일 장 재개 후 재산출 권장."):
+            state["dolpanty_pick_day"] = today
+        print("[종배픽] 금요일 억제 — 주말 리스크 회피(그림자만 로깅)")
+        return
+    # [V20.6] 확정픽 최소점수 50 — 40 겨우 넘긴 애매한 픽은 강신호 금지.
     #   50 미만이면 확정픽 발송 안 하고 그림자로만 로깅(검증 데이터는 유지).
     if cands[0]["score"] < 50:
         _log_shadow()
