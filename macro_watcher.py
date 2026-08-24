@@ -901,7 +901,8 @@ def _gemini_generate(gkey, prompt):
     _errs = []
     for _mn in _GEMINI_MODELS:
         try:
-            _resp = genai.GenerativeModel(_mn).generate_content(prompt)
+            _resp = genai.GenerativeModel(_mn).generate_content(
+                prompt, request_options={"timeout": 25})   # 무한 대기 방지
             _txt = getattr(_resp, "text", None)
             if _txt:
                 return _txt.strip()
@@ -965,7 +966,9 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "📌 주목 테마 TOP 3 — 각: 테마 · 대장주 · 재료강도(상/중/하) · 지속성(단발/며칠) · 선반영주의\n"
                    "⚠️ 피할 것 (재료소멸·이미급등·악재)\n"
                    "한 줄 총평.")
+        print("[저녁뉴스] 🤖 Gemini 판정 중... (5~20초 소요)")
         report = _gemini_generate(gemini_key, _prompt)
+        print(f"[저녁뉴스] Gemini 판정 {'완료' if report else '실패→헤드라인'}")
     if report:
         _msg = (f"{SIG_WATCH}\n{report}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
