@@ -853,13 +853,16 @@ def _naver_news(cid, csec, query, display=10):
 
 # [V21.5] RSS 폴백 — 네이버 검색 스코프 없거나 실패 시 국내 경제 RSS로 뉴스 수집(키 불필요).
 _RSS_FEEDS = (
-    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),      # 증권 우선(재료 밀집)
-    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),      # 보조(Gemini가 재료만 선별)
+    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),         # 국내 증권(재료 밀집)
+    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),         # 국내 경제
+    ("연합국제", "https://www.yna.co.kr/rss/international.xml"),    # 세계(미국장·지정학·중국·유가)
+    ("연합산업", "https://www.yna.co.kr/rss/industry.xml"),        # 산업(반도체·기업 글로벌)
 )
 
 
-def _rss_news(max_items=40):
-    """국내 경제/증권 RSS에서 최신 뉴스 수집 — [{title,description}]. feedparser 없이 stdlib 파싱."""
+def _rss_news(per_feed=15):
+    """국내 증권/경제 + 세계/산업 RSS에서 피드별 최신 N건씩 수집(글로벌 뉴스 누락 방지).
+    [{title,description,src}]. feedparser 없이 stdlib 파싱."""
     import xml.etree.ElementTree as _ET
     import re as _re
     arts = []
@@ -872,15 +875,17 @@ def _rss_news(max_items=40):
             _root = _ET.fromstring(r.content)
             _cnt = 0
             for _it in _root.iter("item"):
+                if _cnt >= per_feed:                      # 피드별 상한(골고루 대표)
+                    break
                 _t = (_it.findtext("title") or "").strip()
                 _d = _re.sub(r"<[^>]+>", "", _it.findtext("description") or "").strip()
                 if _t:
-                    arts.append({"title": _t, "description": _d})
+                    arts.append({"title": _t, "description": _d, "src": _nm})
                     _cnt += 1
             print(f"[RSS 진단] {_nm} {_cnt}건")
         except Exception as _e:
             print(f"[RSS 진단] {_nm} 예외: {type(_e).__name__}")
-    return arts[:max_items]
+    return arts
 
 
 _GEMINI_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
@@ -940,28 +945,30 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 seen.add(_k); arts.append(f"- {_t} :: {_d}")
             if len(arts) >= 40:
                 break
-    # 2) 네이버 0건(스코프 없음/실패) → RSS 폴백(키 불필요)
+    # 2) 네이버 0건(스코프 없음/실패) → RSS 폴백(키 불필요, 국내+세계 피드별 골고루)
     if not arts:
         _src = "RSS"
-        for it in _rss_news(40):
+        for it in _rss_news(15):
             _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
             _d = it.get("description", "")
             _k = _t[:40]
             if not _t or _k in seen:
                 continue
-            seen.add(_k); arts.append(f"- {_t} :: {_d}")
+            seen.add(_k); arts.append(f"[{it.get('src', '')}] {_t} :: {_d}")   # 소스 태그(국내/세계 구분)
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
     print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건")
-    _batch = "\n".join(arts[:40])
+    _batch = "\n".join(arts[:60])
     report = None
     if gemini_key:
-        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스 헤드라인·요약이야. "
-                   "내일 주목할 종목/테마를 골라줘. 이미 오늘 크게 오른 재료는 sell-the-news 주의로 표시하고, "
-                   "불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
+        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(국내 증권/경제 + [연합국제]세계·[연합산업]글로벌 산업)야. "
+                   "한국 증시는 미국장·반도체 글로벌·지정학·환율에 크게 좌우되니, "
+                   "★세계 뉴스가 내일 한국장(코스피/코스닥)에 미칠 영향을 반드시 반영해★ 내일 주목 종목/테마를 골라줘. "
+                   "이미 오늘 크게 오른 재료는 sell-the-news 주의, 불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
                    f"[뉴스]\n{_batch}\n\n"
                    "[출력: 텔레그램용·간결·이모지]\n"
+                   "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄)\n"
                    "🌙 내일 시황 브리핑\n"
                    "📌 주목 테마 TOP 3 — 각: 테마 · 대장주 · 재료강도(상/중/하) · 지속성(단발/며칠) · 선반영주의\n"
                    "⚠️ 피할 것 (재료소멸·이미급등·악재)\n"
