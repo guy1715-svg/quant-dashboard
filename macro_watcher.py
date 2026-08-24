@@ -868,11 +868,14 @@ _RSS_FEEDS = (
 )   # [V21.9] 경제 일반(정치·부고 노이즈) 제외 — 증권+세계+산업만(사용자 요청)
 
 
-def _rss_news(per_feed=15):
-    """국내 증권/경제 + 세계/산업 RSS에서 피드별 최신 N건씩 수집(글로벌 뉴스 누락 방지).
-    [{title,description,src}]. feedparser 없이 stdlib 파싱."""
+def _rss_news(per_feed=40, hours=12):
+    """국내 증권 + 세계/산업 RSS에서 최근 `hours`시간 이내 뉴스 수집(피드별 상한 per_feed).
+    [{title,description,src,time,ts}]. pubDate로 12시간 필터 → 최신순. feedparser 없이 stdlib 파싱."""
     import xml.etree.ElementTree as _ET
     import re as _re
+    from email.utils import parsedate_to_datetime as _pdt
+    _kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    _cutoff = _kst - datetime.timedelta(hours=hours)
     arts = []
     for _nm, _url in _RSS_FEEDS:
         try:
@@ -883,21 +886,30 @@ def _rss_news(per_feed=15):
             _root = _ET.fromstring(r.content)
             _cnt = 0
             for _it in _root.iter("item"):
-                if _cnt >= per_feed:                      # 피드별 상한(골고루 대표)
+                if _cnt >= per_feed:
                     break
                 _t = (_it.findtext("title") or "").strip()
                 _d = _re.sub(r"<[^>]+>", "", _it.findtext("description") or "").strip()
-                _pd = _it.findtext("pubDate") or ""       # 시각 태그(최근 뉴스 우선용)
-                _tm = ""
-                _mt = _re.search(r"(\d{2}:\d{2}):", _pd)
-                if _mt:
-                    _tm = _mt.group(1)
+                _pd = _it.findtext("pubDate") or ""
+                _tm, _ts = "", None
+                try:
+                    _dt = _pdt(_pd)                        # RFC822 → datetime
+                    if _dt.tzinfo:
+                        _dt = _dt.astimezone(datetime.timezone(datetime.timedelta(hours=9))).replace(tzinfo=None)
+                    _ts = _dt
+                    _tm = _dt.strftime("%H:%M")
+                except Exception:
+                    pass
+                if _ts is not None and _ts < _cutoff:     # 12시간 초과된 오래된 뉴스 제외
+                    continue
                 if _t:
-                    arts.append({"title": _t, "description": _d, "src": _nm, "time": _tm})
+                    arts.append({"title": _t, "description": _d, "src": _nm, "time": _tm, "ts": _ts})
                     _cnt += 1
-            print(f"[RSS 진단] {_nm} {_cnt}건")
+            print(f"[RSS 진단] {_nm} {_cnt}건(최근 {hours}h)")
         except Exception as _e:
             print(f"[RSS 진단] {_nm} 예외: {type(_e).__name__}")
+    # 최신순 정렬(시각 있는 것 우선)
+    arts.sort(key=lambda a: a.get("ts") or datetime.datetime(1970, 1, 1), reverse=True)
     return arts
 
 
@@ -1039,7 +1051,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     seen = set(); arts = []
     # [V22.1] 네이버 검색 API는 스코프 막힘(401 영구) → 시도 스킵, RSS만 사용(국내+세계 피드별 골고루)
     _src = "RSS"
-    for it in _rss_news(18):
+    for it in _rss_news(40, 12):                          # 피드별 최대 40건·최근 12시간
         _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
         _d = it.get("description", "")
         _k = _t[:40]
@@ -1050,8 +1062,8 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
-    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건")
-    _batch = "\n".join(arts[:60])
+    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건(최근 12h)")
+    _batch = "\n".join(arts[:70])
     # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
     try:
         _, _, _mdetail = compute_macro()
