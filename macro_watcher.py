@@ -1222,8 +1222,18 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         print("[종배픽] 후보 0종 — 관망")
         return
     cands.sort(key=lambda c: c["score"], reverse=True)
+    # [V20.6] 확정픽 최소점수 50 — 40 겨우 넘긴 애매한 픽(예: 삼성생명 54→월 -11%)은 강신호 금지.
+    #   50 미만이면 확정픽 발송 안 하고 그림자로만 로깅(검증 데이터는 유지).
+    if cands[0]["score"] < 50:
+        _log_shadow()
+        if send_telegram(token_tg, chat_id,
+                         f"🌒[종배] 확정픽 없음 — 최상위 후보({cands[0]['name']} {cands[0]['score']:.0f}점) "
+                         f"기준(50점) 미달. 강한 종배 셋업 아님(관망)."):
+            state["dolpanty_pick_day"] = today
+        print(f"[종배픽] 확정픽 없음 — 최고 {cands[0]['name']}({cands[0]['score']:.0f}) < 50 · 관망")
+        return
     pick = cands[0]
-    div = cands[1:3]
+    div = [c for c in cands[1:3] if c["score"] >= 50]   # 분산 후보도 50점 이상만
     _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
     for c in div:
         _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
