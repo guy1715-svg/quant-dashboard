@@ -838,15 +838,16 @@ def read_gemini_key():
 
 
 def _naver_news(cid, csec, query, display=10):
-    """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 []."""
+    """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 [](진단 출력)."""
     try:
         r = requests.get("https://openapi.naver.com/v1/search/news.json",
                          headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
                          params={"query": query, "display": display, "sort": "date"}, timeout=6)
         if r.status_code == 200:
             return r.json().get("items", []) or []
-    except Exception:
-        pass
+        print(f"[네이버뉴스 진단] '{query}' HTTP {r.status_code} · 응답: {r.text[:200]}")
+    except Exception as _e:
+        print(f"[네이버뉴스 진단] '{query}' 예외: {type(_e).__name__}: {_e}")
     return []
 
 
