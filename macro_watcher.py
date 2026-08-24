@@ -897,6 +897,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         return
     state["dart_err_warned"] = False
     _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _vrank_codes = None                            # [V21.0] 당일 거래대금 랭킹 top40(주도주 교차검증용·지연조회)
     for _it in (j.get("list") or []):
         _rcp = _it.get("rcept_no")
         _stock = (_it.get("stock_code") or "").strip()
@@ -939,9 +940,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                 pass
         if not _px:                             # 장외/거래 전 → 선점 후보(재료만)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🎯 [공시 발굴·선점] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
                           f"공시: {_nm} (호재 재료)\n"
-                          f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 후 소액 진입\n{_url}")
+                          f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 · 아직 매수 아님\n{_url}")
             continue
         _disp = None
         try:
@@ -950,13 +951,13 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             pass
         _dtxt = f" · 이격 {_disp:+.0f}%" if _disp is not None else ""
         _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
-        # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '선점'으로만(장전 0억 강매수 오발 차단)
+        # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '관찰'로만(장전 0억 강매수 오발 차단)
         if (not _turn) or _turn < 5_000_000_000:
             send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🎯 [공시 발굴·선점] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
                           f"공시: {_nm} (호재 재료)\n"
                           f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
-                          f"🔥 거래 붙는지 확인 후 소액 — 아직 강신호 아님\n{_url}")
+                          f"🔥 거래 붙는지 확인 후 — 아직 매수 아님\n{_url}")
             continue
         _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
         if _overheat:                            # 이미 급등 → 추격 금지
@@ -1001,12 +1002,22 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                               f"{SIG_WATCH}\n📢 [공시·임팩트 약함 관망] {_corp}({_stock})\n"
                               f"공시: {_nm}\n{_st}{_dtxt} — {_why} → 강신호 아님(참고만)\n{_url}")
                 continue
-        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
+        # [V21.0 주도주 교차검증] 당일 거래대금 랭킹(top40)에 들어야 = 시장 주목 주도주.
+        #   호재라도 랭킹 밖(소외주)이면 장 꺾일 때 먼저 던져짐(손절 확률↑) → 관찰로 강등.
+        if _vrank_codes is None:
+            _vrank_codes = {s["code"] for s in _volume_rank(_tok, kis_key, kis_secret, top=40)}
+        if _stock not in _vrank_codes:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n👀 [공시·비주도 관찰] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억 — "
+                          f"당일 거래대금 랭킹 밖(비주도주) → 손절 확률↑, 강매수 보류\n{_url}")
+            continue
+        # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효 + 주도주
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
-                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · 비과열 ✅\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · 🔥주도주(랭킹 內) · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
@@ -2441,7 +2452,10 @@ def main():
                 if sev < prev_sev or _worse_on:
                     icon = "📈 매크로 개선!" if sev < prev_sev else "📉 매크로 악화 — 리스크↑"
                     _mbadge = SIG_WATCH if sev < prev_sev else SIG_CAUTION
-                    if send_telegram(token_tg, chat_id, f"{_mbadge}\n{icon}\n{mtext}\n{mdetail}\n{stamp} KST"):
+                    # [V21.0] 리스크오프로 '전환'되면 보유 종목 손절라인 점검 경고 추가(오늘 -3% 크래시 교훈)
+                    _hold = ("\n🚨 보유 종목 점검 — 리스크오프 전환! 손절 라인(−2%) 확인·비주도주 우선 정리 검토"
+                             if sev >= 2 and prev_sev < 2 else "")
+                    if send_telegram(token_tg, chat_id, f"{_mbadge}\n{icon}\n{mtext}\n{mdetail}{_hold}\n{stamp} KST"):
                         st["macro_alert_ts"] = int(now.timestamp())
             st["sev"] = sev
             # 🌙 나스닥100 선물 야간 변동 추적(20:00 기준 → 07:00 아침) — 브리핑에서 송출
