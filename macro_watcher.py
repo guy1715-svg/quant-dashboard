@@ -921,9 +921,48 @@ def _gemini_generate(gkey, prompt):
 _NEWS_KEYWORDS = ("특징주", "수주", "실적", "신약 임상", "정책 수혜")
 
 
-def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key):
+def _verify_news_picks(token, key, secret, report):
+    """[V21.6] Gemini 브리핑에서 6자리 종목코드 추출 → KIS로 오늘 차트상태 검증(선반영/거래대금).
+    반환: 검증 텍스트 or ''. 뉴스픽이 이미 급등했으면 sell-the-news, 안 움직였으면 내일 여지."""
+    if not (token and report):
+        return ""
+    import re as _re
+    _codes = []
+    for _c in _re.findall(r"\(?(\d{6})\)?", report):        # 괄호 안/밖 6자리
+        if _c not in _codes:
+            _codes.append(_c)
+    _codes = _codes[:8]
+    if not _codes:
+        return ""
+    _lines = []
+    for _cd in _codes:
+        try:
+            _px, _chg, _turn = _price_and_turnover(token, key, secret, _cd)
+            if not _px:
+                continue
+            _disp = _ma20_disparity(token, key, secret, _cd, _px)
+            _dt = f"이격 {_disp:+.0f}%" if _disp is not None else "이격 –"
+            _tk = f"거래대금 {(_turn or 0)/1e8:,.0f}억"
+            # 판정: 이미 급등(등락≥5 or 이격≥10) = sell-the-news / 저조 거래 = 관심밖 / 그 외 = 주목
+            if (_chg or 0) >= 5.0 or (_disp is not None and _disp >= 10.0):
+                _vd = "⚠️이미 급등(선반영·추격주의)"
+            elif (_turn or 0) < 10_000_000_000:
+                _vd = "💤거래 저조(관심 유입 확인 필요)"
+            else:
+                _vd = "✅거래 받쳐줌(내일 주목)"
+            _lines.append(f"• {_cd} {_px:,}({(_chg or 0):+.1f}%)·{_dt}·{_tk} → {_vd}")
+        except Exception:
+            continue
+    if not _lines:
+        return ""
+    return "\n🔍 뉴스픽 차트검증(오늘 종가 기준)\n" + "\n".join(_lines)
+
+
+def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key,
+                       kis_key=None, kis_secret=None):
     """[V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 마감 후 뉴스는 내일 갭·수급 선행지표.
-    네이버 검색으로 재료 뉴스 수집 → Gemini가 '내일 주목 테마·대장주·선반영주의' 브리핑. 매수 아님(참고)."""
+    네이버/RSS 뉴스 수집 → Gemini가 '내일 주목 테마·대장주·해외변수·선반영주의' 브리핑 → KIS 차트검증 첨부.
+    매수 아님(참고)."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((17 * 60) <= m <= (22 * 60)):
         return
@@ -970,14 +1009,23 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "[출력: 텔레그램용·간결·이모지]\n"
                    "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄)\n"
                    "🌙 내일 시황 브리핑\n"
-                   "📌 주목 테마 TOP 3 — 각: 테마 · 대장주 · 재료강도(상/중/하) · 지속성(단발/며칠) · 선반영주의\n"
+                   "📌 주목 테마 TOP 3 — 각: 테마 · 대장주(반드시 종목명 옆에 6자리 종목코드 괄호로! 예: 두산에너빌리티(034020)) · "
+                   "재료강도(상/중/하) · 지속성(단발/며칠) · 선반영주의\n"
                    "⚠️ 피할 것 (재료소멸·이미급등·악재)\n"
                    "한 줄 총평.")
         print("[저녁뉴스] 🤖 Gemini 판정 중... (5~20초 소요)")
         report = _gemini_generate(gemini_key, _prompt)
         print(f"[저녁뉴스] Gemini 판정 {'완료' if report else '실패→헤드라인'}")
     if report:
-        _msg = (f"{SIG_WATCH}\n{report}\n\n"
+        _verify = ""
+        try:
+            _vtok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+            _verify = _verify_news_picks(_vtok, kis_key, kis_secret, report)
+            if _verify:
+                print("[저녁뉴스] 차트검증 첨부 완료")
+        except Exception as _ve:
+            print("차트검증 오류:", _ve)
+        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
     else:
         _heads = "\n".join("• " + a.split(" :: ")[0] for a in arts[:8])
@@ -2667,7 +2715,7 @@ def main():
         _st = load_state(); _st.pop("evening_news_day", None)
         _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _now = _now.replace(hour=18, minute=0)    # 저녁 창(17~22) 안으로 강제
-        check_evening_news(_now, _st, token_tg, chat_id, _nid, _nsec, _gk)
+        check_evening_news(_now, _st, token_tg, chat_id, _nid, _nsec, _gk, kis_key, kis_secret)
         save_state(_st)
         sys.exit(0)
 
@@ -2770,7 +2818,8 @@ def main():
                 print("DART 공시 감시 오류:", _dqe)
             # 🌙 [V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 내일 주목 테마·대장주 브리핑
             try:
-                check_evening_news(now, st, token_tg, chat_id, naver_id, naver_secret, gemini_key)
+                check_evening_news(now, st, token_tg, chat_id, naver_id, naver_secret, gemini_key,
+                                   kis_key, kis_secret)
             except Exception as _ene:
                 print("저녁 뉴스 스캐너 오류:", _ene)
             print(f"[{stamp}] 매크로 sev={sev} {mtext}")
