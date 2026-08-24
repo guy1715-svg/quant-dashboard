@@ -812,6 +812,61 @@ _DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "�
 _DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
 
 
+def _market_cap(token, key, secret, code):
+    """시가총액(억원) — inquire-price hts_avls. 실패 시 None. 수주 임팩트 = 계약금액/시총 판정용."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return _to_int(o.get("hts_avls"))     # 억원 단위
+    except Exception:
+        pass
+    return None
+
+
+def _contract_detail(dart_key, rcept_no):
+    """[Phase2] DART 공급계약 상세문서에서 '최근매출액 대비(%)'·계약기간(년) 추출(best-effort).
+    반환 {'sales_ratio': float|None, 'years': float|None}. 파싱 실패 시 값 None(시총 폴백)."""
+    out = {"sales_ratio": None, "years": None}
+    try:
+        import io as _io, zipfile as _zip, re as _re
+        r = requests.get("https://opendart.fss.or.kr/api/document.xml",
+                         params={"crtfc_key": dart_key, "rcept_no": rcept_no}, timeout=8)
+        if r.status_code != 200 or not r.content:
+            return out
+        try:
+            _zf = _zip.ZipFile(_io.BytesIO(r.content))
+            _raw = b"".join(_zf.read(n) for n in _zf.namelist())
+        except Exception:
+            _raw = r.content
+        try:
+            txt = _raw.decode("utf-8", "ignore")
+        except Exception:
+            txt = _raw.decode("cp949", "ignore")
+        txt = _re.sub(r"<[^>]+>", " ", txt)       # 태그 제거
+        txt = _re.sub(r"\s+", " ", txt)
+        # 최근 매출액 대비(%) — 라벨 뒤 첫 숫자
+        m = _re.search(r"매출액\s*대비[^0-9\-]{0,15}([0-9]+(?:\.[0-9]+)?)", txt)
+        if m:
+            out["sales_ratio"] = float(m.group(1))
+        # 계약기간: 시작~종료일(YYYY.MM.DD 또는 YYYY-MM-DD 2개)로 연수 추정
+        ds = _re.findall(r"(20[0-9]{2})[.\-/ ]\s*([01]?[0-9])[.\-/ ]\s*([0-3]?[0-9])", txt)
+        if len(ds) >= 2:
+            try:
+                y0, m0, d0 = map(int, ds[0]); y1, m1, d1 = map(int, ds[-1])
+                _days = (datetime.date(y1, m1, d1) - datetime.date(y0, m0, d0)).days
+                if _days > 0:
+                    out["years"] = round(_days / 365.0, 1)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
 def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None, sev=1):
     """DART 당일 신규 공시 폴링 → 호재 공시는 우리 엔진(거래대금·이격)으로 교차검증해 '진입후보 선정'.
     악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음.
@@ -921,12 +976,37 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                           f"{SIG_WATCH}\n📢 [공시·하락중 관망] {_corp}({_stock})\n"
                           f"공시: {_nm}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
             continue
-        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호
+        # [V20.8] 수주/공급계약 임팩트 판정(멘토 피드백) — 금액 크기만 X, 매출대비·계약기간·시총으로.
+        #   Phase2: DART 상세문서에서 '매출액 대비%'·계약기간→연환산 임팩트. 연 5% 미만=미미.
+        #   Phase1(폴백): 매출대비 파싱 실패 시 시총으로 — 시총 5조+ 대형주는 수주 임팩트 작음.
+        _impact_txt = ""
+        if any(k in _nm for k in ("공급계약", "단일판매", "수주")):
+            _cd = _contract_detail(dart_key, _rcp)
+            _ratio, _yrs = _cd.get("sales_ratio"), _cd.get("years")
+            _weak = False; _why = ""
+            if _ratio is not None:
+                _eff = _ratio / max(_yrs or 1.0, 1.0)     # 연환산 매출대비%
+                _impact_txt = (f" · 매출대비 {_ratio:.0f}%"
+                               + (f"·{_yrs:.0f}년→연 {_eff:.1f}%" if _yrs else ""))
+                if _eff < 5.0:                            # 연매출 대비 5% 미만 = 실적 영향 미미
+                    _weak = True; _why = f"매출대비 임팩트 미미(연 {_eff:.1f}%)"
+            else:
+                _mc = _market_cap(_tok, kis_key, kis_secret, _stock)   # Phase1 폴백
+                if _mc and _mc >= 50_000:                 # 시총 5조+ 대형주 = 수주 임팩트 작음
+                    _weak = True; _why = f"시총 {_mc/10000:.0f}조 대형주(수주 임팩트 작음)"
+                elif _mc:
+                    _impact_txt = f" · 시총 {_mc/10000:.1f}조"
+            if _weak:
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_WATCH}\n📢 [공시·임팩트 약함 관망] {_corp}({_stock})\n"
+                              f"공시: {_nm}\n{_st}{_dtxt} — {_why} → 강신호 아님(참고만)\n{_url}")
+                continue
+        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
-                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억 · 비과열 ✅\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
