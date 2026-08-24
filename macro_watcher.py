@@ -853,11 +853,8 @@ def _naver_news(cid, csec, query, display=10):
 
 # [V21.5] RSS 폴백 — 네이버 검색 스코프 없거나 실패 시 국내 경제 RSS로 뉴스 수집(키 불필요).
 _RSS_FEEDS = (
-    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),
-    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),
-    ("한경경제", "https://rss.hankyung.com/feed/economy.xml"),
-    ("한경증권", "https://rss.hankyung.com/feed/finance.xml"),
-    ("매경증권", "https://www.mk.co.kr/rss/50200011/"),
+    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),      # 증권 우선(재료 밀집)
+    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),      # 보조(Gemini가 재료만 선별)
 )
 
 
