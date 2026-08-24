@@ -2586,6 +2586,8 @@ def main():
     ap.add_argument("--no-worse", action="store_true", help="매크로 악화 알림 끄기(개선만)")
     ap.add_argument("--force-pick", action="store_true",
                     help="종가베팅 픽을 시간창 무시하고 지금 즉시 1회 발송 후 종료(수동 강제)")
+    ap.add_argument("--test-news", action="store_true",
+                    help="저녁 뉴스 시황 스캐너를 시간창 무시하고 지금 즉시 1회 실행 후 종료(키 테스트)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -2593,6 +2595,20 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
+        _nid, _nsec = read_naver_keys()
+        _gk = read_gemini_key()
+        print(f"[테스트] 저녁뉴스 — 네이버 {'OK' if (_nid and _nsec) else '키없음'} · "
+              f"Gemini {'OK' if _gk else '키없음'}")
+        if not (_nid and _nsec):
+            print("⚠️ 네이버 키 없음 — NAVER_CLIENT_ID/SECRET 확인"); sys.exit(1)
+        _st = load_state(); _st.pop("evening_news_day", None)
+        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _now = _now.replace(hour=18, minute=0)    # 저녁 창(17~22) 안으로 강제
+        check_evening_news(_now, _st, token_tg, chat_id, _nid, _nsec, _gk)
+        save_state(_st)
+        sys.exit(0)
 
     if args.force_pick:                           # [V20.0] 수동 강제 — 시간창·당일락 무시하고 즉시 종배픽
         if not kis_on:
