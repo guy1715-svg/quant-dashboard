@@ -1897,7 +1897,10 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     if not ((9 * 60 + 15) <= m <= (15 * 60 + 20)):
         return []
     today = now_kst.strftime("%Y%m%d")
-    _bidx = m // 15                                  # 현재 15분 버킷 인덱스
+    # [V21.2] 시간대 적응형 봉 — 수급 몰리는 창(09:15~10:00·14:00~15:00)은 5분봉(빠른 포착),
+    #   그 외(지루한 midday)는 15분봉(노이즈↓). 봉 크기·임계는 시간대 따라 자동 전환.
+    _bsize = 5 if (((9 * 60 + 15) <= m <= (10 * 60)) or ((14 * 60) <= m <= (15 * 60))) else 15
+    _bidx = m // _bsize                              # 현재 봉 버킷 인덱스(5 or 15분)
     _nq = _pct("NQ=F")                               # 나스닥100 선물 — 김팀장式 '선물 동조' 확인
     _nq_pv = state.get("bar15_nq_prev")              # 직전 루프 NQ (상승 기울기 판정용)
     _nq_rising = (_nq_pv is None) or (_nq is None) or (_nq >= _nq_pv)   # 선물이 오르는 중(기울기 ≥ 0)
@@ -1951,8 +1954,8 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                 _is_leader = code in _vrank_b15
                 if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
                     send_telegram(token_tg, chat_id,
-                                  f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 15분봉 강한 양봉 — {name}\n"
-                                  f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
+                                  f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name}\n"
+                                  f"방금 막 끝난 {_bsize}분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
                                   f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內)\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                                   f"{_warn}\n"
