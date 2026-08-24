@@ -851,6 +851,41 @@ def _naver_news(cid, csec, query, display=10):
     return []
 
 
+# [V21.5] RSS 폴백 — 네이버 검색 스코프 없거나 실패 시 국내 경제 RSS로 뉴스 수집(키 불필요).
+_RSS_FEEDS = (
+    ("연합경제", "https://www.yna.co.kr/rss/economy.xml"),
+    ("연합증권", "https://www.yna.co.kr/rss/market.xml"),
+    ("한경경제", "https://rss.hankyung.com/feed/economy.xml"),
+    ("한경증권", "https://rss.hankyung.com/feed/finance.xml"),
+    ("매경증권", "https://www.mk.co.kr/rss/50200011/"),
+)
+
+
+def _rss_news(max_items=40):
+    """국내 경제/증권 RSS에서 최신 뉴스 수집 — [{title,description}]. feedparser 없이 stdlib 파싱."""
+    import xml.etree.ElementTree as _ET
+    import re as _re
+    arts = []
+    for _nm, _url in _RSS_FEEDS:
+        try:
+            r = requests.get(_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                print(f"[RSS 진단] {_nm} HTTP {r.status_code}")
+                continue
+            _root = _ET.fromstring(r.content)
+            _cnt = 0
+            for _it in _root.iter("item"):
+                _t = (_it.findtext("title") or "").strip()
+                _d = _re.sub(r"<[^>]+>", "", _it.findtext("description") or "").strip()
+                if _t:
+                    arts.append({"title": _t, "description": _d})
+                    _cnt += 1
+            print(f"[RSS 진단] {_nm} {_cnt}건")
+        except Exception as _e:
+            print(f"[RSS 진단] {_nm} 예외: {type(_e).__name__}")
+    return arts[:max_items]
+
+
 _GEMINI_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
 
 
@@ -878,8 +913,6 @@ _NEWS_KEYWORDS = ("특징주", "수주", "실적", "신약 임상", "정책 수�
 def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key):
     """[V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 마감 후 뉴스는 내일 갭·수급 선행지표.
     네이버 검색으로 재료 뉴스 수집 → Gemini가 '내일 주목 테마·대장주·선반영주의' 브리핑. 매수 아님(참고)."""
-    if not (naver_id and naver_secret):
-        return
     m = now_kst.hour * 60 + now_kst.minute
     if not ((17 * 60) <= m <= (22 * 60)):
         return
@@ -888,19 +921,33 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         return
     import re as _re
     seen = set(); arts = []
-    for kw in _NEWS_KEYWORDS:
-        for it in _naver_news(naver_id, naver_secret, kw, 10):
-            _t = _re.sub(r"<[^>]+>", "", it.get("title", "")).replace("&quot;", '"').replace("&amp;", "&")
-            _d = _re.sub(r"<[^>]+>", "", it.get("description", "")).replace("&quot;", '"').replace("&amp;", "&")
+    _src = "네이버"
+    # 1) 네이버 검색(키 있을 때) — 키워드 타겟팅
+    if naver_id and naver_secret:
+        for kw in _NEWS_KEYWORDS:
+            for it in _naver_news(naver_id, naver_secret, kw, 10):
+                _t = _re.sub(r"<[^>]+>", "", it.get("title", "")).replace("&quot;", '"').replace("&amp;", "&")
+                _d = _re.sub(r"<[^>]+>", "", it.get("description", "")).replace("&quot;", '"').replace("&amp;", "&")
+                _k = _t[:40]
+                if not _t or _k in seen:
+                    continue
+                seen.add(_k); arts.append(f"- {_t} :: {_d}")
+            if len(arts) >= 40:
+                break
+    # 2) 네이버 0건(스코프 없음/실패) → RSS 폴백(키 불필요)
+    if not arts:
+        _src = "RSS"
+        for it in _rss_news(40):
+            _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
+            _d = it.get("description", "")
             _k = _t[:40]
             if not _t or _k in seen:
                 continue
             seen.add(_k); arts.append(f"- {_t} :: {_d}")
-        if len(arts) >= 40:
-            break
     if not arts:
-        print("[저녁뉴스] 수집 0건 — 네이버 키/응답 확인 필요")
+        print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
+    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건")
     _batch = "\n".join(arts[:40])
     report = None
     if gemini_key:
@@ -2600,10 +2647,8 @@ def main():
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
         _nid, _nsec = read_naver_keys()
         _gk = read_gemini_key()
-        print(f"[테스트] 저녁뉴스 — 네이버 {'OK' if (_nid and _nsec) else '키없음'} · "
-              f"Gemini {'OK' if _gk else '키없음'}")
-        if not (_nid and _nsec):
-            print("⚠️ 네이버 키 없음 — NAVER_CLIENT_ID/SECRET 확인"); sys.exit(1)
+        print(f"[테스트] 저녁뉴스 — 네이버 {'OK' if (_nid and _nsec) else '키없음(RSS폴백)'} · "
+              f"Gemini {'OK' if _gk else '키없음(헤드라인만)'}")
         _st = load_state(); _st.pop("evening_news_day", None)
         _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _now = _now.replace(hour=18, minute=0)    # 저녁 창(17~22) 안으로 강제
