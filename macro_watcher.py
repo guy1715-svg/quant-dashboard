@@ -994,6 +994,33 @@ def _gemini_stock_news_verdict(gemini_key, code, name):
     return f"\n🤖 AI뉴스: {_v.strip()}" if _v else ""
 
 
+def _watchlist_check(token, key, secret, code, px, chg, turn, ng=None):
+    """[V22.6] 관심종목 10대 기준 중 자동측정 가능 항목 체크(사용자 매매원칙 적용).
+    측정: ①거래대금상위 ②500억+ ③외인/기관수급 ⑤정배열·전고/신고 ⑥재료 ⑨끼(변동성). 반환: 통과 리스트."""
+    _p = []
+    try:
+        if turn and turn >= 50_000_000_000:                 # ② 거래대금 500억+
+            _p.append("거래대금500억+")
+        if code in {s["code"] for s in _volume_rank(token, key, secret, top=40)}:  # ① 거래대금 상위
+            _p.append("거래대금상위")
+        _f, _o = _investor_est(token, key, secret, code)    # ③ 외인/기관 수급(+)
+        if (_f + _o) > 0:
+            _p.append("수급유입")
+        ds = _daily_setup(token, key, secret, code, px)     # ⑤ 정배열(px>5MA>20MA)
+        if ds and ds.get("ma5") and ds.get("ma20") and px > ds["ma5"] > ds["ma20"]:
+            _p.append("정배열")
+        _rh = _recent_high(token, key, secret, code, 20)    # ⑤ 전고 근접/신고가
+        if _rh and px >= _rh:
+            _p.append("신고가")
+        elif _rh and px >= _rh * 0.98:
+            _p.append("전고근접")
+        if ng in ("S", "A"):                                # ⑥ 재료 모멘텀
+            _p.append(f"재료{ng}급")
+    except Exception:
+        pass
+    return _p
+
+
 def _verify_news_picks(token, key, secret, report):
     """[V21.6] Gemini 브리핑에서 6자리 종목코드 추출 → KIS로 오늘 차트상태 검증(선반영/거래대금).
     반환: 검증 텍스트 or ''. 뉴스픽이 이미 급등했으면 sell-the-news, 안 움직였으면 내일 여지."""
@@ -1697,12 +1724,21 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         _ai_news = _gemini_stock_news_verdict(gemini_key, pick["code"], pick["name"])
     except Exception:
         pass
+    # [V22.6] 관심종목 10대 기준(사용자 매매원칙) 자동 체크 첨부
+    _wl = ""
+    try:
+        _wlp = _watchlist_check(token, key, secret, pick["code"], pick["px"], pick["chg"],
+                                pick["turn"], pick["ng"])
+        if _wlp:
+            _wl = f"\n📋 관심기준 {len(_wlp)}개 충족: {'·'.join(_wlp)}"
+    except Exception:
+        pass
     _divtxt = ("\n🌒 분산 2·3위: "
                + " · ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in div)) if div else ""
     if send_telegram(token_tg, chat_id,
                      f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {pick['name']} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
-                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
                      f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산\n"
