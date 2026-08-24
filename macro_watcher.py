@@ -1228,12 +1228,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     today = now_kst.strftime("%Y%m%d")
     if not force and state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
         return
-    if sev == 2:
-        if send_telegram(token_tg, chat_id,
-                         "🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
-                         "매크로 🟢 전환·낙폭 진정 후 재산출."):
-            state["dolpanty_pick_day"] = today
-        return
+    # [V20.9] 리스크오프(sev2)여도 그림자 로깅은 계속 — "관망이 옳았나(상위주가 익일 빠졌나)" 검증 데이터.
+    #   발송은 관망 그대로, 아래 스캔 후 그림자만 기록하고 리턴.
     cands = []
     raw = []                                          # [검증] 필터 통과 여부 무관 거래대금 상위(그림자 로깅용)
     _budget = 0
@@ -1250,6 +1246,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             if _npx:
                 px, chg = _npx, _nchg                # 현재가·등락은 NXT 실시간(거래대금은 정규장 랭킹 유지)
         raw.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn})
+        if sev == 2:                                 # 리스크오프 — raw(그림자용)만 모으고 스코어링 스킵
+            continue
         if chg >= 7.0:                               # 이미 과열 — 추격 금지
             continue
         if chg < -2.0:                               # 하락 과대(떨어지는 칼) — 종배 제외
@@ -1294,6 +1292,14 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             print(f"[종배픽] 그림자 로깅 {len(_sh)}종({'NXT실시간' if _in_nxt else '종가'}): "
                   + ", ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in _sh))
 
+    if sev == 2:                                     # [V20.9] 리스크오프 — 관망 발송 + 그림자만 로깅(검증 유지)
+        _log_shadow()
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
+                         "매크로 🟢 전환·낙폭 진정 후 재산출."):
+            state["dolpanty_pick_day"] = today
+        print("[종배픽] 리스크오프 관망 — 그림자만 로깅")
+        return
     if not cands:
         _log_shadow()                                # 관망 날에도 검증 데이터 축적
         if send_telegram(token_tg, chat_id,
