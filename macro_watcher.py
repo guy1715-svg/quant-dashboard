@@ -798,6 +798,133 @@ def read_dart_key():
     return None
 
 
+# ── [V21.4] 뉴스 시황 — 네이버 검색 API + Gemini 판정 ──────────────────────────
+def read_naver_keys():
+    """네이버 검색 API Client ID/Secret — 환경변수 우선. 없으면 (None,None)."""
+    return (os.environ.get("NAVER_CLIENT_ID"), os.environ.get("NAVER_CLIENT_SECRET"))
+
+
+def _read_secret_alias(aliases):
+    """secrets.toml에서 별칭 키 값 탐색(공용). 없으면 None."""
+    _al = {a.lower() for a in aliases}
+    try:
+        import tomllib
+        with open(SECRETS_FILE, "rb") as f:
+            _d = tomllib.load(f)
+        _found = [None]
+
+        def _w(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if isinstance(v, dict):
+                        _w(v)
+                    elif str(k).lower() in _al and isinstance(v, str) and not _found[0]:
+                        _found[0] = v.strip()
+        if isinstance(_d, dict):
+            _w(_d)
+        if _found[0]:
+            return _found[0]
+    except Exception:
+        pass
+    return None
+
+
+def read_gemini_key():
+    """Gemini API 키 — 환경변수 → secrets.toml. 없으면 None(뉴스 브리핑은 헤드라인만)."""
+    for _n in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_KEY", "GOOGLE_GEMINI_API_KEY"):
+        if os.environ.get(_n):
+            return os.environ[_n].strip()
+    return _read_secret_alias({"gemini_api_key", "google_api_key", "gemini_key", "gemini"})
+
+
+def _naver_news(cid, csec, query, display=10):
+    """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 []."""
+    try:
+        r = requests.get("https://openapi.naver.com/v1/search/news.json",
+                         headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
+                         params={"query": query, "display": display, "sort": "date"}, timeout=6)
+        if r.status_code == 200:
+            return r.json().get("items", []) or []
+    except Exception:
+        pass
+    return []
+
+
+_GEMINI_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
+
+
+def _gemini_generate(gkey, prompt):
+    """Gemini 텍스트 생성 — 모델 후보 순차 시도. 실패/미설치 시 None."""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gkey)
+        for _mn in _GEMINI_MODELS:
+            try:
+                _resp = genai.GenerativeModel(_mn).generate_content(prompt)
+                _txt = getattr(_resp, "text", None)
+                if _txt:
+                    return _txt.strip()
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+_NEWS_KEYWORDS = ("특징주", "수주", "실적", "신약 임상", "정책 수혜")
+
+
+def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key):
+    """[V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 마감 후 뉴스는 내일 갭·수급 선행지표.
+    네이버 검색으로 재료 뉴스 수집 → Gemini가 '내일 주목 테마·대장주·선반영주의' 브리핑. 매수 아님(참고)."""
+    if not (naver_id and naver_secret):
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((17 * 60) <= m <= (22 * 60)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("evening_news_day") == today:
+        return
+    import re as _re
+    seen = set(); arts = []
+    for kw in _NEWS_KEYWORDS:
+        for it in _naver_news(naver_id, naver_secret, kw, 10):
+            _t = _re.sub(r"<[^>]+>", "", it.get("title", "")).replace("&quot;", '"').replace("&amp;", "&")
+            _d = _re.sub(r"<[^>]+>", "", it.get("description", "")).replace("&quot;", '"').replace("&amp;", "&")
+            _k = _t[:40]
+            if not _t or _k in seen:
+                continue
+            seen.add(_k); arts.append(f"- {_t} :: {_d}")
+        if len(arts) >= 40:
+            break
+    if not arts:
+        print("[저녁뉴스] 수집 0건 — 네이버 키/응답 확인 필요")
+        return
+    _batch = "\n".join(arts[:40])
+    report = None
+    if gemini_key:
+        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스 헤드라인·요약이야. "
+                   "내일 주목할 종목/테마를 골라줘. 이미 오늘 크게 오른 재료는 sell-the-news 주의로 표시하고, "
+                   "불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
+                   f"[뉴스]\n{_batch}\n\n"
+                   "[출력: 텔레그램용·간결·이모지]\n"
+                   "🌙 내일 시황 브리핑\n"
+                   "📌 주목 테마 TOP 3 — 각: 테마 · 대장주 · 재료강도(상/중/하) · 지속성(단발/며칠) · 선반영주의\n"
+                   "⚠️ 피할 것 (재료소멸·이미급등·악재)\n"
+                   "한 줄 총평.")
+        report = _gemini_generate(gemini_key, _prompt)
+    if report:
+        _msg = (f"{SIG_WATCH}\n{report}\n\n"
+                "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
+    else:
+        _heads = "\n".join("• " + a.split(" :: ")[0] for a in arts[:8])
+        _msg = (f"{SIG_WATCH}\n🌙 내일 참고 뉴스(헤드라인)\n{_heads}\n"
+                "※ AI 판정 미가동(Gemini 키 없음/실패) — 헤드라인만")
+    if send_telegram(token_tg, chat_id, _msg):
+        state["evening_news_day"] = today
+        print(f"[저녁뉴스] 브리핑 발송 — 수집 {len(arts)}건 · AI {'ON' if report else 'OFF'}")
+
+
 _DART_POS = ("공급계약체결", "단일판매", "수주", "기술이전", "특허권취득", "품목허가", "임상시험결과",
              "자기주식취득결정", "무상증자결정")
 # [V18.8] 악재는 '진짜 중대'만 — 안내/조정 류 오탐 제거(전환가액조정 등 잡음 컷)
@@ -2491,8 +2618,12 @@ def main():
         else:
             print(f"⚠️ secrets.toml 있으나 KIS 키(KIS_APP_KEY/KIS_APP_SECRET 등) 못 찾음")
     dart_key = read_dart_key()                    # [V18.4] DART 공시 감시 키(없으면 자동 OFF)
+    naver_id, naver_secret = read_naver_keys()    # [V21.4] 네이버 뉴스 검색(없으면 저녁 뉴스 OFF)
+    gemini_key = read_gemini_key()                # [V21.4] Gemini 판정(없으면 헤드라인만)
     print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급 {'ON' if kis_on else 'OFF'} · "
-          f"DART공시 {'ON' if dart_key else 'OFF(키없음)'}")
+          f"DART공시 {'ON' if dart_key else 'OFF(키없음)'} · "
+          f"저녁뉴스 {'ON' if (naver_id and naver_secret) else 'OFF(네이버키없음)'}"
+          f"{'·AI' if gemini_key else '·헤드라인만'}")
     send_telegram(token_tg, chat_id,
                   f"📡 감시 시작 — 국면 개선·전조·A급 알림 대기중\n수급 감시 {'ON' if kis_on else 'OFF(KIS키 없음)'}")
 
@@ -2560,6 +2691,11 @@ def main():
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
             except Exception as _dqe:
                 print("DART 공시 감시 오류:", _dqe)
+            # 🌙 [V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 내일 주목 테마·대장주 브리핑
+            try:
+                check_evening_news(now, st, token_tg, chat_id, naver_id, naver_secret, gemini_key)
+            except Exception as _ene:
+                print("저녁 뉴스 스캐너 오류:", _ene)
             print(f"[{stamp}] 매크로 sev={sev} {mtext}")
             for _dl in mdetail.split("\n"):           # 미국/한국 그룹을 들여쓰기해 한눈에 구분
                 print(f"           {_dl}")
