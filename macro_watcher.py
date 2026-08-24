@@ -1037,30 +1037,16 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         return
     import re as _re
     seen = set(); arts = []
-    _src = "네이버"
-    # 1) 네이버 검색(키 있을 때) — 키워드 타겟팅
-    if naver_id and naver_secret:
-        for kw in _NEWS_KEYWORDS:
-            for it in _naver_news(naver_id, naver_secret, kw, 10):
-                _t = _re.sub(r"<[^>]+>", "", it.get("title", "")).replace("&quot;", '"').replace("&amp;", "&")
-                _d = _re.sub(r"<[^>]+>", "", it.get("description", "")).replace("&quot;", '"').replace("&amp;", "&")
-                _k = _t[:40]
-                if not _t or _k in seen:
-                    continue
-                seen.add(_k); arts.append(f"- {_t} :: {_d}")
-            if len(arts) >= 40:
-                break
-    # 2) 네이버 0건(스코프 없음/실패) → RSS 폴백(키 불필요, 국내+세계 피드별 골고루)
-    if not arts:
-        _src = "RSS"
-        for it in _rss_news(18):
-            _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
-            _d = it.get("description", "")
-            _k = _t[:40]
-            if not _t or _k in seen:
-                continue
-            _tg = f"{it.get('src', '')} {it.get('time', '')}".strip()
-            seen.add(_k); arts.append(f"[{_tg}] {_t} :: {_d}")   # [출처 시각] 태그(최근·구분)
+    # [V22.1] 네이버 검색 API는 스코프 막힘(401 영구) → 시도 스킵, RSS만 사용(국내+세계 피드별 골고루)
+    _src = "RSS"
+    for it in _rss_news(18):
+        _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
+        _d = it.get("description", "")
+        _k = _t[:40]
+        if not _t or _k in seen:
+            continue
+        _tg = f"{it.get('src', '')} {it.get('time', '')}".strip()
+        seen.add(_k); arts.append(f"[{_tg}] {_t} :: {_d}")   # [출처 시각] 태그(최근·구분)
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
