@@ -665,6 +665,66 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉")
+_OVERNIGHT_KINDS = ("종배픽", "브리핑")
+
+
+def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
+    """[V23.3] 추천 종목 성적표 — signal_scorecard+pick_history 읽어 현재가 대조.
+    🌅 오늘 아침(당일단타) / 🌒 어제 저녁(종배·브리핑) 구분해 텔레그램 1건. 복붙 불필요."""
+    today = now_kst.strftime("%Y-%m-%d")
+    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
+    except Exception:
+        rows = []
+
+    def _res(code, base):
+        try:
+            _p, _c, _ = _price_and_turnover(token, key, secret, code)
+            if _p and base:
+                return _p, (_p / base - 1) * 100
+        except Exception:
+            pass
+        return None, None
+
+    def _fmt(r):
+        _p, _pct = _res(r["code"], r.get("px"))
+        if _p is None:
+            return f"• {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} → 조회실패"
+        _ic = "🔴" if _pct < 0 else "🟢" if _pct > 0 else "⚪"
+        return f"{_ic} {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} → 현재 {_p:,} ({_pct:+.1f}%)"
+
+    _morning = [r for r in rows if r.get("date") == today and r.get("kind") in _DAYTRADE_KINDS]
+    _evening = [r for r in rows if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS]
+    _lines = ["📋 추천 종목 성적표"]
+    _lines.append(f"\n🌅 오늘 아침 당일단타 ({today})")
+    if _morning:
+        _mp = [_fmt(r) for r in _morning[:15]]
+        _lines += _mp
+        _pcts = [(_res(r["code"], r.get("px"))[1]) for r in _morning]
+        _pcts = [x for x in _pcts if x is not None]
+        if _pcts:
+            _lines.append(f"   → 평균 {sum(_pcts)/len(_pcts):+.1f}% · 승률 {sum(1 for x in _pcts if x>0)/len(_pcts)*100:.0f}%")
+    else:
+        _lines.append("   (신호 없음)")
+    _lines.append(f"\n🌒 어제 저녁 종배·브리핑 ({yday} → 오늘 결과)")
+    if _evening:
+        _lines += [_fmt(r) for r in _evening[:15]]
+        _pcts = [(_res(r["code"], r.get("px"))[1]) for r in _evening]
+        _pcts = [x for x in _pcts if x is not None]
+        if _pcts:
+            _lines.append(f"   → 평균 {sum(_pcts)/len(_pcts):+.1f}% · 승률 {sum(1 for x in _pcts if x>0)/len(_pcts)*100:.0f}%")
+    else:
+        _lines.append("   (기록 없음)")
+    _lines.append("\n※ 현재가 기준 실시간 대조 — 추천가 대비 등락")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 발송")
+
+
 def _log_signal(state, now_kst, kind, name, code, px):
     """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
     today = now_kst.strftime("%Y%m%d")
@@ -1158,6 +1218,15 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 print("[저녁뉴스] 차트검증 첨부 완료")
         except Exception as _ve:
             print("차트검증 오류:", _ve)
+        # [V23.3] 브리핑 픽(종목명+코드)을 성적표에 기록 → 익일 결과 자동 대조
+        try:
+            import re as _re2
+            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&]{2,20}?)\s*\((\d{6})\)", report):
+                _bp, _, _ = _price_and_turnover(_vtok, kis_key, kis_secret, _bc) if _vtok else (None, None, None)
+                if _bp:
+                    _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
+        except Exception as _be:
+            print("브리핑 성적표 기록 오류:", _be)
         _msg = (f"{SIG_WATCH}\n{report}\n{_verify}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
     else:
@@ -2989,6 +3058,8 @@ def main():
                     help="종가베팅 픽을 시간창 무시하고 지금 즉시 1회 발송 후 종료(수동 강제)")
     ap.add_argument("--test-news", action="store_true",
                     help="저녁 뉴스 시황 스캐너를 시간창 무시하고 지금 즉시 1회 실행 후 종료(키 테스트)")
+    ap.add_argument("--report", action="store_true",
+                    help="추천 종목 성적표(아침 당일단타/어제 저녁 종배·브리핑) 현재가 대조 후 텔레그램 발송·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -2996,6 +3067,14 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.report:                               # [V23.3] 추천 성적표 수동 발송
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 성적표 현재가 대조 불가"); sys.exit(1)
+        _rt = kis_token(kis_key, kis_secret)
+        _rnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _scorecard_report(_rt, kis_key, kis_secret, _rnow, token_tg, chat_id)
+        sys.exit(0)
 
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
         _nid, _nsec = read_naver_keys()
