@@ -1906,6 +1906,29 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _wl = f"\n📋 관심기준 {len(_wlp)}개 충족: {'·'.join(_wlp)}"
     except Exception:
         pass
+    # [V23.4 종배룰 #3] 외인·기관 수급 방향
+    _sup = ""
+    try:
+        _f, _o = _investor_est(token, key, secret, pick["code"])
+        _fa, _oa = _f * pick["px"] / 1e8, _o * pick["px"] / 1e8
+        _sup = f"\n💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억" + (" ✅유입" if (_f + _o) > 0 else " ⚠️이탈")
+    except Exception:
+        pass
+    # [V23.4 종배룰 #5] 시황 선반영 판정 — 美선물 상승분을 한국이 이미 따라왔나(대형주 종배 여지)
+    _mkt = ""
+    try:
+        _nqp = _pct("NQ=F"); _ksp = _hist_pct("^KS11")
+        if _nqp is not None and _ksp is not None:
+            if _nqp > 0.3 and _ksp >= _nqp * 0.8:
+                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → ⚠️선반영(지수 이미 따라옴·대형주 종배 여지↓)"
+            elif _nqp > 0.5 and _ksp <= 0.1:
+                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → 🔴갭하락 위험(美↑ 한국 보합)"
+            elif _nqp > 0 and _ksp < _nqp * 0.5:
+                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → 🟢여지 있음(한국 덜 따라옴·내일 갭업 여지)"
+            else:
+                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
+    except Exception:
+        pass
     _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
     _divtxt = ("\n🌒 분산(다른 섹터): "
                + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
@@ -1913,7 +1936,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     if send_telegram(token_tg, chat_id,
                      f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
-                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
                      f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산\n"
