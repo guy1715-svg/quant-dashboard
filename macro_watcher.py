@@ -1807,7 +1807,55 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                      f"밤사이 나스닥·SOX 방향으로 익일 갭 가늠 · 8시 NXT는 목표(+3%)때만 · 청산은 9시 시가"):
         state["dolpanty_pick_day"] = today
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
+        # [V23.0] 진입 타이밍 리마인더용 픽 정보 저장(15:25 종가 동시호가 매수 알림)
+        state["dolpanty_pick_info"] = {"day": today, "code": pick["code"], "name": pick["name"],
+                                       "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False}
     print(f"[종배픽] 후보 {len(cands)}종 · 원톱 {pick['name']}({pick['score']:.0f}) · 분산 {len(div)}종")
+
+
+def check_dolpanty_entry(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V23.1] 종배 진입 타이밍 상시 감시 — 종가(15:23~15:30)+NXT(18:00~19:50) 동안 오늘 확정픽을
+    실시간 조회해 '진입 좋은 자리'면 알림. 20분 쿨다운(스팸 방지). 8시 NXT 마감까지 커버.
+    판정: 진입가 이하·안정=적정 / 이미 오름=추격주의 / 급락=갭다운주의."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _close = (15 * 60 + 23) <= m <= (15 * 60 + 30)       # 종가 동시호가
+    _nxt = (18 * 60) <= m <= (19 * 60 + 50)              # NXT 야간
+    if not (_close or _nxt):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    _info = state.get("dolpanty_pick_info") or {}
+    if _info.get("day") != today:
+        return
+    # 20분 쿨다운
+    _last = _info.get("entry_ts", 0)
+    if (int(now_kst.timestamp()) - int(_last)) < 20 * 60:
+        return
+    _base = _info["px"]                                   # 종가 확정픽 진입가 기준
+    _mrkt = "NX" if _nxt else "J"
+    try:
+        _cur, _chg, _turn = _price_and_turnover(token, key, secret, _info["code"], mrkt=_mrkt)
+    except Exception:
+        _cur = None
+    if not _cur:
+        return
+    _gap = (_cur / _base - 1) * 100                       # 종가픽 대비 현재가 괴리
+    _stop = int(_cur * 0.98); _t1 = int(_cur * 1.03)
+    _when = "종가 동시호가" if _close else "NXT 야간"
+    if _gap <= -2.0:
+        _vd = ("🔴 NXT 약세 — 갭다운 주의", f"진입가 대비 {_gap:+.1f}% 하락. 지금 잡으면 싸지만 약세 신호 — 재고 권장.")
+    elif _gap <= 0.5:
+        _vd = ("🟢 진입 적정 자리", f"진입가 근처({_gap:+.1f}%) — 안 비싸게 잡을 자리. 극소액·-2% 손절.")
+    elif _gap <= 2.0:
+        _vd = ("🟡 소폭 상승", f"진입가 대비 {_gap:+.1f}% — 살짝 올랐지만 아직 추격은 아님. 눌림 보며.")
+    else:
+        _vd = ("⚠️ 추격 주의", f"진입가 대비 {_gap:+.1f}% 급등 — 지금 추격 금물, 눌림 대기.")
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_WATCH}\n🌒⏰ 종배 진입타이밍({_when}) — {_info['name']}\n"
+                     f"{_vd[0]} · 현재 {_cur:,}({_chg:+.1f}%)\n{_vd[1]}\n"
+                     f"진입 {_cur:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%) · 청산 내일 9시 시가"):
+        _info["entry_ts"] = int(now_kst.timestamp())
+        state["dolpanty_pick_info"] = _info
+        print(f"[종배픽] 진입타이밍 알림({_when}) — {_info['name']} {_gap:+.1f}%")
 
 
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
@@ -3226,6 +3274,11 @@ def main():
                                             gemini_key=gemini_key)
                     except Exception as _dpe:
                         print("종배픽 오류:", _dpe)
+                    # [V23.0] 종배 진입 타이밍 리마인더(15:23~15:29 종가 동시호가)
+                    try:
+                        check_dolpanty_entry(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _dee:
+                        print("종배 진입알림 오류:", _dee)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
