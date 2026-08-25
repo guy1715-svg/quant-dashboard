@@ -1078,7 +1078,9 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     seen = set(); arts = []
     # [V22.1] 네이버 검색 API는 스코프 막힘(401 영구) → 시도 스킵, RSS만 사용(국내+세계 피드별 골고루)
     _src = "RSS"
-    for it in _rss_news(50, 24):                          # 피드별 최대 50건·최근 24시간
+    # [V22.8] 뉴스 기간 — 평일 24h(신선 재료). 월요일은 주말·금요일 마감후 뉴스 커버 위해 72h로 자동 확대.
+    _news_hours = 72 if now_kst.weekday() == 0 else 24
+    for it in _rss_news(50, _news_hours):                 # 피드별 최대 50건·최근 N시간
         _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
         _d = it.get("description", "")
         _k = _t[:40]
@@ -1089,7 +1091,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
         return
-    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건(최근 24h)")
+    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건(최근 {_news_hours}h)")
     _batch = "\n".join(arts[:80])
     # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
     try:
