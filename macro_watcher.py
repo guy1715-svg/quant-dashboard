@@ -1474,6 +1474,60 @@ def _volume_rank(token, key, secret, top=40):
         return []
 
 
+def _vol_ratio_5d(token, key, secret, code):
+    """[V22.7] 오늘 거래량 / 최근 5거래일(전일까지) 평균 거래량 배수. (오늘vol, 5일평균, 배수) or None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)]
+        vols = [_to_int(x.get("acml_vol")) for x in rows]      # 최신순(오늘=[0])
+        if len(vols) >= 6 and vols[0]:
+            _avg5 = sum(vols[1:6]) / 5.0                        # 전일부터 5거래일 평균
+            if _avg5 > 0:
+                return vols[0], _avg5, vols[0] / _avg5
+    except Exception:
+        pass
+    return None
+
+
+def check_vol_surge(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V22.7] 거래량 급증 서치(마감권 15:00~15:25, 당일 1회) — 거래대금 상위 중
+    '오늘 거래량 > 5일평균 2배' 종목을 거래대금 순위와 함께 알림. 관심종목 발굴용(매수 아님)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60) <= m <= (15 * 60 + 25)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("volsurge_day") == today:
+        return
+    hits = []
+    for _i, s in enumerate(_volume_rank(token, key, secret, top=40), start=1):
+        if any(k in str(s["name"]) for k in _EARLY_ETF_KW):
+            continue
+        _vr = _vol_ratio_5d(token, key, secret, s["code"])
+        if not _vr:
+            continue
+        _tv, _avg5, _mult = _vr
+        if _mult >= 2.0:                                    # 오늘 거래량이 5일평균의 2배+
+            hits.append((_mult, f"• {s['name']} {s['chg']:+.1f}% · 거래량 {_mult:.1f}배(5일평균) · "
+                                f"거래대금 {s['turnover']/1e8:,.0f}억(거래대금 {_i}위)"))
+        if len(hits) >= 15:
+            break
+    if hits:
+        hits.sort(reverse=True)                             # 급증 배수 큰 순
+        _body = "\n".join(h[1] for h in hits[:12])
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n📊 [거래량 급증 서치] 오늘 거래량 > 5일평균 2배 + 거래대금 상위\n"
+                         f"{_body}\n※ 관심종목 후보 — 개장 후/익일 수급·차트 확인(매수 아님)"):
+            state["volsurge_day"] = today
+        print(f"[거래량급증] {len(hits)}종 발송")
+    else:
+        state["volsurge_day"] = today
+        print("[거래량급증] 해당 종목 없음")
+
+
 def _daily_setup(token, key, secret, code, px):
     """일봉 셋업 — inquire-daily-price 최근 30일. ma5/ma20/이격/기준선(26)/돌파·근접/5일선위/20일평균거래대금."""
     try:
@@ -3153,6 +3207,11 @@ def main():
                         check_early_catch(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _ece:
                         print("조기 포착 오류:", _ece)
+                    # [V22.7] 거래량 급증 서치(마감권) — 오늘 거래량>5일평균 2배 + 거래대금 상위 종목 알림
+                    try:
+                        check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _vse:
+                        print("거래량 급증 오류:", _vse)
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
                         check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
