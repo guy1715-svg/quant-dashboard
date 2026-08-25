@@ -1444,7 +1444,9 @@ def _news_grade(code):
 #   거래대금 랭킹 → 일봉 셋업(기준선·5일선·이격·급증배수) → 조기포착/급증진입 판정 + 뉴스.
 # ══════════════════════════════════════════════════════════════════════════
 _EARLY_ETF_KW = ("ETN", "ETF", "선물", "레버리지", "인버스", "KODEX", "TIGER", "PLUS",
-                 "ACE", "SOL", "KBSTAR", "리츠", "스팩", "채권")
+                 "ACE", "SOL", "KBSTAR", "리츠", "스팩", "채권",
+                 "RISE", "KoAct", "히어로즈", "마이티", "WON", "BNK", "TIMEFOLIO",
+                 "1Q", "FOCUS", "파워", "KIWOOM", "HANARO", "액티브", "커버드콜")   # [V22.9] 신규 ETF 브랜드 추가
 
 
 def _volume_rank(token, key, secret, top=40):
@@ -1719,10 +1721,14 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
                       "turn": turn, "disp": disp, "score": score, "ng": ng})
     def _log_shadow(exclude=()):
-        # [검증] 그림자 픽 — 거래대금 상위 3종을 텔레그램 없이 로깅만. 대시보드 백필이 익일 갭 대조.
-        #   실제 발송픽(dolpanty)과 성적 비교 → "필터가 거른 게 실제로 안 떴나" 검증 데이터.
-        _sh = [c for c in sorted(raw, key=lambda x: x["turn"], reverse=True)
-               if c["code"] not in exclude][:3]
+        # [검증] 그림자 픽 — "우리가 뽑을 뻔한 후보"를 텔레그램 없이 로깅. 대시보드 백필이 익일 갭 대조.
+        #   [V22.9] 점수 있는 후보(cands) 우선 — 매일 삼성/하이닉스 거래대금 top만 찍히던 문제 해결.
+        #   cands 있으면 점수 상위(실제픽 제외)를, 없으면(리스크오프/미형성) 거래대금 상위로 폴백.
+        if cands:
+            _pool = sorted(cands, key=lambda c: c["score"], reverse=True)
+        else:
+            _pool = sorted(raw, key=lambda x: x["turn"], reverse=True)
+        _sh = [c for c in _pool if c["code"] not in exclude][:3]
         for c in _sh:
             _log_pick(now_kst, c["code"], c["name"], 30.0, c["px"], nq, "dolpanty_shadow")
         if _sh:
