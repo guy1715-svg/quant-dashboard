@@ -700,6 +700,14 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
 
     _morning = [r for r in rows if r.get("date") == today and r.get("kind") in _DAYTRADE_KINDS]
     _evening = [r for r in rows if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS]
+    _today_on = [r for r in rows if r.get("date") == today and r.get("kind") in _OVERNIGHT_KINDS]
+    if not rows:
+        send_telegram(token_tg, chat_id,
+                      "📋 추천 성적표 — 기록 없음\n"
+                      "signal_scorecard.json이 비어있어. ①감시(옵션3)를 장중(09~15시) 켜둬야 신호가 쌓임 "
+                      "②기록 파일은 PC마다 따로(집/회사 다름). 감시 며칠 돌린 PC에서 --report 하세요.")
+        print("[성적표] 기록 파일 비어있음(0건)")
+        return
     _lines = ["📋 추천 종목 성적표"]
     _lines.append(f"\n🌅 오늘 아침 당일단타 ({today})")
     if _morning:
@@ -720,9 +728,12 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
             _lines.append(f"   → 평균 {sum(_pcts)/len(_pcts):+.1f}% · 승률 {sum(1 for x in _pcts if x>0)/len(_pcts)*100:.0f}%")
     else:
         _lines.append("   (기록 없음)")
+    if _today_on:                                   # 오늘 수동/자동 등록된 종배·브리핑(결과는 내일)
+        _lines.append(f"\n📌 오늘 등록 종배·브리핑 ({today} · 결과는 내일)")
+        _lines += [f"• {r.get('name', r['code'])} [{r.get('kind')}] 등록가 {r.get('px', 0):,}" for r in _today_on[:15]]
     _lines.append("\n※ 현재가 기준 실시간 대조 — 추천가 대비 등락")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
-    print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 발송")
+    print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
 
 
 def _log_signal(state, now_kst, kind, name, code, px):
