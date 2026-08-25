@@ -1183,6 +1183,21 @@ _DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "�
 _DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
 
 
+def _sector_name(token, key, secret, code):
+    """종목 업종명 — inquire-price bstp_kor_isnm. 종배 분산(다른 섹터) 판정용. 실패 시 ''."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return (o.get("bstp_kor_isnm") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _market_cap(token, key, secret, code):
     """시가총액(억원) — inquire-price hts_avls. 실패 시 None. 수주 임팩트 = 계약금액/시총 판정용."""
     try:
@@ -1772,7 +1787,23 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         print(f"[종배픽] 확정픽 없음 — 최고 {cands[0]['name']}({cands[0]['score']:.0f}) < 50 · 관망")
         return
     pick = cands[0]
-    div = [c for c in cands[1:3] if c["score"] >= 50]   # 분산 후보도 50점 이상만
+    # [V23.2] 분산 후보는 '다른 섹터'로 — 같은 섹터면 동반 갭다운이라 분산 효과 없음(사용자 룰).
+    _pick_sec = _sector_name(token, key, secret, pick["code"])
+    pick["sector"] = _pick_sec
+    _used_sec = {_pick_sec} if _pick_sec else set()
+    div = []
+    for c in cands[1:]:
+        if c["score"] < 50:
+            continue
+        _csec = _sector_name(token, key, secret, c["code"])
+        if _csec and _csec in _used_sec:            # 이미 담은 섹터(원톱 포함) → 스킵
+            continue
+        c["sector"] = _csec
+        div.append(c)
+        if _csec:
+            _used_sec.add(_csec)
+        if len(div) >= 2:
+            break
     _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
     for c in div:
         _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
@@ -1795,10 +1826,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _wl = f"\n📋 관심기준 {len(_wlp)}개 충족: {'·'.join(_wlp)}"
     except Exception:
         pass
-    _divtxt = ("\n🌒 분산 2·3위: "
-               + " · ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in div)) if div else ""
+    _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
+    _divtxt = ("\n🌒 분산(다른 섹터): "
+               + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
+                            for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {pick['name']} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
