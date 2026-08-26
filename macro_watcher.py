@@ -1879,10 +1879,6 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _used_sec.add(_csec)
         if len(div) >= 2:
             break
-    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
-    for c in div:
-        _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
-    _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 실제픽 제외한 상위주 그림자 로깅
     _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
     _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
     _pbasis = "NXT 실시간가" if _in_nxt else "종가"       # 가격 기준 표기
@@ -1902,26 +1898,53 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     except Exception:
         pass
     # [V23.4 종배룰 #3] 외인·기관 수급 방향
-    _sup = ""
+    _sup = ""; _supply_neg = False
     try:
         _f, _o = _investor_est(token, key, secret, pick["code"])
         _fa, _oa = _f * pick["px"] / 1e8, _o * pick["px"] / 1e8
-        _sup = f"\n💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억" + (" ✅유입" if (_f + _o) > 0 else " ⚠️이탈")
+        _supply_neg = (_f + _o) < 0
+        _sup = f"\n💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억" + (" ✅유입" if not _supply_neg else " ⚠️이탈")
     except Exception:
         pass
+    # [V23.6] 자기모순 방지 — AI뉴스가 '부적합/악재'거나 수급 이탈이면 확정픽(매수) 강등 → 관망.
+    #   (SK스퀘어 실패 케이스: AI '부적합'인데 확정픽 발송 → 다음날 하락. 데이터로 검증된 강등 규칙.)
+    _ai_bad = ("부적합" in _ai_news) or ("악재" in _ai_news)
+    if _ai_bad or _supply_neg:
+        _why = []
+        if _ai_bad:
+            _why.append("AI 부적합/악재")
+        if _supply_neg:
+            _why.append("수급 이탈")
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
+                      f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
+                      f"※ 기술적 셋업은 있으나 뉴스/수급이 반대 — 종배는 쉬는 게 정답")
+        _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 강등돼도 검증 데이터는 남김
+        _log_pick(now_kst, pick["code"], pick["name"], 30.0, pick["px"], nq, "dolpanty_shadow")  # 강등=그림자
+        state["dolpanty_pick_day"] = today
+        print(f"[종배픽] 확정픽 강등(관망) — {pick['name']}: {'·'.join(_why)}")
+        return
+    # 통과 — 확정픽 로깅(dolpanty)
+    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
+    for c in div:
+        _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
+    _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})
     # [V23.4 종배룰 #5] 시황 선반영 판정 — 美선물 상승분을 한국이 이미 따라왔나(대형주 종배 여지)
     _mkt = ""
     try:
         _nqp = _pct("NQ=F"); _ksp = _hist_pct("^KS11")
         if _nqp is not None and _ksp is not None:
+            _mhead = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
             if _nqp > 0.3 and _ksp >= _nqp * 0.8:
-                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → ⚠️선반영(지수 이미 따라옴·대형주 종배 여지↓)"
+                _mkt = _mhead + " → ⚠️선반영(지수 이미 따라옴·대형주 종배 여지↓)"
             elif _nqp > 0.5 and _ksp <= 0.1:
-                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → 🔴갭하락 위험(美↑ 한국 보합)"
+                _mkt = _mhead + " → 🔴갭하락 위험(美↑ 한국 보합)"
+            elif _nqp <= 0.1 and _ksp >= 0.5:            # 미국 지지 없이 한국만 올랐다 = 갭 여지 적음
+                _mkt = _mhead + " → ⚠️한국 단독 상승(美 지지 없음·다음날 갭 여지↓)"
             elif _nqp > 0 and _ksp < _nqp * 0.5:
-                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}% → 🟢여지 있음(한국 덜 따라옴·내일 갭업 여지)"
+                _mkt = _mhead + " → 🟢여지 있음(한국 덜 따라옴·내일 갭업 여지)"
             else:
-                _mkt = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
+                _mkt = _mhead
     except Exception:
         pass
     _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
