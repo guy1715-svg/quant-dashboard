@@ -1742,6 +1742,54 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
     state["my_watch_ts"] = mw
 
 
+def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
+    """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
+    ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 3) <= m <= (9 * 60 + 12)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("gap_analysis_day") == today:
+        return
+    _gaps = [s for s in _volume_rank(token, key, secret, top=40)
+             if (s.get("chg") or 0) >= 3.0 and not any(k in str(s["name"]) for k in _EARLY_ETF_KW)]
+    _gaps = sorted(_gaps, key=lambda x: x.get("chg", 0), reverse=True)[:8]
+    if not _gaps:
+        state["gap_analysis_day"] = today
+        print("[갭분석] 갭상승 3%+ 종목 없음")
+        return
+    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    _pred = set()
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            _sc = json.load(f)
+        _pred = {r["code"] for r in _sc if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽")}
+    except Exception:
+        pass
+    _lines, _hit_n = [], 0
+    for s in _gaps:
+        _hit = s["code"] in _pred
+        _hit_n += 1 if _hit else 0
+        _lines.append(f"• {s['name']} +{s['chg']:.1f}% {'🎯예측적중' if _hit else '❓미예측(놓침)'}")
+    _msg = (f"{SIG_WATCH}\n🌅 오늘 갭상승 원인 역분석\n"
+            f"📊 갭상승(+3%↑) {len(_gaps)}종 · 어제 브리핑/종배 적중 {_hit_n}/{len(_gaps)}종\n"
+            + "\n".join(_lines))
+    if gemini_key:
+        _batch = []
+        for s in _gaps[:6]:
+            _tt = _stock_news_titles(s["code"], 3)
+            _batch.append(f"{s['name']}(+{s['chg']:.1f}%): " + (" / ".join(_tt[:3]) if _tt else "뉴스없음"))
+        _prompt = ("오늘 아침 갭상승한 종목들과 각 최근 뉴스야. 왜 갭상승했는지 공통 원인"
+                   "(테마·뉴스·미국장·수급 중)을 3줄 이내로 분석해. 다음 종배·브리핑 예측 개선용 학습이야.\n\n"
+                   + "\n".join(_batch))
+        _v = _gemini_generate(gemini_key, _prompt)
+        if _v:
+            _msg += f"\n\n🧠 갭상승 공통 원인:\n{_v.strip()}"
+    if send_telegram(token_tg, chat_id, _msg):
+        state["gap_analysis_day"] = today
+        print(f"[갭분석] {len(_gaps)}종 · 예측적중 {_hit_n}")
+
+
 def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V18.7] 조기 포착(기준선 초입)·급증진입 — 거래대금 랭킹 상시 스캔. 09:00~15:20, 리스크오프 억제."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -3527,6 +3575,11 @@ def main():
                         check_my_watch(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
                     except Exception as _mwe:
                         print("내관심타점 오류:", _mwe)
+                    # [V24.0] 아침 갭상승 원인 역분석(09:03~09:12) — 브리핑 적중률 검증 + 원인 학습
+                    try:
+                        check_gap_analysis(tok, kis_key, kis_secret, now, st, token_tg, chat_id, gemini_key)
+                    except Exception as _gae:
+                        print("갭분석 오류:", _gae)
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
                         check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
