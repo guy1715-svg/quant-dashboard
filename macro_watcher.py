@@ -1691,10 +1691,14 @@ def _read_my_watch():
 
 def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
     """[V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목을 장중 실시간 감시.
-    큰추세(일봉 정배열) 상승 + ①모멘텀(거래량 급증·양전) or ②5일선 눌림반등이면 타점 알림. 종목별 30분 쿨다운."""
+    큰추세(일봉 정배열) 상승 + ①모멘텀(거래량 급증·양전) or ②5일선 눌림반등이면 타점 알림. 종목별 30분 쿨다운.
+    감시창: 정규장 09:00~15:30 + NXT 야간 18:00~20:00(넥스트레이드 실시간가)."""
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((9 * 60) <= m <= (15 * 60 + 20)):
+    _reg = (9 * 60) <= m <= (15 * 60 + 30)
+    _nxt = (18 * 60) <= m <= (20 * 60)
+    if not (_reg or _nxt):
         return
+    _mrkt = "NX" if _nxt else "J"                        # NXT는 넥스트레이드 실시간가
     stocks = _read_my_watch()
     if not stocks:
         return
@@ -1708,7 +1712,7 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
             continue
         if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 30 * 60:   # 30분 쿨다운
             continue
-        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
         if not px:
             continue
         ds = _daily_setup(token, key, secret, code, px)
@@ -1727,8 +1731,9 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
             continue                                              # 큰추세 하락/횡보 = 타점 아님(역추세 회피)
         if _sig:
             _stop = int(px * 0.98); _t1 = int(px * 1.03)
+            _sess = "NXT 야간 실시간" if _nxt else "정규장"
             if send_telegram(token_tg, chat_id,
-                             f"{SIG_BUY}\n👁️ [내 관심종목 타점] {name} — {_sig[0]}\n"
+                             f"{SIG_BUY}\n👁️ [내 관심종목 타점·{_sess}] {name} — {_sig[0]}\n"
                              f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
                              f"진입 {px:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)\n"
                              f"※ 니가 지정한 관심종목 타점 · 개장 후 수급 확인 · -2% 손절"):
