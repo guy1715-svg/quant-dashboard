@@ -736,6 +736,72 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
 
 
+def _daily_closes(token, key, secret, code):
+    """종목 최근 일봉 종가 맵 {YYYYMMDD: 종가} — inquire-daily-price. 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date"); _c = _to_int(x.get("stck_clpr"))
+                if _d and _c:
+                    out[_d] = _c
+        return out
+    except Exception:
+        return {}
+
+
+def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
+    """[V24.2] 과거 누적 신호 종합 분석 — signal_scorecard+pick_history 전체를 KIS 일봉으로
+    익일 종가 대조, 신호 종류별 승률·평균수익 집계. 이미 쌓인 데이터로 '뭐가 먹히나' 판정."""
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
+    except Exception:
+        rows = []
+    # pick_history(종배/그림자)도 합침 — signal→kind 매핑
+    _kmap = {"dolpanty": "종배픽", "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
+    for p in _pick_read():
+        rows.append({"date": p.get("date"), "code": p.get("code"), "name": p.get("name"),
+                     "px": p.get("px"), "kind": _kmap.get(p.get("signal"), p.get("signal", "종배"))})
+    if not rows:
+        send_telegram(token_tg, chat_id, "📊 신호 분석 — 기록 없음(signal_scorecard/pick_history 비어있음). 감시 며칠 돌린 PC에서.")
+        return
+    from collections import defaultdict
+    _by_kind = defaultdict(list)
+    _cache = {}
+    for r in rows[-200:]:                          # 최근 200건(일봉 30일 커버 범위)
+        code, date, px, kind = str(r.get("code", "")).zfill(6), r.get("date", ""), r.get("px"), r.get("kind")
+        if not (code.isdigit() and px and kind and date):
+            continue
+        _ymd = date.replace("-", "")
+        if code not in _cache:
+            _cache[code] = _daily_closes(token, key, secret, code)
+        _cl = _cache[code]
+        _later = sorted(d for d in _cl if d > _ymd)   # 신호 다음 거래일들
+        if _later:
+            _by_kind[kind].append((_cl[_later[0]] / px - 1) * 100)   # 익일 종가 대비 %
+    if not any(_by_kind.values()):
+        send_telegram(token_tg, chat_id, "📊 신호 분석 — 익일 결과 대조 가능한 기록이 아직 없음(최근 신호는 내일 이후 집계).")
+        return
+    _lines = ["📊 신호별 종합 성적 (과거 누적 · 익일 종가 대비)"]
+    for kind, rets in sorted(_by_kind.items(), key=lambda x: -len(x[1])):
+        if rets:
+            _wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+            _avg = sum(rets) / len(rets)
+            _ic = "🟢" if _avg > 0 else "🔴"
+            _lines.append(f"{_ic} {kind}: {len(rets)}건 · 승률 {_wr:.0f}% · 평균 {_avg:+.1f}%")
+    _lines.append("\n💡 승률↑·평균+ 신호는 살리고, 승률↓·평균− 신호는 실행 중단 판단 근거")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[신호분석] {sum(len(v) for v in _by_kind.values())}건 집계 · {len(_by_kind)}종류")
+
+
 def _log_signal(state, now_kst, kind, name, code, px):
     """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
     today = now_kst.strftime("%Y%m%d")
@@ -3269,6 +3335,8 @@ def main():
                     help="저녁 뉴스 시황 스캐너를 시간창 무시하고 지금 즉시 1회 실행 후 종료(키 테스트)")
     ap.add_argument("--report", action="store_true",
                     help="추천 종목 성적표(아침 당일단타/어제 저녁 종배·브리핑) 현재가 대조 후 텔레그램 발송·종료")
+    ap.add_argument("--analyze", action="store_true",
+                    help="과거 누적 신호 종합 분석 — 신호종류별 승률·평균수익(익일 종가 대비) 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -3283,6 +3351,14 @@ def main():
         _rt = kis_token(kis_key, kis_secret)
         _rnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _scorecard_report(_rt, kis_key, kis_secret, _rnow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.analyze:                              # [V24.2] 과거 누적 신호 종합 분석(신호종류별 승률)
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 신호 분석 일봉대조 불가"); sys.exit(1)
+        _at = kis_token(kis_key, kis_secret)
+        _anow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _analyze_history(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
         sys.exit(0)
 
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
