@@ -1468,22 +1468,17 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                               f"{SIG_WATCH}\n📢 [공시·임팩트 약함 관망] {_corp}({_stock})\n"
                               f"공시: {_nm}\n{_st}{_dtxt} — {_why} → 강신호 아님(참고만)\n{_url}")
                 continue
-        # [V21.0 주도주 교차검증] 당일 거래대금 랭킹(top40)에 들어야 = 시장 주목 주도주.
-        #   호재라도 랭킹 밖(소외주)이면 장 꺾일 때 먼저 던져짐(손절 확률↑) → 관찰로 강등.
+        # [V23.5] 거래대금 랭킹은 '태그'로만 — 공시는 선행 재료라 아직 거래대금 안 붙은 게 정상.
+        #   랭킹 강등(V21.0)은 공시 선행성과 모순 → 매수(강)은 유지하고 주도/비주도만 표시.
         if _vrank_codes is None:
-            _vrank_codes = {s["code"] for s in _volume_rank(_tok, kis_key, kis_secret, top=40)}
-        if _stock not in _vrank_codes:
-            send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n👀 [공시·비주도 관찰] {_corp}({_stock})\n"
-                          f"공시: {_nm}\n{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억 — "
-                          f"당일 거래대금 랭킹 밖(비주도주) → 손절 확률↑, 강매수 보류\n{_url}")
-            continue
-        # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효 + 주도주
+            _vrank_codes = {s["code"] for s in _volume_rank(_tok, kis_key, kis_secret, top=100)}
+        _lead_tag = "🔥주도주(거래대금 랭킹 內)" if _stock in _vrank_codes else "🌱비주도(선행 재료·거래 확인 필요)"
+        # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
-                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · 🔥주도주(랭킹 內) · 비과열 ✅\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · {_lead_tag} · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
