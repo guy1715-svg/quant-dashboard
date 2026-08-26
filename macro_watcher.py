@@ -1674,6 +1674,69 @@ def _big_trend_tag(token, key, secret, code, px):
         return ""
 
 
+MY_WATCH_FILE = os.path.join(BASE, "my_watch.json")
+
+
+def _read_my_watch():
+    """내 관심종목 — my_watch.json({"on":true,"stocks":[{"code","name"}]}). off/없으면 []."""
+    try:
+        with open(MY_WATCH_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
+            return d["stocks"]
+    except Exception:
+        pass
+    return []
+
+
+def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목을 장중 실시간 감시.
+    큰추세(일봉 정배열) 상승 + ①모멘텀(거래량 급증·양전) or ②5일선 눌림반등이면 타점 알림. 종목별 30분 쿨다운."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (15 * 60 + 20)):
+        return
+    stocks = _read_my_watch()
+    if not stocks:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    mw = state.get("my_watch_ts", {})
+    if mw.get("_day") != today:
+        mw = {"_day": today}
+    for s in stocks:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
+        if not (code.isdigit() and len(code) == 6):
+            continue
+        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 30 * 60:   # 30분 쿨다운
+            continue
+        px, chg, turn = _price_and_turnover(token, key, secret, code)
+        if not px:
+            continue
+        ds = _daily_setup(token, key, secret, code, px)
+        if not ds:
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        _up = bool(_ma5 and _ma20 and px > _ma5 > _ma20)         # 큰추세 상승(정배열)
+        _vr = _vol_ratio_5d(token, key, secret, code)
+        _mult = _vr[2] if _vr else 0
+        _sig = None
+        if _up and (chg or 0) > 0 and _mult >= 1.5:
+            _sig = ("🎯 모멘텀 타점", f"큰추세 상승 + 오늘 {(chg or 0):+.1f}% + 거래량 {_mult:.1f}배 급증 → 상승 초입")
+        elif _up and _ma5 and abs(px / _ma5 - 1) <= 0.015 and (chg or 0) >= -1.0:
+            _sig = ("🎯 눌림 타점", f"큰추세 상승 + 5일선 지지 눌림({(chg or 0):+.1f}%) → 반등 자리")
+        elif not _up:
+            continue                                              # 큰추세 하락/횡보 = 타점 아님(역추세 회피)
+        if _sig:
+            _stop = int(px * 0.98); _t1 = int(px * 1.03)
+            if send_telegram(token_tg, chat_id,
+                             f"{SIG_BUY}\n👁️ [내 관심종목 타점] {name} — {_sig[0]}\n"
+                             f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                             f"진입 {px:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)\n"
+                             f"※ 니가 지정한 관심종목 타점 · 개장 후 수급 확인 · -2% 손절"):
+                mw[code] = int(now_kst.timestamp())
+                print(f"[내관심타점] {name} — {_sig[0]}")
+    state["my_watch_ts"] = mw
+
+
 def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V18.7] 조기 포착(기준선 초입)·급증진입 — 거래대금 랭킹 상시 스캔. 09:00~15:20, 리스크오프 억제."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -3454,6 +3517,11 @@ def main():
                         check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _vse:
                         print("거래량 급증 오류:", _vse)
+                    # [V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목 실시간 감시
+                    try:
+                        check_my_watch(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _mwe:
+                        print("내관심타점 오류:", _mwe)
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
                         check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
