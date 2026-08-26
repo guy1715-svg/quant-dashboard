@@ -1655,6 +1655,25 @@ def _daily_setup(token, key, secret, code, px):
         return None
 
 
+def _big_trend_tag(token, key, secret, code, px):
+    """[V23.7] MTF 큰추세 필터(방식B) — 일봉 정배열로 큰 방향 판정, 진입신호에 태그.
+    큰 봉(추세)이 방향, 작은 봉이 타점 — 신호 떠도 큰추세 하락이면 '역방향 주의'로 걸러줌. 실패 시 ''."""
+    try:
+        ds = _daily_setup(token, key, secret, code, px)
+        if not ds:
+            return ""
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20):
+            return ""
+        if px > _ma5 > _ma20:
+            return "\n📈 큰추세(일봉): 상승 ✅ (진입 방향 일치 — 큰 봉이 허락)"
+        if px < _ma5 < _ma20:
+            return "\n📉 큰추세(일봉): 하락 ⚠️ (역방향 진입 — 속임수 주의·보류 권장)"
+        return "\n➖ 큰추세(일봉): 횡보 (방향 불명확 — 신중)"
+    except Exception:
+        return ""
+
+
 def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V18.7] 조기 포착(기준선 초입)·급증진입 — 거래대금 랭킹 상시 스캔. 09:00~15:20, 리스크오프 억제."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -2062,9 +2081,10 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                                  f"🔻 돌파 후 하락 매도: {int(_res*0.99):,}원 (뚫었다 다시 밑이면 매도)")
                 else:
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
+                _bt = _big_trend_tag(token, key, secret, code, px)
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
-                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}\n"
+                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}{_bt}\n"
                               f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                               f"─── 가격표 ───\n"
                               f"🎯 매수가(현재): {px:,}원\n"
@@ -2664,10 +2684,11 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                     _vrank_b15 = {s["code"] for s in _volume_rank(token, key, secret, top=40)}
                 _is_leader = code in _vrank_b15
                 if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
+                    _bt = _big_trend_tag(token, key, secret, code, px)
                     send_telegram(token_tg, chat_id,
                                   f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name}\n"
                                   f"방금 막 끝난 {_bsize}분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
-                                  f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內)\n"
+                                  f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內){_bt}\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                                   f"{_warn}\n"
                                   f"─── 가격표 ───\n"
@@ -2745,9 +2766,10 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                 continue                          # 악재 감지 → 진입 보류
             _emat = ("🔥재료 강함(S급)" if _eng == "S" else "🟢재료 있음(A급)" if _eng == "A"
                      else "⚠️재료 미확인(순수 수급)")
+            _bt = _big_trend_tag(token, key, secret, code, px)
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n🌅[아침단타·당일청산] 🟢 진입 시그널 — {name}\n"
-                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt} · {_emat}\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt} · {_emat}{_bt}\n"
                           f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
