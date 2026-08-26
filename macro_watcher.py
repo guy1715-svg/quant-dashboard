@@ -2575,7 +2575,25 @@ def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineu
     sent = state.get("premkt_sent", {})
     if sent.get("_day") != today:
         sent = {"_day": today}
-    for code, name in lineup:
+    # [V24.1] 1차 조기감지 유니버스 = 라인업 + 어제 브리핑/종배 예측 + 내 관심종목(예측이 8시 NXT에 벌써 반응하나)
+    _univ, _seen = [], set()
+    for _c, _n in lineup:
+        if _c not in _seen:
+            _univ.append((_c, _n, "라인업")); _seen.add(_c)
+    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            _sc = json.load(f)
+        for r in _sc:
+            if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽") and r.get("code") not in _seen:
+                _univ.append((r["code"], r.get("name", r["code"]), "어제예측")); _seen.add(r["code"])
+    except Exception:
+        pass
+    for s in _read_my_watch():
+        _c = str(s.get("code", "")).zfill(6)
+        if _c.isdigit() and len(_c) == 6 and _c not in _seen:
+            _univ.append((_c, s.get("name", _c), "내관심")); _seen.add(_c)
+    for code, name, _origin in _univ:
         if sent.get(code):
             continue
         # 1) NXT 프리마켓 실가(08:00~08:50) 우선
@@ -2588,10 +2606,11 @@ def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineu
         if not (px and chg is not None):
             continue
         if chg >= _PREMKT_GAP_UP:
+            _ot = "🎯어제예측 조기반응" if _origin == "어제예측" else ("👁️내 관심종목" if _origin == "내관심" else "라인업")
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n🌅 [장전 예열] {name} 갭업 {chg:+.1f}% ({_src})\n"
+                          f"{SIG_WATCH}\n🌅 [장전 조기감지·8시NXT] {name} 갭업 {chg:+.1f}% ({_src}) · {_ot}\n"
                           f"현재 {px:,} · {now_kst.strftime('%H:%M')} KST\n"
-                          f"👀 09시 시가저격 주목 후보 — 개장 후 거래대금·수급 확인 후 대응(추격 금지)")
+                          f"👀 9시 갭업 예고 — 개장(2차) 거래대금·수급 확인 후 대응(추격 금지)")
             sent[code] = True
         elif chg <= _PREMKT_GAP_DN:
             send_telegram(token_tg, chat_id,
