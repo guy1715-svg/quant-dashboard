@@ -2003,12 +2003,17 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             score += 12
         elif ds.get("kij_near"):
             score += 6
+        # [V24.3] 재료(뉴스·테마) 가점 대폭↑ — 데이터상 브리핑(재료·선행)이 종배픽(거래대금·후행)보다 승률 3배.
+        #   종배도 재료 있는 종목을 우선하도록 S/A 가점을 2배로.
         if ng == "S":
-            score += 10
+            score += 20
         elif ng == "A":
-            score += 6
+            score += 12
         if 0 <= disp <= 3:                            # 20일선 눌림 근처(과열 아닌 초입) 가점
             score += 5
+        # [V24.3] 초대형주 페널티 — 거래대금 초상위 대형주(삼성/하이닉스급)는 지수종속·갭 작아 종배 부적합.
+        if turn >= 300_000_000_000:                   # 3천억↑ = 초대형(지수 대장주)
+            score -= 12
         cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
                       "turn": turn, "disp": disp, "score": score, "ng": ng})
     def _log_shadow(exclude=()):
