@@ -2716,6 +2716,35 @@ def _price_full(token, key, secret, code):
     return None, None, None, None, None
 
 
+def _pullback_levels(token, key, secret, code, px, chg, ds=None):
+    """[V24.4] 과열 종목 눌림 매수 목표 — 현재가 아래 지지선(5일선·20일선·오늘시가·전일종가) 텍스트.
+    '눌림 기다려'만 하지 말고 구체적 재진입 자리를 제시. 지지선 없으면 ''."""
+    _lv = []
+    if ds is None:
+        ds = _daily_setup(token, key, secret, code, px)
+    if ds:
+        if ds.get("ma5"):
+            _lv.append(("5일선", int(ds["ma5"])))
+        if ds.get("ma20"):
+            _lv.append(("20일선", int(ds["ma20"])))
+    try:
+        _p, _c, _o, _h, _l = _price_full(token, key, secret, code)
+        if _o:
+            _lv.append(("오늘시가", _o))
+        if chg is not None and px:
+            _lv.append(("전일종가", int(px / (1 + (chg or 0) / 100.0))))
+    except Exception:
+        pass
+    _below = sorted({(_n, _v) for _n, _v in _lv if _v and _v < px}, key=lambda x: -x[1])  # 현재가 아래·가까운 순
+    if not _below:
+        return ""
+    _txt = "\n🎯 눌림 매수 목표(추격 대신 여기서 재진입):"
+    for _n, _v in _below[:4]:
+        _txt += f"\n  • {_n} {_v:,} ({(_v / px - 1) * 100:+.1f}%)"
+    _txt += "\n  → 이 지지선 근처로 눌리면 진입 검토 · 못 지키면 손절"
+    return _txt
+
+
 def _tail_ok(o, h, l, c, ratio=0.33):
     """아래꼬리 판정 — (min(시,종)-저) ≥ 범위×ratio."""
     if not all(isinstance(v, (int, float)) and v > 0 for v in (o, h, l, c)):
@@ -2891,12 +2920,14 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                 _is_leader = code in _vrank_b15
                 if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
                     _bt = _big_trend_tag(token, key, secret, code, px)
+                    # [V24.4] 과열(이격 7%↑)이면 '눌림 기다려'만 말고 구체적 눌림 매수 목표 제시
+                    _pull = _pullback_levels(token, key, secret, code, px, chg) if (_disp is not None and _disp >= 7) else ""
                     send_telegram(token_tg, chat_id,
                                   f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name}\n"
                                   f"방금 막 끝난 {_bsize}분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
                                   f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內){_bt}\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                                  f"{_warn}\n"
+                                  f"{_warn}{_pull}\n"
                                   f"─── 가격표 ───\n"
                                   f"🎯 매수가(현재): {_buy:,}원\n"
                                   f"✂️ 손절가: {_stop:,}원 (−2%)\n"
