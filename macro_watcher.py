@@ -1315,7 +1315,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "🧠 시장심리: (내일 개미 심리 방향 — 공포/탐욕/관망 중 + 자금 몰릴 섹터 vs 회피할 섹터, 1~2줄)\n"
                    "💰 거래대금 주도주 모멘텀: (오늘 자금 몰린 상위 종목 2~3개 — 각: 종목 · 오른 이유 · 지속성(단발/며칠+) · 내일 추격가능?)\n"
                    "🌙 내일 시황 브리핑\n"
-                   "📌 주목 테마 TOP 3 — 각: 테마 · 대장주(반드시 종목명 옆에 6자리 종목코드 괄호로! 예: 두산에너빌리티(034020)) · "
+                   "📌 주목 테마 TOP 5 — 각: 테마 · 대장주(반드시 종목명 옆에 6자리 종목코드 괄호로! 예: 두산에너빌리티(034020)) · "
                    "재료강도(상/중/하) · 지속성(단발/며칠) · 개미심리(몰릴/빠질) · 선반영주의\n"
                    "⚠️ 피할 것 (재료소멸·이미급등·악재·심리악화)\n"
                    "한 줄 총평.")
@@ -1917,9 +1917,8 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
         if not ds or ds["turnavg"] <= 0:
             continue
         mult = turn / ds["turnavg"]; disp = ds["disp"]; above5 = ds["above5"]
-        if mult >= 2.0 and above5 and disp < 7 and chg < 12:
-            _kind, _label, _kt = "급증진입", "🟢 [진입 신호·거래대금]", ""
-        elif (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
+        # [V24.7] 급증진입 OFF — 누적성적 0%·평균 -6.2%(실행 중단). 조기포착만 유지.
+        if (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
             _kind, _label = "조기포착", "🟢 [조기 포착·기준선]"
             _kt = " · 일목 " + ("기준선 돌파✅" if ds["kij_cross"] else "기준선 걸침(±2%)")
         else:
@@ -1980,6 +1979,26 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
+def _recent_brief_codes(now_kst, days=2):
+    """[V24.7] 최근 브리핑(선행 테마) 종목 — 종배 재설계용 우선 유니버스.
+    데이터상 브리핑(55%·+1.1%)이 종배픽(36%·-3.3%)보다 압도적. 종배도 이 종목풀에서 뽑는다.
+    최근 days일 내 kind=='브리핑' 종목의 {code:name} 반환(중복 제거)."""
+    out = {}
+    try:
+        from datetime import timedelta
+        _cut = (now_kst - timedelta(days=days)).strftime("%Y-%m-%d")
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows if isinstance(rows, list) else []:
+            if r.get("kind") == "브리핑" and str(r.get("date", "")) >= _cut:
+                cd = str(r.get("code", "")).zfill(6)
+                if cd and cd != "000000":
+                    out[cd] = r.get("name", "")
+    except Exception:
+        pass
+    return out
+
+
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
                         gemini_key=None):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
@@ -1999,6 +2018,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     cands = []
     raw = []                                          # [검증] 필터 통과 여부 무관 거래대금 상위(그림자 로깅용)
     _budget = 0
+    _brief = _recent_brief_codes(now_kst)             # [V24.7] 최근 브리핑 테마(선행) — 종배 우선 유니버스
+    _seen = set()                                     # 이미 스코어링한 종목(브리핑 보강 루프 중복 방지)
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn:
@@ -2050,8 +2071,53 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         # [V24.3] 초대형주 페널티 — 거래대금 초상위 대형주(삼성/하이닉스급)는 지수종속·갭 작아 종배 부적합.
         if turn >= 300_000_000_000:                   # 3천억↑ = 초대형(지수 대장주)
             score -= 12
+        # [V24.7] 브리핑 테마 가점 — 종배 재설계 핵심. 검증된 선행 신호와 겹치면 강한 우선순위.
+        _isbrief = cd in _brief
+        if _isbrief:
+            score += 25
+        _seen.add(cd)
         cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
-                      "turn": turn, "disp": disp, "score": score, "ng": ng})
+                      "turn": turn, "disp": disp, "score": score, "ng": ng, "brief": _isbrief})
+    # [V24.7] 브리핑 테마 보강 — 거래대금 top40에 아직 안 든 선행 테마주도 종배 후보로.
+    #   종배픽이 진 이유=후행 대형주만 담아서. 선행 테마주는 거래대금 낮아도(500억 floor 면제) 넣는다.
+    if sev != 2:
+        for _bc, _bn in _brief.items():
+            if _bc in _seen or _budget > 30:
+                continue
+            _bpx, _bchg, _bturn = _price_and_turnover(token, key, secret, _bc,
+                                                       mrkt=("NX" if _in_nxt else "J"))
+            if not _bpx:
+                continue
+            if _bchg is not None and (_bchg >= 7.0 or _bchg < -2.0):   # 과열·급락 컷(본 루프와 동일)
+                continue
+            _budget += 1
+            _bds = _daily_setup(token, key, secret, _bc, _bpx)
+            if not _bds or not _bds.get("ma20") or _bpx <= _bds["ma20"]:  # 20MA↑ 필수
+                continue
+            _bdisp = _bds["disp"]
+            if _bdisp >= 7.0:
+                continue
+            _bng, _bnbad = _news_grade(_bc)
+            if _bnbad:
+                continue
+            _bscore = 40.0 + 25                        # 기본 + 브리핑(선행) 가점
+            if _bds.get("above5"):
+                _bscore += 8
+            if _bds.get("kij_cross"):
+                _bscore += 12
+            elif _bds.get("kij_near"):
+                _bscore += 6
+            if _bng == "S":
+                _bscore += 20
+            elif _bng == "A":
+                _bscore += 12
+            if 0 <= _bdisp <= 3:
+                _bscore += 5
+            _seen.add(_bc)
+            cands.append({"code": _bc, "name": _bn or "", "px": _bpx, "chg": _bchg or 0.0,
+                          "turn": _bturn or 0, "disp": _bdisp, "score": _bscore,
+                          "ng": _bng, "brief": True})
+
     def _log_shadow(exclude=()):
         # [검증] 그림자 픽 — "우리가 뽑을 뻔한 후보"를 텔레그램 없이 로깅. 대시보드 백필이 익일 갭 대조.
         #   [V22.9] 점수 있는 후보(cands) 우선 — 매일 삼성/하이닉스 거래대금 top만 찍히던 문제 해결.
@@ -2190,11 +2256,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     except Exception:
         pass
     _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
+    _brief_tag = " 🎯브리핑테마(선행)" if pick.get("brief") else ""   # [V24.7] 재설계: 브리핑 겹침 표시
     _divtxt = ("\n🌒 분산(다른 섹터): "
                + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
                             for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']}{_brief_tag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
