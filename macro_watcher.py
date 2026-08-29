@@ -1782,7 +1782,7 @@ MY_WATCH_FILE = os.path.join(BASE, "my_watch.json")
 def _read_my_watch():
     """내 관심종목 — my_watch.json({"on":true,"stocks":[{"code","name"}]}). off/없으면 []."""
     try:
-        with open(MY_WATCH_FILE, encoding="utf-8") as f:
+        with open(MY_WATCH_FILE, encoding="utf-8-sig") as f:  # utf-8-sig: 메모장 BOM 허용
             d = json.load(f)
         if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
             return d["stocks"]
