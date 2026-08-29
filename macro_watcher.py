@@ -1018,6 +1018,54 @@ def read_gemini_key():
     return _read_secret_alias({"gemini_api_key", "google_api_key", "gemini_key", "gemini"})
 
 
+def read_perplexity_key():
+    """[V24.8] Perplexity API 키 — 환경변수 → secrets.toml. 없으면 None(팩트체크 레이어 생략)."""
+    for _n in ("PERPLEXITY_API_KEY", "PPLX_API_KEY", "PERPLEXITY_KEY", "PPLX_KEY"):
+        if os.environ.get(_n):
+            return os.environ[_n].strip()
+    return _read_secret_alias({"perplexity_api_key", "pplx_api_key", "perplexity_key", "perplexity", "pplx"})
+
+
+def _perplexity_factcheck(pkey, brief, mdetail=""):
+    """[V24.8] Gemini 브리핑을 Perplexity(실시간 웹검색)로 팩트체크·보정.
+    Gemini는 RSS 서사를 그대로 받아쓰는 약점(유가 '급등' 오탐 등)이 있어, 웹검색 기반으로
+    ①지수·유가·실적·수주·인물발언 등 팩트 검증 ②과장/오류 보정 ③확인 안 되면 '미확인' 명시.
+    반환: 텔레그램용 간결 텍스트(+출처). 키 없거나 실패 시 ''(브리핑은 그대로 발송)."""
+    if not pkey or not brief:
+        return ""
+    _sys = ("너는 한국 주식 트레이더의 애널리스트다. 아래 [1차 브리핑]은 다른 AI가 RSS 뉴스로 만든 것이라 "
+            "팩트 오류·과장이 있을 수 있다. 실시간 웹검색으로 교차검증하라. "
+            "규칙: ①지수 등락·유가·실적·수주·인물발언 등 구체 수치/사실을 검증하고 틀리면 실제값으로 보정. "
+            "②웹에서 확인 안 되는 주장은 '❓미확인'으로 명시(지어내지 마). "
+            "③뉴스만 있고 수주·계약·공시 근거 없는 테마는 '추격주의'로 강등. "
+            "④결과는 텔레그램용으로 짧게. 장황한 서술 금지.")
+    _usr = (f"[실측 시장데이터]\n{mdetail}\n\n[1차 브리핑]\n{brief}\n\n"
+            "[출력 형식·간결·이모지]\n"
+            "🔎 팩트체크: (1차 브리핑의 틀린/과장된 수치·주장 2~4개를 '주장→실제(또는 미확인)'로 교정)\n"
+            "🏆 보정된 우선순위 TOP3: (수주·실적·수급 근거 있는 종목 우선 — 종목명·이유 1줄)\n"
+            "🚫 강등/제외: (근거 약한 테마 — 이유 1줄)\n"
+            "한 줄 결론.")
+    try:
+        r = requests.post("https://api.perplexity.ai/chat/completions",
+                          headers={"Authorization": f"Bearer {pkey}", "Content-Type": "application/json"},
+                          json={"model": "sonar",
+                                "messages": [{"role": "system", "content": _sys},
+                                             {"role": "user", "content": _usr}],
+                                "temperature": 0.2}, timeout=45)
+        if r.status_code != 200:
+            print(f"[Perplexity 진단] HTTP {r.status_code} · {r.text[:200]}")
+            return ""
+        _j = r.json()
+        _txt = (_j.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        _cits = _j.get("citations") or []
+        if _txt and _cits:
+            _txt += "\n📎 출처: " + " · ".join(str(c) for c in _cits[:3])
+        return _txt
+    except Exception as _pe:
+        print(f"[Perplexity 진단] 예외: {type(_pe).__name__}: {_pe}")
+        return ""
+
+
 def _naver_news(cid, csec, query, display=10):
     """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 [](진단 출력)."""
     try:
@@ -1339,7 +1387,18 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                     _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
         except Exception as _be:
             print("브리핑 성적표 기록 오류:", _be)
-        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}\n\n"
+        # [V24.8] Perplexity 팩트체크 레이어 — Gemini 1차 브리핑을 실시간 웹검색으로 교차검증·보정
+        _fc = ""
+        try:
+            _pk = read_perplexity_key()
+            if _pk:
+                print("[저녁뉴스] 🔎 Perplexity 팩트체크 중... (10~40초)")
+                _fc = _perplexity_factcheck(_pk, report, _mdetail)
+                print(f"[저녁뉴스] 팩트체크 {'완료' if _fc else '실패/생략'}")
+        except Exception as _fce:
+            print("팩트체크 오류:", _fce)
+        _fc_block = f"\n\n━━ 🔎 Perplexity 교차검증 ━━\n{_fc}" if _fc else ""
+        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}{_fc_block}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
     else:
         _heads = "\n".join("• " + a.split(" :: ")[0] for a in arts[:8])
