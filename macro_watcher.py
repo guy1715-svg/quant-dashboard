@@ -1025,12 +1025,6 @@ def _gemini_factcheck(gkey, brief, mdetail=""):
     반환: 텔레그램용 간결 텍스트. 키 없거나 실패 시 ''(브리핑은 그대로 발송)."""
     if not gkey or not brief:
         return ""
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=gkey)
-    except Exception as _ie:
-        print(f"[팩트체크 진단] 라이브러리/설정 오류: {_ie}")
-        return ""
     _prompt = (
         "너는 한국 주식 트레이더의 애널리스트다. 아래 [1차 브리핑]은 다른 패스가 RSS 뉴스로 만든 것이라 "
         "팩트 오류·과장이 있을 수 있다. 구글 검색으로 교차검증하라.\n"
@@ -1044,26 +1038,46 @@ def _gemini_factcheck(gkey, brief, mdetail=""):
         "🏆 보정 우선순위 TOP3: (수주·실적·수급 근거 있는 종목 우선 — 종목명·이유 1줄)\n"
         "🚫 강등/제외: (근거 약한 테마 — 이유 1줄)\n"
         "한 줄 결론.")
-    # grounding(구글검색) 시도 방식들 — SDK 버전별로 인자명이 달라 순차 시도, 전부 실패 시 검색 없이.
-    _tool_variants = ("google_search_retrieval", [{"google_search_retrieval": {}}],
-                      [{"google_search": {}}], None)
     _errs = []
-    for _mn in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"):
-        for _tv in _tool_variants:
+    # ── 1순위: 신버전 SDK(google-genai) + 구글검색 grounding (Gemini 2.x 정식 방식) ──
+    try:
+        from google import genai as _ng
+        from google.genai import types as _nt
+        _client = _ng.Client(api_key=gkey)
+        for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
             try:
-                _model = genai.GenerativeModel(_mn)
-                _kw = {"request_options": {"timeout": 60}}
-                if _tv is not None:
-                    _kw["tools"] = _tv
-                _resp = _model.generate_content(_prompt, **_kw)
+                _resp = _client.models.generate_content(
+                    model=_mn, contents=_prompt,
+                    config=_nt.GenerateContentConfig(
+                        tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
                 _txt = getattr(_resp, "text", None)
                 if _txt:
-                    _grounded = _tv is not None
-                    return _txt.strip() + ("" if _grounded else "\n(검색 미지원 — 실측 대조만)")
-            except Exception as _ge:
-                _errs.append(f"{_mn}/{('검색' if _tv is not None else '기본')}:{type(_ge).__name__}")
-                continue
-    print(f"[팩트체크 진단] 전 시도 실패 — {' / '.join(_errs)[:250]}")
+                    return _txt.strip() + "\n🌐(구글검색 grounding)"
+            except Exception as _ne:
+                _errs.append(f"신SDK/{_mn}:{type(_ne).__name__}")
+    except Exception as _nie:
+        _errs.append(f"신SDK미설치:{type(_nie).__name__}")
+    # ── 2순위: 구버전 SDK(google-generativeai) — grounding 시도 후 실패 시 검색 없이 폴백 ──
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gkey)
+        _tool_variants = ("google_search_retrieval", [{"google_search_retrieval": {}}], None)
+        for _mn in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"):
+            for _tv in _tool_variants:
+                try:
+                    _kw = {"request_options": {"timeout": 60}}
+                    if _tv is not None:
+                        _kw["tools"] = _tv
+                    _resp = genai.GenerativeModel(_mn).generate_content(_prompt, **_kw)
+                    _txt = getattr(_resp, "text", None)
+                    if _txt:
+                        return _txt.strip() + ("\n🌐(구글검색 grounding)" if _tv is not None
+                                               else "\n(검색 미지원 — 실측 대조만·구SDK)")
+                except Exception as _ge:
+                    _errs.append(f"구SDK/{_mn}/{('검색' if _tv else '기본')}:{type(_ge).__name__}")
+    except Exception as _oie:
+        _errs.append(f"구SDK설정:{type(_oie).__name__}")
+    print(f"[팩트체크 진단] 전 시도 실패 — {' / '.join(_errs)[:300]}")
     return ""
 
 
