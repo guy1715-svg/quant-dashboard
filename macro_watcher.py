@@ -3443,9 +3443,17 @@ def main():
         _st = kis_token(kis_key, kis_secret)
         _gk = read_gemini_key()
         if args.stock == "__WATCH__":             # 인자 없으면 my_watch 전체
+            print(f"[진단] my_watch 경로: {MY_WATCH_FILE}")
+            print(f"[진단] 파일 존재: {os.path.exists(MY_WATCH_FILE)}")
+            try:
+                with open(MY_WATCH_FILE, encoding="utf-8-sig") as _f:
+                    _raw = json.load(_f)
+                print(f"[진단] on={_raw.get('on')!r}, stocks={len(_raw.get('stocks') or [])}개")
+            except Exception as _e:
+                print(f"[진단] 읽기 실패: {type(_e).__name__}: {_e}")
             _targets = [(str(s.get("code", "")).zfill(6), s.get("name", "")) for s in _read_my_watch()]
             if not _targets:
-                print("⚠️ my_watch.json 비어있음 — 종목코드 지정: --stock 005930"); sys.exit(1)
+                print("⚠️ my_watch.json 비어있음 — 위 진단 확인 / 종목코드 지정: --stock 005930"); sys.exit(1)
         else:
             _targets = [(str(args.stock).zfill(6), "")]
         for _cd, _nm in _targets:
