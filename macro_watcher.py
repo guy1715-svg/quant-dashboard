@@ -802,6 +802,41 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
     print(f"[신호분석] {sum(len(v) for v in _by_kind.values())}건 집계 · {len(_by_kind)}종류")
 
 
+def _deep_stock(token, key, secret, code, name="", gemini_key=None):
+    """[V24.6] 특정종목 종합 해석 — 차트(이격·정배열·거래량)+수급(외인·기관)+큰추세(60분)+뉴스(AI)+타점.
+    '이 종목 어때?' 한 방 분석. 반환: 텔레그램용 텍스트."""
+    px, chg, turn = _price_and_turnover(token, key, secret, code)
+    if not px:
+        return f"❌ {code} — 시세 조회 실패(코드 확인)"
+    ds = _daily_setup(token, key, secret, code, px) or {}
+    _ma5, _ma20, _disp = ds.get("ma5"), ds.get("ma20"), ds.get("disp")
+    _align = "🟢정배열(5>20MA↑)" if (_ma5 and _ma20 and px > _ma5 > _ma20) else "🔴비정배열"
+    _vr = _vol_ratio_5d(token, key, secret, code)
+    _vt = f"{_vr[2]:.1f}배" if _vr else "–"
+    _f, _o = _investor_est(token, key, secret, code)
+    _sup = f"외인 {_f*px/1e8:+.0f}억·기관 {_o*px/1e8:+.0f}억 " + ("✅유입" if (_f + _o) > 0 else "⚠️이탈")
+    _bt = _big_trend_tag(token, key, secret, code, px).strip() or "60분 추세 –"
+    _ng, _nbad = _news_grade(code)
+    _ngt = "🔴악재" if _nbad else ("🔥재료S급" if _ng == "S" else "🟢재료A급" if _ng == "A" else "⚠️재료 미확인")
+    _dispt = f"{_disp:+.0f}%" if _disp is not None else "–"
+    _heat = "🔴심한과열" if (_disp or 0) >= 12 else "🟠과열" if (_disp or 0) >= 7 else "🟢정상" if (_disp or 0) >= -2 else "🔵낙폭과대"
+    _pull = _pullback_levels(token, key, secret, code, px, chg, ds)
+    _stop = int(px * 0.98); _t1 = int(px * 1.03)
+    _lines = [f"🔎 [종목 해석] {name or code} ({code})",
+              f"현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억 · 거래량 {_vt}(5일평균)",
+              f"📊 20MA 이격 {_dispt} {_heat} · {_align}",
+              f"💰 수급: {_sup}",
+              f"📈 {_bt} · 재료: {_ngt}"]
+    if _pull:
+        _lines.append(_pull.strip())
+    _lines.append(f"진입 {px:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)")
+    if gemini_key:
+        _ai = _gemini_stock_news_verdict(gemini_key, code, name or code)
+        if _ai:
+            _lines.append(_ai.strip())
+    return "\n".join(_lines)
+
+
 def _log_signal(state, now_kst, kind, name, code, px):
     """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
     today = now_kst.strftime("%Y%m%d")
@@ -1541,11 +1576,12 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _lead_tag = "🔥주도주(거래대금 랭킹 內)" if _stock in _vrank_codes else "🌱비주도(선행 재료·거래 확인 필요)"
         # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
+        _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= 7) else ""
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
                       f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · {_lead_tag} · 비과열 ✅\n"
-                      f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
+                      f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%){_pull}\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
     state["dart_sent"] = sent
@@ -2269,10 +2305,12 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                 else:
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 _bt = _big_trend_tag(token, key, secret, code, px)
+                _sdisp = _ma20_disparity(token, key, secret, code, px)   # [V24.5] 과열이면 눌림 목표
+                _pull = _pullback_levels(token, key, secret, code, px, chg) if (_sdisp is not None and _sdisp >= 7) else ""
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
                               f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}{_bt}\n"
-                              f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST{_pull}\n"
                               f"─── 가격표 ───\n"
                               f"🎯 매수가(현재): {px:,}원\n"
                               f"✂️ 손절가: {_stop:,}원 (−2%)\n"
@@ -3373,6 +3411,8 @@ def main():
                     help="추천 종목 성적표(아침 당일단타/어제 저녁 종배·브리핑) 현재가 대조 후 텔레그램 발송·종료")
     ap.add_argument("--analyze", action="store_true",
                     help="과거 누적 신호 종합 분석 — 신호종류별 승률·평균수익(익일 종가 대비) 텔레그램·종료")
+    ap.add_argument("--stock", nargs="?", const="__WATCH__", default=None,
+                    help="특정종목 종합 해석(차트+수급+뉴스+타점). --stock 005930=그 종목 / --stock=my_watch 전체")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -3395,6 +3435,23 @@ def main():
         _at = kis_token(kis_key, kis_secret)
         _anow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _analyze_history(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.stock is not None:                    # [V24.6] 특정종목 종합 해석
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 종목 해석 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _gk = read_gemini_key()
+        if args.stock == "__WATCH__":             # 인자 없으면 my_watch 전체
+            _targets = [(str(s.get("code", "")).zfill(6), s.get("name", "")) for s in _read_my_watch()]
+            if not _targets:
+                print("⚠️ my_watch.json 비어있음 — 종목코드 지정: --stock 005930"); sys.exit(1)
+        else:
+            _targets = [(str(args.stock).zfill(6), "")]
+        for _cd, _nm in _targets:
+            _rep = _deep_stock(_st, kis_key, kis_secret, _cd, _nm, _gk)
+            send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
+            print(f"[종목해석] {_nm or _cd} 발송")
         sys.exit(0)
 
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
