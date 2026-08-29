@@ -337,7 +337,7 @@ def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
         _kr_fs = ("코스피 " + (f"{ks_fs:+.2f}%" if ks_fs is not None else "—")
                   + " · 야간(EWY) " + (f"{ewy_fs:+.2f}%" if ewy_fs is not None else "—")
                   + " · 환율 " + (f"{fxl_fs:,.0f}({fxc_fs:+.2f}%)" if (fxl_fs is not None and fxc_fs is not None) else "—"))
-        return 2, "🔴 데이터 outage · 신규매수 보수적 차단(지표 조회 실패)", f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr_fs}"
+        return 2, "🔴 데이터 outage · 신규매수 보수적 차단(지표 조회 실패)", f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr_fs}", "outage"
     if (riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash) and not sox_rescue:
         sev = 2
         text = "🔴 리스크오프 · 신규매수 차단" + (f" (반도체 폭락 SOX {sox:+.1f}%)" if sox_crash else "")
@@ -368,7 +368,10 @@ def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
            + " · 환율 " + (f"{fxl:,.0f}({fxc:+.2f}%)" if (fxl is not None and fxc is not None) else "—"))
     # 미국(밤)/한국 두 그룹으로 줄 분리 — 한눈에 구분되게(heartbeat·텔레그램 공통)
     detail = f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr}"
-    return sev, text, detail
+    # [V25.1] data_state: "ok"(3대 지표 정상) / "partial"(일부 None — sev 튈 수 있어 직전 유지)
+    #   full outage(전부 None)는 위에서 별도 처리(sev=2 fail-safe·"outage").
+    data_state = "ok" if (nq is not None and sox is not None and wti is not None) else "partial"
+    return sev, text, detail, data_state
 
 
 def _level(sym):
@@ -1380,7 +1383,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
     try:
         _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
-        _, _, _mdetail = compute_macro(_ct, kis_key, kis_secret)
+        _, _, _mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
     except Exception:
         _mdetail = ""
     # [V22.4] 오늘 거래대금 상위 20종 주입 — 뉴스 테마 vs 실제 자금 몰린 종목 교차(거래대금이 먼저)
@@ -3440,6 +3443,10 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
     nq = _pct("NQ=F")
     if sox is None:
         return None
+    # [V25.1] 미국 현물 개장(약 22:30 KST) 전 20:00~22:30은 SOX가 전일 종가(stale) → 알림 억제.
+    #   (개장 전 어제 SOX로 '미장 반도체 강/약세' 헛알림 방지. 나스닥선물 실시간은 check_nq_cross가 담당.)
+    if (20 * 60) <= m < (22 * 60 + 30):
+        return sox
     _now_ts = int(now_kst.timestamp())
     # [V16.9 다이어트] '밤당 1회(방향별)' — 같은 SOX 약세/강세를 새벽 내내 반복 발송하던 스팸 제거.
     #   밤 id: 새벽(08시 이전)은 전날 저녁 세션 소속 → 전일 날짜로 묶음.
@@ -3587,7 +3594,7 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
     if state.get("brief_day") == today:
         return
     _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
-    sev, mtext, mdetail = compute_macro(_ct, kis_key, kis_secret)
+    sev, mtext, mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
     cg = _cash_guide(sev)
     lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d(%a)')} 장전 브리핑",
              f"",
@@ -3763,7 +3770,7 @@ def main():
         st = load_state()
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
         _tok = kis_token(kis_key, kis_secret)
-        _sev, _, _ = compute_macro(_tok, kis_key, kis_secret)
+        _sev, _, _, _ = compute_macro(_tok, kis_key, kis_secret)
         _gk_fp = read_gemini_key()                # AI 뉴스판정용
         print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준"
               + (" · NXT 실시간가" if _nxt_now else " · 종가"))
@@ -3799,10 +3806,29 @@ def main():
                 time.sleep(max(60, args.interval))
                 continue
 
+            # [V25.1] 공휴일 감지 — 평일 장중(09:10~15:20)인데 KIS 거래대금 랭킹이 0건이면 휴장 추정.
+            #   하드코딩 공휴일 리스트(매년 갱신·오류 위험) 대신 실데이터 자기교정. 정규장 신호만 스킵
+            #   (저녁 브리핑·야간 미장은 그대로 — 다음 거래일 대비). 일시적 조회 실패면 다음 사이클 자동 복구.
+            _mm0 = now.hour * 60 + now.minute
+            if kis_on and (9 * 60 + 10) <= _mm0 <= (15 * 60 + 20):
+                try:
+                    _htok = kis_token(kis_key, kis_secret)
+                    if _htok and len(_volume_rank(_htok, kis_key, kis_secret, top=5)) == 0:
+                        print(f"[{stamp}] 휴장 추정(거래대금 랭킹 0건) — 정규장 신호 스킵")
+                        time.sleep(max(60, args.interval))
+                        continue
+                except Exception as _hce:
+                    print(f"[{stamp}] 휴장 감지 조회 오류(무시): {_hce}")
+
             # 1) 매크로 (코스피는 KIS 지수 우선 — yfinance 지연 버그 회피)
             _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
-            sev, mtext, mdetail = compute_macro(_ct, kis_key, kis_secret)
+            sev, mtext, mdetail, _dstate = compute_macro(_ct, kis_key, kis_secret)
             prev_sev = st.get("sev")
+            # [V25.1] 부분 outage(지표 일부 None)면 sev가 튈 수 있어 → 직전 sev 유지·알림 억제.
+            #   (예: WTI만 None → riskoff 풀려 가짜 '개선' 알림.) full outage("outage")는 sev=2 유지(방어).
+            if _dstate == "partial" and prev_sev is not None:
+                print(f"[{stamp}] ⚠️ 지표 일부 조회 실패 — sev 판정 보류(직전 {prev_sev} 유지)")
+                sev = prev_sev
             # [스팸 차단] 매크로 알림은 (a)장 관련 시간(08:00~20:00)에만 (b)60분 쿨다운.
             #   나스닥선물이 차단기준(-0.2%) 근처서 출렁이면 sev가 🔴↔🟡 오락가락 → 야간 알림 폭주 방지.
             _mm = now.hour * 60 + now.minute
