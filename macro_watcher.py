@@ -309,7 +309,7 @@ def _wti_pct():
     return _hist_pct("CL=F")
 
 
-def compute_macro():
+def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
     nq, sox = _pct("NQ=F"), _pct("^SOX")
     peers = [x for x in (_pct("NVDA"), _pct("AVGO"), _pct("MU")) if x is not None]
     wti = _wti_pct()
@@ -324,6 +324,20 @@ def compute_macro():
     sox_strong = (sox is not None and sox >= 1.0)
     nq_mild = (nq is not None and NQ_BLOCK >= nq > -0.8)
     sox_rescue = (nq_mild and sox_strong and semi_sync and not riskoff and not sox_crash)
+    # [V24.9] fail-safe — 미국 3대 지표(나스닥·SOX·WTI)가 전부 None(데이터 outage)이면
+    #   킬스위치가 '중립(sev1)'으로 열려버리는 fail-open 방지: 보수적으로 sev=2(신규매수 억제).
+    if nq is None and sox is None and wti is None:
+        _us = "미국지표 조회 실패(데이터 지연·보수적 차단)"
+        ks_fs = _kospi_index_kis(kis_token, kis_key, kis_secret)
+        if ks_fs is None:
+            ks_fs = _hist_pct("^KS11")
+            if ks_fs is not None and abs(ks_fs) > 4.0:
+                ks_fs = None
+        ewy_fs = _pct("EWY"); fxl_fs, fxc_fs = _level("USDKRW=X")
+        _kr_fs = ("코스피 " + (f"{ks_fs:+.2f}%" if ks_fs is not None else "—")
+                  + " · 야간(EWY) " + (f"{ewy_fs:+.2f}%" if ewy_fs is not None else "—")
+                  + " · 환율 " + (f"{fxl_fs:,.0f}({fxc_fs:+.2f}%)" if (fxl_fs is not None and fxc_fs is not None) else "—"))
+        return 2, "🔴 데이터 outage · 신규매수 보수적 차단(지표 조회 실패)", f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr_fs}"
     if (riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash) and not sox_rescue:
         sev = 2
         text = "🔴 리스크오프 · 신규매수 차단" + (f" (반도체 폭락 SOX {sox:+.1f}%)" if sox_crash else "")
@@ -341,9 +355,12 @@ def compute_macro():
     # [V20.1] 코스피 주간(^KS11)·야간 프록시(EWY 美상장 한국ETF)·원달러 환율 추가.
     #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
     #   코스피는 fast_info.previous_close가 튀는 케이스(+5%대 오류) 있어 히스토리 기반으로 산출.
-    ks = _hist_pct("^KS11")
-    if ks is not None and abs(ks) > 4.0:              # 코스피 하루 ±4% 초과=데이터 이상(서킷급 아니면 없음) → 표기 제외
-        ks = None
+    # [V24.9] 코스피는 KIS 지수 우선(yfinance ^KS11 하루 지연 버그 회피), 실패 시 yfinance 폴백
+    ks = _kospi_index_kis(kis_token, kis_key, kis_secret)
+    if ks is None:
+        ks = _hist_pct("^KS11")
+        if ks is not None and abs(ks) > 4.0:          # 코스피 하루 ±4% 초과=데이터 이상 → 표기 제외
+            ks = None
     ewy = _pct("EWY")
     fxl, fxc = _level("USDKRW=X")
     _kr = ("코스피 " + (f"{ks:+.2f}%" if ks is not None else "—")
@@ -930,6 +947,27 @@ def kospi200_futures(token, key, secret):
     return None
 
 
+def _kospi_index_kis(token, key, secret):
+    """[V24.9] 코스피 종합지수 전일대비% — KIS 국내업종 현재가(FHPUP02100000, U/0001).
+    yfinance ^KS11은 일봉이 하루 밀려(stale) 목요일값을 금요일로 오산하는 버그가 있어 KIS로 대체.
+    반환: float(%) 또는 None(키·데이터 없음)."""
+    if not (token and key and secret):
+        return None
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPUP02100000"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": "0001"}, timeout=6)
+        o = r.json().get("output") or {}
+        if isinstance(o, dict):
+            _c = str(o.get("bstp_nmix_prdy_ctrt", "")).replace(",", "").strip()
+            if _c not in ("", None):
+                return float(_c)
+    except Exception as _e:
+        print(f"[KIS코스피 진단] {type(_e).__name__}: {_e}")
+    return None
+
+
 def _kospi_fut_session(now_kst):
     """코스피200 선물 거래 세션 태그 — 주간(09:00~15:45)/야간(18:00~익일05:00)/휴장."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -1336,7 +1374,8 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     _batch = "\n".join(arts[:80])
     # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
     try:
-        _, _, _mdetail = compute_macro()
+        _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+        _, _, _mdetail = compute_macro(_ct, kis_key, kis_secret)
     except Exception:
         _mdetail = ""
     # [V22.4] 오늘 거래대금 상위 20종 주입 — 뉴스 테마 vs 실제 자금 몰린 종목 교차(거래대금이 먼저)
@@ -2165,9 +2204,9 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                 continue
             _bpx, _bchg, _bturn = _price_and_turnover(token, key, secret, _bc,
                                                        mrkt=("NX" if _in_nxt else "J"))
-            if not _bpx:
+            if not _bpx or _bchg is None:              # [V24.9] 등락 미확인이면 컷(과거: chg=0.0으로 위장돼 급락 우회)
                 continue
-            if _bchg is not None and (_bchg >= 7.0 or _bchg < -2.0):   # 과열·급락 컷(본 루프와 동일)
+            if _bchg >= 7.0 or _bchg < -2.0:           # 과열·급락 컷(본 루프와 동일)
                 continue
             _budget += 1
             _bds = _daily_setup(token, key, secret, _bc, _bpx)
@@ -2288,11 +2327,14 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _sup = ""; _supply_neg = False
     try:
         _f, _o = _investor_est(token, key, secret, pick["code"])
+        if _f is None or _o is None:
+            raise ValueError("수급 데이터 없음")
         _fa, _oa = _f * pick["px"] / 1e8, _o * pick["px"] / 1e8
         _supply_neg = (_f + _o) < 0
         _sup = f"\n💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억" + (" ✅유입" if not _supply_neg else " ⚠️이탈")
     except Exception:
-        pass
+        # [V24.9] 수급 조회 실패를 조용히 '이상무'로 넘기지 말고 명시(사람이 소액·확인 판단)
+        _sup = "\n💰 수급: ⚠️미확인(조회 실패 — 개장 후 외인/기관 직접 확인·소액 대응)"
     # [V23.6] 자기모순 방지 — AI뉴스가 '부적합/악재'거나 수급 이탈이면 확정픽(매수) 강등 → 관망.
     #   (SK스퀘어 실패 케이스: AI '부적합'인데 확정픽 발송 → 다음날 하락. 데이터로 검증된 강등 규칙.)
     _ai_bad = ("부적합" in _ai_news) or ("악재" in _ai_news)
@@ -2319,7 +2361,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V23.4 종배룰 #5] 시황 선반영 판정 — 美선물 상승분을 한국이 이미 따라왔나(대형주 종배 여지)
     _mkt = ""
     try:
-        _nqp = _pct("NQ=F"); _ksp = _hist_pct("^KS11")
+        _nqp = _pct("NQ=F")
+        _ksp = _kospi_index_kis(token, key, secret)      # [V24.9] KIS 우선(yfinance 지연 회피)
+        if _ksp is None:
+            _ksp = _hist_pct("^KS11")
+            if _ksp is not None and abs(_ksp) > 4.0:
+                _ksp = None
         if _nqp is not None and _ksp is not None:
             _mhead = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
             if _nqp > 0.3 and _ksp >= _nqp * 0.8:
@@ -3468,7 +3515,8 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
     today = now_kst.strftime("%Y%m%d")
     if state.get("brief_day") == today:
         return
-    sev, mtext, mdetail = compute_macro()
+    _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    sev, mtext, mdetail = compute_macro(_ct, kis_key, kis_secret)
     cg = _cash_guide(sev)
     lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d(%a)')} 장전 브리핑",
              f"",
@@ -3632,7 +3680,7 @@ def main():
         st = load_state()
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
         _tok = kis_token(kis_key, kis_secret)
-        _sev, _, _ = compute_macro()
+        _sev, _, _ = compute_macro(_tok, kis_key, kis_secret)
         _gk_fp = read_gemini_key()                # AI 뉴스판정용
         print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준"
               + (" · NXT 실시간가" if _nxt_now else " · 종가"))
@@ -3668,8 +3716,9 @@ def main():
                 time.sleep(max(60, args.interval))
                 continue
 
-            # 1) 매크로
-            sev, mtext, mdetail = compute_macro()
+            # 1) 매크로 (코스피는 KIS 지수 우선 — yfinance 지연 버그 회피)
+            _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+            sev, mtext, mdetail = compute_macro(_ct, kis_key, kis_secret)
             prev_sev = st.get("sev")
             # [스팸 차단] 매크로 알림은 (a)장 관련 시간(08:00~20:00)에만 (b)60분 쿨다운.
             #   나스닥선물이 차단기준(-0.2%) 근처서 출렁이면 sev가 🔴↔🟡 오락가락 → 야간 알림 폭주 방지.
