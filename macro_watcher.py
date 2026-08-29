@@ -1899,6 +1899,72 @@ def _big_trend_tag(token, key, secret, code, px):
         return ""
 
 
+def _weekly_volatility(token, key, secret, code):
+    """[V25.0] 이번주(최근 5거래일) 변동성 — 주간 레인지%·5일 수익률·최신 종가.
+    변동성 = (5일 최고가 − 5일 최저가) / 5일 최저가 × 100. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)][:5]
+        if len(rows) < 3:
+            return None
+        highs = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lows = [_to_int(x.get("stck_lwpr")) for x in rows]
+        clos = [_to_int(x.get("stck_clpr")) for x in rows]
+        if not (all(highs) and all(lows) and all(clos)):
+            return None
+        hi, lo = max(highs), min(lows)
+        vol_pct = ((hi - lo) / lo * 100) if lo else 0
+        ret5 = ((clos[0] / clos[-1] - 1) * 100) if clos[-1] else 0   # 최신순: [0]=오늘 [-1]=주초
+        return {"vol": vol_pct, "ret5": ret5, "close": clos[0], "hi": hi, "lo": lo}
+    except Exception:
+        return None
+
+
+def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
+    """[V25.0] 주간 변동성 상위 스캐너(래리 윌리엄스式 물색). 거래대금 상위 유니버스에서
+    이번주 변동성 큰 종목을 랭킹 → 재료/선반영/수급/눌림 필터 태그 첨부.
+    ★매수신호 아님 — '관찰 후보 리스트'. 진입은 필터 통과분만.★ 반환: 텔레그램 텍스트."""
+    cands = []
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg = s["code"], s["name"], s["px"], s["chg"]
+        if not px or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        _budget += 1
+        if _budget > 32:
+            break
+        wv = _weekly_volatility(token, key, secret, cd)
+        if not wv:
+            continue
+        cands.append({"code": cd, "name": nm, "px": px, "chg": chg, **wv})
+    if not cands:
+        return "📊 주간 변동성 스캐너 — 후보 없음(데이터 조회 실패/휴장)."
+    cands.sort(key=lambda c: c["vol"], reverse=True)
+    lines = ["📊 주간 변동성 상위 (래리 윌리엄스式 물색 · 이번주 5일 레인지)",
+             "⚠️ 매수신호 아님 — 관찰 후보. 재료·수급·눌림 필터 통과분만 진입.", ""]
+    for i, c in enumerate(cands[:top_n], 1):
+        ds = _daily_setup(token, key, secret, c["code"], c["px"])
+        disp = ds["disp"] if ds else None
+        ng, nbad = _news_grade(c["code"])
+        _mat = ("🔴악재" if nbad else "🔥재료S" if ng == "S" else "🟢재료A" if ng == "A" else "⚠️재료무")
+        if c["ret5"] >= 15 or (disp is not None and disp >= 12):
+            _pre = " ⚠️선반영(이미급등·추격주의)"
+        elif disp is not None and 0 <= disp <= 4:
+            _pre = " 🟢눌림권(진입 여지)"
+        else:
+            _pre = ""
+        lines.append(f"{i}. {c['name']}({c['code']}) {c['px']:,}({c['chg']:+.1f}%)")
+        lines.append(f"   변동성 {c['vol']:.0f}% · 주간 {c['ret5']:+.0f}%"
+                     + (f" · 20MA이격 {disp:+.0f}%" if disp is not None else "")
+                     + f" · {_mat}{_pre}")
+    lines.append("\n※ 변동성만으론 방향 없음 — 재료 확인+선반영 회피+눌림 타점 필수")
+    return "\n".join(lines)
+
+
 MY_WATCH_FILE = os.path.join(BASE, "my_watch.json")
 
 
@@ -3612,6 +3678,8 @@ def main():
                     help="과거 누적 신호 종합 분석 — 신호종류별 승률·평균수익(익일 종가 대비) 텔레그램·종료")
     ap.add_argument("--stock", nargs="?", const="__WATCH__", default=None,
                     help="특정종목 종합 해석(차트+수급+뉴스+타점). --stock 005930=그 종목 / --stock=my_watch 전체")
+    ap.add_argument("--volatility", action="store_true",
+                    help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -3659,6 +3727,16 @@ def main():
             _rep = _deep_stock(_st, kis_key, kis_secret, _cd, _nm, _gk)
             send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
             print(f"[종목해석] {_nm or _cd} 발송")
+        sys.exit(0)
+
+    if args.volatility:                           # [V25.0] 주간 변동성 상위 스캐너
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 변동성 스캔 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        print("[변동성] 주간 변동성 상위 스캔 중... (거래대금 상위 일봉 조회)")
+        _rep = _volatility_scan(_st, kis_key, kis_secret, read_gemini_key())
+        send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
+        print("[변동성] 발송 완료")
         sys.exit(0)
 
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
