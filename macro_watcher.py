@@ -1316,7 +1316,7 @@ def _verify_news_picks(token, key, secret, report):
     import re as _re
     # [V22.0] '종목명(코드)' 쌍에서 이름 맵 추출 → 검증줄에 코드 대신 종목명 표시
     _name_map = {}
-    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&]{2,20}?)\s*\((\d{6})\)", report):
+    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", report):
         _name_map.setdefault(_cd, _nm.strip())
     _codes = []
     for _c in _re.findall(r"\(?(\d{6})\)?", report):        # 괄호 안/밖 6자리
@@ -1449,7 +1449,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         # [V23.3] 브리핑 픽(종목명+코드)을 성적표에 기록 → 익일 결과 자동 대조
         try:
             import re as _re2
-            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&]{2,20}?)\s*\((\d{6})\)", report):
+            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", report):
                 _bp, _, _ = _price_and_turnover(_vtok, kis_key, kis_secret, _bc) if _vtok else (None, None, None)
                 if _bp:
                     _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
