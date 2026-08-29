@@ -1952,8 +1952,16 @@ def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
     for i, c in enumerate(cands[:top_n], 1):
         ds = _daily_setup(token, key, secret, c["code"], c["px"])
         disp = ds["disp"] if ds else None
-        ng, nbad = _news_grade(c["code"])
-        _mat = ("🔴악재" if nbad else "🔥재료S" if ng == "S" else "🟢재료A" if ng == "A" else "⚠️재료무")
+        # [V25.2] 재료(키워드) 태그 제거 — 오탐 많음(삼성전기 '악재' 등). 대신 신뢰도 높은 수급 표시.
+        #   재료 확인은 --stock / 저녁브리핑 팩트체크(검색 grounding)가 정확.
+        _sup = ""
+        try:
+            _f, _o = _investor_est(token, key, secret, c["code"])
+            if _f is not None and _o is not None:
+                _net = (_f + _o) * c["px"] / 1e8
+                _sup = f" · 수급 {_net:+.0f}억" + ("✅" if _net >= 0 else "⚠️")
+        except Exception:
+            pass
         if c["ret5"] >= 15 or (disp is not None and disp >= 12):
             _pre = " ⚠️선반영(이미급등·추격주의)"
         elif disp is not None and 0 <= disp <= 4:
@@ -1963,8 +1971,8 @@ def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
         lines.append(f"{i}. {c['name']}({c['code']}) {c['px']:,}({c['chg']:+.1f}%)")
         lines.append(f"   변동성 {c['vol']:.0f}% · 주간 {c['ret5']:+.0f}%"
                      + (f" · 20MA이격 {disp:+.0f}%" if disp is not None else "")
-                     + f" · {_mat}{_pre}")
-    lines.append("\n※ 변동성만으론 방향 없음 — 재료 확인+선반영 회피+눌림 타점 필수")
+                     + f"{_sup}{_pre}")
+    lines.append("\n※ 변동성=물색만. 재료는 --stock/저녁브리핑 팩트체크로 확인 · 선반영 회피 · 눌림 타점 필수")
     return "\n".join(lines)
 
 
