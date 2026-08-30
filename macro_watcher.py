@@ -2194,6 +2194,44 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
+def _regime_detect(token, key, secret, now_kst, lookback_days=14, min_n=5):
+    """[V25.6] 장세 판독기 — 최근 종배(픽+그림자)의 '익일 종가 수익' 평균으로 지금이 종배 통하는 장인지 판정.
+    갭 잘 뜨는 장(+)=종배 유효 / 저갭·불리 장(−)=종배 억제·대형주 눌림 권장(모카 8월 교훈).
+    반환 {state,avg,n,text,tag}. 데이터 부족 시 state='unknown'."""
+    from datetime import timedelta
+    _cut = (now_kst - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    rets, _cache = [], {}
+    for p in _pick_read():
+        if p.get("signal") not in ("dolpanty", "dolpanty_shadow", "dolpanty_div"):
+            continue
+        if str(p.get("date", "")) < _cut:
+            continue
+        cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
+        if not px:
+            continue
+        closes = _cache.get(cd)
+        if closes is None:
+            closes = _daily_closes(token, key, secret, cd); _cache[cd] = closes
+        _pdate = str(p.get("date", "")).replace("-", "")
+        _nxt = next((d for d in sorted(closes.keys()) if d > _pdate), None)
+        if _nxt and closes.get(_nxt):
+            rets.append((closes[_nxt] / px - 1) * 100)
+    n = len(rets)
+    if n < min_n:
+        return {"state": "unknown", "avg": None, "n": n,
+                "text": f"🌫️ 장세판독 데이터 부족(종배 표본 {n}<{min_n}) — 며칠 더 축적", "tag": ""}
+    avg = sum(rets) / n
+    if avg >= 0.5:
+        return {"state": "gap", "avg": avg, "n": n,
+                "text": f"🟢 갭 장세(종배 유효) — 최근 종배 익일 평균 {avg:+.1f}% (n={n})", "tag": "🟢종배유효장세"}
+    if avg <= -0.5:
+        return {"state": "lowgap", "avg": avg, "n": n,
+                "text": f"🔵 저갭 장세(종배 불리) — 최근 종배 익일 평균 {avg:+.1f}% (n={n}) · 대형주 눌림·인버스 권장",
+                "tag": "🔵저갭장세(종배 억제)"}
+    return {"state": "neutral", "avg": avg, "n": n,
+            "text": f"🟡 중립 장세 — 최근 종배 익일 평균 {avg:+.1f}% (n={n})", "tag": "🟡중립장세"}
+
+
 def _recent_brief_codes(now_kst, days=2):
     """[V24.7] 최근 브리핑(선행 테마) 종목 — 종배 재설계용 우선 유니버스.
     데이터상 브리핑(55%·+1.1%)이 종배픽(36%·-3.3%)보다 압도적. 종배도 이 종목풀에서 뽑는다.
@@ -2374,15 +2412,18 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             state["dolpanty_pick_day"] = today
         print("[종배픽] 금요일 억제 — 주말 리스크 회피(그림자만 로깅)")
         return
-    # [V20.6] 확정픽 최소점수 50 — 40 겨우 넘긴 애매한 픽은 강신호 금지.
-    #   50 미만이면 확정픽 발송 안 하고 그림자로만 로깅(검증 데이터는 유지).
-    if cands[0]["score"] < 50:
+    # [V25.6] 장세 판독 — 저갭 장세(종배 불리)면 임계 상향(50→60): 강한 픽만 발송, 나머지 관망.
+    #   (모카 교훈: 갭 안 뜨는 장에선 종배 자체를 쉬어라. 데이터로 장세 감지해 자동 억제.)
+    _regime = _regime_detect(token, key, secret, now_kst)
+    _thr = 60 if _regime["state"] == "lowgap" else 50
+    if cands[0]["score"] < _thr:
         _log_shadow()
+        _rmsg = (f" · {_regime['tag']}" if _regime.get("tag") else "")
         if send_telegram(token_tg, chat_id,
-                         f"🌒[종배] 확정픽 없음 — 최상위 후보({cands[0]['name']} {cands[0]['score']:.0f}점) "
-                         f"기준(50점) 미달. 강한 종배 셋업 아님(관망)."):
+                         f"🌒[종배] 확정픽 없음 — 최상위({cands[0]['name']} {cands[0]['score']:.0f}점) "
+                         f"기준({_thr}점) 미달{_rmsg}. 강한 셋업 아님(관망).\n{_regime['text']}"):
             state["dolpanty_pick_day"] = today
-        print(f"[종배픽] 확정픽 없음 — 최고 {cands[0]['name']}({cands[0]['score']:.0f}) < 50 · 관망")
+        print(f"[종배픽] 확정픽 없음 — 최고 {cands[0]['name']}({cands[0]['score']:.0f}) < {_thr} · {_regime['state']} · 관망")
         return
     pick = cands[0]
     # [V23.2] 분산 후보는 '다른 섹터'로 — 같은 섹터면 동반 갭다운이라 분산 효과 없음(사용자 룰).
@@ -2487,9 +2528,11 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                      f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']}{_brief_tag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
+                     f"🧭 {_regime['text']}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
-                     f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산\n"
+                     f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산"
+                     + (" · 🔵저갭장세라 소액·신중" if _regime['state'] == 'lowgap' else "") + "\n"
                      f"밤사이 나스닥·SOX 방향으로 익일 갭 가늠 · 8시 NXT는 목표(+3%)때만 · 청산은 9시 시가"):
         state["dolpanty_pick_day"] = today
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
@@ -3740,6 +3783,8 @@ def main():
                     help="특정종목 종합 해석(차트+수급+뉴스+타점). --stock 005930=그 종목 / --stock=my_watch 전체")
     ap.add_argument("--volatility", action="store_true",
                     help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
+    ap.add_argument("--regime", action="store_true",
+                    help="장세 판독기 — 최근 종배 익일 수익으로 종배 유효/저갭 장세 판정 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -3797,6 +3842,17 @@ def main():
         _rep = _volatility_scan(_st, kis_key, kis_secret, read_gemini_key())
         send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
         print("[변동성] 발송 완료")
+        sys.exit(0)
+
+    if args.regime:                               # [V25.6] 장세 판독기
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 장세 판독 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _rg = _regime_detect(_st, kis_key, kis_secret, datetime.datetime.utcnow() + datetime.timedelta(hours=9))
+        send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n🧭 장세 판독\n{_rg['text']}\n"
+                      + ("→ 종배 임계 상향(강한 픽만)·대형주 눌림 위주 권장" if _rg['state'] == 'lowgap'
+                         else "→ 종배 정상 운용" if _rg['state'] == 'gap' else "→ 선별 운용"))
+        print(f"[장세판독] {_rg['state']} · {_rg['text']}")
         sys.exit(0)
 
     if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
