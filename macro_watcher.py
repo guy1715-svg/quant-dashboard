@@ -2012,8 +2012,6 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
         code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
         if not (code.isdigit() and len(code) == 6):
             continue
-        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 30 * 60:   # 30분 쿨다운
-            continue
         px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
         if not px:
             continue
@@ -2024,6 +2022,23 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
         _up = bool(_ma5 and _ma20 and px > _ma5 > _ma20)         # 큰추세 상승(정배열)
         _vr = _vol_ratio_5d(token, key, secret, code)
         _mult = _vr[2] if _vr else 0
+        # [V25.4] 🚀 돌파 확인 알림 — 20일 전고 돌파 + 거래량 2배↑(가짜돌파 필터). 별도 쿨다운(60분).
+        #   ※ 진짜 돌파 조건: 전고 위 + 거래량 동반. 장중 잠깐 찍는 속임수 걸러내려 배수 게이트.
+        _bk = code + "_brk"
+        _rhigh = _recent_high(token, key, secret, code, days=20)
+        if (_rhigh and px >= _rhigh and _mult >= 2.0
+                and (int(now_kst.timestamp()) - int(mw.get(_bk, 0))) >= 60 * 60):
+            _bstop = int(_rhigh * 0.98); _bt1 = int(px * 1.05)
+            _sess_b = "NXT 야간 실시간" if _nxt else "정규장"
+            if send_telegram(token_tg, chat_id,
+                             f"{SIG_BUY}\n🚀 [돌파 확인·{_sess_b}] {name} — 20일 전고 돌파!\n"
+                             f"현재 {px:,}({(chg or 0):+.1f}%) · 전고 {_rhigh:,} 상향 · 거래량 {_mult:.1f}배 동반\n"
+                             f"진입 {px:,} · 손절 {_bstop:,}(전고 아래 −2%) · 익절 {_bt1:,}(+5%)\n"
+                             f"⚠️ 종가로 돌파 굳는지 확인 · 눌림 없이 급하면 소액 · 거래량 빠지면 속임수 주의"):
+                mw[_bk] = int(now_kst.timestamp())
+                print(f"[돌파확인] {name} {px:,} 전고 {_rhigh:,} 돌파(거래량 {_mult:.1f}배)")
+        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 30 * 60:   # 30분 쿨다운(모멘텀/눌림)
+            continue
         _sig = None
         if _up and (chg or 0) > 0 and _mult >= 1.5:
             _sig = ("🎯 모멘텀 타점", f"큰추세 상승 + 오늘 {(chg or 0):+.1f}% + 거래량 {_mult:.1f}배 급증 → 상승 초입")
