@@ -3501,6 +3501,36 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
     return sox
 
 
+def check_morning_riskoff(now_kst, state, token_tg, chat_id):
+    """[V25.5] 아침 비상 점검 넛지 — 밤사이 미국 급락 시 08:00~08:15 보유 점검 알림(당일 1회).
+    나스닥선물 -1.5%↓(또는 SOX -3%↓)면 발송. ★강제 손절 아님 — '점검·약한 종목 우선 정리 검토·
+    손절선 확인'을 유도해 감정적 경직(존버) 방지. NXT 프리마켓(08:00~08:50)에 대응 가능.★"""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((8 * 60) <= m <= (8 * 60 + 15)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("morning_riskoff_day") == today:
+        return
+    nq = _pct("NQ=F"); sox = _pct("^SOX")
+    _crash = (nq is not None and nq <= -1.5) or (sox is not None and sox <= -3.0)
+    if not _crash:
+        return
+    _us = []
+    if nq is not None:
+        _us.append(f"나스닥선물 {nq:+.1f}%")
+    if sox is not None:
+        _us.append(f"SOX {sox:+.1f}%")
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_CAUTION}\n🚨 아침 비상 점검 — 밤사이 미국 급락\n"
+                     f"{' · '.join(_us)}\n"
+                     f"① 보유 종목 손절선(−2%) 재확인 ② 비주도주·약한 종목 우선 정리 검토 "
+                     f"③ NXT 프리마켓(08:00~08:50)에서 미리 대응 가능\n"
+                     f"⚠️ 강제 매도 아님 — 8시 선물은 9시 개장가와 다를 수 있음. "
+                     f"감정적 경직 말고 '계획대로' 대응 · 물타기 금지\n{now_kst.strftime('%m/%d %H:%M')} KST"):
+        state["morning_riskoff_day"] = today
+        print(f"[아침비상] 미국 급락 점검 알림 발송 — {' · '.join(_us)}")
+
+
 def _pick_mode(now_kst):
     """현재 KST 시각 기준 오늘의 픽 성격. 만쥬=오전 초단타(09~10), 돌팬티=오후 종가베팅(13~15:30)."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -3895,6 +3925,11 @@ def main():
                 check_us_overnight(now, st, token_tg, chat_id)
             except Exception as _uoe:
                 print("야간 미장 알림 오류:", _uoe)
+            # 🚨 [V25.5] 아침 비상 점검(08:00~08:15) — 밤사이 미국 급락 시 보유 점검 넛지
+            try:
+                check_morning_riskoff(now, st, token_tg, chat_id)
+            except Exception as _mre:
+                print("아침 비상 점검 오류:", _mre)
             # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
             try:
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
