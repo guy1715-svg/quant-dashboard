@@ -685,7 +685,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2057,6 +2057,66 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
                 mw[code] = int(now_kst.timestamp())
                 print(f"[내관심타점] {name} — {_sig[0]}")
     state["my_watch_ts"] = mw
+
+
+def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.7] 눌림 타점 스캐너(시장 전역) — 저갭 장세의 주력 무기. 거래대금 상위 중
+    정배열(큰추세 상승·ma5>ma20) 종목이 지지선(5일선/20일선)까지 눌렸다가 지지·반등하면 타점 알림.
+    ★하락추세 종목은 제외(떨어지는 칼 방지) — 정배열만.★ 09:05~15:20, 리스크오프 억제. 종목별 40분 쿨다운."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("pullback_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if (int(now_kst.timestamp()) - int(sent.get(cd, 0))) < 40 * 60:
+            continue
+        if not (-2.0 <= (chg or 0) <= 4.0):          # 급락(칼)·급등(눌림 아님) 사전 컷 → 일봉조회 절약
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds:
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20 and _ma5 > _ma20):    # 정배열(큰추세 상승) 필수 — 하락추세 눌림 금지
+            continue
+        _disp = ds.get("disp", 0)
+        if _disp >= 10.0:                            # 과열은 '눌림' 아님
+            continue
+        _d5 = (px / _ma5 - 1) * 100                  # 5일선 이격
+        _d20 = (px / _ma20 - 1) * 100                # 20일선 이격
+        _sig = None
+        if -1.0 <= _d5 <= 2.0:                       # 5일선 지지 눌림(위에서 눌러 닿음)
+            _sig = ("5일선 눌림", f"큰추세 상승 + 5일선({int(_ma5):,}) 지지 눌림(이격 {_d5:+.1f}%)")
+        elif -1.5 <= _d20 <= 2.0 and _d5 < 0:        # 더 깊은 20일선 눌림(5일선 아래로 조정 후 20일선 지지)
+            _sig = ("20일선 눌림", f"큰추세 상승 + 20일선({int(_ma20):,}) 지지 눌림(이격 {_d20:+.1f}%)")
+        if not _sig:
+            continue
+        _ng, _nbad = _news_grade(cd)                 # 악재 제외
+        if _nbad:
+            continue
+        _pull = _pullback_levels(token, key, secret, cd, px, chg, ds) or ""
+        _stop = int(_ma20 * 0.98)                    # 손절 = 20일선 아래(추세 이탈)
+        _t1 = int(px * 1.03)
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🎯 [눌림 타점·정배열] {nm} — {_sig[0]}\n"
+                         f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
+                         + (f" · {_mat}" if _mat else "") + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}(20일선 아래) · 익절 {_t1:,}(+3%){_pull}\n"
+                         f"※ 저갭 장세 주력 무기 · 지지 확인 후 분할 · 정배열 유지 시만 유효"):
+            sent[cd] = int(now_kst.timestamp())
+            _log_signal(state, now_kst, "눌림타점", nm, cd, px)
+            print(f"[눌림타점] {nm} {px:,} — {_sig[0]}")
+    state["pullback_sent"] = sent
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
@@ -4189,6 +4249,11 @@ def main():
                         check_my_watch(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
                     except Exception as _mwe:
                         print("내관심타점 오류:", _mwe)
+                    # [V25.7] 눌림 타점 스캐너(시장 전역) — 저갭 장세 주력 무기(정배열 지지선 눌림)
+                    try:
+                        check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _pbe:
+                        print("눌림타점 스캐너 오류:", _pbe)
                     # [V24.0] 아침 갭상승 원인 역분석(09:03~09:12) — 브리핑 적중률 검증 + 원인 학습
                     try:
                         check_gap_analysis(tok, kis_key, kis_secret, now, st, token_tg, chat_id, gemini_key)
