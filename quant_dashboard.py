@@ -5877,7 +5877,7 @@ def _pick_history_write(rows):
     """pick_history.json 덮어쓰기(최근 400건 상한). 실패는 조용히 무시."""
     try:
         with open(_PICK_HISTORY_PATH, "w", encoding="utf-8") as _f:
-            _json_tracker.dump(rows[-400:], _f, ensure_ascii=False)
+            _json_tracker.dump(rows[-1500:], _f, ensure_ascii=False)
     except OSError:
         pass
 
