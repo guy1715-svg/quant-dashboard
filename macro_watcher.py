@@ -2572,12 +2572,18 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V23.6] 자기모순 방지 — AI뉴스가 '부적합/악재'거나 수급 이탈이면 확정픽(매수) 강등 → 관망.
     #   (SK스퀘어 실패 케이스: AI '부적합'인데 확정픽 발송 → 다음날 하락. 데이터로 검증된 강등 규칙.)
     _ai_bad = ("부적합" in _ai_news) or ("악재" in _ai_news)
-    if _ai_bad or _supply_neg:
+    # [V25.12 B] 저갭 장세에선 '재료 없는 종배' 금지 — 이 장에서 갭 나는 건 강한 개별 재료(공시·실적·브리핑)뿐.
+    #   무재료(ng 없음 + 브리핑 아님) 픽은 저갭 장세에 오버나이트 근거 없음 → 강등(관망).
+    _regime_block = (_regime["state"] == "lowgap"
+                     and pick.get("ng") not in ("S", "A") and not pick.get("brief"))
+    if _ai_bad or _supply_neg or _regime_block:
         _why = []
         if _ai_bad:
             _why.append("AI 부적합/악재")
         if _supply_neg:
             _why.append("수급 이탈")
+        if _regime_block:
+            _why.append("저갭 장세+무재료(갭 근거 없음)")
         send_telegram(token_tg, chat_id,
                       f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
                       f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
@@ -2629,7 +2635,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                      f"{_divtxt}\n"
                      f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산"
                      + (" · 🔵저갭장세라 소액·신중" if _regime['state'] == 'lowgap' else "") + "\n"
-                     f"밤사이 나스닥·SOX 방향으로 익일 갭 가늠 · 8시 NXT는 목표(+3%)때만 · 청산은 9시 시가"):
+                     f"밤사이 나스닥·SOX 방향으로 갭 가늠 · ★청산: NXT(16~20시·8시)서 +3% 뜨면 즉시(갭은 NXT서 흡수됨)·안 뜨면 9시 시가★"):
         state["dolpanty_pick_day"] = today
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
         # [V23.0] 진입 타이밍 리마인더용 픽 정보 저장(15:25 종가 동시호가 매수 알림)
@@ -2681,6 +2687,49 @@ def check_dolpanty_entry(token, key, secret, now_kst, state, token_tg, chat_id):
         _info["entry_ts"] = int(now_kst.timestamp())
         state["dolpanty_pick_info"] = _info
         print(f"[종배픽] 진입타이밍 알림({_when}) — {_info['name']} {_gap:+.1f}%")
+
+
+def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V25.12 A] 종배 NXT 청산 알림 — 종배 근본문제(NXT가 오버나이트 갭을 9시 전에 흡수) 대응.
+    NXT 애프터(16:00~20:00, 픽 당일)·프리마켓(08:00~08:50, 익일)에서 종배픽이 목표(+3%) 도달하면
+    '9시 기다리지 말고 지금 NXT 청산'(갭은 NXT서 이미 남), 손절선 이탈이면 'NXT 손절' 알림. 픽당 1회."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _after = (16 * 60) <= m <= (20 * 60)                  # 당일 NXT 애프터
+    _pre = (8 * 60) <= m <= (8 * 60 + 50)                 # 익일 NXT 프리마켓
+    if not (_after or _pre):
+        return
+    _info = state.get("dolpanty_pick_info") or {}
+    if not _info.get("code") or _info.get("exit_done"):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if _after and _info.get("day") != today:             # 애프터는 픽 당일만
+        return
+    if _pre and _info.get("day") == today:               # 프리마켓은 픽 익일(당일 픽이면 아직 애프터)
+        return
+    _base = _info["px"]
+    _t1 = _info.get("t1") or int(_base * 1.03)
+    _stop = _info.get("stop") or int(_base * 0.98)
+    try:
+        _cur, _chg, _ = _price_and_turnover(token, key, secret, _info["code"], mrkt="NX")
+    except Exception:
+        _cur = None
+    if not _cur:
+        return
+    _g = (_cur / _base - 1) * 100
+    _when = "NXT 애프터(16~20시)" if _after else "NXT 프리마켓(8시)"
+    _sig = None
+    if _cur >= _t1:
+        _sig = ("🎯 NXT 청산 타이밍!", f"목표 +{_g:.1f}% 도달({_cur:,}) — 갭은 NXT서 이미 남. 9시 시가 기다리다 사라지기 전에 지금 익절 검토")
+    elif _cur <= _stop:
+        _sig = ("🔴 NXT 손절", f"진입가 대비 {_g:+.1f}%({_cur:,}) 손절선 이탈 — NXT서 손절해 밤/갭다운 리스크 차단")
+    if not _sig:
+        return
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_WATCH}\n🌙💰 종배 청산 알림({_when}) — {_info['name']}\n"
+                     f"{_sig[0]} · 현재 {_cur:,}({(_chg or 0):+.1f}%)\n{_sig[1]}"):
+        _info["exit_done"] = True
+        state["dolpanty_pick_info"] = _info
+        print(f"[종배청산] {_info['name']} {_g:+.1f}% — {_sig[0]}")
 
 
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
@@ -4310,6 +4359,11 @@ def main():
                         check_dolpanty_entry(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
                     except Exception as _dee:
                         print("종배 진입알림 오류:", _dee)
+                    # [V25.12 A] 종배 NXT 청산 알림 — 갭이 NXT서 나므로 목표 도달 시 9시 전 청산
+                    try:
+                        check_dolpanty_exit(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _dxe:
+                        print("종배 청산알림 오류:", _dxe)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
