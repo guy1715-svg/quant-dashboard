@@ -2471,7 +2471,10 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         if cands:
             _pool = sorted(cands, key=lambda c: c["score"], reverse=True)
         else:
-            _pool = sorted(raw, key=lambda x: x["turn"], reverse=True)
+            # [V25.11] 폴백도 초대형주(3천억↑ 지수 대장주) 제외 — 만년 삼성/하이닉스만 찍히던 노이즈 차단.
+            #   종배로 뽑을 일 없는 종목을 그림자에 남기면 검증 데이터가 오염됨. 없으면 로깅 스킵.
+            _pool = sorted([x for x in raw if x["turn"] < 300_000_000_000],
+                           key=lambda x: x["turn"], reverse=True)
         _sh = [c for c in _pool if c["code"] not in exclude][:3]
         for c in _sh:
             _log_pick(now_kst, c["code"], c["name"], 30.0, c["px"], nq, "dolpanty_shadow")
