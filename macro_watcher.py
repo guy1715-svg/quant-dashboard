@@ -2269,7 +2269,7 @@ def _pick_read():
 def _pick_write(rows):
     try:
         with open(PICK_FILE, "w", encoding="utf-8") as f:
-            json.dump(rows[-400:], f, ensure_ascii=False)
+            json.dump(rows[-1500:], f, ensure_ascii=False)
     except OSError:
         pass
 
