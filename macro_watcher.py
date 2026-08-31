@@ -1366,7 +1366,8 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     # [V22.1] 네이버 검색 API는 스코프 막힘(401 영구) → 시도 스킵, RSS만 사용(국내+세계 피드별 골고루)
     _src = "RSS"
     # [V22.8] 뉴스 기간 — 평일 24h(신선 재료). 월요일은 주말·금요일 마감후 뉴스 커버 위해 72h로 자동 확대.
-    _news_hours = 72 if now_kst.weekday() == 0 else 24
+    # [V25.8] 월요일은 주말 뉴스 커버 위해 72h — 단 '오전(정오 전)'까지만. 오후엔 24h(최신 재료 위주).
+    _news_hours = 72 if (now_kst.weekday() == 0 and now_kst.hour < 12) else 24
     for it in _rss_news(50, _news_hours):                 # 피드별 최대 50건·최근 N시간
         _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
         _d = it.get("description", "")
