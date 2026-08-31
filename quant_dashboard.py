@@ -4095,6 +4095,17 @@ def scan_tomorrow_candidates(top=50):
     except Exception:
         _rank = []
     _out = []
+    # [V25.3] 최근 브리핑(선행 테마) 종목 — 텔레그램 종배 재설계와 동일 유니버스
+    _brief = {}
+    try:
+        _sc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_scorecard.json")
+        _cut = (datetime.utcnow() + timedelta(hours=9) - timedelta(days=2)).strftime("%Y-%m-%d")
+        with open(_sc_path, encoding="utf-8") as _f:
+            for _r in json.load(_f):
+                if _r.get("kind") == "브리핑" and str(_r.get("date", "")) >= _cut:
+                    _brief[str(_r.get("code", "")).zfill(6)] = _r.get("name", "")
+    except Exception:
+        _brief = {}
     for _s in _rank:
         _cd = _s.get("code"); _to = _s.get("turnover") or 0; _px = _s.get("px") or 0
         _chg = _s.get("chg", 0.0)
@@ -4114,30 +4125,32 @@ def scan_tomorrow_candidates(top=50):
         except Exception:
             continue
         _disp = ((_px / _ma20 - 1) * 100) if _ma20 else 0.0
+        # [V25.3] 텔레그램 종배 재설계 이식 — '강한 돌파 가점'(V17.0) 폐기.
+        #   실제 픽 성적(--analyze)에서 그 로직이 최악(22~36%)이라, 브리핑(선행 테마)+비과열로 전환.
+        #   게이트: 과열(+7%↑)·급락(−2%↓) 컷 / 20MA↑ 필수 / 20MA 이격 7%↑ 과열 컷.
+        if _chg >= 7.0 or _chg < -2.0:
+            continue
+        if _ma20 and _px <= _ma20:
+            continue
+        if _disp >= 7.0:
+            continue
         _above5 = bool(_ma5 and _px >= _ma5)
         _near_prevhigh = bool(_prevhigh20 and _px >= _prevhigh20 * 0.99)  # 전고 돌파/근접
         _new_high = bool(_high60 and _px >= _high60)                      # 60일 신고가
-        _reasons, _score = [], 0
-        if _above5:       _score += 1; _reasons.append("5일선 위")
-        if _near_prevhigh:_score += 2; _reasons.append("전고 돌파/근접")
-        if _new_high:     _score += 1; _reasons.append("신고가")
-        if _chg > 0:      _score += 1
-        # 거래대금 상위는 이미 랭킹 진입으로 충족(가점 1)
-        _score += 1
-        # [V17.0] 백테스트(12·24개월) 결과 반영 — 종배(오버나이트)는 '모멘텀 게임'.
-        #   강한 돌파(높은 이격)가 익일 갭을 더 크게 먹음(기대값·손익비 우위 확인).
-        #   → V16.8의 이격 상단 페널티(추격금지) 폐기. 강세 돌파는 오히려 가점.
-        #   단, 초고이격(≥15%)은 갭다운 꼬리위험(백테 최악 -30%) 크므로 '고변동·소액' 경고만.
-        #   ⚠️ 이 완화는 '종배(종가매수·오버나이트)' 트랙 전용 — 아침단타(눌림) 게이트는 그대로 유지.
-        if _disp >= 8.0:
-            _score += 1; _reasons.append(f"🔥강세 돌파(이격{_disp:+.0f}%)")   # 모멘텀 가점
-        else:
-            _reasons.append("차분(이격 낮음)")
-        _hot = _disp >= 15.0                                              # 초고변동(갭다운 주의)
+        _reasons, _score = [], 40.0                                       # 거래대금 관문 통과 기본
+        if _above5:        _score += 8;  _reasons.append("5일선 위")
+        if _near_prevhigh: _score += 12; _reasons.append("전고 돌파/근접")
+        if _new_high:      _score += 6;  _reasons.append("신고가")
+        if 0 <= _disp <= 3: _score += 5; _reasons.append("눌림권(초입)")
+        if _to >= 300_000_000_000:                                        # 초대형(지수종속) 페널티
+            _score -= 12; _reasons.append("⚠️초대형(지수종속)")
+        if _cd in _brief:                                                 # 브리핑 테마(선행) 가점
+            _score += 25; _reasons.append("🎯브리핑테마(선행)")
+        _hot = _disp >= 6.0                                               # 이격 6%+ = 과열 근접 경고
         if _hot:
-            _reasons.append("⚠고변동·소액")
+            _reasons.append("⚠과열근접·소액")
         _oh = "hot" if _hot else "no"
-        _grade = "🟢강력" if _score >= 6 else "🟡관심" if _score >= 4 else "⚪보류"
+        _grade = "🟢강력" if _score >= 65 else "🟡관심" if _score >= 50 else "⚪보류"
         # 종배 진입가 = 종가(현재가) — 백테스트 검증 모델(종가매수→익일 시가청산). 눌림 대기 아님.
         _entry = int(_px)
         _ohrank = 1 if _hot else 2                                        # 동점 시 초고변동은 살짝 뒤로
@@ -4146,19 +4159,21 @@ def scan_tomorrow_candidates(top=50):
                      "entry": _entry, "overheat": _oh, "ohrank": _ohrank,
                      "ma5": int(_ma5) if _ma5 else 0, "reasons": _reasons})
     _out.sort(key=lambda x: (x["score"], x["ohrank"], x["turnover"]), reverse=True)
-    for _s in _out[:8]:
+    # [V25.10] 상위 8종만 뉴스 평가 후 '그 8종만' 반환 — 예전엔 전체 반환 → render의 악재필터가
+    #   평가 안 된 9위 종목을 승격시키는 구멍(감사 지적). 평가된 종목만 노출해 구멍 차단.
+    _top = _out[:8]
+    for _s in _top:
         try:
             _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
         except Exception:
             _s["tags"] = []
-        # [V18.3] 뉴스 재료 등급 + 악재 감지 — 종배 후보 선정에 뉴스 반영(악재는 render에서 제외)
         try:
             _nb, _nmute, _ = news_score_modifier(_s["code"], _s.get("disp", 0), overheat_mute=False)
         except Exception:
             _nb, _nmute = 0, False
         _s["news_grade"] = "S" if _nb >= 8 else "A" if _nb >= 4 else "none"
         _s["news_bad"] = bool(_nmute)
-    return _out
+    return _top
 
 
 def render_tomorrow_prep():
@@ -4177,10 +4192,10 @@ def render_tomorrow_prep():
     except Exception as _e:
         st.caption(f"⚠️ 후보 스캔 일시 비활성: {type(_e).__name__}"); return
     # [V18.3] 악재 감지 종목은 종배 후보에서 제외(뉴스 확인 반영)
-    _bad = [c for c in _cands if c.get("news_bad") and c["score"] >= 4]
-    _cands = [c for c in _cands if c["score"] >= 4 and not c.get("news_bad")][:8]
+    _bad = [c for c in _cands if c.get("news_bad") and c["score"] >= 50]
+    _cands = [c for c in _cands if c["score"] >= 50 and not c.get("news_bad")][:8]
     if not _cands:
-        st.caption("오늘 종가 기준 뚜렷한 후보(전고돌파+5일선+거래대금) 없음 — 무리한 종배는 쉬는 게 정답."); return
+        st.caption("오늘 종가 기준 뚜렷한 후보(20MA↑·비과열·브리핑테마) 없음 — 무리한 종배는 쉬는 게 정답."); return
     for _c in _cands:
         _cc = "#ef4444" if _c["chg"] < 0 else "#16a34a" if _c["chg"] > 0 else "#94a3b8"
         _oh = _c["overheat"]                       # "hot"(초고변동) / "no"
@@ -4206,9 +4221,9 @@ def render_tomorrow_prep():
             f"{'<br>'+_tags if _tags else ''}</div></div>", unsafe_allow_html=True)
     if _bad:
         st.caption("🚫 악재 감지로 제외: " + ", ".join(f"{c['name']}" for c in _bad[:5]) + " (뉴스에 악재 포착 → 종배 부적합)")
-    st.caption("💡 종배(오버나이트) = 모멘텀 게임. 백테스트상 '강한 돌파(높은 이격)'가 익일 갭을 더 먹음 → "
-               "강세일수록 후보 상위. 🔥재료S/🟢재료A는 지속력↑, ⚪재료미확인은 기술적 단발 주의. "
-               "진입은 종배 확정픽(15:00~15:30 종가)에서. ⚠️고변동주 소액·분산. 리스크오프면 매수 보류.")
+    st.caption("💡 종배(오버나이트) — 텔레그램 종배픽과 동일 로직(V25.3): 브리핑(선행 테마)+비과열 우선, "
+               "초대형주·과열(이격7%↑) 제외. 🎯브리핑테마=검증된 선행 신호와 겹침. "
+               "진입은 종배 확정픽(15:00~15:30 종가)에서. ⚠️과열근접주 소액·분산. 리스크오프면 매수 보류.")
 
 
 # ═══════════════════════════════════════════════════════════════════
