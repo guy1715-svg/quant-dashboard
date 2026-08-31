@@ -4159,19 +4159,21 @@ def scan_tomorrow_candidates(top=50):
                      "entry": _entry, "overheat": _oh, "ohrank": _ohrank,
                      "ma5": int(_ma5) if _ma5 else 0, "reasons": _reasons})
     _out.sort(key=lambda x: (x["score"], x["ohrank"], x["turnover"]), reverse=True)
-    for _s in _out[:8]:
+    # [V25.10] 상위 8종만 뉴스 평가 후 '그 8종만' 반환 — 예전엔 전체 반환 → render의 악재필터가
+    #   평가 안 된 9위 종목을 승격시키는 구멍(감사 지적). 평가된 종목만 노출해 구멍 차단.
+    _top = _out[:8]
+    for _s in _top:
         try:
             _s["tags"] = fetch_stock_triggers(_s["code"], _s.get("name", ""))
         except Exception:
             _s["tags"] = []
-        # [V18.3] 뉴스 재료 등급 + 악재 감지 — 종배 후보 선정에 뉴스 반영(악재는 render에서 제외)
         try:
             _nb, _nmute, _ = news_score_modifier(_s["code"], _s.get("disp", 0), overheat_mute=False)
         except Exception:
             _nb, _nmute = 0, False
         _s["news_grade"] = "S" if _nb >= 8 else "A" if _nb >= 4 else "none"
         _s["news_bad"] = bool(_nmute)
-    return _out
+    return _top
 
 
 def render_tomorrow_prep():

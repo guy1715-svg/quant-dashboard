@@ -756,6 +756,25 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
 
 
+def _daily_opens(token, key, secret, code):
+    """종목 최근 일봉 시가 맵 {YYYYMMDD: 시가} — 종배(익일 시가 청산) 갭 측정용. 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date"); _o = _to_int(x.get("stck_oprc"))
+                if _d and _o:
+                    out[_d] = _o
+        return out
+    except Exception:
+        return {}
+
+
 def _daily_closes(token, key, secret, code):
     """종목 최근 일봉 종가 맵 {YYYYMMDD: 종가} — inquire-daily-price. 실패 시 {}."""
     try:
@@ -873,9 +892,10 @@ def _log_signal(state, now_kst, kind, name, code, px):
         pass
 
 
-def _recent_high(token, key, secret, code, days=20):
-    """최근 N일 고가 중 현재가 위의 '저항선' 근사 — inquire-daily-price. 실패 시 None.
-    현재가보다 높은 최근 고가들 중 가장 가까운 값(=다음 저항). 없으면 최근 최고가."""
+def _recent_high(token, key, secret, code, days=20, exclude_today=False):
+    """최근 N일 고가 — inquire-daily-price. 실패 시 None.
+    exclude_today=True면 오늘 봉(o[0]) 제외한 '직전 N일 전고' 반환(돌파 판정용 — 오늘 고가 포함 시
+    px>=전고가 HOD에서만 참이 되는 버그 방지)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -883,7 +903,8 @@ def _recent_high(token, key, secret, code, days=20):
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
                                  "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
         o = r.json().get("output", [])
-        highs = [_to_int(row.get("stck_hgpr")) for row in (o or [])[:days] if isinstance(row, dict)]
+        _rows = (o or [])[1:days + 1] if exclude_today else (o or [])[:days]
+        highs = [_to_int(row.get("stck_hgpr")) for row in _rows if isinstance(row, dict)]
         highs = [h for h in highs if h]
         return max(highs) if highs else None
     except Exception:
@@ -2027,7 +2048,7 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
         # [V25.4] 🚀 돌파 확인 알림 — 20일 전고 돌파 + 거래량 2배↑(가짜돌파 필터). 별도 쿨다운(60분).
         #   ※ 진짜 돌파 조건: 전고 위 + 거래량 동반. 장중 잠깐 찍는 속임수 걸러내려 배수 게이트.
         _bk = code + "_brk"
-        _rhigh = _recent_high(token, key, secret, code, days=20)
+        _rhigh = _recent_high(token, key, secret, code, days=20, exclude_today=True)  # 직전 20일 전고(오늘 제외)
         if (_rhigh and px >= _rhigh and _mult >= 2.0
                 and (int(now_kst.timestamp()) - int(mw.get(_bk, 0))) >= 60 * 60):
             _bstop = int(_rhigh * 0.98); _bt1 = int(px * 1.05)
@@ -2095,11 +2116,19 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
             continue
         _d5 = (px / _ma5 - 1) * 100                  # 5일선 이격
         _d20 = (px / _ma20 - 1) * 100                # 20일선 이격
+        # [V25.10] 반등 확인 — '지지선 근처'만으로 발송하면 떨어지는 칼을 잡음(감사 지적).
+        #   진짜 눌림 = 오늘 저가가 지지선(MA) 근처까지 눌렸다가 현재가가 그 위로 회복(반등)한 것.
+        _pf = _price_full(token, key, secret, cd)     # (현재가,등락,시가,고가,저가)
+        _low = _pf[4] if _pf else None
+        if not _low or (chg or 0) < -1.5:             # 저가 미확보 or 오늘 크게 밀리는 중 → 반등 아님
+            continue
         _sig = None
-        if -1.0 <= _d5 <= 2.0:                       # 5일선 지지 눌림(위에서 눌러 닿음)
-            _sig = ("5일선 눌림", f"큰추세 상승 + 5일선({int(_ma5):,}) 지지 눌림(이격 {_d5:+.1f}%)")
-        elif -1.5 <= _d20 <= 2.0 and _d5 < 0:        # 더 깊은 20일선 눌림(5일선 아래로 조정 후 20일선 지지)
-            _sig = ("20일선 눌림", f"큰추세 상승 + 20일선({int(_ma20):,}) 지지 눌림(이격 {_d20:+.1f}%)")
+        if (_low <= _ma5 * 1.005 and px >= _ma5 * 0.998   # 저가 5일선 터치 + 현재가 5일선 회복(반등)
+                and px > _low * 1.002 and _d5 <= 3.0):
+            _sig = ("5일선 눌림반등", f"큰추세 상승 · 저가 {int(_low):,}(5일선 터치) → 현재 5일선 회복 · 반등 확인")
+        elif (px < _ma5 and _low <= _ma20 * 1.01 and px >= _ma20 * 0.998   # 5일선 아래 조정 후 20일선 반등
+                and px > _low * 1.002):
+            _sig = ("20일선 눌림반등", f"큰추세 상승 · 저가 {int(_low):,}(20일선 터치) → 현재 20일선 회복 · 반등 확인")
         if not _sig:
             continue
         _ng, _nbad = _news_grade(cd)                 # 악재 제외
@@ -2256,13 +2285,14 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
-def _regime_detect(token, key, secret, now_kst, lookback_days=14, min_n=5):
-    """[V25.6] 장세 판독기 — 최근 종배(픽+그림자)의 '익일 종가 수익' 평균으로 지금이 종배 통하는 장인지 판정.
-    갭 잘 뜨는 장(+)=종배 유효 / 저갭·불리 장(−)=종배 억제·대형주 눌림 권장(모카 8월 교훈).
+def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6):
+    """[V25.10] 장세 판독기 — 최근 종배(픽+그림자)의 '익일 시가 갭'(종배 실제 청산가) 중앙값으로
+    지금이 종배 통하는 장인지 판정. 갭 잘 뜨는 장(+)=종배 유효 / 저갭·불리 장(−)=종배 억제·대형주 눌림.
+    ★익일 종가가 아닌 익일 시가로 측정(종배=종가매수→익일 시가청산). 이상치엔 중앙값으로 강건.★
     반환 {state,avg,n,text,tag}. 데이터 부족 시 state='unknown'."""
     from datetime import timedelta
     _cut = (now_kst - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-    rets, _cache = [], {}
+    gaps, _cache = [], {}
     for p in _pick_read():
         if p.get("signal") not in ("dolpanty", "dolpanty_shadow", "dolpanty_div"):
             continue
@@ -2271,27 +2301,28 @@ def _regime_detect(token, key, secret, now_kst, lookback_days=14, min_n=5):
         cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
         if not px:
             continue
-        closes = _cache.get(cd)
-        if closes is None:
-            closes = _daily_closes(token, key, secret, cd); _cache[cd] = closes
+        opens = _cache.get(cd)
+        if opens is None:
+            opens = _daily_opens(token, key, secret, cd); _cache[cd] = opens
         _pdate = str(p.get("date", "")).replace("-", "")
-        _nxt = next((d for d in sorted(closes.keys()) if d > _pdate), None)
-        if _nxt and closes.get(_nxt):
-            rets.append((closes[_nxt] / px - 1) * 100)
-    n = len(rets)
+        _nxt = next((d for d in sorted(opens.keys()) if d > _pdate), None)
+        if _nxt and opens.get(_nxt):
+            gaps.append((opens[_nxt] / px - 1) * 100)     # 익일 시가 갭 = 종배 실제 수익
+    n = len(gaps)
     if n < min_n:
         return {"state": "unknown", "avg": None, "n": n,
                 "text": f"🌫️ 장세판독 데이터 부족(종배 표본 {n}<{min_n}) — 며칠 더 축적", "tag": ""}
-    avg = sum(rets) / n
+    gaps.sort()
+    avg = gaps[n // 2] if n % 2 else (gaps[n // 2 - 1] + gaps[n // 2]) / 2   # 중앙값(이상치 강건)
     if avg >= 0.5:
         return {"state": "gap", "avg": avg, "n": n,
-                "text": f"🟢 갭 장세(종배 유효) — 최근 종배 익일 평균 {avg:+.1f}% (n={n})", "tag": "🟢종배유효장세"}
+                "text": f"🟢 갭 장세(종배 유효) — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n})", "tag": "🟢종배유효장세"}
     if avg <= -0.5:
         return {"state": "lowgap", "avg": avg, "n": n,
-                "text": f"🔵 저갭 장세(종배 불리) — 최근 종배 익일 평균 {avg:+.1f}% (n={n}) · 대형주 눌림·인버스 권장",
+                "text": f"🔵 저갭 장세(종배 불리) — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n}) · 대형주 눌림·인버스 권장",
                 "tag": "🔵저갭장세(종배 억제)"}
     return {"state": "neutral", "avg": avg, "n": n,
-            "text": f"🟡 중립 장세 — 최근 종배 익일 평균 {avg:+.1f}% (n={n})", "tag": "🟡중립장세"}
+            "text": f"🟡 중립 장세 — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n})", "tag": "🟡중립장세"}
 
 
 def _recent_brief_codes(now_kst, days=2):
@@ -2494,7 +2525,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _used_sec = {_pick_sec} if _pick_sec else set()
     div = []
     for c in cands[1:]:
-        if c["score"] < 50:
+        if c["score"] < _thr:                        # [V25.10] 분산 후보도 장세 임계(_thr) 적용 — 저갭엔 약한 분산 금지
             continue
         _csec = _sector_name(token, key, secret, c["code"])
         if _csec and _csec in _used_sec:            # 이미 담은 섹터(원톱 포함) → 스킵
@@ -3997,9 +4028,13 @@ def main():
             prev_sev = st.get("sev")
             # [V25.1] 부분 outage(지표 일부 None)면 sev가 튈 수 있어 → 직전 sev 유지·알림 억제.
             #   (예: WTI만 None → riskoff 풀려 가짜 '개선' 알림.) full outage("outage")는 sev=2 유지(방어).
-            if _dstate == "partial" and prev_sev is not None:
-                print(f"[{stamp}] ⚠️ 지표 일부 조회 실패 — sev 판정 보류(직전 {prev_sev} 유지)")
-                sev = prev_sev
+            if _dstate == "partial":
+                if prev_sev is not None:
+                    print(f"[{stamp}] ⚠️ 지표 일부 조회 실패 — sev 판정 보류(직전 {prev_sev} 유지)")
+                    sev = prev_sev
+                elif sev < 1:                          # [V25.10] 콜드스타트+부분결측이면 초록(진입허용) 금지(보수)
+                    print(f"[{stamp}] ⚠️ 첫 사이클 지표 일부 결측 — 보수적으로 sev {sev}→1")
+                    sev = 1
             # [스팸 차단] 매크로 알림은 (a)장 관련 시간(08:00~20:00)에만 (b)60분 쿨다운.
             #   나스닥선물이 차단기준(-0.2%) 근처서 출렁이면 sev가 🔴↔🟡 오락가락 → 야간 알림 폭주 방지.
             _mm = now.hour * 60 + now.minute
