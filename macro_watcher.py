@@ -2211,6 +2211,77 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
     state["my_watch_ts"] = mw
 
 
+HOLDINGS_FILE = os.path.join(BASE, "my_holdings.json")
+
+
+def _read_holdings():
+    """보유종목 — my_holdings.json({"on":true,"stocks":[{code,name,avg,qty,stop?,target?}]}). off/없으면 []."""
+    try:
+        with open(HOLDINGS_FILE, encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
+            return d["stocks"]
+    except Exception:
+        pass
+    return []
+
+
+def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V25.20] 보유종목 관리 알림 — my_holdings.json의 매수평균 대비 손절/익절 감시.
+    수익률 ≤ 손절%(기본-2) → 🔴손절 / ≥ 익절%(기본+3) → 🟢익절 / 손절 근접(-1.5%) → ⚠️경고.
+    감시창: 정규장 09:00~15:30 + NXT 프리(08:00~08:50)·애프터(16:00~20:00). 종목·상태별 60분 쿨다운."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _reg = (9 * 60) <= m <= (15 * 60 + 30)
+    _pre = (8 * 60) <= m <= (8 * 60 + 50)
+    _aft = (16 * 60) <= m <= (20 * 60)
+    if not (_reg or _pre or _aft):
+        return
+    _mrkt = "J" if _reg else "NX"
+    hold = _read_holdings()
+    if not hold:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    hs = state.get("holdings_sent", {})
+    if hs.get("_day") != today:
+        hs = {"_day": today}
+    for s in hold:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
+        avg = s.get("avg") or 0
+        if not (code.isdigit() and len(code) == 6) or not avg:
+            continue
+        qty = s.get("qty") or 0
+        _stop = float(s.get("stop", -2.0)); _target = float(s.get("target", 3.0))
+        try:
+            px, chg, _ = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
+        except Exception:
+            px = None
+        if not px:
+            continue
+        _ret = (px / avg - 1) * 100
+        _pl = int((px - avg) * qty) if qty else 0
+        _kind = None
+        if _ret <= _stop:
+            _kind = ("🔴 손절선 이탈", f"손절 기준({_stop:+.0f}%) 이탈 — 규칙대로 정리 검토(존버 금지)")
+        elif _ret >= _target:
+            _kind = ("🟢 익절 도달", f"익절 목표({_target:+.0f}%) 도달 — 분할 익절·이익 확보 검토")
+        elif _ret <= _stop + 0.5:
+            _kind = ("⚠️ 손절 근접", f"손절선({_stop:+.0f}%) 0.5%p 이내 — 이탈 시 정리 준비")
+        if not _kind:
+            continue
+        _ck = f"{code}_{_kind[0][:2]}"                     # 종목+상태별 쿨다운(중복 방지)
+        if (int(now_kst.timestamp()) - int(hs.get(_ck, 0))) < 60 * 60:
+            continue
+        _sess = "정규장" if _reg else "NXT 프리(8시)" if _pre else "NXT 애프터"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_CAUTION}\n💼 [보유관리·{_sess}] {name} — {_kind[0]}\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%"
+                         + (f" · 평가손익 {_pl:+,}원" if qty else "") + "\n"
+                         f"{_kind[1]}"):
+            hs[_ck] = int(now_kst.timestamp())
+            print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
+    state["holdings_sent"] = hs
+
+
 def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V25.7] 눌림 타점 스캐너(시장 전역) — 저갭 장세의 주력 무기. 거래대금 상위 중
     정배열(큰추세 상승·ma5>ma20) 종목이 지지선(5일선/20일선)까지 눌렸다가 지지·반등하면 타점 알림.
@@ -4552,6 +4623,11 @@ def main():
                         check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _pbe:
                         print("눌림타점 스캐너 오류:", _pbe)
+                    # [V25.20] 보유종목 관리 — my_holdings.json 매수평균 대비 손절/익절 알림
+                    try:
+                        check_holdings(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _hde:
+                        print("보유관리 오류:", _hde)
                     # [V24.0] 아침 갭상승 원인 역분석(09:03~09:12) — 브리핑 적중률 검증 + 원인 학습
                     try:
                         check_gap_analysis(tok, kis_key, kis_secret, now, st, token_tg, chat_id, gemini_key)
