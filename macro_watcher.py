@@ -805,7 +805,8 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
     except Exception:
         rows = []
     # pick_history(종배/그림자)도 합침 — signal→kind 매핑
-    _kmap = {"dolpanty": "종배픽", "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
+    _kmap = {"dolpanty": "종배픽(NXT)", "dolpanty_nonxt": "종배픽(NXT미거래)",
+             "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
     for p in _pick_read():
         rows.append({"date": p.get("date"), "code": p.get("code"), "name": p.get("name"),
                      "px": p.get("px"), "kind": _kmap.get(p.get("signal"), p.get("signal", "종배"))})
@@ -932,6 +933,18 @@ def _prev_3min_high(token, key, secret, code):
     except Exception:
         pass
     return None
+
+
+def _nxt_tradable(token, key, secret, code):
+    """[V25.17] 넥스트레이드(NXT) 거래 가능 종목인지 — NX 시세 조회로 판별. True/False/None(미확인).
+    NXT 거래 종목: 밤 재료가 NXT에 흡수돼 9시 갭 작음·대신 NXT서 오버나이트 청산 가능.
+    NXT 미거래 종목: 9시 갭 엣지 살아있으나 밤새 탈출 불가(풀노출) → 소액·손절 철저.
+    ※ 정규장~애프터 사이(15:30~16:00 등)엔 NX 시세가 비어 None(미확인) 나올 수 있음."""
+    try:
+        _p, _c, _t = _price_and_turnover(token, key, secret, code, mrkt="NX")
+        return bool(_p and _p > 0)
+    except Exception:
+        return None
 
 
 # [V13.2] 시가저격에 '3분봉 전고 돌파'를 필수 조건으로 강제할지. 기본 False = 태그 표시만(거래대금 임계 유지).
@@ -2637,8 +2650,17 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         state["dolpanty_pick_day"] = today
         print(f"[종배픽] 확정픽 강등(관망) — {pick['name']}: {'·'.join(_why)}")
         return
-    # 통과 — 확정픽 로깅(dolpanty)
-    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, "dolpanty")
+    # [V25.17] NXT 거래 여부 판별 → 태그·청산 가이드. 로깅 시 NXT/미거래 분리(--analyze 비교용).
+    def _nxt_label(_st):
+        if _st is True:
+            return ("🟢NXT거래", "청산: NXT(16~20시·8시)서 +3% 뜨면 즉시(밤 재료 NXT 흡수)·안 뜨면 9시 시가")
+        if _st is False:
+            return ("🔴NXT미거래", "⚠️밤새 탈출 불가(풀노출)·9시 시가만 청산 — 소액·손절 철저 / 단 9시 갭엣지는 살아있음")
+        return ("⚪NXT미확인", "청산: NXT 조회되면 +3%서, 아니면 9시 시가")
+    _pick_nxt = _nxt_tradable(token, key, secret, pick["code"])
+    _pick_sig = "dolpanty_nonxt" if _pick_nxt is False else "dolpanty"    # 미확인/거래=dolpanty
+    # 통과 — 확정픽 로깅(NXT 여부별 분리 저장)
+    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, _pick_sig)
     for c in div:
         _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
     _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})
@@ -2667,25 +2689,47 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         pass
     _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
     _brief_tag = " 🎯브리핑테마(선행)" if pick.get("brief") else ""   # [V24.7] 재설계: 브리핑 겹침 표시
+    _ntag, _nguide = _nxt_label(_pick_nxt)
     _divtxt = ("\n🌒 분산(다른 섹터): "
                + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
                             for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트→익일 시가 익절] 확정픽 {_psec_txt}{pick['name']}{_brief_tag} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_brief_tag} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"🧭 {_regime['text']}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
-                     f"⚠️ 종가 굳는 것 확인 후 매수 · 원톱+2·3위 각 극소액 분산"
+                     f"⚠️ 종가 굳는 것 확인 후 매수 · 극소액 분산"
                      + (" · 🔵저갭장세라 소액·신중" if _regime['state'] == 'lowgap' else "") + "\n"
-                     f"밤사이 나스닥·SOX 방향으로 갭 가늠 · ★청산: NXT(16~20시·8시)서 +3% 뜨면 즉시(갭은 NXT서 흡수됨)·안 뜨면 9시 시가★"):
+                     f"★{_nguide}★"):
         state["dolpanty_pick_day"] = today
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
-        # [V23.0] 진입 타이밍 리마인더용 픽 정보 저장(15:25 종가 동시호가 매수 알림)
         state["dolpanty_pick_info"] = {"day": today, "code": pick["code"], "name": pick["name"],
                                        "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False}
-    print(f"[종배픽] 후보 {len(cands)}종 · 원톱 {pick['name']}({pick['score']:.0f}) · 분산 {len(div)}종")
+    # [V25.17] 비교 종배픽 — 원톱과 '반대 NXT 유형' 최고 후보 1종 추가(둘 다 선정·검증 비교용).
+    #   NXT거래 vs 미거래 어느 쪽 종배가 이기나 --analyze로 대조. 소액 실험.
+    _used = {pick["code"], *[c["code"] for c in div]}
+    _cmp = None
+    for c in cands:
+        if c["code"] in _used or c["score"] < _thr:
+            continue
+        _cst = _nxt_tradable(token, key, secret, c["code"])
+        if _cst is not None and _cst != bool(_pick_nxt):     # 원톱과 반대 유형
+            c["nxt"] = _cst
+            _cmp = c
+            break
+    if _cmp:
+        _ct2, _cg2 = _nxt_label(_cmp["nxt"])
+        _cstop = int(_cmp["px"] * 0.98); _ct1 = int(_cmp["px"] * 1.03)
+        _csig = "dolpanty_nonxt" if _cmp["nxt"] is False else "dolpanty"
+        _log_pick(now_kst, _cmp["code"], _cmp["name"], _cmp["score"], _cmp["px"], nq, _csig)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🌒[종배·비교픽({_ct2})] {_cmp['name']} {_cmp['px']:,}({_cmp['chg']:+.1f}%) · 점수 {_cmp['score']:.0f}\n"
+                      f"원톱({_ntag})과 반대 유형 — 어느 종배가 이기나 검증용 소액\n"
+                      f"진입 {_cmp['px']:,} · 손절 {_cstop:,}(−2%) · 익절 {_ct1:,}(+3%)\n★{_cg2}★")
+        print(f"[종배픽] 비교픽 {_cmp['name']} ({_ct2})")
+    print(f"[종배픽] 후보 {len(cands)}종 · 원톱 {pick['name']}({pick['score']:.0f}·{_ntag}) · 분산 {len(div)}종")
 
 
 def check_dolpanty_entry(token, key, secret, now_kst, state, token_tg, chat_id):
