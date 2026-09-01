@@ -2210,16 +2210,20 @@ def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, ge
             f"📊 갭상승(+3%↑) {len(_gaps)}종 · 어제 브리핑/종배 적중 {_hit_n}/{len(_gaps)}종\n"
             + "\n".join(_lines))
     if gemini_key:
+        # [V25.15 B] 놓친 종목(미예측) 재료 분석 강화 — 왜 놓쳤나·감지 가능했나·다음에 잡을 카테고리.
+        _missed = [s for s in _gaps if s["code"] not in _pred][:6]
         _batch = []
-        for s in _gaps[:6]:
+        for s in (_missed or _gaps[:6]):
             _tt = _stock_news_titles(s["code"], 3)
             _batch.append(f"{s['name']}(+{s['chg']:.1f}%): " + (" / ".join(_tt[:3]) if _tt else "뉴스없음"))
-        _prompt = ("오늘 아침 갭상승한 종목들과 각 최근 뉴스야. 왜 갭상승했는지 공통 원인"
-                   "(테마·뉴스·미국장·수급 중)을 3줄 이내로 분석해. 다음 종배·브리핑 예측 개선용 학습이야.\n\n"
-                   + "\n".join(_batch))
+        _prompt = ("아래는 오늘 갭상승했는데 우리 예측이 '놓친' 종목들과 최근 뉴스야. 각 종목마다:\n"
+                   "① 갭 원인 재료를 분류: [신약/임상] [정책/정부] [수주/계약] [실적] [테마순환] [미국연동] [수급/세력] [불명] 중 하나\n"
+                   "② 그 재료가 '전날 미리 감지 가능'했나(전날 공시·거래대금 조짐 존재) vs '당일 사후성'인가\n"
+                   "③ 맨 끝에 '다음에 잡으려면 강화할 감지 1가지' 제안(예: DART 임상공시 감시, 정책수혜 키워드 등).\n"
+                   "종목당 1줄, 총 6줄 이내. 학습용이니 간결히.\n\n" + "\n".join(_batch))
         _v = _gemini_generate(gemini_key, _prompt)
         if _v:
-            _msg += f"\n\n🧠 갭상승 공통 원인:\n{_v.strip()}"
+            _msg += f"\n\n🧠 놓친 종목 원인·감지개선:\n{_v.strip()}"
     if send_telegram(token_tg, chat_id, _msg):
         state["gap_analysis_day"] = today
         print(f"[갭분석] {len(_gaps)}종 · 예측적중 {_hit_n}")
