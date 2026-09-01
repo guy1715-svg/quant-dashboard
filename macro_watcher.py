@@ -2082,15 +2082,20 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
                              f"⚠️ 종가로 돌파 굳는지 확인 · 눌림 없이 급하면 소액 · 거래량 빠지면 속임수 주의"):
                 mw[_bk] = int(now_kst.timestamp())
                 print(f"[돌파확인] {name} {px:,} 전고 {_rhigh:,} 돌파(거래량 {_mult:.1f}배)")
-        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 30 * 60:   # 30분 쿨다운(모멘텀/눌림)
+        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 120 * 60:  # [V25.15] 쿨다운 30→120분(같은 종목 반복 발송 방지)
             continue
-        _sig = None
-        if _up and (chg or 0) > 0 and _mult >= 1.5:
-            _sig = ("🎯 모멘텀 타점", f"큰추세 상승 + 오늘 {(chg or 0):+.1f}% + 거래량 {_mult:.1f}배 급증 → 상승 초입")
-        elif _up and _ma5 and abs(px / _ma5 - 1) <= 0.015 and (chg or 0) >= -1.0:
-            _sig = ("🎯 눌림 타점", f"큰추세 상승 + 5일선 지지 눌림({(chg or 0):+.1f}%) → 반등 자리")
-        elif not _up:
+        if not _up:
             continue                                              # 큰추세 하락/횡보 = 타점 아님(역추세 회피)
+        # [V25.15] 눌림도 '반등 확인'(저가 5일선 터치 후 현재가 회복)일 때만 — 5일선 근처 하루종일 맴돌 때
+        #   반복 발송(SK하이닉스 등)하던 문제 해결. 시장 눌림 스캐너와 동일 기준.
+        _pf = _price_full(token, key, secret, code)
+        _low = _pf[4] if _pf else None
+        _sig = None
+        if (chg or 0) > 0 and _mult >= 1.5:
+            _sig = ("🎯 모멘텀 타점", f"큰추세 상승 + 오늘 {(chg or 0):+.1f}% + 거래량 {_mult:.1f}배 급증 → 상승 초입")
+        elif (_ma5 and _low and _low <= _ma5 * 1.005 and px >= _ma5 * 0.998
+                and px > _low * 1.002 and (chg or 0) >= -1.0):
+            _sig = ("🎯 눌림 반등", f"큰추세 상승 · 저가 {int(_low):,}(5일선 터치) → 현재 5일선 회복 · 반등 확인")
         if _sig:
             _stop = int(px * 0.98); _t1 = int(px * 1.03)
             _sess = "NXT 야간 실시간" if _nxt else "정규장"
