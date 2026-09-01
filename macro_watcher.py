@@ -1567,8 +1567,8 @@ def _market_cap(token, key, secret, code):
 
 def _contract_detail(dart_key, rcept_no):
     """[Phase2] DART 공급계약 상세문서에서 '최근매출액 대비(%)'·계약기간(년) 추출(best-effort).
-    반환 {'sales_ratio': float|None, 'years': float|None}. 파싱 실패 시 값 None(시총 폴백)."""
-    out = {"sales_ratio": None, "years": None}
+    반환 {'sales_ratio': float|None, 'years': float|None, 'amount': float|None(억원)}. 파싱 실패 시 None."""
+    out = {"sales_ratio": None, "years": None, "amount": None}
     try:
         import io as _io, zipfile as _zip, re as _re
         r = requests.get("https://opendart.fss.or.kr/api/document.xml",
@@ -1590,6 +1590,13 @@ def _contract_detail(dart_key, rcept_no):
         m = _re.search(r"매출액\s*대비[^0-9\-]{0,15}([0-9]+(?:\.[0-9]+)?)", txt)
         if m:
             out["sales_ratio"] = float(m.group(1))
+        # [V25.16] 계약금액(절대액) — 대형주라도 절대 규모 크면 강신호 유지용(삼성전기 1조722억 놓침 대응)
+        ma = _re.search(r"계약금액[^0-9]{0,20}([0-9][0-9,]{7,})", txt)   # 8자리↑(천만원↑) 숫자
+        if ma:
+            try:
+                out["amount"] = int(ma.group(1).replace(",", "")) / 1e8    # 원 → 억원
+            except Exception:
+                pass
         # 계약기간: 시작~종료일(YYYY.MM.DD 또는 YYYY-MM-DD 2개)로 연수 추정
         ds = _re.findall(r"(20[0-9]{2})[.\-/ ]\s*([01]?[0-9])[.\-/ ]\s*([0-3]?[0-9])", txt)
         if len(ds) >= 2:
@@ -1613,7 +1620,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
     if not dart_key:
         return
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((7 * 60) <= m <= (17 * 60)):        # 장전~마감후 공시창(07:00~17:00)
+    # [V25.16] 창 확대 07:00~20:00 — 대형 공급계약·수주는 장 마감 후(16~18시) 공시 많음(삼성전기 놓침 대응).
+    #   마감후 공시는 종가 매수 불가지만 NXT(16~20시)/익일 대응 가능 → 알림 가치 큼.
+    if not ((7 * 60) <= m <= (20 * 60)):
         return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("dart_sent", {})
@@ -1721,7 +1730,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _impact_txt = ""
         if any(k in _nm for k in ("공급계약", "단일판매", "수주")):
             _cd = _contract_detail(dart_key, _rcp)
-            _ratio, _yrs = _cd.get("sales_ratio"), _cd.get("years")
+            _ratio, _yrs, _amt = _cd.get("sales_ratio"), _cd.get("years"), _cd.get("amount")
             _weak = False; _why = ""
             if _ratio is not None:
                 _eff = _ratio / max(_yrs or 1.0, 1.0)     # 연환산 매출대비%
@@ -1729,6 +1738,8 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                                + (f"·{_yrs:.0f}년→연 {_eff:.1f}%" if _yrs else ""))
                 if _eff < 5.0:                            # 연매출 대비 5% 미만 = 실적 영향 미미
                     _weak = True; _why = f"매출대비 임팩트 미미(연 {_eff:.1f}%)"
+            elif _amt is not None and _amt >= 3000:       # [V25.16] 계약금액 3천억+ = 절대 규모 큼 → 대형주라도 강신호
+                _impact_txt = f" · 계약 {_amt/10000:.2f}조(대형 수주)" if _amt >= 10000 else f" · 계약 {_amt:,.0f}억(대형 수주)"
             else:
                 _mc = _market_cap(_tok, kis_key, kis_secret, _stock)   # Phase1 폴백
                 if _mc and _mc >= 50_000:                 # 시총 5조+ 대형주 = 수주 임팩트 작음
