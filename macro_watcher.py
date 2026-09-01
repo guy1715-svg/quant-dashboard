@@ -1876,14 +1876,19 @@ _NEWS_NEG_KW = ("무산", "해지", "철회", "횡령", "배임", "상장폐지"
                 "소송", "불성실공시", "분식", "거래정지", "관리종목", "리콜")
 
 
+_NEWS_GRADE_CACHE = {}   # [V25.23] {code_YYYYMMDD: (grade, is_bad)} — 일당 캐시로 판정 안정화
+
+
 def _news_grade(code):
     """종목 뉴스 재료 등급 — 네이버 모바일 뉴스 제목 키워드. 반환 (grade, is_bad).
-    grade: 'S'/'A'/'none'. is_bad: 악재 감지. 실패 시 ('none', False) — 매매 방해 안 함."""
+    grade: 'S'/'A'/'none'. is_bad: 악재. [V25.23] 일당 캐시 — 조회 실패/빈응답이면 그날 성공한
+    등급을 재사용(같은 날 판정이 A→none 뒤집히던 버그 방지). 성공 결과만 캐시."""
+    _key = code + (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
     titles = []
     try:
         r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize=15&page=1",
                          headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
-                         timeout=5)
+                         timeout=7)
         _j = r.json()
 
         def _walk(o):
@@ -1898,18 +1903,21 @@ def _news_grade(code):
                     _walk(it)
         _walk(_j)
     except Exception:
-        return "none", False
+        return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 조회 실패 → 그날 캐시 재사용(판정 안정)
     if not titles:
-        return "none", False
+        return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 빈응답(일시적) → 캐시 우선
+    _res = ("none", False)
     for t in titles:
         if any(n in t for n in _NEWS_NEG_KW):
-            return "none", True                # 제목 하나라도 악재 → 악재 판정
-    blob = " ".join(titles)
-    if any(k in blob for k in _NEWS_S_KW):
-        return "S", False
-    if any(k in blob for k in _NEWS_A_KW):
-        return "A", False
-    return "none", False
+            _res = ("none", True); break                      # 제목 하나라도 악재 → 악재 판정
+    else:
+        blob = " ".join(titles)
+        if any(k in blob for k in _NEWS_S_KW):
+            _res = ("S", False)
+        elif any(k in blob for k in _NEWS_A_KW):
+            _res = ("A", False)
+    _NEWS_GRADE_CACHE[_key] = _res                            # 성공 결과만 캐시 → 이후 안정
+    return _res
 
 
 # ══════════════════════════════════════════════════════════════════════════
