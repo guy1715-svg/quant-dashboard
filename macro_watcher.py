@@ -2782,7 +2782,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         state["dolpanty_pick_day"] = today
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
         state["dolpanty_pick_info"] = {"day": today, "code": pick["code"], "name": pick["name"],
-                                       "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False}
+                                       "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False,
+                                       "ng": pick.get("ng"), "brief": bool(pick.get("brief"))}  # [V25.19] 홀딩판정용
     # [V25.17] 비교 종배픽 — 원톱과 '반대 NXT 유형' 최고 후보 1종 추가(둘 다 선정·검증 비교용).
     #   NXT거래 vs 미거래 어느 쪽 종배가 이기나 --analyze로 대조. 소액 실험.
     _used = {pick["code"], *[c["code"] for c in div]}
@@ -2886,6 +2887,40 @@ def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
         _sig = ("🎯 NXT 청산 타이밍!", f"목표 +{_g:.1f}% 도달({_cur:,}) — 갭은 NXT서 이미 남. 9시 시가 기다리다 사라지기 전에 지금 익절 검토")
     elif _cur <= _stop:
         _sig = ("🔴 NXT 손절", f"진입가 대비 {_g:+.1f}%({_cur:,}) 손절선 이탈 — NXT서 손절해 밤/갭다운 리스크 차단")
+    # [V25.19] 8시 프리마켓 '매도 vs 홀딩' 자동판정 — 목표(+3%)·손절 사이 애매 구간(사용자 핵심 고민).
+    #   4요인: 재료질(A급) · 수급(순매수) · 선반영(+3%↑) · NXT 미거래. 픽당 1회.
+    if _pre and not _sig and not _info.get("hold_judged"):
+        _ng = _info.get("ng"); _isbrief = _info.get("brief")
+        _strong_mat = (_ng in ("S", "A")) or _isbrief
+        _sup_pos = None
+        try:
+            _f, _o = _investor_est(token, key, secret, _info["code"])
+            if _f is not None and _o is not None:
+                _sup_pos = (_f + _o) >= 0
+        except Exception:
+            pass
+        _reflected = _g >= 3.0
+        _why = []
+        _hold = True
+        if _reflected:
+            _hold = False; _why.append(f"이미 +{_g:.1f}%(선반영)")
+        if not _strong_mat:
+            _hold = False; _why.append("재료 약함(A급/브리핑 아님)")
+        if _sup_pos is False:
+            _hold = False; _why.append("수급 이탈")
+        _verdict = ("🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 추가 여력)" if _hold
+                    else "🔴 8시 NXT 매도 (" + "·".join(_why) + " → 홀딩 근거 약함)")
+        _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🌅 종배 홀딩 판정(8시 프리마켓) — {_info['name']}\n"
+                         f"현재 {_cur:,}({(_chg or 0):+.1f}%) · 진입대비 {_g:+.1f}%\n"
+                         f"재료:{_ng or '없음'}{'·브리핑' if _isbrief else ''} · 수급:{_supmark} · 선반영:{'예' if _reflected else '아니오'}\n"
+                         f"→ {_verdict}\n"
+                         f"※ 8시 NXT 하락은 유동성 얇아 가짜일 수 있음 — 애매하면 9시 첫10분 저점 확인 후 판단(NXT 미거래 종목은 승률 낮으니 특히 소액)"):
+            _info["hold_judged"] = True
+            state["dolpanty_pick_info"] = _info
+            print(f"[종배홀딩판정] {_info['name']} {_g:+.1f}% — {'보유' if _hold else '매도'}")
+        return
     if not _sig:
         return
     if send_telegram(token_tg, chat_id,
