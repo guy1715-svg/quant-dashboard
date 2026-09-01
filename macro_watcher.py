@@ -1340,12 +1340,18 @@ def _verify_news_picks(token, key, secret, report):
     if not (token and report):
         return ""
     import re as _re
-    # [V22.0] '종목명(코드)' 쌍에서 이름 맵 추출 → 검증줄에 코드 대신 종목명 표시
+    # [V25.14] 추천 구간(📌 주목 테마 ~ ⚠️피할것 앞)만 검증 — 피할것·주도주 서술 종목을
+    #   '✅내일 주목'으로 표시하던 모순 제거(브리핑 성적표 기록과 동일 기준).
+    _c1 = report.find("📌"); _c2 = report.find("⚠️")
+    if _c2 < 0:
+        _c2 = report.find("피할")
+    _region = report[(_c1 if _c1 >= 0 else 0):(_c2 if _c2 > 0 else len(report))]
+    # '종목명(코드)' 쌍에서 이름 맵 추출 → 검증줄에 코드 대신 종목명 표시
     _name_map = {}
-    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", report):
+    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", _region):
         _name_map.setdefault(_cd, _nm.strip())
     _codes = []
-    for _c in _re.findall(r"\(?(\d{6})\)?", report):        # 괄호 안/밖 6자리
+    for _c in _re.findall(r"\(?(\d{6})\)?", _region):        # 괄호 안/밖 6자리(추천 구간만)
         if _c not in _codes:
             _codes.append(_c)
     _codes = _codes[:8]
