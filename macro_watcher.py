@@ -756,6 +756,26 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
 
 
+def _daily_ohlc(token, key, secret, code):
+    """종목 최근 일봉 {YYYYMMDD: {'o':시가,'h':고가,'c':종가}} — 청산 타이밍 분석용(1콜). 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date")
+                _o, _h, _c = _to_int(x.get("stck_oprc")), _to_int(x.get("stck_hgpr")), _to_int(x.get("stck_clpr"))
+                if _d and _o and _c:
+                    out[_d] = {"o": _o, "h": _h or _c, "c": _c}
+        return out
+    except Exception:
+        return {}
+
+
 def _daily_opens(token, key, secret, code):
     """종목 최근 일봉 시가 맵 {YYYYMMDD: 시가} — 종배(익일 시가 청산) 갭 측정용. 실패 시 {}."""
     try:
@@ -851,49 +871,49 @@ def _analyze_exit_timing(token, key, secret, now_kst, token_tg, chat_id):
     if not _picks:
         send_telegram(token_tg, chat_id, "📊 종배 청산분석 — 종배 기록 없음(감시 며칠 돌린 PC에서).")
         return
-    from collections import defaultdict
-    _oc, _cc, _nxt_cache = {}, {}, {}
-    # 버킷: 전체 / NXT거래 / NXT미거래
-    _agg = {k: {"open": [], "close": []} for k in ("전체", "NXT거래", "NXT미거래")}
+    _ohlc, _nxt_cache = {}, {}
+    _agg = {k: {"open": [], "high": [], "close": []} for k in ("전체", "NXT거래", "NXT미거래")}
     for p in _picks:
         cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
         if not px:
             continue
-        if cd not in _oc:
-            _oc[cd] = _daily_opens(token, key, secret, cd)
-            _cc[cd] = _daily_closes(token, key, secret, cd)
+        if cd not in _ohlc:
+            _ohlc[cd] = _daily_ohlc(token, key, secret, cd)
         _pdate = str(p.get("date", "")).replace("-", "")
-        _no = next((d for d in sorted(_oc[cd]) if d > _pdate), None)
-        _ncl = next((d for d in sorted(_cc[cd]) if d > _pdate), None)
-        if not (_no and _oc[cd].get(_no)):
+        _nx = next((d for d in sorted(_ohlc[cd]) if d > _pdate), None)
+        if not _nx:
             continue
-        _gopen = (_oc[cd][_no] / px - 1) * 100
-        _gclose = (_cc[cd][_ncl] / px - 1) * 100 if (_ncl and _cc[cd].get(_ncl)) else None
+        _bar = _ohlc[cd][_nx]
+        _gopen = (_bar["o"] / px - 1) * 100
+        _ghigh = (_bar["h"] / px - 1) * 100
+        _gclose = (_bar["c"] / px - 1) * 100
         if cd not in _nxt_cache:
             _nxt_cache[cd] = _nxt_tradable(token, key, secret, cd)
         _buckets = ["전체"] + (["NXT거래"] if _nxt_cache[cd] is True else ["NXT미거래"] if _nxt_cache[cd] is False else [])
         for _b in _buckets:
             _agg[_b]["open"].append(_gopen)
-            if _gclose is not None:
-                _agg[_b]["close"].append(_gclose)
+            _agg[_b]["high"].append(_ghigh)
+            _agg[_b]["close"].append(_gclose)
 
     def _stat(xs):
         if not xs:
             return None
         _w = sum(1 for x in xs if x > 0) / len(xs) * 100
         return (len(xs), _w, sum(xs) / len(xs))
-    _lines = ["📊 종배 청산 타이밍 분석 (쌓인 데이터·익일 시가 vs 종가)"]
+    _lines = ["📊 종배 청산 타이밍 분석 (쌓인 데이터)"]
     for _b in ("전체", "NXT거래", "NXT미거래"):
-        _so, _sc = _stat(_agg[_b]["open"]), _stat(_agg[_b]["close"])
+        _so, _sh, _sc = _stat(_agg[_b]["open"]), _stat(_agg[_b]["high"]), _stat(_agg[_b]["close"])
         if not _so:
             continue
-        _lines.append(f"\n■ {_b}")
-        _lines.append(f"  ⏱️ 익일 시가청산: {_so[0]}건 · 승률 {_so[1]:.0f}% · 평균 {_so[2]:+.1f}%")
+        _lines.append(f"\n■ {_b} ({_so[0]}건)")
+        _lines.append(f"  ⏱️ 9시 시초가: 승률 {_so[1]:.0f}% · 평균 {_so[2]:+.1f}%")
+        if _sh:
+            _lines.append(f"  🚀 익일 고가(팝 완벽청산): 승률 {_sh[1]:.0f}% · 평균 {_sh[2]:+.1f}%")
         if _sc:
-            _lines.append(f"  🌆 익일 종가청산: {_sc[0]}건 · 승률 {_sc[1]:.0f}% · 평균 {_sc[2]:+.1f}%")
-            _better = "시가(조기)" if _so[2] > _sc[2] else "종가(홀딩)"
-            _lines.append(f"  → 유리: {_better} 청산 (차이 {_so[2] - _sc[2]:+.1f}%p)")
-    _lines.append("\n※ NXT 애프터 저녁가는 과거 미저장이라 소급 불가 · 시가=9시 청산, 종가=하루홀딩 기준")
+            _lines.append(f"  🌆 종가(하루홀딩): 승률 {_sc[1]:.0f}% · 평균 {_sc[2]:+.1f}%")
+        if _sh:
+            _lines.append(f"  → 팝 여력(시초가→고가): {_sh[2] - _so[2]:+.1f}%p (아침 튐 노려 팔 여지)")
+    _lines.append("\n※ 고가=당일 최고가 완벽 청산(상한선) · 네 방식(9~9:30 팝 매도)은 시초가~고가 사이 · 종가=하루홀딩")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
     print("[청산분석] 발송:", " / ".join(_lines).replace("\n", " "))
 
