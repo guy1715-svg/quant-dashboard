@@ -842,6 +842,62 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
     print(f"[신호분석] {sum(len(v) for v in _by_kind.values())}건 집계 · {len(_by_kind)}종류")
 
 
+def _analyze_exit_timing(token, key, secret, now_kst, token_tg, chat_id):
+    """[V25.18] 종배 청산 타이밍 분석 — 쌓인 종배픽으로 '익일 시가 청산 vs 익일 종가 청산'을
+    KIS 일봉(시가·종가)으로 소급 대조 + NXT거래/미거래 분리. '조기(시가)가 나은가 홀딩(종가)이 나은가' 답.
+    ※ NXT 애프터 그날저녁가는 과거 미저장이라 소급 불가(시가/종가만)."""
+    _picks = [p for p in _pick_read()
+              if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow")]
+    if not _picks:
+        send_telegram(token_tg, chat_id, "📊 종배 청산분석 — 종배 기록 없음(감시 며칠 돌린 PC에서).")
+        return
+    from collections import defaultdict
+    _oc, _cc, _nxt_cache = {}, {}, {}
+    # 버킷: 전체 / NXT거래 / NXT미거래
+    _agg = {k: {"open": [], "close": []} for k in ("전체", "NXT거래", "NXT미거래")}
+    for p in _picks:
+        cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
+        if not px:
+            continue
+        if cd not in _oc:
+            _oc[cd] = _daily_opens(token, key, secret, cd)
+            _cc[cd] = _daily_closes(token, key, secret, cd)
+        _pdate = str(p.get("date", "")).replace("-", "")
+        _no = next((d for d in sorted(_oc[cd]) if d > _pdate), None)
+        _ncl = next((d for d in sorted(_cc[cd]) if d > _pdate), None)
+        if not (_no and _oc[cd].get(_no)):
+            continue
+        _gopen = (_oc[cd][_no] / px - 1) * 100
+        _gclose = (_cc[cd][_ncl] / px - 1) * 100 if (_ncl and _cc[cd].get(_ncl)) else None
+        if cd not in _nxt_cache:
+            _nxt_cache[cd] = _nxt_tradable(token, key, secret, cd)
+        _buckets = ["전체"] + (["NXT거래"] if _nxt_cache[cd] is True else ["NXT미거래"] if _nxt_cache[cd] is False else [])
+        for _b in _buckets:
+            _agg[_b]["open"].append(_gopen)
+            if _gclose is not None:
+                _agg[_b]["close"].append(_gclose)
+
+    def _stat(xs):
+        if not xs:
+            return None
+        _w = sum(1 for x in xs if x > 0) / len(xs) * 100
+        return (len(xs), _w, sum(xs) / len(xs))
+    _lines = ["📊 종배 청산 타이밍 분석 (쌓인 데이터·익일 시가 vs 종가)"]
+    for _b in ("전체", "NXT거래", "NXT미거래"):
+        _so, _sc = _stat(_agg[_b]["open"]), _stat(_agg[_b]["close"])
+        if not _so:
+            continue
+        _lines.append(f"\n■ {_b}")
+        _lines.append(f"  ⏱️ 익일 시가청산: {_so[0]}건 · 승률 {_so[1]:.0f}% · 평균 {_so[2]:+.1f}%")
+        if _sc:
+            _lines.append(f"  🌆 익일 종가청산: {_sc[0]}건 · 승률 {_sc[1]:.0f}% · 평균 {_sc[2]:+.1f}%")
+            _better = "시가(조기)" if _so[2] > _sc[2] else "종가(홀딩)"
+            _lines.append(f"  → 유리: {_better} 청산 (차이 {_so[2] - _sc[2]:+.1f}%p)")
+    _lines.append("\n※ NXT 애프터 저녁가는 과거 미저장이라 소급 불가 · 시가=9시 청산, 종가=하루홀딩 기준")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print("[청산분석] 발송:", " / ".join(_lines).replace("\n", " "))
+
+
 def _deep_stock(token, key, secret, code, name="", gemini_key=None):
     """[V24.6] 특정종목 종합 해석 — 차트(이격·정배열·거래량)+수급(외인·기관)+큰추세(60분)+뉴스(AI)+타점.
     '이 종목 어때?' 한 방 분석. 반환: 텔레그램용 텍스트."""
@@ -4018,6 +4074,8 @@ def main():
                     help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
     ap.add_argument("--regime", action="store_true",
                     help="장세 판독기 — 최근 종배 익일 수익으로 종배 유효/저갭 장세 판정 텔레그램·종료")
+    ap.add_argument("--exit-analysis", dest="exit_analysis", action="store_true",
+                    help="종배 청산 타이밍 분석 — 익일 시가청산 vs 종가청산, NXT거래/미거래 분리(쌓인 데이터)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -4040,6 +4098,14 @@ def main():
         _at = kis_token(kis_key, kis_secret)
         _anow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _analyze_history(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.exit_analysis:                        # [V25.18] 종배 청산 타이밍 분석(시가 vs 종가·NXT별)
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 청산분석 일봉대조 불가"); sys.exit(1)
+        _et = kis_token(kis_key, kis_secret)
+        _enow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _analyze_exit_timing(_et, kis_key, kis_secret, _enow, token_tg, chat_id)
         sys.exit(0)
 
     if args.stock is not None:                    # [V24.6] 특정종목 종합 해석
