@@ -1652,12 +1652,14 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             continue                            # 신규·상장사(종목코드 有)만
         _nm = _it.get("report_nm", "") or ""
         _corp = _it.get("corp_name", "")
-        if any(k in _nm for k in _DART_SKIP):     # [V18.6] 형식·노이즈 공시 제외(증권발행실적 등)
-            sent[_rcp] = True
-            continue
         _neg = any(k in _nm for k in _DART_NEG)
         _pos = any(k in _nm for k in _DART_POS)
         _perf = any(k in _nm for k in _DART_PERF)  # [V18.6] 진짜 잠정실적만(증권발행실적 오탐 제거)
+        # [V25.16] SKIP은 '호재·악재 키워드 없을 때만' 적용 — "단일판매ㆍ공급계약체결(자율공시)"가
+        #   '자율공시)'에 걸려 스킵되던 버그(삼성전기 1조722억 놓침). 진짜 재료면 자율공시여도 처리.
+        if any(k in _nm for k in _DART_SKIP) and not (_pos or _neg):
+            sent[_rcp] = True
+            continue
         # [V20.5 버그수정] 호재 키워드라도 '해지·철회·취소·무산·불발·중단' 붙으면 계약 무산 = 악재로 재분류
         #   예: "단일판매공급계약해지" → '단일판매'로 호재 오탐 → 실제론 악재
         if _pos and any(k in _nm for k in ("해지", "철회", "취소", "무산", "불발", "중단")):
