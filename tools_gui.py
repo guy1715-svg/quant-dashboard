@@ -26,6 +26,8 @@ KEYS = {
     "GITHUB_TOKEN":       "PUT_YOUR_GITHUB_TOKEN",
     # OpenBLAS 메모리 크래시 방지
     "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+    # 한글/특수문자(—) print 크래시 방지 — 자식 파이썬 stdout을 UTF-8로
+    "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
 }
 
 BASE = os.path.dirname(os.path.abspath(__file__))

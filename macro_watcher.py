@@ -27,6 +27,14 @@ import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
+# [V25.22] stdout/stderr을 UTF-8로 강제 — GUI/일반 콘솔(cp949)에서 print(—·특수문자) 크래시 방지.
+#   (tools.bat은 chcp 65001로 됐지만 GUI subprocess·기본 콘솔은 cp949라 UnicodeEncodeError 발생)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 try:
     import requests
 except ImportError:
