@@ -1474,10 +1474,21 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 print("[저녁뉴스] 차트검증 첨부 완료")
         except Exception as _ve:
             print("차트검증 오류:", _ve)
-        # [V23.3] 브리핑 픽(종목명+코드)을 성적표에 기록 → 익일 결과 자동 대조
+        # [V25.14] 브리핑 픽 기록 — ★'📌 주목 테마 TOP5(대장주)' 구간만★ 성적표에 적립.
+        #   (버그: 이전엔 리포트 전체를 긁어 ⚠️피할것·거래대금 주도주 서술의 종목까지 '브리핑 픽'으로
+        #    저장 → 추천 안 한/경고한 종목이 '적중'으로 찍히고 --analyze 승률 오염. 추천 구간만 기록.)
         try:
             import re as _re2
-            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", report):
+            _c1 = report.find("📌")                       # 주목 테마 시작
+            _c2 = report.find("⚠️")                       # 피할 것 시작(그 앞까지가 추천)
+            if _c2 < 0:
+                _c2 = report.find("피할")
+            _pick_region = report[(_c1 if _c1 >= 0 else 0):(_c2 if _c2 > 0 else len(report))]
+            _seen_bc = set()
+            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", _pick_region):
+                if _bc in _seen_bc:
+                    continue
+                _seen_bc.add(_bc)
                 _bp, _, _ = _price_and_turnover(_vtok, kis_key, kis_secret, _bc) if _vtok else (None, None, None)
                 if _bp:
                     _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
