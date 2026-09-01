@@ -2226,6 +2226,33 @@ def _read_holdings():
     return []
 
 
+def _holding_judge(token, key, secret, code, px, prev_close):
+    """[V25.21] 보유종목 오버나이트 홀딩 판정 — 4요인(재료질·수급·선반영·밤사이등락)으로
+    '9시까지 보유 vs 지금 매도'. 반환: 텔레그램 1줄 판정 텍스트."""
+    _ng, _nbad = _news_grade(code)
+    _strong = _ng in ("S", "A")
+    _sup_pos = None
+    try:
+        _f, _o = _investor_est(token, key, secret, code)
+        if _f is not None and _o is not None:
+            _sup_pos = (_f + _o) >= 0
+    except Exception:
+        pass
+    _g = ((px / prev_close - 1) * 100) if prev_close else 0
+    _reflected = _g >= 3.0
+    _why = []; _hold = True
+    if _reflected:
+        _hold = False; _why.append(f"밤사이 +{_g:.1f}%(선반영)")
+    if not _strong:
+        _hold = False; _why.append("재료 약함(A급 아님)")
+    if _sup_pos is False:
+        _hold = False; _why.append("수급 이탈")
+    _verdict = ("🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 여력)" if _hold
+                else "🔴 지금(8시 NXT) 매도 검토 (" + "·".join(_why) + ")")
+    _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
+    return f"재료:{_ng or '없음'} · 수급:{_supmark} · 밤사이:{_g:+.1f}%(선반영 {'예' if _reflected else '아니오'})\n→ {_verdict}"
+
+
 def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
     """[V25.20] 보유종목 관리 알림 — my_holdings.json의 매수평균 대비 손절/익절 감시.
     수익률 ≤ 손절%(기본-2) → 🔴손절 / ≥ 익절%(기본+3) → 🟢익절 / 손절 근접(-1.5%) → ⚠️경고.
@@ -2259,6 +2286,22 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             continue
         _ret = (px / avg - 1) * 100
         _pl = int((px - avg) * qty) if qty else 0
+        # [V25.21] 8시 프리마켓 오버나이트 홀딩 판정 — 보유 전체에 '9시 보유 vs 8시 매도'(당일 1회/종목)
+        if _pre:
+            _jk = code + "_judge"
+            if hs.get(_jk) != today:
+                try:
+                    _cl = _daily_closes(token, key, secret, code)
+                    _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
+                    _jtxt = _holding_judge(token, key, secret, code, px, _prevc)
+                    send_telegram(token_tg, chat_id,
+                                  f"{SIG_WATCH}\n🌅 보유 홀딩 판정(8시) — {name}\n"
+                                  f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%\n{_jtxt}\n"
+                                  f"※ 8시 NXT 하락은 얇아 가짜일 수 있음 — 애매하면 9시 첫10분 저점 확인")
+                    hs[_jk] = today
+                    print(f"[보유판정] {name} 8시 홀딩판정")
+                except Exception as _je:
+                    print("보유판정 오류:", _je)
         _kind = None
         if _ret <= _stop:
             _kind = ("🔴 손절선 이탈", f"손절 기준({_stop:+.0f}%) 이탈 — 규칙대로 정리 검토(존버 금지)")
@@ -2280,6 +2323,43 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             hs[_ck] = int(now_kst.timestamp())
             print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
     state["holdings_sent"] = hs
+
+
+def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
+    """[V25.21] 보유종목 수동 조회 — 전 보유종목 수익률·평가손익 + 오버나이트 홀딩 판정. --holdings."""
+    hold = _read_holdings()
+    if not hold:
+        send_telegram(token_tg, chat_id, "💼 보유종목 없음 — my_holdings.json 확인(on:true·stocks 등록).")
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    _mrkt = "J" if ((9 * 60) <= m <= (15 * 60 + 30)) else "NX"
+    _lines = ["💼 보유종목 현황·판정"]
+    _tot = 0
+    for s in hold:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code); avg = s.get("avg") or 0
+        qty = s.get("qty") or 0
+        if not avg:
+            continue
+        try:
+            px, chg, _ = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
+        except Exception:
+            px = None
+        if not px:
+            _lines.append(f"\n■ {name} — 시세 조회 실패")
+            continue
+        _ret = (px / avg - 1) * 100; _pl = int((px - avg) * qty) if qty else 0
+        _tot += _pl
+        try:
+            _cl = _daily_closes(token, key, secret, code)
+            _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
+            _j = _holding_judge(token, key, secret, code, px, _prevc)
+        except Exception:
+            _j = "판정 조회 실패"
+        _lines.append(f"\n■ {name} {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · {_ret:+.1f}%"
+                      + (f" · {_pl:+,}원" if qty else "") + f"\n  {_j}")
+    _lines.append(f"\n💰 총 평가손익 {_tot:+,}원")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[보유조회] {len(hold)}종 · 총손익 {_tot:+,}")
 
 
 def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -4200,6 +4280,8 @@ def main():
                     help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
     ap.add_argument("--regime", action="store_true",
                     help="장세 판독기 — 최근 종배 익일 수익으로 종배 유효/저갭 장세 판정 텔레그램·종료")
+    ap.add_argument("--holdings", action="store_true",
+                    help="보유종목 현황·홀딩판정(my_holdings.json) 텔레그램·종료")
     ap.add_argument("--exit-analysis", dest="exit_analysis", action="store_true",
                     help="종배 청산 타이밍 분석 — 익일 시가청산 vs 종가청산, NXT거래/미거래 분리(쌓인 데이터)")
     args = ap.parse_args()
@@ -4267,6 +4349,14 @@ def main():
         _rep = _volatility_scan(_st, kis_key, kis_secret, read_gemini_key())
         send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
         print("[변동성] 발송 완료")
+        sys.exit(0)
+
+    if args.holdings:                             # [V25.21] 보유종목 현황·홀딩판정
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 보유 조회 불가"); sys.exit(1)
+        _ht = kis_token(kis_key, kis_secret)
+        _hnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _holdings_report(_ht, kis_key, kis_secret, _hnow, token_tg, chat_id)
         sys.exit(0)
 
     if args.regime:                               # [V25.6] 장세 판독기
