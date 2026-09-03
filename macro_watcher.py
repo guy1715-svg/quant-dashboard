@@ -693,7 +693,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2387,6 +2387,86 @@ def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
     _lines.append(f"\n💰 총 평가손익 {_tot:+,}원")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
     print(f"[보유조회] {len(hold)}종 · 총손익 {_tot:+,}")
+
+
+def _box_range(token, key, secret, code, days=20):
+    """[V25.29] 박스권 범위 — 최근 N일 고가최고(상단)·저가최저(하단)·ma5·ma20. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)][:days]
+        if len(rows) < 15:
+            return None
+        highs = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lows = [_to_int(x.get("stck_lwpr")) for x in rows]
+        clos = [_to_int(x.get("stck_clpr")) for x in rows]
+        if not (all(highs) and all(lows) and all(clos)):
+            return None
+        return {"top": max(highs), "bottom": min(lows),
+                "ma5": sum(clos[:5]) / 5.0, "ma20": sum(clos) / len(clos)}
+    except Exception:
+        return None
+
+
+def check_range_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.29] 레인지(박스) 매매 — 박스장 전용 무기. 횡보 종목이 박스 하단 지지에서 반등하면
+    '하단 매수→상단 목표' 알림. 추세장 종목은 배제(ma5≈ma20 횡보만). 09:05~15:20, 리스크오프 억제, 종목별 당일1회."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("range_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW) or sent.get(cd):
+            continue
+        if not (-2.5 <= (chg or 0) <= 3.0):          # 급락(박스깨짐)·급등(상단탈출) 사전 컷
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        br = _box_range(token, key, secret, cd)
+        if not br:
+            continue
+        _top, _bot, _ma5, _ma20 = br["top"], br["bottom"], br["ma5"], br["ma20"]
+        if not (_bot and _top and _ma20):
+            continue
+        _width = (_top / _bot - 1) * 100
+        if not (8.0 <= _width <= 35.0):              # 박스다운 폭(너무 좁으면 무의미·너무 넓으면 추세)
+            continue
+        if abs(_ma5 / _ma20 - 1) * 100 > 3.5:        # 횡보 확인 — 추세장(정/역배열 강함) 배제
+            continue
+        _d_bot = (px / _bot - 1) * 100               # 박스 하단 이격
+        if not (0 <= _d_bot <= 5.0):                 # 하단 5% 이내(지지 근처)만
+            continue
+        if px <= _bot * 0.98:                        # 하단 이탈(박스 붕괴) → 매수 아님
+            continue
+        _pf = _price_full(token, key, secret, cd)
+        _low = _pf[4] if _pf else None
+        if not _low or _low > _bot * 1.03 or px <= _low * 1.002:   # 저가 하단 터치 + 현재가 반등 확인
+            continue
+        _exp = (_top / px - 1) * 100                 # 상단까지 여력
+        if _exp < 3.0:                               # 먹을 여력 3%+ 있어야 의미
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _stop = int(_bot * 0.97); _t1 = int(_top)    # 손절=하단이탈, 목표=박스 상단
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n📦 [레인지 매매·박스하단] {nm} {px:,}({(chg or 0):+.1f}%)\n"
+                         f"박스 {int(_bot):,}~{int(_top):,}({_width:.0f}%) · 하단 지지 반등(하단+{_d_bot:.1f}%) · 상단여력 +{_exp:.0f}%\n"
+                         f"진입 {px:,} · 손절 {_stop:,}(하단 이탈) · 목표 {_t1:,}(박스 상단)\n"
+                         f"※ 박스장 무기 — 상단서 익절·하단 깨지면 손절 · 횡보 종목 전용"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "레인지매매", nm, cd, px)
+            print(f"[레인지매매] {nm} {px:,} 박스 {int(_bot):,}~{int(_top):,}")
+    state["range_sent"] = sent
 
 
 def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -4786,6 +4866,11 @@ def main():
                         check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _pbe:
                         print("눌림타점 스캐너 오류:", _pbe)
+                    # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
+                    try:
+                        check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _rte:
+                        print("레인지매매 오류:", _rte)
                     # [V25.20] 보유종목 관리 — my_holdings.json 매수평균 대비 손절/익절 알림
                     try:
                         check_holdings(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
