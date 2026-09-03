@@ -2411,15 +2411,18 @@ def _box_range(token, key, secret, code, days=20):
         return None
 
 
-def check_range_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+def check_range_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False):
     """[V25.29] 레인지(박스) 매매 — 박스장 전용 무기. 횡보 종목이 박스 하단 지지에서 반등하면
-    '하단 매수→상단 목표' 알림. 추세장 종목은 배제(ma5≈ma20 횡보만). 09:05~15:20, 리스크오프 억제, 종목별 당일1회."""
+    '하단 매수→상단 목표' 알림. 추세장 종목은 배제(ma5≈ma20 횡보만). 09:05~15:20, 리스크오프 억제, 종목별 당일1회.
+    force=True: 시간창·쿨다운·당일락 무시(수동 테스트, --range)."""
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+    if not force and (not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2):
         return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("range_sent", {})
-    if sent.get("_day") != today:
+    if force:
+        sent = {"_day": today}                        # 강제: 당일락 무시하고 새로 스캔
+    elif sent.get("_day") != today:
         sent = {"_day": today}
     _budget = 0
     for s in _volume_rank(token, key, secret, top=40):
@@ -4433,6 +4436,8 @@ def main():
                     help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
     ap.add_argument("--regime", action="store_true",
                     help="장세 판독기 — 최근 종배 익일 수익으로 종배 유효/저갭 장세 판정 텔레그램·종료")
+    ap.add_argument("--range", dest="range_scan", action="store_true",
+                    help="레인지(박스) 매매 강제 스캔 — 시간창 무시하고 박스 하단 반등 종목 텔레그램·종료")
     ap.add_argument("--holdings", action="store_true",
                     help="보유종목 현황·홀딩판정(my_holdings.json) 텔레그램·종료")
     ap.add_argument("--exit-analysis", dest="exit_analysis", action="store_true",
@@ -4502,6 +4507,21 @@ def main():
         _rep = _volatility_scan(_st, kis_key, kis_secret, read_gemini_key())
         send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
         print("[변동성] 발송 완료")
+        sys.exit(0)
+
+    if args.range_scan:                           # [V25.29] 레인지(박스) 매매 강제 스캔
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 레인지 스캔 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _rnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        print("[레인지] 박스권 하단 반등 강제 스캔 중...")
+        _cnt0 = len(load_state().get("range_sent", {}))
+        _stt = load_state()
+        check_range_trade(_st, kis_key, kis_secret, _rnow, _stt, token_tg, chat_id, sev=1, force=True)
+        _found = len([k for k in _stt.get("range_sent", {}) if k != "_day"])
+        if _found == 0:
+            send_telegram(token_tg, chat_id, "📦 레인지 매매 — 조건 통과 종목 없음(횡보+하단반등+상단여력 3%↑ 통과 없음).")
+        print(f"[레인지] 강제 스캔 완료 — {_found}종")
         sys.exit(0)
 
     if args.holdings:                             # [V25.21] 보유종목 현황·홀딩판정
