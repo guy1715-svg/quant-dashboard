@@ -1867,7 +1867,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= 7) else ""
         send_telegram(token_tg, chat_id,
-                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
+                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
                       f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · {_lead_tag} · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%){_pull}\n"
@@ -2442,8 +2442,9 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
         _stop = int(_ma20 * 0.98)                    # 손절 = 20일선 아래(추세 이탈)
         _t1 = int(px * 1.03)
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        _elite = _elite_tag(token, key, secret, cd)   # [V25.27] 재료A+수급유입이면 ⭐정예
         if send_telegram(token_tg, chat_id,
-                         f"{SIG_BUY}\n🎯 [눌림 타점·정배열] {nm} — {_sig[0]}\n"
+                         f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
                          f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
                          + (f" · {_mat}" if _mat else "") + "\n"
                          f"진입 {px:,} · 손절 {_stop:,}(20일선 아래) · 익절 {_t1:,}(+3%){_pull}\n"
@@ -2593,6 +2594,21 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                  "open_next": None, "gap": None})
     _pick_write(rows)
+
+
+def _elite_tag(token, key, secret, code):
+    """[V25.27] ⭐정예 판정 — 재료 A/S급 + 수급 유입(외인+기관 +) 동시 충족 시 '⭐정예' 반환.
+    신호(눌림·공시)에 붙여 '진짜 확신'만 표시. 하나라도 미달/미확인이면 '' (일반 신호)."""
+    _ng, _nbad = _news_grade(code)
+    if _nbad or _ng not in ("S", "A"):
+        return ""
+    try:
+        _f, _o = _investor_est(token, key, secret, code)
+        if _f is None or _o is None or (_f + _o) < 0:   # 수급 미확인 or 이탈 → 정예 아님
+            return ""
+    except Exception:
+        return ""
+    return " ⭐정예"
 
 
 def _regime_today(token, key, secret, now_kst, state):
@@ -2958,12 +2974,13 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         pass
     _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
     _brief_tag = " 🎯브리핑테마(선행)" if pick.get("brief") else ""   # [V24.7] 재설계: 브리핑 겹침 표시
+    _elite_j = " ⭐정예" if ((pick.get("ng") in ("S", "A") or pick.get("brief")) and not _supply_neg) else ""
     _ntag, _nguide = _nxt_label(_pick_nxt)
     _divtxt = ("\n🌒 분산(다른 섹터): "
                + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
                             for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_brief_tag} {_ntag} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_brief_tag}{_elite_j} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"🧭 {_regime['text']}\n"
