@@ -2511,6 +2511,8 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (15 * 60 + 20)) or sev == 2:
         return
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 아침단타 억제
+        return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("early_sent", {})
     if sent.get("_day") != today:
@@ -2591,6 +2593,22 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                  "open_next": None, "gap": None})
     _pick_write(rows)
+
+
+def _regime_today(token, key, secret, now_kst, state):
+    """[V25.26] 당일 장세 상태 캐시 — _regime_detect를 하루 1회만 계산(API 절약), 이후 재사용.
+    반환: 'gap'/'neutral'/'lowgap'/'unknown'. 아침 단타 억제 게이트용."""
+    today = now_kst.strftime("%Y%m%d")
+    _rc = state.get("regime_cache") or {}
+    if _rc.get("day") == today and _rc.get("state"):
+        return _rc["state"]
+    try:
+        _r = _regime_detect(token, key, secret, now_kst)
+        _st = _r.get("state", "unknown")
+    except Exception:
+        _st = "unknown"
+    state["regime_cache"] = {"day": today, "state": _st}
+    return _st
 
 
 def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6):
@@ -3119,6 +3137,15 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
         sent = {"_day": today}
     out = []
     if not in_window:
+        state["sniper_sent"] = sent
+        return out
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 시가저격 억제
+        # 하루 1회 안내(왜 아침 신호가 없는지)
+        if not sent.get("_lowgap_note"):
+            send_telegram(token_tg, chat_id,
+                          "🔵[박스장] 저갭 장세 — 아침 당일단타(시가저격·진입·조기포착) 억제.\n"
+                          "박스장은 아침 추격 승률 낮음(오늘 23%) → 저녁 브리핑 테마·눌림 위주로.")
+            sent["_lowgap_note"] = True
         state["sniper_sent"] = sent
         return out
     for code, name in lineup:
@@ -3842,6 +3869,8 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     [V16.9 다이어트] sev==2(리스크오프) 또는 낙폭과대 급락주(이격≤-10%+하락)면 발송 억제(스냅샷엔 남김)."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (10 * 60)):            # 만쥬 제로아워 밖 → 감시 안 함
+        return []
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 진입 억제
         return []
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("entry_sent", {})
