@@ -2339,7 +2339,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
         if not _kind:
             continue
         _ck = f"{code}_{_kind[0][:2]}"                     # 종목+상태별 쿨다운(중복 방지)
-        if (int(now_kst.timestamp()) - int(hs.get(_ck, 0))) < 60 * 60:
+        if (int(now_kst.timestamp()) - int(hs.get(_ck, 0))) < 4 * 60 * 60:   # [V25.30] 60분→4시간(손절 매시간 반복 스팸 해결·하루 2회)
             continue
         _sess = "정규장" if _reg else "NXT 프리(8시)" if _pre else "NXT 애프터"
         if send_telegram(token_tg, chat_id,
@@ -2460,7 +2460,7 @@ def check_range_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev
         _ng, _nbad = _news_grade(cd)
         if _nbad:
             continue
-        _stop = int(_bot * 0.97); _t1 = int(_top)    # 손절=하단이탈, 목표=박스 상단
+        _stop = max(int(px * 0.965), int(_bot * 0.97)); _t1 = int(_top)    # [V25.30] 손절 -3.5% 상한(하단 멀면)·목표=박스 상단
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n📦 [레인지 매매·박스하단] {nm} {px:,}({(chg or 0):+.1f}%)\n"
                          f"박스 {int(_bot):,}~{int(_top):,}({_width:.0f}%) · 하단 지지 반등(하단+{_d_bot:.1f}%) · 상단여력 +{_exp:.0f}%\n"
@@ -2488,7 +2488,7 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
             continue
-        if (int(now_kst.timestamp()) - int(sent.get(cd, 0))) < 40 * 60:
+        if sent.get(cd):                              # [V25.30] 같은 종목 하루 1회(40분 반복 스팸 해결)
             continue
         if not (-2.0 <= (chg or 0) <= 4.0):          # 급락(칼)·급등(눌림 아님) 사전 컷 → 일봉조회 절약
             continue
@@ -2525,7 +2525,9 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
         if _nbad:
             continue
         _pull = _pullback_levels(token, key, secret, cd, px, chg, ds) or ""
-        _stop = int(_ma20 * 0.98)                    # 손절 = 20일선 아래(추세 이탈)
+        # [V25.30] 손절폭 -3% 상한 — '20일선 아래'가 멀면 -9%까지 가던 문제(삼성SDI 등). 20일선/−3% 中 높은쪽.
+        _stop = max(int(px * 0.97), int(_ma20 * 0.98))
+        _stoppct = (_stop / px - 1) * 100
         _t1 = int(px * 1.03)
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
         _elite = _elite_tag(token, key, secret, cd)   # [V25.27] 재료A+수급유입이면 ⭐정예
@@ -2533,7 +2535,7 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
                          f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
                          f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
                          + (f" · {_mat}" if _mat else "") + "\n"
-                         f"진입 {px:,} · 손절 {_stop:,}(20일선 아래) · 익절 {_t1:,}(+3%){_pull}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·20일선/−3% 중 높은쪽) · 익절 {_t1:,}(+3%){_pull}\n"
                          f"※ 저갭 장세 주력 무기 · 지지 확인 후 분할 · 정배열 유지 시만 유효"):
             sent[cd] = int(now_kst.timestamp())
             _log_signal(state, now_kst, "눌림타점", nm, cd, px)
@@ -4316,7 +4318,10 @@ def send_interval_brief(now_kst, state, token_tg, chat_id, snap):
     _topn = f"{_top.get('name')}(+{_top.get('amt_eok'):,.0f}억)" if _top else "—"
     # [V16.9 다이어트] 상태가 바뀔 때만 발송 — sev·자금흐름·A급수·진입수·원톱이 직전과 같으면 침묵.
     #   → 하루 11개 '리스크오프·0종' 복붙 스팸 제거. (첫 브리핑은 항상 1회 발송)
-    _sig = f"{sev}|{_flow}|{_ace_n}|{_entry_n}|{_topn}|{1 if macro.get('overheat') else 0}"
+    # [V25.30] 시그니처엔 '변하는 금액' 빼고 구조(섹터·종목명·개수)만 — 금액 미세변동으로 30분마다
+    #   재발송되던 스팸 해결. 원톱 종목명·수급 방향 섹터·개수 바뀔 때만 발송.
+    _flow_sig = (f"{_outf['sector']}>{_inf['sector']}" if (_inf and _outf) else "none")
+    _sig = f"{sev}|{_flow_sig}|{_ace_n}|{_entry_n}|{_top.get('name', '—')}|{1 if macro.get('overheat') else 0}"
     if state.get("interval_brief_sig") == _sig:
         state["interval_brief_ts"] = int(now_kst.timestamp())   # 침묵해도 타이머는 갱신(다음 판정 30분 뒤)
         return
@@ -4769,8 +4774,8 @@ def main():
                         _tour = st.get("tour_sent") or {}
                         if _tour.get("_day") != _today3:
                             _tour = {"_day": _today3}
-                        _last = int(_tour.get(key, 0))
-                        if _mkt_hours and (int(now.timestamp()) - _last) >= 3600:   # 섹터별 60분
+                        # [V25.30] 섹터별 60분 → '같은 유입섹터 하루 1회'(매시간 반복 스팸 해결)
+                        if _mkt_hours and not _tour.get(key):
                             send_telegram(token_tg, chat_id,
                                           f"{SIG_BUY}\n🚀 전조 시그널!\n자금 {outflow[0]} 이탈 → {inflow[0]} 유입\n"
                                           f"유입 {inflow[1]['net']/1e8:,.0f}억 · {stamp} KST\n폭등 前 선취 후보 — 대시보드 확인")
