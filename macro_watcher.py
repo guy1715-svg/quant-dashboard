@@ -3182,6 +3182,25 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             state["dolpanty_pick_day"] = today
         print("[종배픽] 후보 0종 — 관망")
         return
+    # [V25.35] 테마(섹터) 대장/2등 순위(강의 1·2강) — 같은 테마에 후보 2개↑ 몰릴 때(=테마 형성)만
+    #   거래대금 순위로 대장 +10 / 2등 +5 / 3등↓ 후발주 -8. 단독 섹터는 중립(테마 아님).
+    _by_sec = {}
+    for _c in cands:
+        _c["sector"] = _sector_name(token, key, secret, _c["code"])   # 이후 분산선정에서도 재사용
+        if _c["sector"]:
+            _by_sec.setdefault(_c["sector"], []).append(_c)
+    for _sec, _members in _by_sec.items():
+        if len(_members) < 2:
+            continue                                                 # 단독 = 테마 아님 → 중립
+        _members.sort(key=lambda c: c["turn"], reverse=True)
+        for _rk, _c in enumerate(_members, 1):
+            if _rk == 1:
+                _c["score"] += 10; _c["theme_rank"] = "🥇대장"
+            elif _rk == 2:
+                _c["score"] += 5;  _c["theme_rank"] = "🥈2등"
+            else:
+                _c["score"] -= 8;  _c["theme_rank"] = "🔻후발"
+            _c["xtag"] = (_c.get("xtag", "") + " " + _c["theme_rank"]).strip()
     cands.sort(key=lambda c: c["score"], reverse=True)
     # [V20.7] 금요일 종배 억제 — 금요일 픽은 주말(3일 밤) 홀딩이라 주말 이벤트 리스크 폭증
     #   (예: 삼성생명 금 +10%→월 -11%). 확정픽 발송 금지, 그림자만 로깅(검증 데이터 유지).
@@ -3208,14 +3227,14 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         return
     pick = cands[0]
     # [V23.2] 분산 후보는 '다른 섹터'로 — 같은 섹터면 동반 갭다운이라 분산 효과 없음(사용자 룰).
-    _pick_sec = _sector_name(token, key, secret, pick["code"])
+    _pick_sec = pick.get("sector") or _sector_name(token, key, secret, pick["code"])
     pick["sector"] = _pick_sec
     _used_sec = {_pick_sec} if _pick_sec else set()
     div = []
     for c in cands[1:]:
         if c["score"] < _thr:                        # [V25.10] 분산 후보도 장세 임계(_thr) 적용 — 저갭엔 약한 분산 금지
             continue
-        _csec = _sector_name(token, key, secret, c["code"])
+        _csec = c.get("sector") or _sector_name(token, key, secret, c["code"])
         if _csec and _csec in _used_sec:            # 이미 담은 섹터(원톱 포함) → 스킵
             continue
         c["sector"] = _csec
@@ -3332,10 +3351,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _elite_j = " ⭐정예" if ((pick.get("ng") in ("S", "A") or pick.get("brief")) and not _supply_neg) else ""
     _ntag, _nguide = _nxt_label(_pick_nxt)
     _divtxt = ("\n🌒 분산(다른 섹터): "
-               + " · ".join(f"{c['name']}[{c.get('sector','')}] {c['px']:,}({c['chg']:+.1f}%)"
+               + " · ".join(f"{c['name']}[{c.get('sector','')}]{(' '+c['theme_rank']) if c.get('theme_rank') else ''} "
+                            f"{c['px']:,}({c['chg']:+.1f}%)"
                             for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
+    _prank = f" {pick['theme_rank']}" if pick.get("theme_rank") else ""   # 원톱 테마 순위
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_brief_tag}{_elite_j} {_ntag} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}"
                      + (f" · {pick['xtag']}" if pick.get("xtag") else "")

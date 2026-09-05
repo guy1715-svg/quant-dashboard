@@ -4087,22 +4087,22 @@ def render_turnover_surge():
 #   "내일 아침 대응 후보"를 미리 선점. NXT 창(17시 등)에 "지금 종배 못 봐?"의 실전 답.
 # ═══════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
-def _scan_eps(code):
-    """[V25.11] 종목 EPS(적자 판정용) — inquire-price. 실패 시 None."""
+def _scan_meta(code):
+    """[V25.11] 종목 EPS(적자 판정)+업종명(테마 순위) — inquire-price 1콜. 반환 (eps|None, 업종명|'')."""
     try:
         _token = kis_get_token()
         if not _token:
-            return None
+            return None, ""
         _r = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
                            headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
                                     "appsecret": _kis_secret(), "tr_id": "FHKST01010100"},
                            params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=5)
         _o = _r.json().get("output", {})
         if isinstance(_o, dict):
-            return _to_int(_o.get("eps"))
+            return _to_int(_o.get("eps")), (_o.get("bstp_kor_isnm") or "").strip()
     except Exception:
         pass
-    return None
+    return None, ""
 
 
 def _scan_supply_fin_gain(code):
@@ -4154,13 +4154,6 @@ def _scan_supply_fin_gain(code):
     if not (_today_in or _has_daily):
         delta -= 10
         rs.append("⚠️무수급")
-    try:
-        _eps = _scan_eps(code)
-        if _eps is not None and _eps < 0:
-            delta -= 12
-            rs.append("⚠️적자")
-    except Exception:
-        pass
     return delta, rs
 
 
@@ -4250,7 +4243,7 @@ def scan_tomorrow_candidates(top=50):
             _nb, _nmute = 0, False
         _s["news_grade"] = "S" if _nb >= 8 else "A" if _nb >= 4 else "none"
         _s["news_bad"] = bool(_nmute)
-        # [V25.11] 수급+재무 가점(텔레그램 종배와 동일) — 무수급/적자 강등, 수급·프로그램 가점
+        # [V25.11] 수급 가점(텔레그램 종배와 동일) — 무수급 강등, 수급·프로그램 가점
         try:
             _sg, _srs = _scan_supply_fin_gain(_s["code"])
             _s["score"] = round(_s["score"] + _sg, 1)
@@ -4258,7 +4251,33 @@ def scan_tomorrow_candidates(top=50):
                 _s["reasons"] = (_s.get("reasons") or []) + _srs
         except Exception:
             pass
-    _top.sort(key=lambda x: (x["score"], x.get("ohrank", 2), x["turnover"]), reverse=True)  # 수급 반영 후 재정렬
+        # 적자(EPS<0) 강등 + 업종명(테마 순위용) — inquire-price 1콜로 동시 취득
+        try:
+            _eps, _sec = _scan_meta(_s["code"])
+            _s["sector"] = _sec
+            if _eps is not None and _eps < 0:
+                _s["score"] = round(_s["score"] - 12, 1)
+                _s["reasons"] = (_s.get("reasons") or []) + ["⚠️적자"]
+        except Exception:
+            _s["sector"] = ""
+    # [V25.11] 테마(업종) 대장/2등 순위 — 같은 업종에 후보 2개↑면 거래대금 순위로 가감점(텔레그램 종배와 동일)
+    _dsec = {}
+    for _s in _top:
+        if _s.get("sector"):
+            _dsec.setdefault(_s["sector"], []).append(_s)
+    for _sec, _mem in _dsec.items():
+        if len(_mem) < 2:
+            continue
+        _mem.sort(key=lambda x: x["turnover"], reverse=True)
+        for _rk, _s in enumerate(_mem, 1):
+            if _rk == 1:
+                _s["score"] = round(_s["score"] + 10, 1); _tr = "🥇대장"
+            elif _rk == 2:
+                _s["score"] = round(_s["score"] + 5, 1);  _tr = "🥈2등"
+            else:
+                _s["score"] = round(_s["score"] - 8, 1);  _tr = "🔻후발"
+            _s["reasons"] = (_s.get("reasons") or []) + [_tr]
+    _top.sort(key=lambda x: (x["score"], x.get("ohrank", 2), x["turnover"]), reverse=True)  # 수급·테마순위 반영 후 재정렬
     return _top
 
 
