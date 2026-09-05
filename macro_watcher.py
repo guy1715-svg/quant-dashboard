@@ -317,6 +317,29 @@ def _wti_pct():
     return _hist_pct("CL=F")
 
 
+def _us_fut_pct(state, now_kst, ttl=600):
+    """[V25.33] 나스닥100 선물 전일대비%(10분 캐시) — 눌림/낙주 '오버나이트 게이트'용.
+    강의: 눌림 홀딩은 밤사이 미국장이 받쳐줄 때만. 한국 장중 NQ=F=오늘밤 미국장 방향 선반영. None 가능."""
+    c = state.get("_usfut_cache") or {}
+    ts = int(now_kst.timestamp())
+    if c.get("ts") and (ts - c["ts"]) < ttl and "nq" in c:
+        return c["nq"]
+    nq = _pct("NQ=F")
+    state["_usfut_cache"] = {"ts": ts, "nq": nq}
+    return nq
+
+
+def _overnight_note(nq):
+    """미국선물%로 오버나이트(홀딩) 여건 한 줄. (태그문자열, 홀딩가능bool)."""
+    if nq is None:
+        return "", True                                   # 데이터 없음 → 판단보류(막지 않음)
+    if nq <= -0.7:
+        return f"\n🌙 미국선물 {nq:+.1f}% 약세 — 오버나이트 비권장, 당일 청산 우선", False
+    if nq >= 0.2:
+        return f"\n🌙 미국선물 {nq:+.1f}% — 홀딩 여건 OK(눌림 종배 가능)", True
+    return f"\n🌙 미국선물 {nq:+.1f}% 보합 — 홀딩은 소량만", True
+
+
 def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
     nq, sox = _pct("NQ=F"), _pct("^SOX")
     peers = [x for x in (_pct("NVDA"), _pct("AVGO"), _pct("MU")) if x is not None]
@@ -693,7 +716,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2483,6 +2506,7 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
     sent = state.get("pullback_sent", {})
     if sent.get("_day") != today:
         sent = {"_day": today}
+    _onote, _ = _overnight_note(_us_fut_pct(state, now_kst))   # [V25.33] 미국선물 오버나이트 게이트(안내)
     _budget = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
@@ -2561,7 +2585,8 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
                          f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
                          f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
                          + (f" · {_mat}" if _mat else "") + _prog_tag + _avg_tag + "\n"
-                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·지지이탈시 전량) · 익절 {_t1:,}(+3%){_pull}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·지지이탈시 전량) · 익절 {_t1:,}(+3%){_pull}"
+                         + _onote + "\n"
                          f"※ 수급주 눌림 · 10분할로 나눠 담고 다음날 갭하락 대비 총알 일부 남길 것"):
             sent[cd] = int(now_kst.timestamp())
             _log_signal(state, now_kst, "눌림타점", nm, cd, px)
@@ -2586,6 +2611,7 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
     sent = state.get("oversold_sent", {})
     if sent.get("_day") != today:
         sent = {"_day": today}
+    _onote, _ = _overnight_note(_us_fut_pct(state, now_kst))   # [V25.33] 미국선물 게이트 — 급락일 홀딩 위험판정
     _budget = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
@@ -2627,12 +2653,79 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
                          f"{SIG_BUY}\n🩸 [과매도 낙주·반등] {nm} — 지수급락({_kospi:+.1f}%)일 낙폭과대\n"
                          f"현재 {px:,}({(chg or 0):+.1f}%) · 저가 {int(_low):,} 대비 반등 · 시총 {_cap/10000:,.1f}조\n"
                          f"💧 급락 속 {_who} 수급 유입{_prog_tag}\n"
-                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈시 전량) · 익절 {_t1:,}(+2.5%)\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈시 전량) · 익절 {_t1:,}(+2.5%)"
+                         + _onote + "\n"
                          f"※ 악재性 급락 아닌지 반드시 확인 · 시가/저가 분할 · 미국선물 급락 지속시 당일 청산"):
             sent[cd] = True
             _log_signal(state, now_kst, "과매도낙주", nm, cd, px)
             print(f"[과매도낙주] {nm} {px:,} ({chg:+.1f}%) 지수{_kospi:+.1f}%")
     state["oversold_sent"] = sent
+
+
+def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.33] 강한 재료주 일시 투매 반등(강의 유형4) — 당일청산 전용(오버나이트 금지).
+    수급단타왕/만주: 강한 재료(계약·실적)로 장중 크게 오른 주도주가 일시 투매로 눌렸지만
+    프로그램/수급·호가가 지지하면 짧은 되돌림(1~2%)만 먹고 빠르게 청산. 종배와 달리 밤 안 넘김.
+    09:10~14:40, 종목별 하루 1회, 리스크오프(sev2) 억제. 게이트: 강한재료(S/A)+당일고점 +5%↑+
+    고점대비 2~7% 눌림+저가대비 반등+프로그램/수급 지지+거래대금 큼."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 10) <= m <= (14 * 60 + 40)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("washout_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd):
+            continue
+        if not (2.0 <= (chg or 0) <= 9.0):           # 아직 강세 유지 중(눌렸어도 +) · 이미 죽은 종목 제외
+            continue
+        if turn < 5_000_000_000:                     # 거래대금 50억+ (주도주·유동성)
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        _ng, _nbad = _news_grade(cd)                 # 강한 재료 필수 — 재료 없는 급등락은 제외(강의: 재료 살아있을 때만)
+        if _nbad or _ng not in ("S", "A"):
+            continue
+        _pf = _price_full(token, key, secret, cd)     # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _high, _low = _pf[3], _pf[4]
+        _prev = px / (1 + (chg or 0) / 100) if chg else None
+        if not (_prev and _high and _low):
+            continue
+        _high_pct = (_high / _prev - 1) * 100          # 당일 고점 등락률
+        if _high_pct < 5.0:                            # 오늘 +5%↑ 강하게 올랐어야(강한 재료주)
+            continue
+        _pull = (_high - px) / _high * 100             # 고점 대비 현재 되돌림%
+        if not (2.0 <= _pull <= 7.0):                  # 2~7% 눌림 = '일시 투매'(너무 얕으면 그냥 강세, 깊으면 붕괴)
+            continue
+        if px < _low * 1.005:                          # 저가 대비 반등 확인(아직 흘러내리면 제외)
+            continue
+        _prog = _program_net(token, key, secret, cd)   # 프로그램 지지
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        _prog_ok = bool(_prog and _prog > 0)
+        if not (_prog_ok or ((_fe or 0) + (_oe or 0) > 0)):   # 프로그램 or 당일 수급 지지 필수
+            continue
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A"
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if _prog_ok else ""
+        _stop = int(_low * 0.99)                        # 저가 이탈시(타이트)
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.02)                            # +2% 짧게
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n⚡ [재료주 투매반등·당일청산] {nm} — 고점 {int(_high):,}(+{_high_pct:.0f}%) 대비 −{_pull:.1f}% 눌림\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · {_mat}{_prog_tag} · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈) · 익절 {_t1:,}(+2%·짧게)\n"
+                         f"⚠️ 오버나이트 금지! 당일 되돌림 1~2%만 먹고 청산 · 재료 소멸/투매 재개시 즉시 정리"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "재료투매반등", nm, cd, px)
+            print(f"[재료투매반등] {nm} {px:,} 고점대비 −{_pull:.1f}%")
+    state["washout_sent"] = sent
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
@@ -5070,6 +5163,11 @@ def main():
                         check_oversold_bounce(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _obe:
                         print("과매도 낙주 오류:", _obe)
+                    # [V25.33] 재료주 일시 투매 반등 — 당일청산(강한 재료주 급등 후 눌림 되돌림)
+                    try:
+                        check_material_washout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _mwe2:
+                        print("재료투매반등 오류:", _mwe2)
                     # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
                     try:
                         check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
