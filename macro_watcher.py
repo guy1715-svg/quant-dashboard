@@ -2891,6 +2891,96 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
     state["openbet_sent"] = sent
 
 
+def _round_level(px):
+    """[V25.37] 라운드 피겨(심리적 매물대) — px 바로 아래 라운드 레벨과 스텝. (level, step)."""
+    if px < 10000:
+        step = 1000
+    elif px < 50000:
+        step = 5000
+    elif px < 100000:
+        step = 10000
+    elif px < 500000:
+        step = 50000
+    else:
+        step = 100000
+    return (int(px) // step) * step, step
+
+
+def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.37] 돌파매매(강의 5강) — 시장 전역. 09:10~15:00, 저갭/리스크오프 억제.
+    강의: '고점 추격'이 아니라 '저항 돌파가 확인된 뒤의 추세 참여'. 매도물량 흡수하며 전고점·라운드피겨·신고가 돌파.
+    게이트: 20MA위 + (전고점 hi20 돌파 or 라운드피겨 돌파) + 거래량 2배↑ + 프로그램 순매수(+) or 재료 + 악재無.
+    손절 돌파기준가 아래 -2%(돌파실패=근거훼손·스윙전환 금지). 종목당 하루 2회까지(3번째 돌파 회피). 종목당 쿨다운 없음(2회 상한)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 10) <= m <= (15 * 60)) or sev == 2:
+        return
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # 저갭/박스장 돌파 억제
+        return
+    today = now_kst.strftime("%Y%m%d")
+    cnt = state.get("breakout_cnt", {})
+    if cnt.get("_day") != today:
+        cnt = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cnt.get(cd, 0) >= 2:                        # 하루 2회 상한(강의: 3번째 돌파 회피)
+            continue
+        if not (1.0 <= (chg or 0) <= 12.0) or turn < 5_000_000_000:   # 오르는 중·과추격 제외·거래대금 50억+
+            continue
+        _budget += 1
+        if _budget > 22:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        if px <= ds["ma20"] or (ds.get("disp") or 0) >= 12:   # 20MA위(추세) + 과열 상한
+            continue
+        _pf = _price_full(token, key, secret, cd)      # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _open = _pf[2]
+        _hi20 = ds.get("hi20") or 0
+        _lvl, _step = _round_level(px)
+        # 돌파 판정 — ①전고점(hi20) 돌파/신고가 ②라운드피겨(시가 아래→현재 위 관통)
+        _bpx, _btype = None, None
+        if _hi20 and px >= _hi20:
+            _bpx, _btype = _hi20, ("신고가" if px >= _hi20 else "전고점")
+            _btype = "전고점/신고가"
+        elif _lvl and _open and _open < _lvl <= px and (px - _lvl) / _lvl <= 0.02:
+            _bpx, _btype = _lvl, f"라운드피겨({_lvl:,})"
+        if not _bpx:
+            continue
+        _vr = _vol_ratio_5d(token, key, secret, cd)
+        _mult = _vr[2] if _vr else 0
+        if _mult < 2.0:                                # 거래량 2배 미달 = 가짜돌파 위험
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _prog = _program_net(token, key, secret, cd)
+        _prog_ok = bool(_prog and _prog > 0)
+        if not (_prog_ok or _ng in ("S", "A")):        # 프로그램 순매수(방향일치) or 재료 필수
+            continue
+        _stop = int(_bpx * 0.98)                        # 돌파기준가 아래 -2%
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.03)
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if _prog_ok else ""
+        _nth = cnt.get(cd, 0) + 1
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🚀 [돌파매매·{_btype}] {nm} {px:,}({(chg or 0):+.1f}%) · {_nth}차 돌파\n"
+                         f"돌파기준 {_bpx:,} 상향 · 거래량 {_mult:.1f}배 동반"
+                         + (f" · {_mat}" if _mat else "") + _prog_tag + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·돌파기준 아래) · 익절 {_t1:,}(+3%)\n"
+                         f"⚠️ 돌파 안착 확인 후 분할(불타기)·거래량 빠지면 속임수 · 돌파 실패시 즉시 손절(스윙 전환 금지)"):
+            cnt[cd] = _nth
+            _log_signal(state, now_kst, "돌파초입", nm, cd, px)
+            print(f"[돌파매매] {nm} {px:,} {_btype} {_nth}차(거래량 {_mult:.1f}배)")
+    state["breakout_cnt"] = cnt
+
+
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
     """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
     ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
@@ -5412,6 +5502,11 @@ def main():
                         check_early_catch(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _ece:
                         print("조기 포착 오류:", _ece)
+                    # [V25.37] 돌파매매(강의 5강) — 시장전역 전고점·라운드피겨·신고가 돌파(거래량2배+프로그램)
+                    try:
+                        check_breakout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _bke:
+                        print("돌파매매 오류:", _bke)
                     # [V22.7] 거래량 급증 서치(마감권) — 오늘 거래량>5일평균 2배 + 거래대금 상위 종목 알림
                     try:
                         check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
