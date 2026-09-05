@@ -2685,18 +2685,21 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
 
 
 def _elite_tag(token, key, secret, code):
-    """[V25.27] ⭐정예 판정 — 재료 A/S급 + 수급 유입(외인+기관 +) 동시 충족 시 '⭐정예' 반환.
-    신호(눌림·공시)에 붙여 '진짜 확신'만 표시. 하나라도 미달/미확인이면 '' (일반 신호)."""
+    """[V25.31] ⭐정예 판정 — 재료 A/S급 + 당일 수급 유입 필수. 여기에 '일별 수급 연속성'을 얹어
+    ⭐정예(기본) / ⭐⭐정예(수급 3일연속·전일比급증) 2단계. 신호에 붙여 확신 강도 표시. 미달 시 ''."""
     _ng, _nbad = _news_grade(code)
     if _nbad or _ng not in ("S", "A"):
         return ""
     try:
         _f, _o = _investor_est(token, key, secret, code)
-        if _f is None or _o is None or (_f + _o) < 0:   # 수급 미확인 or 이탈 → 정예 아님
+        if _f is None or _o is None or (_f + _o) < 0:   # 당일 수급 미확인 or 이탈 → 정예 아님
             return ""
     except Exception:
         return ""
-    return " ⭐정예"
+    _stag, _strong = _supply_daily_tag(token, key, secret, code)   # 일별 연속성·강도
+    if _strong:
+        return f" ⭐⭐정예(수급강){_stag}"                          # 재료A + 수급 연속/급증 = 최상위
+    return f" ⭐정예{_stag}"                                        # 재료A + 당일 유입(+2일연속 있으면 태그)
 
 
 def _regime_today(token, key, secret, now_kst, state):
@@ -3305,6 +3308,58 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                 _log_signal(state, now_kst, "시가저격", name, code, px)
     state["sniper_sent"] = sent
     return out
+
+
+def _investor_daily(token, key, secret, code, days=5):
+    """[V25.31] 종목 일별 외국인/기관 순매수(수량) 최근 N일 — inquire-investor(FHKST01010900).
+    최신순 리스트 [{frgn,orgn}]. 수급 '연속성'·'전일대비 강도' 판정용. 실패 시 []."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010900"},
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=6)
+        out = []
+        for x in (r.json().get("output") or [])[:days]:
+            if isinstance(x, dict):
+                out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty"))})
+        return out
+    except Exception:
+        return []
+
+
+def _supply_daily_tag(token, key, secret, code):
+    """[V25.31] 수급 연속성·강도 태그 — 외인/기관 연속 순매수 일수 + 최근 급증. 반환 (tag, strong)."""
+    d = _investor_daily(token, key, secret, code, days=5)
+    if not d:
+        return "", False
+
+    def _consec(k):
+        n = 0
+        for row in d:
+            if row.get(k, 0) > 0:
+                n += 1
+            else:
+                break
+        return n
+    _fc, _oc = _consec("frgn"), _consec("orgn")
+    _best = max(_fc, _oc)
+    _who = "외인" if _fc >= _oc else "기관"
+    # 전일대비 급증: 최신일 순매수 > 직전 3일 평균 절대값 × 2 (외인 or 기관)
+    _surge = False
+    try:
+        for _k in ("frgn", "orgn"):
+            _today = d[0].get(_k, 0)
+            _prev = [abs(r.get(_k, 0)) for r in d[1:4]]
+            _avg = sum(_prev) / len(_prev) if _prev else 0
+            if _today > 0 and _avg > 0 and _today >= _avg * 2:
+                _surge = True
+    except Exception:
+        pass
+    if _best >= 3:
+        return f" 🔥{_who}{_best}일연속매수" + ("·전일比급증" if _surge else ""), True
+    if _best == 2 or _surge:
+        return f" 🟢{_who}{'2일연속' if _best >= 2 else '수급급증'}", False
+    return "", False
 
 
 def _investor_est(token, key, secret, code):
