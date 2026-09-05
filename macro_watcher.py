@@ -2524,19 +2524,45 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
         _ng, _nbad = _news_grade(cd)                 # 악재 제외
         if _nbad:
             continue
+        # ── [V25.32] 수급 게이트(강의 핵심) ──────────────────────────────
+        #   수급단타왕: "외국인·기관 수급주 위주로만 눌림. 무수급 재료·테마주 눌림은 떨어지는 칼."
+        #   당일 외인+기관 추정 순매수 유입 OR 일별 연속매수 中 하나는 반드시 있어야 발송.
+        #   (수급 fetch 1회로 게이트·연속성·평단·정예태그 전부 처리 — _elite_tag 중복호출 제거)
+        _fe, _oe = _investor_est(token, key, secret, cd)          # 당일 추정 순매수(수량)
+        _idaily = _investor_daily(token, key, secret, cd, days=5)  # 일별 순매수(연속성·평단)
+        _stag, _strong = _supply_daily_tag_from(_idaily)
+        _today_in = ((_fe or 0) + (_oe or 0)) > 0
+        if not (_today_in or _stag):                 # 당일 유입도, 일별 연속도 없음 → 무수급 → 눌림 금지
+            continue
+        # ── [V25.32] 주포 매도→매수 전환 확인 ────────────────────────────
+        #   강의: 프로그램(주포)이 매도 소진 후 매수 전환하는 자리가 눌림 급소. 당일 프로그램 순매수(+)면 강신호.
+        _prog = _program_net(token, key, secret, cd)              # 당일 프로그램 순매수 금액(원)
+        _prog_tag = ""
+        if _prog and _prog > 0:
+            _prog_tag = f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
+        # ── [V25.32] 외인/기관 평단 아래 = 추가매수 급소 ──────────────────
+        _avg = _supply_avgprice(_idaily)
+        _avg_tag = ""
+        if _avg and px <= _avg * 1.005:              # 현재가가 수급 평단 이하(±0.5%) → 강의 '평단 아래 매수' 자리
+            _avg_tag = f"\n💡 외인/기관 평단(~{_avg:,}) 이하 — 세력 원가 구간(강의 '평단 아래 매수')"
         _pull = _pullback_levels(token, key, secret, cd, px, chg, ds) or ""
         # [V25.30] 손절폭 -3% 상한 — '20일선 아래'가 멀면 -9%까지 가던 문제(삼성SDI 등). 20일선/−3% 中 높은쪽.
         _stop = max(int(px * 0.97), int(_ma20 * 0.98))
         _stoppct = (_stop / px - 1) * 100
         _t1 = int(px * 1.03)
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
-        _elite = _elite_tag(token, key, secret, cd)   # [V25.27] 재료A+수급유입이면 ⭐정예
+        # 정예 태그 인라인(이미 가져온 수급으로 판정 — _elite_tag 재조회 안 함)
+        _elite = ""
+        if _ng in ("S", "A") and _today_in:
+            _elite = f" ⭐⭐정예(수급강){_stag}" if _strong else f" ⭐정예{_stag}"
+        elif _stag:                                  # 재료는 약해도 수급 연속이면 표시
+            _elite = _stag
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
                          f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
-                         + (f" · {_mat}" if _mat else "") + "\n"
-                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·20일선/−3% 중 높은쪽) · 익절 {_t1:,}(+3%){_pull}\n"
-                         f"※ 저갭 장세 주력 무기 · 지지 확인 후 분할 · 정배열 유지 시만 유효"):
+                         + (f" · {_mat}" if _mat else "") + _prog_tag + _avg_tag + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·지지이탈시 전량) · 익절 {_t1:,}(+3%){_pull}\n"
+                         f"※ 수급주 눌림 · 10분할로 나눠 담고 다음날 갭하락 대비 총알 일부 남길 것"):
             sent[cd] = int(now_kst.timestamp())
             _log_signal(state, now_kst, "눌림타점", nm, cd, px)
             print(f"[눌림타점] {nm} {px:,} — {_sig[0]}")
@@ -3311,8 +3337,8 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
 
 
 def _investor_daily(token, key, secret, code, days=5):
-    """[V25.31] 종목 일별 외국인/기관 순매수(수량) 최근 N일 — inquire-investor(FHKST01010900).
-    최신순 리스트 [{frgn,orgn}]. 수급 '연속성'·'전일대비 강도' 판정용. 실패 시 []."""
+    """[V25.32] 종목 일별 외국인/기관 순매수 최근 N일 — inquire-investor(FHKST01010900).
+    최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 []."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -3321,15 +3347,42 @@ def _investor_daily(token, key, secret, code, days=5):
         out = []
         for x in (r.json().get("output") or [])[:days]:
             if isinstance(x, dict):
-                out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty"))})
+                out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty")),
+                            "frgn_amt": _to_int(x.get("frgn_ntby_tr_pbmn")),
+                            "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn"))})
         return out
     except Exception:
         return []
 
 
+def _supply_avgprice(rows):
+    """[V25.32] 외인/기관 '평단' 근사 — 최근 연속 순매수 구간의 Σ순매수금액/Σ순매수수량(원).
+    강의(수급단타왕) '평단 아래서 추가매수' 규칙용. 금액필드 없거나 계산불가 시 None."""
+    if not rows:
+        return None
+    best = None
+    for k, amt_k in (("frgn", "frgn_amt"), ("orgn", "orgn_amt")):
+        tot_qty = tot_amt = 0
+        for row in rows:                              # 최신→과거, 순매수(+)인 날만 누적(매도전환 만나면 중단)
+            q, a = row.get(k, 0), row.get(amt_k, 0)
+            if q > 0 and a:
+                tot_qty += q
+                tot_amt += abs(a)
+            else:
+                break
+        if tot_qty > 0 and tot_amt > 0:
+            avg = tot_amt / tot_qty
+            best = avg if best is None else min(best, avg)   # 더 낮은(보수적) 평단 채택
+    return int(best) if best else None
+
+
 def _supply_daily_tag(token, key, secret, code):
     """[V25.31] 수급 연속성·강도 태그 — 외인/기관 연속 순매수 일수 + 최근 급증. 반환 (tag, strong)."""
-    d = _investor_daily(token, key, secret, code, days=5)
+    return _supply_daily_tag_from(_investor_daily(token, key, secret, code, days=5))
+
+
+def _supply_daily_tag_from(d):
+    """[V25.32] 위와 동일하나 이미 조회한 일별수급(rows)으로 판정 — 중복 API 호출 방지."""
     if not d:
         return "", False
 
