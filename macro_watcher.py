@@ -693,7 +693,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2567,6 +2567,72 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
             _log_signal(state, now_kst, "눌림타점", nm, cd, px)
             print(f"[눌림타점] {nm} {px:,} — {_sig[0]}")
     state["pullback_sent"] = sent
+
+
+def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.32] 과매도 낙주 반등(강의 ⑧, 조건부) — 지수 급락일 전용 별도 경로.
+    수급단타왕: "지수/미국 급락일에 대형주가 악재 아닌 이유로 -5~-9% 낙폭과대 → 수급 받쳐주고 반등하면 최고 기회
+    (8/5 서킷·모건스탠리 리포트式)." 평상시 눌림스캐너는 -2% 밑을 '떨어지는 칼'로 컷하므로 이 경로만 예외 허용.
+    엄격 게이트: ①지수 급락일 ②시총 대형(≥1조) ③낙폭과대(-4%↓) ④저가대비 반등확인 ⑤당일 수급유입 ⑥악재無.
+    09:05~14:30, 종목별 하루 1회. 손절 오늘 저가 이탈시 전량(타이트)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (14 * 60 + 30)):
+        return
+    # ① 지수 급락일 게이트 — 코스피 당일 등락률 -1.3% 이하일 때만 낙주 경로 활성(과매도 국면)
+    _kospi = _kospi_index_kis(token, key, secret)
+    if _kospi is None or _kospi > -1.3:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("oversold_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd):
+            continue
+        # ③ 낙폭과대 — 오늘 -4%↓(과열/약보합 배제). -15%보다 더 빠지는 건 진짜 악재 가능 → 하한 -13%.
+        if not (-13.0 <= (chg or 0) <= -4.0):
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        # ② 시총 대형(≥1조=10000억) — 호가 탄탄한 대장주/주도주만(강의: 초대형주는 1억 사도 티도 안 남)
+        _cap = _market_cap(token, key, secret, cd)
+        if not _cap or _cap < 10000:
+            continue
+        # ④ 반등 확인 — 오늘 저가 대비 현재가 +1%↑ 회복(바닥에서 올라오는 중). 저가=현재면 아직 칼.
+        _pf = _price_full(token, key, secret, cd)
+        _low = _pf[4] if _pf else None
+        if not _low or px < _low * 1.01:
+            continue
+        # ⑥ 악재 컷 — 진짜 악재로 빠진 거면 배제(강의: 악재가 선반영/실질무영향일 때만). 등급 악재면 스킵.
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        # ⑤ 수급 유입 필수 — 급락 속에서도 외인/기관이 받는 종목만(8/5식 양매수). 이게 승부 필터.
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        if ((_fe or 0) + (_oe or 0)) <= 0:
+            continue
+        _prog = _program_net(token, key, secret, cd)          # 프로그램 받침(보너스)
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if (_prog and _prog > 0) else ""
+        _who = "외인+기관" if (_fe or 0) > 0 and (_oe or 0) > 0 else ("외인" if (_fe or 0) > 0 else "기관")
+        # 손절 = 오늘 저가 -1.5%(지지 이탈시 전량, 강의 만주式 타이트). 익절 +2.5%(반등 2%만 먹기).
+        _stop = int(_low * 0.985)
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.025)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🩸 [과매도 낙주·반등] {nm} — 지수급락({_kospi:+.1f}%)일 낙폭과대\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · 저가 {int(_low):,} 대비 반등 · 시총 {_cap/10000:,.1f}조\n"
+                         f"💧 급락 속 {_who} 수급 유입{_prog_tag}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈시 전량) · 익절 {_t1:,}(+2.5%)\n"
+                         f"※ 악재性 급락 아닌지 반드시 확인 · 시가/저가 분할 · 미국선물 급락 지속시 당일 청산"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "과매도낙주", nm, cd, px)
+            print(f"[과매도낙주] {nm} {px:,} ({chg:+.1f}%) 지수{_kospi:+.1f}%")
+    state["oversold_sent"] = sent
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
@@ -4999,6 +5065,11 @@ def main():
                         check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _pbe:
                         print("눌림타점 스캐너 오류:", _pbe)
+                    # [V25.32] 과매도 낙주 반등 — 지수 급락일 전용(대형주 낙폭과대+수급유입+반등)
+                    try:
+                        check_oversold_bounce(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _obe:
+                        print("과매도 낙주 오류:", _obe)
                     # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
                     try:
                         check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
