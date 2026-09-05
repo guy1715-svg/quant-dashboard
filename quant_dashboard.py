@@ -4087,6 +4087,83 @@ def render_turnover_surge():
 #   "내일 아침 대응 후보"를 미리 선점. NXT 창(17시 등)에 "지금 종배 못 봐?"의 실전 답.
 # ═══════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
+def _scan_eps(code):
+    """[V25.11] 종목 EPS(적자 판정용) — inquire-price. 실패 시 None."""
+    try:
+        _token = kis_get_token()
+        if not _token:
+            return None
+        _r = _requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+                           headers={"authorization": f"Bearer {_token}", "appkey": _kis_key(),
+                                    "appsecret": _kis_secret(), "tr_id": "FHKST01010100"},
+                           params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=5)
+        _o = _r.json().get("output", {})
+        if isinstance(_o, dict):
+            return _to_int(_o.get("eps"))
+    except Exception:
+        pass
+    return None
+
+
+def _scan_supply_fin_gain(code):
+    """[V25.11] 종배 수급+재무 가점 — 텔레그램 종배(check_dolpanty_pick)와 동일 개념으로 대시보드 정렬 보정.
+    당일 외인/기관 유입 +8, 기관 3일연속 +12(2일/외인총합 +6), 프로그램 매수전환 +6,
+    무수급 -10, 적자(EPS<0) -12. 반환 (점수델타, reasons리스트). 상위 8종에만 적용(API 절약)."""
+    delta, rs = 0.0, []
+    _today_in = False
+    try:
+        _in = kis_get_investor_intraday(code) or {}
+        if ((_in.get("외인순매수", 0) or 0) + (_in.get("기관순매수", 0) or 0)) > 0:
+            _today_in = True
+            delta += 8
+            rs.append("당일수급유입")
+    except Exception:
+        pass
+    _has_daily = False
+    try:
+        _org, _fortot = kis_get_org_net_daily(code, 5)   # (오래된→최신, 외인총합)
+        if _org:
+            _n = 0
+            for _v in reversed(_org):                     # 최신→과거로 기관 연속매수 일수
+                if _v > 0:
+                    _n += 1
+                else:
+                    break
+            if _n >= 3:
+                delta += 12
+                rs.append(f"기관{_n}일연속")
+                _has_daily = True
+            elif _n == 2 or (_fortot or 0) > 0:
+                delta += 6
+                rs.append("수급연속")
+                _has_daily = True
+    except Exception:
+        pass
+    try:
+        _pt = kis_program_trade_by_time(code)
+        _amt = 0
+        for _r in (_pt or []):                            # 최신(맨 앞)부터 비영 순매수대금
+            if _r.get("amt"):
+                _amt = _r["amt"]
+                break
+        if _amt and _amt > 0:
+            delta += 6
+            rs.append("🟩프로그램+")
+    except Exception:
+        pass
+    if not (_today_in or _has_daily):
+        delta -= 10
+        rs.append("⚠️무수급")
+    try:
+        _eps = _scan_eps(code)
+        if _eps is not None and _eps < 0:
+            delta -= 12
+            rs.append("⚠️적자")
+    except Exception:
+        pass
+    return delta, rs
+
+
 def scan_tomorrow_candidates(top=50):
     """장마감 후 오늘 종가 확정 데이터로 '내일 아침 후보' 채점.
     반환 [{code,name,px,chg,turnover,grade,score,disp,entry,reasons,tags}] 점수순. 예외 안전."""
@@ -4173,6 +4250,15 @@ def scan_tomorrow_candidates(top=50):
             _nb, _nmute = 0, False
         _s["news_grade"] = "S" if _nb >= 8 else "A" if _nb >= 4 else "none"
         _s["news_bad"] = bool(_nmute)
+        # [V25.11] 수급+재무 가점(텔레그램 종배와 동일) — 무수급/적자 강등, 수급·프로그램 가점
+        try:
+            _sg, _srs = _scan_supply_fin_gain(_s["code"])
+            _s["score"] = round(_s["score"] + _sg, 1)
+            if _srs:
+                _s["reasons"] = (_s.get("reasons") or []) + _srs
+        except Exception:
+            pass
+    _top.sort(key=lambda x: (x["score"], x.get("ohrank", 2), x["turnover"]), reverse=True)  # 수급 반영 후 재정렬
     return _top
 
 
