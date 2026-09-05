@@ -4281,6 +4281,49 @@ def scan_tomorrow_candidates(top=50):
     return _top
 
 
+def render_unified_top_pick():
+    """[V25.12] 👑 종배 원톱(최신 통일 로직) — scan_tomorrow_candidates #1을 원톱으로 강조.
+    옛 render_dolpanty_pick(_dolpanty_score·섹터머니플로우)·만쥬 원톱 대체. 텔레그램 종배와 동일 기준
+    (거래대금·20MA·비과열·브리핑테마·수급·재무·전고점·테마순위). 내일아침후보 리스트의 #1과 일치."""
+    _now = st.session_state.get("_now_kst") or (datetime.utcnow() + timedelta(hours=9))
+    _m = _now.hour * 60 + _now.minute
+    _phase = "확정(종가 확정)" if (15 * 60 + 5) <= _m <= (20 * 60) else "예비(장중 잠정)"
+    st.markdown("<div style='font-size:17px;font-weight:900;color:#86efac;margin-bottom:2px'>"
+                f"🌒 오늘의 종배 원톱 <span style='font-size:11px;color:#94a3b8;font-weight:400'>"
+                f"최신 통일 로직 · {_phase}</span></div>", unsafe_allow_html=True)
+    if not kis_available():
+        st.caption("⚠️ KIS 미연결 — 자동 선정 불가"); return
+    try:
+        _c = scan_tomorrow_candidates()
+    except Exception as _e:
+        st.caption(f"⚠️ 후보 스캔 일시 비활성: {type(_e).__name__}"); return
+    _c = [x for x in (_c or []) if x.get("score", 0) >= 50 and not x.get("news_bad")]
+    if not _c:
+        st.caption("오늘 종가 기준 뚜렷한 원톱 없음(20MA↑·비과열·수급 통과 X) — 무리한 종배는 관망이 정답."); return
+    _p = _c[0]
+    _entry = _p.get("entry") or int(_p["px"])
+    _stop = int(_entry * 0.98); _t1 = int(_entry * 1.03)
+    _ng = _p.get("news_grade", "none")
+    _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "⚪재료미확인"
+    _rs = " · ".join(_p.get("reasons") or []) or "—"
+    _sec = _p.get("sector", "")
+    _cc = "#ef4444" if _p["chg"] < 0 else "#16a34a" if _p["chg"] > 0 else "#94a3b8"
+    st.markdown(
+        f"<div style='padding:8px 10px;border:2px solid #16a34a;border-radius:10px;background:#0f172a'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;gap:8px'>"
+        f"<span style='font-weight:900;color:#e2e8f0;font-size:15px'>👑 {_p['name']} "
+        f"<span style='color:#64748b;font-size:10px'>{_p['code']}{(' · '+_sec) if _sec else ''}</span></span>"
+        f"<span style='color:#cbd5e1;font-size:13px'>{_p['px']:,} "
+        f"<span style='color:{_cc}'>({_p['chg']:+.1f}%)</span> · {_p['score']:.0f}점</span></div>"
+        f"<div style='font-size:11px;color:#93c5fd;margin-top:3px'>{_mat} · {_rs}</div>"
+        f"<div style='font-size:12px;color:#cbd5e1;margin-top:4px'>"
+        f"📍진입 {_entry:,}(종가) · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)</div>"
+        f"<div style='font-size:11px;color:#f59e0b;margin-top:2px'>"
+        f"🚫 익일 무효화: 9시 시초가 이탈 · 전일 저점 이탈 · 재료 논리 훼손 → 즉시 청산</div>"
+        f"</div>", unsafe_allow_html=True)
+    st.caption("※ 극소액 분산(몰빵 금지) · 다른 섹터 1~2개로 제한 · 상세 리스트는 아래 '내일 아침 후보' 참조")
+
+
 def render_tomorrow_prep():
     """🌅 내일 아침 후보 — 장마감 후(15:30~) 종가 확정 기준 선점 리스트. 예외 전파 없음.
     NXT 창(15:30~20:00)에만 노출 — 그 외 시간엔 자동 숨김."""
@@ -12545,21 +12588,14 @@ with tab_g:
         "<div style='font-size:15px;font-weight:900;color:#fde68a'>👑 시스템 단독 원톱 추천</div>"
         "<div style='font-size:11px;color:#94a3b8;margin-bottom:2px'>시스템이 교차검증으로 뽑은 오늘의 단 하나 — "
         "아래 '관심종목/테마 리스트'와 구분됩니다</div></div>", unsafe_allow_html=True)
-    _pk1, _pk2 = st.columns(2)
-    with _pk1:
-        try:
-            render_manju_morning_pick()
-        except Exception as _mpe:
-            import logging as _lg_mp
-            _lg_mp.warning("만쥬 단타 픽 실패: %s: %s", type(_mpe).__name__, _mpe)
-            st.caption("⚠️ 만쥬 픽 일시 비활성 (데이터 지연)")
-    with _pk2:
-        try:
-            render_dolpanty_pick()
-        except Exception as _dpp:
-            import logging as _lg_dpp
-            _lg_dpp.warning("돌팬티 픽 실패: %s: %s", type(_dpp).__name__, _dpp)
-            st.caption("⚠️ 돌팬티 픽 일시 비활성 (데이터 지연)")
+    # [V25.12] 종배 원톱 통일 — 옛 돌팬티(_dolpanty_score)·만쥬 원톱 제거, 최신 scan_tomorrow_candidates #1로 단일화.
+    #   (내일아침후보 리스트와 동일 로직 → 원톱=리스트 #1로 위계만 강조. 종배 로직 이중화 모순 해소.)
+    try:
+        render_unified_top_pick()
+    except Exception as _dpp:
+        import logging as _lg_dpp
+        _lg_dpp.warning("종배 원톱 실패: %s: %s", type(_dpp).__name__, _dpp)
+        st.caption("⚠️ 종배 원톱 일시 비활성 (데이터 지연)")
     st.markdown("<div style='font-size:12px;font-weight:700;color:#94a3b8;margin:8px 0 2px'>"
                 "⚔️ 관심종목·테마 리스트 (원톱 제외 · 엑셀형)</div>", unsafe_allow_html=True)
     try:
@@ -12571,22 +12607,16 @@ with tab_g:
     st.divider()
     # ═══ ④ 🔬 전략별 심화 분석 ═══
     _section_title("4", "🔬", "전략별 심화 분석")
+    # [V25.12] 만쥬式(오전 초단타) 탭 제거 — 실전 미사용 + --analyze 아침단타 23%(최악). 돌팬티式(종배)만 유지.
     if _SHOW_PENSION:
-        _mj_sub, _dp_sub, _mt_sub, _pn_sub = st.tabs(
-            ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
+        _dp_sub, _mt_sub, _pn_sub = st.tabs(
+            ["🌒 돌팬티式 (오후·야간 종가베팅)",
              "🌀 머니투어 (섹터 자금이동)", "🏦 연기금 추적"])
     else:   # [V14.2] 🏦 연기금 추적 숨김
-        _mj_sub, _dp_sub, _mt_sub = st.tabs(
-            ["⚡ 만쥬式 (오전 초단타)", "🌒 돌팬티式 (오후·야간 종가베팅)",
+        _dp_sub, _mt_sub = st.tabs(
+            ["🌒 돌팬티式 (오후·야간 종가베팅)",
              "🌀 머니투어 (섹터 자금이동)"])
         _pn_sub = None
-    with _mj_sub:
-        try:
-            render_manju_scalp_monitor()
-        except Exception as _mje:
-            import traceback as _tbmj
-            st.error(f"⚠️ 만쥬式 위젯 오류 — {type(_mje).__name__}: {_mje}")
-            st.caption(_tbmj.format_exc().splitlines()[-1])
     with _dp_sub:
         try:
             render_dolpanty_swing_monitor()
