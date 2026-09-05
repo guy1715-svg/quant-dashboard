@@ -716,7 +716,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2804,6 +2804,91 @@ def check_afterhours(token, key, secret, now_kst, state, token_tg, chat_id, sev=
             print(f"[시간외단일가] {nm} NXT {npx:,}({(nchg or 0):+.1f}%) 10분델타 {_delta/1e8:,.1f}억")
     state["afterhours_sent"] = sent
     state["afterhours_snap"] = snap
+
+
+def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.36] 시가배팅(강의 4강) — 09:00~09:10, 장초반 5~10분 변동성 단기 공략(당일).
+    강의: 갭 추격이 아니라 '밤사이 신규재료 + 시간외 강도 + 시초 프로그램 수급'이 재료를 확인해줄 때만 진입.
+    4유형 통합: ①장전 신규뉴스(재료S/A 갭상) ②해외발(미선물 강세 동조) ③시간외 강세 연장 ④갭하락 과매도(대형주+수급).
+    시초가 이탈 -1.5% 손절·물타기 금지·첫 슈팅 분할익절. 종목당 하루 1회, 리스크오프(sev2)는 갭하락 과매도만 허용."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (9 * 60 + 10)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("openbet_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _nq = _us_fut_pct(state, now_kst)                 # 미국 나스닥선물%(해외발 동조 판정)
+    _brief = _recent_brief_codes(now_kst)
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd) or turn < 3_000_000_000:      # 거래대금 30억 미달(초반이라 낮춤) 컷
+            continue
+        _is_gapdown = (-13.0 <= (chg or 0) <= -4.0)   # 유형④ 갭하락 과매도
+        _is_gapup = (1.0 <= (chg or 0) <= 8.0)        # ①②③ 갭상(과열 추격 배제: +8%↑ 제외)
+        if not (_is_gapup or _is_gapdown):
+            continue
+        if sev == 2 and not _is_gapdown:              # 리스크오프 땐 갭하락 과매도만
+            continue
+        _budget += 1
+        if _budget > 18:
+            break
+        _pf = _price_full(token, key, secret, cd)      # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _open, _low = _pf[2], _pf[4]
+        if not _open:
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _prog = _program_net(token, key, secret, cd)   # 시초 프로그램 순매수(매수전환 확인)
+        _prog_ok = bool(_prog and _prog > 0)
+        _isbrief = cd in _brief
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        _supply_ok = ((_fe or 0) + (_oe or 0)) > 0
+        if _is_gapdown:
+            # 유형④ — 대형주 낙폭과대 + 수급/프로그램 반등 + 저가대비 회복
+            _cap = _market_cap(token, key, secret, cd)
+            if not _cap or _cap < 10000:               # 시총 1조↑ 대형주만
+                continue
+            if not (_supply_ok or _prog_ok):           # 급락 속 수급/프로그램 받침 필수
+                continue
+            if _low and px < _low * 1.005:             # 저가 대비 반등 확인
+                continue
+            _type = "갭하락 과매도"
+            _stop = int((_low or px) * 0.985); _t1 = int(px * 1.025)
+        else:
+            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) 中 하나 필수(무근거 갭 추격 배제)
+            _overseas = (_nq is not None and _nq >= 0.5)
+            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok)):
+                continue
+            if px < _open * 0.99:                       # 시초가 이미 이탈 중이면 진입 안 함
+                continue
+            _type = ("장전 신규뉴스" if _ng in ("S", "A") else
+                     "해외발 동조" if _overseas else "시간외/테마 연장")
+            _stop = int(_open * 0.985); _t1 = int(px * 1.02)
+        _stoppct = (_stop / px - 1) * 100
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ("🎯브리핑" if _isbrief else "⚪재료미확인")
+        _tags = _mat
+        if _prog_ok:
+            _tags += f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
+        if _supply_ok:
+            _tags += " · 💧수급유입"
+        if _nq is not None:
+            _tags += f" · 美선물 {_nq:+.1f}%"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🌅 [시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"{_tags}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·시초가 이탈시) · 1차익절 {_t1:,}\n"
+                         f"⚠️ 첫 슈팅 분할익절 · 물타기 금지 · 시초가 이탈 후 회복 실패면 즉시 손절(스윙 전환 금지)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "시가배팅", nm, cd, px)
+            print(f"[시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%)")
+    state["openbet_sent"] = sent
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
@@ -5305,6 +5390,11 @@ def main():
                         check_premarket(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
                     except Exception as _pme:
                         print("장전 예열 오류:", _pme)
+                    # [V25.36] 시가배팅(강의 4강) — 09:00~09:10 장초반 갭·재료·시초수급 단기 공략
+                    try:
+                        check_opening_bet(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _obe2:
+                        print("시가배팅 오류:", _obe2)
                     # 09:10 시가저격 — 라인업 거래대금 임계 돌파 시 종목별 1회 텔레그램
                     try:
                         snap["snipers"] = check_snipers(tok, kis_key, kis_secret, now, st,
