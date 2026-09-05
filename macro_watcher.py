@@ -716,7 +716,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         pass
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -2728,6 +2728,82 @@ def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id
             _log_signal(state, now_kst, "재료투매반등", nm, cd, px)
             print(f"[재료투매반등] {nm} {px:,} 고점대비 −{_pull:.1f}%")
     state["washout_sent"] = sent
+
+
+def check_afterhours(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.35] 시간외 단일가(강의 3강) — 17:00~18:30, 후반(17:30+)까지 '실제 체결'이 이어지는 대장주 알림.
+    강의 핵심: 시간외 등락률(허수)이 아니라 10분당 실제 체결대금이 지속·증가하는지가 관건.
+    → 누적거래대금(acml_tr_pbmn)은 항상 증가하므로, 시간간격 델타(≈10분)로 실체결 지속을 판정.
+    게이트: 정규장 거래대금 상위 + 강한재료(S/A) or 브리핑테마 + NXT 등락 강세(+1.5%↑) + 10분 델타 3억↑.
+    등급 A(재료S/A)·B(브리핑). 종목당 하루 1회. 리스크오프(sev2) 억제. 5분 스로틀로 API 절약."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((17 * 60) <= m <= (18 * 60 + 30)) or sev == 2:
+        return
+    _nowts = int(now_kst.timestamp())
+    _last = state.get("afterhours_scan_ts", 0)
+    if _nowts - _last < 300:                      # 5분 스로틀(스냅샷 간격 확보 + API 절약)
+        return
+    state["afterhours_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("afterhours_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    snap = state.get("afterhours_snap", {})
+    if snap.get("_day") != today:
+        snap = {"_day": today}
+    _late = m >= (17 * 60 + 30)                   # 후반(17:30+) — 강의가 선호하는 구간
+    _brief = _recent_brief_codes(now_kst)
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, turn0 = s["code"], s["name"], s["turnover"]
+        if not turn0 or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if turn0 < 30_000_000_000:                # 정규장 거래대금 300억 미달 = 유동성 부족 컷
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        npx, nchg, nturn = _price_and_turnover(token, key, secret, cd, mrkt="NX")   # NXT 실시간
+        if not npx or nchg is None:
+            continue
+        # ── 실체결 지속 판정: 8분↑ 간격 델타(≈10분당 체결) ──
+        _pv = snap.get(cd)
+        _delta = None
+        if isinstance(_pv, dict) and (_nowts - _pv.get("t", 0)) >= 480:
+            _delta = (nturn or 0) - _pv.get("v", 0)
+            snap[cd] = {"t": _nowts, "v": nturn or 0}     # 앵커 갱신(최근 10분 델타 유지)
+        elif not isinstance(_pv, dict):
+            snap[cd] = {"t": _nowts, "v": nturn or 0}     # 첫 관측 — 저장만
+        if sent.get(cd):
+            continue
+        if (nchg or 0) < 1.5:                     # 시간외 강세 아님
+            continue
+        if _delta is None:                        # 아직 델타 측정 전(다음 스캔서 판정)
+            continue
+        if _delta < 300_000_000:                  # 10분당 실체결 3억 미달 = 꺼지는 중(허수/일회성)
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):   # 재료·테마 없는 시간외 급등 배제(강의: 뉴스 없는 급등 위험)
+            continue
+        _grade = "A" if _ng in ("S", "A") else "B"    # A=강한재료 / B=브리핑테마성
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🎯브리핑테마"
+        _stop = int(npx * 0.98)
+        _t1 = int(npx * 1.03)
+        _late_tag = " · 후반매수(17:30+·강의선호)" if _late else " · 초반(허수 주의)"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🌆 [시간외 단일가·{_grade}등급] {nm} — 실체결 지속(10분 {_delta/1e8:,.1f}억)\n"
+                         f"NXT {npx:,}({(nchg or 0):+.1f}%) · 정규장 거래대금 {(turn0 or 0)/1e8:,.0f}억 · {_mat}{_late_tag}\n"
+                         f"진입 {npx:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)\n"
+                         f"🚫 익일 무효화: 시초가 이탈 · 재료 무효화 → 즉시 정리\n"
+                         f"※ 예상체결(허수) 말고 마지막 실체결 확인 · 분할 · 갭하락 전제 소액 · NXT +3%↑면 갭엣지↓(일부 확정)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "시간외단일가", nm, cd, npx)
+            print(f"[시간외단일가] {nm} NXT {npx:,}({(nchg or 0):+.1f}%) 10분델타 {_delta/1e8:,.1f}억")
+    state["afterhours_sent"] = sent
+    state["afterhours_snap"] = snap
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
@@ -5302,6 +5378,11 @@ def main():
                         check_dolpanty_exit(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
                     except Exception as _dxe:
                         print("종배 청산알림 오류:", _dxe)
+                    # [V25.35] 시간외 단일가(강의 3강) — 17~18:30 실체결 지속 대장주(10분 델타 기반)
+                    try:
+                        check_afterhours(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _ahe:
+                        print("시간외 단일가 오류:", _ahe)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
