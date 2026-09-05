@@ -2981,6 +2981,90 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
     state["breakout_cnt"] = cnt
 
 
+_SUPPLY_RISK_KW = ("유상증자", "전환사채", "신주인수권", "교환사채", "추가상장", "최대주주",
+                   "지분매각", "블록딜", "블록 딜", "감자", "CB", "BW", "보호예수 해제", "오버행")
+
+
+def _supply_risk_news(code):
+    """[V25.38] 공급 악재(잠재 매물) 뉴스 감지 — 유증·CB·추가상장·대주주매도 등. 스윙 배제용. 감지 시 키워드."""
+    try:
+        for _t in (_stock_news_titles(code, 8) or []):
+            for _k in _SUPPLY_RISK_KW:
+                if _k in str(_t):
+                    return _k
+    except Exception:
+        pass
+    return None
+
+
+def check_swing_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.38] 단기스윙(강의 9강) — 15:00~15:25 당일 1회. 며칠~수주 조건부 보유 후보.
+    강의: 저가 장기보유가 아니라 '외인/기관 연속 매수 + 살아있는 재료'를 확인해 분할 진입, 수급 약화·공급악재 시 청산.
+    게이트(추세형): 정배열 + 일별 수급 연속(2일↑) + 재료(S/A or 브리핑) + 지수 대비 상대강세 + 공급악재(유증·CB) 無.
+    ※ 바닥권 매집형은 거래대금 랭킹 밖이라 이 스캔이 못 잡음(한계). 하루 최대 3종. 종배자금과 분리 안내."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60) <= m <= (15 * 60 + 25)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("swing_scan_day") == today:
+        return
+    _kospi = _kospi_index_kis(token, key, secret)      # 상대강도 기준(지수 등락)
+    _kchg = _kospi if _kospi is not None else 0.0
+    _brief = _recent_brief_codes(now_kst)
+    _picks, _budget = [], 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if turn < 30_000_000_000:                      # 거래대금 300억+ (유동성)
+            continue
+        if (chg or 0) <= _kchg:                         # 지수 대비 상대강세 필수(강의: 상대강도)
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20 and _ma5 > _ma20 and px > _ma20):   # 정배열·20MA 위(추세)
+            continue
+        _stag, _strong = _supply_daily_tag(token, key, secret, cd)   # 일별 수급 연속(핵심)
+        if not _stag:                                  # 연속 수급 없음 → 스윙 부적합
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):        # 살아있는 재료 필수
+            continue
+        _risk = _supply_risk_news(cd)                  # 공급악재(유증·CB·추가상장) 배제
+        if _risk:
+            print(f"[단기스윙] {nm} 제외 — 공급악재 뉴스({_risk})")
+            continue
+        _score = (12 if _strong else 6) + (10 if _ng == "S" else 6 if _ng == "A" else 0) + (8 if _isbrief else 0)
+        _picks.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn,
+                       "stag": _stag, "strong": _strong, "ng": _ng, "brief": _isbrief, "score": _score,
+                       "ma20": _ma20})
+    state["swing_scan_day"] = today
+    if not _picks:
+        print("[단기스윙] 후보 0종")
+        return
+    _picks.sort(key=lambda x: x["score"], reverse=True)
+    for p in _picks[:3]:                                # 하루 최대 3종
+        _stop = int(p["ma20"] * 0.98)                   # 무효화: 20일선 이탈
+        _t1 = int(p["px"] * 1.10); _t2 = int(p["px"] * 1.18)
+        _mat = "🔥재료S" if p["ng"] == "S" else "🟢재료A" if p["ng"] == "A" else "🎯브리핑"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n📈 [단기스윙 후보] {p['name']} {p['px']:,}({(p['chg'] or 0):+.1f}%) · 지수대비 강세\n"
+                         f"{_mat} · 수급{p['stag']} · 거래대금 {(p['turn'] or 0)/1e8:,.0f}억\n"
+                         f"분할진입(며칠~수주 보유) · 1차익절 {_t1:,}(+10%·절반) · 2차 {_t2:,}(+18%)\n"
+                         f"🚫 무효화(즉시청산): 20일선 {int(p['ma20']):,} 이탈 · 수급 대량매도 전환 · 재료 훼손\n"
+                         f"※ 종배자금과 분리 · 물타기 금지(불타기만) · 공급악재(유증·CB) 공시 시 청산"):
+            _log_signal(state, now_kst, "단기스윙", p["name"], p["code"], p["px"])
+            print(f"[단기스윙] {p['name']} {p['px']:,} 수급{p['stag']}")
+
+
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
     """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
     ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
@@ -5547,6 +5631,11 @@ def main():
                         check_gap_analysis(tok, kis_key, kis_secret, now, st, token_tg, chat_id, gemini_key)
                     except Exception as _gae:
                         print("갭분석 오류:", _gae)
+                    # [V25.38] 단기스윙 후보(강의 9강) — 15:00~15:25 수급연속+재료+상대강세+공급악재無
+                    try:
+                        check_swing_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _swe:
+                        print("단기스윙 오류:", _swe)
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
                         check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
