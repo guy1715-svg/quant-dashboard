@@ -2070,12 +2070,13 @@ def _daily_setup(token, key, secret, code, px):
         prevc = clpr[1] if len(clpr) >= 2 else px
         _turns = [clpr[i] * vol[i] for i in range(1, min(21, len(clpr))) if clpr[i] and vol[i]]
         turnavg = (sum(_turns) / len(_turns)) if _turns else 0
+        _hi20 = max([h for h in hgpr[1:21] if h]) if any(hgpr[1:21]) else 0   # 전고점(오늘 제외 최근20일 최고가)
         return {"ma5": ma5, "ma20": ma20,
                 "disp": ((px / ma20 - 1) * 100) if ma20 else 0,
                 "above5": bool(ma5 and px >= ma5),
                 "kij_cross": bool(kijun and prevc < kijun <= px),
                 "kij_near": bool(kijun and abs(px / kijun - 1) <= 0.02),
-                "turnavg": turnavg}
+                "turnavg": turnavg, "hi20": _hi20}
     except Exception:
         return None
 
@@ -2963,6 +2964,66 @@ def _recent_brief_codes(now_kst, days=2):
     return out
 
 
+def _pick_supply_score(token, key, secret, code):
+    """[V25.34] 종배 수급 가점(강의 1강 ②·④ 핵심) — 당일 외인/기관 유입 + 일별 연속성 + 프로그램 매수전환.
+    무수급이면 감점(강의: 수급 없는 종목 종배 부적합). 반환 (점수델타, 태그문자열)."""
+    delta = 0.0
+    _fe, _oe = _investor_est(token, key, secret, code)             # 당일 추정 순매수(수량)
+    _today_in = ((_fe or 0) + (_oe or 0)) > 0
+    _stag, _strong = _supply_daily_tag(token, key, secret, code)   # 일별 연속성·강도
+    _prog = _program_net(token, key, secret, code)                 # 프로그램 순매수(금액)
+    if _today_in:
+        delta += 8
+    if _strong:                                                   # 3일연속·급증
+        delta += 12
+    elif _stag:                                                   # 2일연속·급증
+        delta += 6
+    if _prog and _prog > 0:
+        delta += 6
+    if not (_today_in or _stag):                                  # 당일도 일별도 수급 없음 → 종배 부적합
+        delta -= 10
+    tag = (_stag or "").strip()
+    if _prog and _prog > 0:
+        tag = (tag + " 🟩프로그램+").strip()
+    if not (_today_in or _stag):
+        tag = "⚠️무수급"
+    return delta, tag
+
+
+def _valuation(token, key, secret, code):
+    """[V25.34] 기본 체력 — inquire-price에서 시총(억)·EPS. 적자주 판정용(강의 1강 ⑥ 재무 안전장치).
+    반환 (mcap억|None, eps|None). EPS<0 = 적자. 실패 시 (None,None)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return _to_int(o.get("hts_avls")), _to_int(o.get("eps"))
+    except Exception:
+        pass
+    return None, None
+
+
+def _pick_extra_score(token, key, secret, code, px, turn, ds):
+    """[V25.34] 종배 추가 가점 통합(강의 1강) — 수급 연속성 + 재무(적자 감점) + 거래대금 상대증가 + 전고점.
+    반환 (점수델타, 태그문자열). ds=_daily_setup 결과(turnavg·hi20 재사용)."""
+    delta, tag = _pick_supply_score(token, key, secret, code)      # ② 수급
+    _mc, _eps = _valuation(token, key, secret, code)               # ⑥ 재무 체력
+    if _eps is not None and _eps < 0:                             # 적자주 → 강의: 적자 테마주보다 이익주 우선
+        delta -= 12
+        tag = (tag + " ⚠️적자").strip()
+    if ds and ds.get("turnavg") and turn >= ds["turnavg"] * 2:    # ① 평소比 거래대금 2배↑(자금 신규 유입)
+        delta += 6
+        tag = (tag + " 💵대금급증").strip()
+    _hi20 = ds.get("hi20") if ds else 0
+    if _hi20 and px >= _hi20 * 0.99:                              # ④ 전고점 근접/돌파(신고가 흐름)
+        delta += 6
+        tag = (tag + " 📈전고돌파").strip()
+    return delta, tag
+
+
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
                         gemini_key=None):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
@@ -3039,9 +3100,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         _isbrief = cd in _brief
         if _isbrief:
             score += 25
+        # [V25.34] 강의 1강 반영 — 수급 연속성·재무(적자감점)·거래대금 상대증가·전고점 가감점
+        _ex, _extag = _pick_extra_score(token, key, secret, cd, px, turn, ds)
+        score += _ex
         _seen.add(cd)
-        cands.append({"code": cd, "name": nm, "px": px, "chg": chg,
-                      "turn": turn, "disp": disp, "score": score, "ng": ng, "brief": _isbrief})
+        cands.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn, "disp": disp,
+                      "score": score, "ng": ng, "brief": _isbrief, "xtag": _extag})
     # [V24.7] 브리핑 테마 보강 — 거래대금 top40에 아직 안 든 선행 테마주도 종배 후보로.
     #   종배픽이 진 이유=후행 대형주만 담아서. 선행 테마주는 거래대금 낮아도(500억 floor 면제) 넣는다.
     if sev != 2:
@@ -3077,10 +3141,12 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                 _bscore += 12
             if 0 <= _bdisp <= 3:
                 _bscore += 5
+            _bex, _bextag = _pick_extra_score(token, key, secret, _bc, _bpx, _bturn or 0, _bds)
+            _bscore += _bex
             _seen.add(_bc)
             cands.append({"code": _bc, "name": _bn or "", "px": _bpx, "chg": _bchg or 0.0,
                           "turn": _bturn or 0, "disp": _bdisp, "score": _bscore,
-                          "ng": _bng, "brief": True})
+                          "ng": _bng, "brief": True, "xtag": _bextag})
 
     def _log_shadow(exclude=()):
         # [검증] 그림자 픽 — "우리가 뽑을 뻔한 후보"를 텔레그램 없이 로깅. 대시보드 백필이 익일 갭 대조.
@@ -3258,7 +3324,9 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     if send_telegram(token_tg, chat_id,
                      f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_brief_tag}{_elite_j} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
-                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}{_ai_news}{_wl}{_sup}{_mkt}\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}"
+                     + (f" · {pick['xtag']}" if pick.get("xtag") else "")
+                     + f"{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"🧭 {_regime['text']}\n"
                      f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
                      f"{_divtxt}\n"
