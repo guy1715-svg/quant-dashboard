@@ -2814,6 +2814,10 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (9 * 60 + 10)):
         return
+    _nowts = int(now_kst.timestamp())                # [V25.39] 90초 스로틀(API 부하·반복스캔 절감)
+    if _nowts - state.get("openbet_scan_ts", 0) < 90:
+        return
+    state["openbet_scan_ts"] = _nowts
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("openbet_sent", {})
     if sent.get("_day") != today:
@@ -2912,8 +2916,12 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
     게이트: 20MA위 + (전고점 hi20 돌파 or 라운드피겨 돌파) + 거래량 2배↑ + 프로그램 순매수(+) or 재료 + 악재無.
     손절 돌파기준가 아래 -2%(돌파실패=근거훼손·스윙전환 금지). 종목당 하루 2회까지(3번째 돌파 회피). 종목당 쿨다운 없음(2회 상한)."""
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((9 * 60 + 10) <= m <= (15 * 60)) or sev == 2:
+    if not ((9 * 60 + 11) <= m <= (15 * 60)) or sev == 2:   # 09:11+ (시가배팅과 1분 겹침 제거)
         return
+    _nowts = int(now_kst.timestamp())                # [V25.39] 180초 스로틀(6시간 매분 스캔 → API 폭주 방지)
+    if _nowts - state.get("breakout_scan_ts", 0) < 180:
+        return
+    state["breakout_scan_ts"] = _nowts
     if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # 저갭/박스장 돌파 억제
         return
     today = now_kst.strftime("%Y%m%d")
@@ -2946,8 +2954,7 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
         # 돌파 판정 — ①전고점(hi20) 돌파/신고가 ②라운드피겨(시가 아래→현재 위 관통)
         _bpx, _btype = None, None
         if _hi20 and px >= _hi20:
-            _bpx, _btype = _hi20, ("신고가" if px >= _hi20 else "전고점")
-            _btype = "전고점/신고가"
+            _bpx, _btype = _hi20, "전고점/신고가"
         elif _lvl and _open and _open < _lvl <= px and (px - _lvl) / _lvl <= 0.02:
             _bpx, _btype = _lvl, f"라운드피겨({_lvl:,})"
         if not _bpx:
