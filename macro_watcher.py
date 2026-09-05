@@ -2076,7 +2076,8 @@ def _daily_setup(token, key, secret, code, px):
                 "above5": bool(ma5 and px >= ma5),
                 "kij_cross": bool(kijun and prevc < kijun <= px),
                 "kij_near": bool(kijun and abs(px / kijun - 1) <= 0.02),
-                "turnavg": turnavg, "hi20": _hi20}
+                "turnavg": turnavg, "hi20": _hi20,
+                "prevlow": (lwpr[1] if len(lwpr) >= 2 and lwpr[1] else 0)}   # 전일 저점(익일 무효화 기준)
     except Exception:
         return None
 
@@ -3224,7 +3225,19 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         if len(div) >= 2:
             break
     _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
-    _stop = int(pick["px"] * 0.98); _t1 = int(pick["px"] * 1.03)
+    # [V25.34] 익일 무효화 조건(강의 2강 필수 출력항목 ④) — 전일 저점 기준 + 시초가 이탈 + 재료 훼손.
+    #   손절도 고정 -2% 대신 '전일 저점 이탈'을 무효화 가격으로(변동성 반영), −3% 상한으로 캡.
+    _pds = _daily_setup(token, key, secret, pick["code"], pick["px"])
+    _plow = (_pds or {}).get("prevlow") or 0
+    if _plow and _plow < pick["px"]:
+        _stop = max(int(_plow), int(pick["px"] * 0.97))   # 전일저점/−3% 中 높은쪽(무효화 가격)
+    else:
+        _stop = int(pick["px"] * 0.98)
+    _stoppct = (_stop / pick["px"] - 1) * 100
+    _t1 = int(pick["px"] * 1.03)
+    _invalidate = ("\n🚫 익일 무효화(즉시 청산): ①9시 시초가 이탈 "
+                   + (f"②전일 저점 {int(_plow):,} 이탈 " if _plow else "②전일 저점 이탈 ")
+                   + "③재료 뒤집는 공시/뉴스(논리 훼손)")
     _pbasis = "NXT 실시간가" if _in_nxt else "종가"       # 가격 기준 표기
     # [V21.7] 확정픽 AI 뉴스판정(Gemini) — 최종 1종만 뉴스 본문 읽어 오버나이트 적합성 첨부(비용 미미)
     _ai_news = ""
@@ -3328,9 +3341,10 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                      + (f" · {pick['xtag']}" if pick.get("xtag") else "")
                      + f"{_ai_news}{_wl}{_sup}{_mkt}\n"
                      f"🧭 {_regime['text']}\n"
-                     f"진입 {pick['px']:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)"
+                     f"진입 {pick['px']:,} · 손절 {_stop:,}({_stoppct:+.1f}%·전일저점/−3%) · 익절 {_t1:,}(+3%)"
+                     f"{_invalidate}"
                      f"{_divtxt}\n"
-                     f"⚠️ 종가 굳는 것 확인 후 매수 · 극소액 분산"
+                     f"⚠️ 종가 굳는 것 확인 후 매수 · 극소액 분산(몰빵 금지)"
                      + (" · 🔵저갭장세라 소액·신중" if _regime['state'] == 'lowgap' else "") + "\n"
                      f"★{_nguide}★"):
         state["dolpanty_pick_day"] = today
