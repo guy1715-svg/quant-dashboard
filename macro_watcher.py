@@ -3072,6 +3072,111 @@ def check_swing_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=
             print(f"[단기스윙] {p['name']} {p['px']:,} 수급{p['stag']}")
 
 
+def check_limitup_follow(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.40] 상따 관찰용(강의 8강) — ⚠️매수신호 아님, 관찰·극소액 실습용 경보.
+    실시간 상한가 잔량·풀림·VI·허수는 KIS 실시간 웹소켓 없이는 못 봐서, '첫테마·대장·거래대금'만 근사한다.
+    상한가 근접(+25%↑) + 강한재료/브리핑 + 거래대금 충분 종목을 관찰 대상으로 알림. 09:30~15:20, 하루 1회, 리스크오프 억제.
+    강의 경고: 2번 이상 풀리면 포기 · -1~2% 빠른손절 · 극소액 · 직장인/모바일 부적합."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 30) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    _nowts = int(now_kst.timestamp())
+    if _nowts - state.get("limitup_scan_ts", 0) < 180:      # 3분 스로틀
+        return
+    state["limitup_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("limitup_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _brief = _recent_brief_codes(now_kst)
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or any(k in str(nm) for k in _EARLY_ETF_KW) or sent.get(cd):
+            continue
+        if (chg or 0) < 25.0 or (turn or 0) < 10_000_000_000:   # 상한가 근접(+25%↑) + 거래대금 100억+
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):     # 첫테마/강한재료 근사(뉴스 없는 상한가 배제)
+            continue
+        _sec = _sector_name(token, key, secret, cd) or ""
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🎯브리핑"
+        _stop = int(px * 0.98)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🔺 [상따 관찰·매수아님] {nm} +{(chg or 0):.1f}% 상한가 근접"
+                         + (f" · {_sec}" if _sec else "") + "\n"
+                         f"{_mat} · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"⚠️ 관찰용 — 실시간 상한가 잔량·풀림·VI·허수 확인 불가(API 한계). HTS에서 직접 확인 필수\n"
+                         f"강의: 2회↑ 풀리면 포기 · 극소액 · 손절 −1~2% · 익일 갭 대응 · 직장인/모바일 부적합\n"
+                         f"참고 손절선 {_stop:,}(−2%)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "상따관찰", nm, cd, px)
+            print(f"[상따관찰] {nm} +{(chg or 0):.1f}% 상한가 근접")
+    state["limitup_sent"] = sent
+
+
+def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.40] 짝꿍 관찰용(강의 7강) — ⚠️매수신호 아님, 관찰·극소액 실습용 경보.
+    실시간 상한가 잔량·VI 해제시각·호가 흡수는 API로 못 봐서, '강한 섹터 대장 급등 → 같은 섹터 2등주'만 근사한다.
+    섹터 내 대장(거래대금 1위+급등 +15%↑) 형성 시 2등주(2위)를 관찰 대상으로 알림. 09:30~15:00, 하루 1회, 저갭/리스크오프 억제.
+    강의: 후속주 5분 이내 청산 · 대장 꺾이면 즉시 매도 · 3등↓ 금지 · 초보 난도 높음."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 30) <= m <= (15 * 60)) or sev == 2:
+        return
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # 테마장세 아니면 짝꿍 무의미
+        return
+    _nowts = int(now_kst.timestamp())
+    if _nowts - state.get("pair_scan_ts", 0) < 300:         # 5분 스로틀(섹터조회 비용)
+        return
+    state["pair_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("pair_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    # 급등 무버(+5%↑)만 섹터 그룹핑(대장·2등 판정) — API 절약 위해 무버로 한정
+    _movers, _budget = [], 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if (chg or 0) < 5.0 or (turn or 0) < 5_000_000_000:
+            continue
+        _budget += 1
+        if _budget > 16:
+            break
+        _sec = _sector_name(token, key, secret, cd)
+        if _sec:
+            _movers.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn, "sec": _sec})
+    _by_sec = {}
+    for mv in _movers:
+        _by_sec.setdefault(mv["sec"], []).append(mv)
+    for _sec, mem in _by_sec.items():
+        if len(mem) < 2:
+            continue
+        mem.sort(key=lambda x: x["turn"], reverse=True)     # 거래대금 순 = 대장/2등
+        _lead, _second = mem[0], mem[1]
+        if (_lead["chg"] or 0) < 15.0:                       # 대장이 강하게(+15%↑) 움직여야 짝꿍 성립
+            continue
+        if sent.get(_second["code"]):
+            continue
+        _ng2, _nbad2 = _news_grade(_second["code"])
+        if _nbad2:
+            continue
+        _stop = int(_second["px"] * 0.98)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🔗 [짝꿍 관찰·매수아님] {_sec} 테마\n"
+                         f"대장 {_lead['name']} +{(_lead['chg'] or 0):.1f}% → 2등주 {_second['name']} +{(_second['chg'] or 0):.1f}% 관찰\n"
+                         f"⚠️ 관찰용 — 실시간 상한가 잔량·VI 확인 불가(API 한계). 대장 상한가 유지/풀림은 HTS로 직접\n"
+                         f"강의: 후속주 5분 내 청산 · 대장 꺾이면 즉시 매도 · 극소액 · 3등↓ 금지\n"
+                         f"참고 손절선 {_stop:,}(−2%)"):
+            sent[_second["code"]] = True
+            _log_signal(state, now_kst, "짝꿍관찰", _second["name"], _second["code"], _second["px"])
+            print(f"[짝꿍관찰] {_sec} 대장 {_lead['name']}+{(_lead['chg'] or 0):.1f}% → 2등 {_second['name']}")
+    state["pair_sent"] = sent
+
+
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
     """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
     ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
@@ -5598,6 +5703,15 @@ def main():
                         check_breakout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _bke:
                         print("돌파매매 오류:", _bke)
+                    # [V25.40] 짝꿍·상따 관찰용(강의 7·8강) — 실시간 상한가/VI 못봐 관찰 경보만(매수신호 아님)
+                    try:
+                        check_limitup_follow(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _lue:
+                        print("상따관찰 오류:", _lue)
+                    try:
+                        check_pair_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _pte:
+                        print("짝꿍관찰 오류:", _pte)
                     # [V22.7] 거래량 급증 서치(마감권) — 오늘 거래량>5일평균 2배 + 거래대금 상위 종목 알림
                     try:
                         check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
