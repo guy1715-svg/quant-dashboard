@@ -3458,6 +3458,12 @@ def _pick_extra_score(token, key, secret, code, px, turn, ds):
     """[V25.34] 종배 추가 가점 통합(강의 1강) — 수급 연속성 + 재무(적자 감점) + 거래대금 상대증가 + 전고점.
     반환 (점수델타, 태그문자열). ds=_daily_setup 결과(turnavg·hi20 재사용)."""
     delta, tag = _pick_supply_score(token, key, secret, code)      # ② 수급
+    # [V25.41] 블록딜성 '가짜 수급' 차단(동주 일지 9/4) — 기관 대량매수처럼 보여도 블록딜·유증·CB·추가상장이면
+    #   진짜 매집이 아니라 이미 정해진 물량. 수급 가점을 상쇄하고 감점. (강의: "수급만 보면 기관대량매수=블록딜")
+    _srisk = _supply_risk_news(code)
+    if _srisk:
+        delta = min(delta, 0.0) - 12                              # 수급 가점 무효화 + 공급악재 감점
+        tag = (tag + f" ⚠️{_srisk}(가짜수급)").strip()
     _mc, _eps = _valuation(token, key, secret, code)               # ⑥ 재무 체력
     if _eps is not None and _eps < 0:                             # 적자주 → 강의: 적자 테마주보다 이익주 우선
         delta -= 12
