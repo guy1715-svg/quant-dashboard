@@ -2332,15 +2332,23 @@ def _holding_judge(token, key, secret, code, px, prev_close):
         pass
     _g = ((px / prev_close - 1) * 100) if prev_close else 0
     _reflected = _g >= 3.0
-    _why = []; _hold = True
+    _nxt_weak = _g <= -2.0                                 # [V25.46] NXT 밤사이 명확한 약세(-2%↓). 8시 NXT는 얇아 노이즈 고려해 보수적
+    # [V25.46] 완화 — '재료 A급 아님' 단독으로는 매도 판정 안 함(삼성전기式: 기존 계약 있어도 신규없어 none 분류될 수 있음).
+    #   매도 검토 = ①선반영(밤 +3%↑) ②수급 이탈 ③(재료 약함 AND NXT 약세) 中 하나. 그 외 재료약함은 '9시 수급 확인 후 판단'.
+    _why = []; _sell = False
     if _reflected:
-        _hold = False; _why.append(f"밤사이 +{_g:.1f}%(선반영)")
-    if not _strong:
-        _hold = False; _why.append("재료 약함(A급 아님)")
+        _sell = True; _why.append(f"밤사이 +{_g:.1f}%(선반영)")
     if _sup_pos is False:
-        _hold = False; _why.append("수급 이탈")
-    _verdict = ("🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 여력)" if _hold
-                else "🔴 지금(8시 NXT) 매도 검토 (" + "·".join(_why) + ")")
+        _sell = True; _why.append("수급 이탈")
+    if (not _strong) and _nxt_weak:
+        _sell = True; _why.append(f"신규재료 없음+NXT약세({_g:+.1f}%)")
+    if _sell:
+        _verdict = "🔴 지금(8시 NXT) 매도 검토 (" + "·".join(_why) + ")"
+    elif _strong:
+        _verdict = "🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 여력)"
+    else:
+        _verdict = ("🟡 신규재료 없음 — 9시 첫 5~10분 수급 확인 후 판단 "
+                    "(NXT 지지·수급 유입 중이면 성급한 8시 매도 금지 · 기존 계약/재료 있으면 유지)")
     _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
     return f"재료:{_ng or '없음'} · 수급:{_supmark} · 밤사이:{_g:+.1f}%(선반영 {'예' if _reflected else '아니오'})\n→ {_verdict}"
 
