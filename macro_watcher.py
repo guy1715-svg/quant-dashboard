@@ -1200,6 +1200,30 @@ def read_gemini_key():
     return _read_secret_alias({"gemini_api_key", "google_api_key", "gemini_key", "gemini"})
 
 
+def _factcheck_avoid_codes(report, fc):
+    """[V25.44] 팩트체크 '🚫강등/제외' 종목의 코드 추출 — 종배가 회피하도록. 반환 코드 리스트.
+    이름→코드 맵은 브리핑 본문의 '이름(123456)' 패턴에서 만든다. 실패 시 []."""
+    if not fc:
+        return []
+    import re as _re
+    name2code = {}
+    for _m in _re.finditer(r'([가-힣A-Za-z0-9·&]+)\s*\((\d{6})\)', report or ""):
+        name2code[_m.group(1)] = _m.group(2)
+    _seg = ""
+    for _mk in ("🚫", "강등/제외", "강등"):
+        _i = fc.find(_mk)
+        if _i >= 0:
+            _seg = fc[_i:_i + 800]                     # 강등 섹션 이후 일부
+            break
+    if not _seg:
+        return []
+    codes = set(_re.findall(r'\((\d{6})\)', _seg))     # 섹션 내 직접 코드
+    for _nm, _cd in name2code.items():                 # 섹션 내 이름 → 코드
+        if len(_nm) >= 2 and _nm in _seg:
+            codes.add(_cd)
+    return list(codes)
+
+
 def _gemini_factcheck(gkey, brief, mdetail=""):
     """[V24.8] Gemini 브리핑을 Gemini+구글검색(grounding)으로 팩트체크·보정.
     Perplexity API(유료) 대신 기존 Gemini 키로 실시간 검색 교차검증. grounding 미지원 시
@@ -1640,6 +1664,14 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 print(f"[저녁뉴스] 팩트체크 {'완료' if _fc else '실패/생략'}")
         except Exception as _fce:
             print("팩트체크 오류:", _fce)
+        # [V25.44] 팩트체크 강등/제외 종목 저장 → 종배가 회피(흥구석유式: 아침엔 제외인데 오후 종배 원톱 모순 방지)
+        try:
+            _avoid = _factcheck_avoid_codes(report, _fc)
+            if _avoid:
+                state["factcheck_avoid"] = {"ts": int(now_kst.timestamp()), "codes": _avoid}
+                print(f"[저녁뉴스] 팩트체크 강등 저장(종배 회피): {_avoid}")
+        except Exception as _ae:
+            print("팩트체크 강등 저장 오류:", _ae)
         _fc_block = f"\n\n━━ 🔎 검색 교차검증 ━━\n{_fc}" if _fc else ""
         _msg = (f"{SIG_WATCH}\n{report}\n{_verify}{_fc_block}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
@@ -3503,11 +3535,21 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _budget = 0
     _brief = _recent_brief_codes(now_kst)             # [V24.7] 최근 브리핑 테마(선행) — 종배 우선 유니버스
     _seen = set()                                     # 이미 스코어링한 종목(브리핑 보강 루프 중복 방지)
+    # [V25.44] 아침 팩트체크 강등/제외 종목 회피 — 선반영·억지테마·D등급으로 걸러진 종목은 종배 후보 배제
+    _fc_avoid = set()
+    try:
+        _fa = state.get("factcheck_avoid") or {}
+        if _fa.get("codes") and (int(now_kst.timestamp()) - int(_fa.get("ts", 0))) < 4 * 24 * 3600:
+            _fc_avoid = {str(c).zfill(6) for c in _fa["codes"]}
+    except Exception:
+        pass
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn:
             continue
         if any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _fc_avoid:                          # [V25.44] 팩트체크 강등(선반영·억지테마·D) → 종배 배제
             continue
         if turn < 50_000_000_000:                    # 거래대금 500억 미달 컷
             continue
@@ -3572,6 +3614,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     if sev != 2:
         for _bc, _bn in _brief.items():
             if _bc in _seen or _budget > 30:
+                continue
+            if _bc in _fc_avoid:                        # [V25.44] 팩트체크 강등 종목은 브리핑 유니버스여도 배제
                 continue
             _bpx, _bchg, _bturn = _price_and_turnover(token, key, secret, _bc,
                                                        mrkt=("NX" if _in_nxt else "J"))
