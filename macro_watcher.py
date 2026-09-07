@@ -333,6 +333,8 @@ def _overnight_note(nq):
     """미국선물%로 오버나이트(홀딩) 여건 한 줄. (태그문자열, 홀딩가능bool)."""
     if nq is None:
         return "", True                                   # 데이터 없음 → 판단보류(막지 않음)
+    if abs(nq) < 0.05:                                    # [V25.45] 사실상 0 = 미국 휴장/데이터없음 → '약세' 오해 방지
+        return "\n🌙 미국선물 데이터 없음(미 휴장 가능) — 오버나이트 판단 보류", True
     if nq <= -0.7:
         return f"\n🌙 미국선물 {nq:+.1f}% 약세 — 오버나이트 비권장, 당일 청산 우선", False
     if nq >= 0.2:
@@ -381,8 +383,14 @@ def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
         sev, text = 1, f"🟠 경고 · 반도체 조정(SOX {sox:+.1f}%) — 한도 50%"
     else:
         sev, text = 1, "🟡 중립 · 선별 진입"
-    _us = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
-           if None not in (nq, sox, wti) else "미국지표 대기")
+    # [V25.45] 미국 휴장/데이터없음 감지 — 24시간 거래되는 NQ선물·WTI가 둘 다 사실상 0.00%면
+    #   미국 휴장(예: 노동절·추수감사절) 또는 데이터 스테일. SOX(지수)는 휴장일에도 직전 종가라 오해 유발 → 라벨로 명시.
+    _us_stale = (nq is not None and wti is not None and abs(nq) < 0.05 and abs(wti) < 0.05)
+    if _us_stale:
+        _us = f"🌙미국 휴장/데이터없음(판단보류) · SOX {sox:+.2f}%(스테일)" if sox is not None else "🌙미국 휴장/데이터없음(판단보류)"
+    else:
+        _us = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
+               if None not in (nq, sox, wti) else "미국지표 대기")
     # [V20.1] 코스피 주간(^KS11)·야간 프록시(EWY 美상장 한국ETF)·원달러 환율 추가.
     #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
     #   코스피는 fast_info.previous_close가 튀는 케이스(+5%대 오류) 있어 히스토리 기반으로 산출.
@@ -3843,7 +3851,9 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _ksp = _hist_pct("^KS11")
             if _ksp is not None and abs(_ksp) > 4.0:
                 _ksp = None
-        if _nqp is not None and _ksp is not None:
+        if _nqp is not None and abs(_nqp) < 0.05:        # [V25.45] 美선물 0 = 미국 휴장/데이터없음 → '지지없음' 오해 방지
+            _mkt = "\n📊 시황: 🌙미국 휴장/데이터없음 — 익일 갭은 국내 수급·시초가로만 판단(美 방향 참고 불가)"
+        elif _nqp is not None and _ksp is not None:
             _mhead = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
             if _nqp > 0.3 and _ksp >= _nqp * 0.8:
                 _mkt = _mhead + " → ⚠️선반영(지수 이미 따라옴·대형주 종배 여지↓)"
