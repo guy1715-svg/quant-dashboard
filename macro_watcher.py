@@ -2509,10 +2509,14 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
     if sent.get("_day") != today:
         sent = {"_day": today}
     _onote, _ = _overnight_note(_us_fut_pct(state, now_kst))   # [V25.33] 미국선물 오버나이트 게이트(안내)
+    # [V25.43] my_watch 종목은 check_my_watch(내관심타점)가 담당 → 중복 발송 방지 위해 여기서 제외
+    _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
     _budget = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _mywatch:                            # 내관심타점이 처리 → 중복 억제
             continue
         if sent.get(cd):                              # [V25.30] 같은 종목 하루 1회(40분 반복 스팸 해결)
             continue
@@ -4775,10 +4779,15 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                 _is_leader = code in _vrank_b15
                 if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
                     _bt = _big_trend_tag(token, key, secret, code, px)
-                    # [V24.4] 과열(이격 7%↑)이면 '눌림 기다려'만 말고 구체적 눌림 매수 목표 제시
-                    _pull = _pullback_levels(token, key, secret, code, px, chg) if (_disp is not None and _disp >= 7) else ""
+                    # [V25.43] 이격 과열(+7%↑)이면 매수검토→관찰로 강등(고점 추격 방지). 눌림 목표만 제시.
+                    _hot = _disp is not None and _disp >= 7
+                    _pull = _pullback_levels(token, key, secret, code, px, chg) if _hot else ""
+                    _prefix = SIG_WATCH if _hot else SIG_BUY
+                    _htag = "관찰(과열·추격금지)" if _hot else "매수검토"
+                    _foot = ("👉 지금은 추격 금지 — 위 눌림 목표까지 빠지면 그때 소량·타이트 손절"
+                             if _hot else "👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
                     send_telegram(token_tg, chat_id,
-                                  f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name}\n"
+                                  f"{_prefix}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name} [{_htag}]\n"
                                   f"방금 막 끝난 {_bsize}분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
                                   f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內){_bt}\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
@@ -4788,7 +4797,7 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                                   f"✂️ 손절가: {_stop:,}원 (−2%)\n"
                                   f"{_res_line}\n"
                                   f"─────────\n"
-                                  f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
+                                  f"{_foot}")
                     sent[_key] = True
                 elif sev != 2 and not _is_leader:
                     sent[_key] = True             # 비주도주 — 발송 억제(중복 방지 위해 마킹만)
