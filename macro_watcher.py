@@ -3557,6 +3557,9 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         # [V25.34] 강의 1강 반영 — 수급 연속성·재무(적자감점)·거래대금 상대증가·전고점 가감점
         _ex, _extag = _pick_extra_score(token, key, secret, cd, px, turn, ds)
         score += _ex
+        if ng not in ("S", "A"):                       # [V25.42] 재료 미확인 점수 상한 49(<발송임계 50) —
+            score = min(score, 49.0)                   #   브리핑겹침·수급만으로 99점 원톱 되던 것 차단(흥구석유式).
+            #   → 확정픽/분산 자격 없음, 그림자로만 검증. 강의 2강: 종배 핵심=재료 지속성
         _seen.add(cd)
         cands.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn, "disp": disp,
                       "score": score, "ng": ng, "brief": _isbrief, "xtag": _extag})
@@ -3597,6 +3600,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                 _bscore += 5
             _bex, _bextag = _pick_extra_score(token, key, secret, _bc, _bpx, _bturn or 0, _bds)
             _bscore += _bex
+            if _bng not in ("S", "A"):                  # [V25.42] 재료 미확인 점수 상한 49(<발송임계)
+                _bscore = min(_bscore, 49.0)
             _seen.add(_bc)
             cands.append({"code": _bc, "name": _bn or "", "px": _bpx, "chg": _bchg or 0.0,
                           "turn": _bturn or 0, "disp": _bdisp, "score": _bscore,
@@ -3745,7 +3750,10 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     #   무재료(ng 없음 + 브리핑 아님) 픽은 저갭 장세에 오버나이트 근거 없음 → 강등(관망).
     _regime_block = (_regime["state"] == "lowgap"
                      and pick.get("ng") not in ("S", "A") and not pick.get("brief"))
-    if _ai_bad or _supply_neg or _regime_block:
+    # [V25.42] 재료 미확인 원톱 강등 — 브리핑 겹침만으로 재료 없이 원톱 확정되던 문제(흥구석유式).
+    #   강의 2강: 종배 핵심=재료 지속성. 재료 미확인(ng none)은 원톱 자격 없음 → 관망(분산 후보로는 잔존).
+    _nograde_block = pick.get("ng") not in ("S", "A")
+    if _ai_bad or _supply_neg or _regime_block or _nograde_block:
         _why = []
         if _ai_bad:
             _why.append("AI 부적합/악재")
@@ -3753,6 +3761,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _why.append("수급 이탈")
         if _regime_block:
             _why.append("저갭 장세+무재료(갭 근거 없음)")
+        if _nograde_block:
+            _why.append("재료 미확인(오버나이트 근거 약함)")
         send_telegram(token_tg, chat_id,
                       f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
                       f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
