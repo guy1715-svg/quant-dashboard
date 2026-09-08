@@ -2069,7 +2069,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
         # [V25.54] 자사주 반전 신호(복기 학습 8/25·9/1·9/3) — 급락(-2%↓) 중 자기주식취득 공시 =
         #   기타법인 수급으로 V자 반전 동력. 일반 호재보다 우선 처리(급락+자사주 조합).
-        if ("자기주식" in _nm) and ((_chg or 0) <= -2.0):
+        _is_buyback = ("자기주식" in _nm and "취득" in _nm
+                       and not any(k in _nm for k in ("해지", "처분", "매도", "반대매매", "종료")))
+        if _is_buyback and ((_chg or 0) <= -2.0):     # 취득(매입)만 — 신탁해지·처분은 오히려 매입중단(제외)
             _mc = None
             try:
                 _mc = _market_cap(_tok, kis_key, kis_secret, _stock)
@@ -2172,6 +2174,10 @@ def test_buyback_scan(now_kst, token_tg, chat_id, dart_key, kis_key=None, kis_se
         send_telegram(token_tg, chat_id, f"⚠️ DART status={j.get('status')} {j.get('message','')}"); return
     _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
     _hits = [x for x in (j.get("list") or []) if "자기주식" in (x.get("report_nm") or "") and (x.get("stock_code") or "").strip()]
+
+    def _is_bb(nm):                                   # 진짜 매입(취득)만 — 해지·처분·매도는 매입중단(제외)
+        return ("자기주식" in nm and "취득" in nm
+                and not any(k in nm for k in ("해지", "처분", "매도", "반대매매", "종료")))
     if not _hits:
         send_telegram(token_tg, chat_id,
                       f"🔄 [자사주 반전 테스트] 오늘({today}) 자기주식 공시 0건 — 실제 공시 나오는 날 발동.\n"
@@ -2186,10 +2192,16 @@ def test_buyback_scan(now_kst, token_tg, chat_id, dart_key, kis_key=None, kis_se
                 _, _chg, _ = _price_and_turnover(_tok, kis_key, kis_secret, _cd)
             except Exception:
                 pass
-        _mark = ("✅발동(급락+자사주)" if (_chg is not None and _chg <= -2.0)
-                 else f"⚪조건미달(급락 아님)" if _chg is not None else "❔시세없음")
-        _lines.append(f"• {_cp}({_cd}) {(f'{_chg:+.1f}%' if _chg is not None else '—')} · {_rn[:20]} → {_mark}")
-    _lines.append("\n※ ✅면 실제 신호도 발동. ⚪면 그 종목이 오늘 급락 아니라서(자사주 공시는 정상 감지됨).")
+        if not _is_bb(_rn):
+            _mark = "🚫제외(해지·처분=매입중단, 반전 아님)"
+        elif _chg is None:
+            _mark = "❔시세없음"
+        elif _chg <= -2.0:
+            _mark = "✅발동(급락+자사주 매입)"
+        else:
+            _mark = "⚪조건미달(급락 아님)"
+        _lines.append(f"• {_cp}({_cd}) {(f'{_chg:+.1f}%' if _chg is not None else '—')} · {_rn[:24]} → {_mark}")
+    _lines.append("\n※ ✅=실제 발동 / ⚪=자사주 매입공시 정상감지지만 급락 아님 / 🚫=해지·처분(매입중단이라 반전 아님).")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
     print(f"[자사주테스트] 자기주식 공시 {len(_hits)}건 발송")
 
