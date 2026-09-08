@@ -1372,7 +1372,11 @@ _RSS_FEEDS = (
     ("증권", "https://www.yna.co.kr/rss/market.xml"),         # 국내 증권(재료 밀집) — 핵심
     ("세계", "https://www.yna.co.kr/rss/international.xml"),   # 세계 메인(미국장·지정학·중국·유가)
     ("산업", "https://www.yna.co.kr/rss/industry.xml"),       # 산업(반도체·기업 글로벌)
-)   # [V21.9] 경제 일반(정치·부고 노이즈) 제외 — 증권+세계+산업만(사용자 요청)
+    # [V25.49 B] 특징주 '사유' 소스 — "왜 올랐나"(뉴스→심리 연결). 실패해도 graceful(연합만으로도 동작).
+    ("한경증권", "https://www.hankyung.com/feed/finance"),     # 한국경제 금융·증권
+    ("한경마켓", "https://www.hankyung.com/feed/economy"),     # 한국경제 경제(시황·정책)
+    ("이데일리증권", "https://rss.edaily.co.kr/stock_news.xml"),  # 이데일리 증권(특징주 밀집)
+)   # [V21.9] 경제 일반(정치·부고 노이즈) 제외 — 연합 증권+세계+산업 + 한경·이데일리 특징주(V25.49)
 
 
 def _rss_news(per_feed=40, hours=12):
@@ -3312,7 +3316,17 @@ def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, ge
     for s in _gaps:
         _hit = s["code"] in _pred
         _hit_n += 1 if _hit else 0
-        _lines.append(f"• {s['name']} +{s['chg']:.1f}% {'🎯예측적중' if _hit else '❓미예측(놓침)'}")
+        # [V25.49 A] 개미 심리 지표 — 개인 근사 순매수(=−(외인+기관))로 '개미가 몰렸나' 표시(뉴스→심리 연결)
+        _psy = ""
+        try:
+            _fe, _oe = _investor_est(token, key, secret, s["code"])
+            _px0 = s.get("px") or 0
+            _retail = -((_fe or 0) + (_oe or 0)) * _px0 / 1e8      # 개인 근사(억원)
+            if _px0 and abs(_retail) >= 5:
+                _psy = f" · {'🔥개미 몰림' if _retail > 0 else '개미 이탈'} {_retail:+.0f}억"
+        except Exception:
+            pass
+        _lines.append(f"• {s['name']} +{s['chg']:.1f}% {'🎯예측적중' if _hit else '❓미예측(놓침)'}{_psy}")
     _msg = (f"{SIG_WATCH}\n🌅 오늘 갭상승 원인 역분석\n"
             f"📊 갭상승(+3%↑) {len(_gaps)}종 · 어제 브리핑/종배 적중 {_hit_n}/{len(_gaps)}종\n"
             + "\n".join(_lines))
