@@ -1486,6 +1486,39 @@ def _is_future_confused(text):
     return any(_m in (text or "") for _m in _FUTURE_CONFUSION_MARKERS)
 
 
+def _remove_review_blocks(date_strs):
+    """[피드백 반영] market_review.md에서 지정 날짜(YYYY-MM-DD 문자열 set)와 일치하는
+    기존 '## 날짜' 블록을 제거 — backfill을 재실행할 때 예전에 지식컷 미래착각 등으로
+    망가졌던 구버전 블록이 새로 만든 정상 블록과 중복으로 쌓이지 않고 교체되게 함.
+    '📊 주간 메타복기' 블록은 날짜로 시작하지 않아 자연히 대상에서 제외됨. 반환: 제거한 블록 수."""
+    if not date_strs or not os.path.exists(MARKET_REVIEW_FILE):
+        return 0
+    import re as _re
+    try:
+        with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
+            _txt = _f.read()
+    except OSError:
+        return 0
+    _parts = _txt.split("\n## ")
+    _kept = [_parts[0]]
+    _removed = 0
+    for _p in _parts[1:]:
+        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _p)
+        if _m and _m.group(1) in date_strs:
+            _removed += 1
+            continue
+        _kept.append(_p)
+    if not _removed:
+        return 0
+    _new_txt = _kept[0] + "".join("\n## " + _p for _p in _kept[1:])
+    try:
+        with open(MARKET_REVIEW_FILE, "w", encoding="utf-8") as _f:
+            _f.write(_new_txt)
+    except OSError:
+        return 0
+    return _removed
+
+
 def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
     """[V25.53 C-backfill] 과거 N거래일 시장 복기 미리학습 → market_review.md 누적.
     [피드백 반영] KIS 지수 일별시세(inquire-daily-indexchartprice)가 있으면 코스피/코스닥 종가·등락률은
@@ -1524,7 +1557,7 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
 
         if _has_kis and not _ks and not _kq:
             # KIS 실측 응답에 해당일이 없음 = 휴장(주말 아닌 평일 공휴일) — 추측하지 않고 확정 기록
-            _out.append(f"\n## {_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)\n")
+            _out.append((_dd.strftime("%Y-%m-%d"), f"\n## {_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)\n"))
             print(f"[backfill] {_dstr} 휴장(KIS 데이터 없음) — Gemini 호출 생략")
             continue
 
@@ -1561,19 +1594,25 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
             _block = f"\n## {_dstr}\n"
             if _fact_line:
                 _block += _fact_line + "\n"
-            _out.append(_block + _wv.strip() + "\n")
+            _out.append((_dd.strftime("%Y-%m-%d"), _block + _wv.strip() + "\n"))
             print(f"[backfill] {_dstr} 복기 완료" + (" (KIS 실측 반영)" if _fact_line else ""))
         else:
             print(f"[backfill] {_dstr} Gemini 실패(스킵) — 위 [grounded 진단] 참조")
         time.sleep(6)                                 # grounding 무료쿼터 배려
     if _out:
         try:
+            # [피드백 반영] 재실행 시 같은 날짜의 구버전 블록(예: 지식컷 미래착각으로 망가졌던 것)이
+            # 새 결과와 중복으로 쌓이지 않도록, 이번에 새로 만든 날짜는 기존 블록을 먼저 제거하고 교체.
+            _fresh_dates = {_ds for _ds, _ in _out}
+            _removed = _remove_review_blocks(_fresh_dates)
+            if _removed:
+                print(f"[backfill] 동일 날짜 구버전 블록 {_removed}건 교체(제거 후 재기록)")
             _new = not os.path.exists(MARKET_REVIEW_FILE)
             with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
                 if _new:
                     _f.write("# 시장 복기 원장 (market_review.md)\n")
                 _f.write(f"\n# ── 과거 backfill {days}일 (생성 {datetime.datetime.now().strftime('%Y-%m-%d')}) ──\n"
-                         + "".join(_out))
+                         + "".join(_b for _, _b in _out))
             print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료")
         except OSError as _e:
             print("[backfill] 저장 실패:", _e)
