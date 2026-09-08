@@ -40,6 +40,33 @@ WATCHER = os.path.join(BASE, "macro_watcher.py")
 _env = {**os.environ, **KEYS}
 _watch_proc = [None]   # 감시 프로세스 핸들(시작/중지용)
 HOLDINGS_FILE = os.path.join(BASE, "my_holdings.json")
+REVIEW_FILE = os.path.join(BASE, "market_review.md")
+
+
+def _view_market_review():
+    """시장복기 원장(market_review.md)을 창으로 표시 — 최신 날짜가 위로 오게 역순."""
+    win = tk.Toplevel(root)
+    win.title("📓 시장 복기 원장")
+    win.geometry("640x560")
+    tk.Label(win, text="📓 시장 복기 원장 (market_review.md)", font=("맑은 고딕", 12, "bold")).pack(pady=6)
+    _box = scrolledtext.ScrolledText(win, width=76, height=30, font=("맑은 고딕", 10), wrap=tk.WORD)
+    _box.pack(padx=8, pady=4, fill=tk.BOTH, expand=True)
+    try:
+        with open(REVIEW_FILE, encoding="utf-8") as f:
+            _txt = f.read().strip()
+        # '## 날짜' 블록 단위로 쪼개 최신(뒤쪽)이 위로 오게 역순 표시
+        _blocks = _txt.split("\n## ")
+        if len(_blocks) > 1:
+            _head, _days = _blocks[0], ["## " + b for b in _blocks[1:]]
+            _txt = _head + "\n\n" + "\n\n".join(reversed(_days))
+        _box.insert(tk.END, _txt or "(비어있음)")
+    except FileNotFoundError:
+        _box.insert(tk.END, "아직 없음 — 감시 마감복기(15:35~) 또는 '과거복기 학습(--backfill)'을 먼저 실행하세요.")
+    except Exception as _e:
+        _box.insert(tk.END, f"읽기 오류: {type(_e).__name__}: {_e}")
+    _box.config(state=tk.DISABLED)
+    tk.Button(win, text="🔄 새로고침", command=lambda: (win.destroy(), _view_market_review()),
+              font=("맑은 고딕", 9)).pack(pady=4)
 
 
 def _load_holdings():
@@ -225,6 +252,8 @@ _specs = [
     ("🧭 장세 판독기", lambda: _run(["--regime"], "장세판독")),
     ("⏱️ 종배 청산분석", lambda: _run(["--exit-analysis"], "청산분석")),
     ("💼 보유종목 조회", lambda: _run(["--holdings"], "보유조회")),
+    ("🕰 과거복기 학습(10일)", lambda: _run(["--backfill-review", "10"], "과거복기")),
+    ("📓 시장복기 보기", _view_market_review),
 ]
 for i, (txt, fn) in enumerate(_specs):
     tk.Button(_btns, text=txt, width=22, height=2, command=fn,
