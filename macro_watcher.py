@@ -5668,6 +5668,75 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
         state["review_day"] = today
 
 
+_WEEKLY_META_TAG = "📊 주간 메타복기"
+
+
+def _load_review_blocks(days_back=7):
+    """market_review.md에서 최근 days_back일 이내 '## YYYY-MM-DD...' 일일 블록만 추출.
+    직전 주간 메타복기 블록(_WEEKLY_META_TAG)은 재료로 재사용하지 않도록 제외."""
+    import re as _re
+    if not os.path.exists(MARKET_REVIEW_FILE):
+        return []
+    try:
+        with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
+            _txt = _f.read()
+    except OSError:
+        return []
+    _cutoff = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date() - datetime.timedelta(days=days_back)
+    _out = []
+    for _blk in _txt.split("\n## "):
+        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _blk.strip())
+        if not _m or _WEEKLY_META_TAG in _blk[:40]:
+            continue
+        try:
+            _bd = datetime.datetime.strptime(_m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if _bd >= _cutoff:
+            _out.append((_bd, _blk.strip()))
+    _out.sort(key=lambda x: x[0])
+    return _out
+
+
+def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=False):
+    """[다음 작업 1호] 주1회(금요일 마감복기 시점) market_review.md 최근 누적분을 Gemini로 재분석해
+    '최근 장세 패턴 요약'(메타 복기) 생성 — 반복 패턴·잘 먹힌 신호·다음주 포커스·규칙원장 반영 후보 제시."""
+    if not force:
+        m = now_kst.hour * 60 + now_kst.minute
+        if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
+            return
+        if now_kst.weekday() != 4:                        # 금요일(마지막 거래일 가정)만
+            return
+        _wk = now_kst.strftime("%G-W%V")
+        if state.get("weekly_review_week") == _wk:
+            return
+    if not gemini_key:
+        print("[주간메타복기] Gemini 키 없음 — 스킵"); return
+    _blocks = _load_review_blocks(days_back=7)
+    if len(_blocks) < 3:
+        print(f"[주간메타복기] 누적 데이터 부족({len(_blocks)}일치, 최소 3일 필요) — 스킵")
+        return
+    _start, _end = _blocks[0][0], _blocks[-1][0]
+    _body = "\n\n".join(b for _, b in _blocks)[:6000]     # 프롬프트 과다 방지
+    _pr = (f"아래는 한국 증시 최근 {_start}~{_end} 일별 마감 복기 기록입니다. 이걸 종합해서 "
+           "① 이번 주 반복된 시장 패턴·테마(있다면) ② 어떤 신호·조건이 실제로 잘 먹혔나(반복 검증된 것) "
+           "③ 다음 주 참고할 포커스 1~2가지 ④ 규칙원장(rules_ledger) 반영을 검토할만한 신규 규칙 후보(없으면 '없음') "
+           "각 항목 1~3줄·간결·이모지. 근거 부족하면 '불명' 명시.\n\n" + _body)
+    _wv = _gemini_generate(gemini_key, _pr)
+    if not _wv:
+        print("[주간메타복기] Gemini 생성 실패 — 스킵"); return
+    _hdr = f"{_WEEKLY_META_TAG} ({_start}~{_end}, {len(_blocks)}일치)"
+    _msg = f"{_hdr}\n\n{_wv.strip()}"
+    if send_telegram(token_tg, chat_id, _msg):
+        try:
+            with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
+                _f.write(f"\n## {_hdr}\n{_wv.strip()}\n")
+            print("[주간메타복기] market_review.md 누적 저장")
+        except OSError as _e:
+            print("[주간메타복기] 저장 실패:", _e)
+        state["weekly_review_week"] = now_kst.strftime("%G-W%V")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=int, default=180, help="체크 주기(초), 기본 180=3분")
@@ -5698,6 +5767,8 @@ def main():
                     help="과거 N거래일 시장 복기 미리학습(지수 궤적+Gemini 웹검색) → market_review.md 누적(기본 10)")
     ap.add_argument("--test-buyback", dest="test_buyback", action="store_true",
                     help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
+    ap.add_argument("--weekly-review", dest="weekly_review", action="store_true",
+                    help="주간 메타복기 강제 실행 — market_review.md 최근 7일 재분석(패턴·먹힌신호·규칙후보) 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -5709,6 +5780,12 @@ def main():
     if args.test_buyback:                         # [V25.54] 자사주 반전 신호 테스트
         _bnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         test_buyback_scan(_bnow, token_tg, chat_id, read_dart_key(), kis_key, kis_secret)
+        sys.exit(0)
+
+    if args.weekly_review:                        # 주간 메타복기 강제 실행
+        _gk = read_gemini_key()
+        _wnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        weekly_meta_review(_wnow, load_state(), token_tg, chat_id, _gk, force=True)
         sys.exit(0)
 
     if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
@@ -6299,6 +6376,7 @@ def main():
             try:
                 send_morning_brief(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
                 send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key)
+                weekly_meta_review(now, st, token_tg, chat_id, gemini_key)
             except Exception as _je:
                 print("일지/복기 발송 오류:", _je)
 
