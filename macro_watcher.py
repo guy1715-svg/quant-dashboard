@@ -741,21 +741,57 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     except Exception:
         rows = []
 
-    def _res(code, base):
+    _mcache = {}
+
+    def _metrics(r):
+        """[V25.48] 종가만 아니라 장중 고/저까지 — '올랐다 빠졌는지' + 익절(+3%)/손절(-2%) 도달 여부 판정."""
+        _ck = r["code"]
+        if _ck in _mcache:
+            return _mcache[_ck]
+        base = r.get("px")
+        _pf = None
         try:
-            _p, _c, _ = _price_and_turnover(token, key, secret, code)
-            if _p and base:
-                return _p, (_p / base - 1) * 100
+            _pf = _price_full(token, key, secret, _ck)
         except Exception:
             pass
-        return None, None
+        if not _pf or not base:
+            _mcache[_ck] = None
+            return None
+        _cur, _, _o, _hi, _lo = _pf
+        _m = {"cur": _cur, "pct": (_cur / base - 1) * 100,
+              "hipct": ((_hi / base - 1) * 100 if _hi else None),
+              "lopct": ((_lo / base - 1) * 100 if _lo else None),
+              "hit_t": bool(_hi and _hi >= base * 1.03),      # 장중 익절가(+3%) 도달
+              "hit_s": bool(_lo and _lo <= base * 0.98)}      # 장중 손절가(-2%) 이탈
+        _mcache[_ck] = _m
+        return _m
 
     def _fmt(r):
-        _p, _pct = _res(r["code"], r.get("px"))
-        if _p is None:
+        _m = _metrics(r)
+        if _m is None:
             return f"• {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} → 조회실패"
+        _pct = _m["pct"]
         _ic = "🔴" if _pct < 0 else "🟢" if _pct > 0 else "⚪"
-        return f"{_ic} {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} → 현재 {_p:,} ({_pct:+.1f}%)"
+        _rng = (f" · 장중 고{_m['hipct']:+.1f}%/저{_m['lopct']:+.1f}%"
+                if (_m["hipct"] is not None and _m["lopct"] is not None) else "")
+        _tag = ""
+        if _m["hit_t"]:
+            _tag += " 🎯익절도달"                            # 장중 +3% 찍음 = 규칙대로면 익절 성공
+        if _m["hit_s"]:
+            _tag += " ✂️손절이탈"
+        return (f"{_ic} {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} "
+                f"→ 현재 {_m['cur']:,} ({_pct:+.1f}%){_rng}{_tag}")
+
+    def _summary(rows_):
+        """평균(종가) · 종가승률 · 익절도달률(장중 +3% 찍은 비율)."""
+        _ms = [_metrics(r) for r in rows_]
+        _ms = [x for x in _ms if x]
+        if not _ms:
+            return ""
+        _avg = sum(x["pct"] for x in _ms) / len(_ms)
+        _wr = sum(1 for x in _ms if x["pct"] > 0) / len(_ms) * 100
+        _tr = sum(1 for x in _ms if x["hit_t"]) / len(_ms) * 100
+        return f"   → 평균 {_avg:+.1f}% · 종가승률 {_wr:.0f}% · 🎯장중 익절도달 {_tr:.0f}%"
 
     _morning = [r for r in rows if r.get("date") == today and r.get("kind") in _DAYTRADE_KINDS]
     _evening = [r for r in rows if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS]
@@ -770,27 +806,24 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     _lines = ["📋 추천 종목 성적표"]
     _lines.append(f"\n🌅 오늘 아침 당일단타 ({today})")
     if _morning:
-        _mp = [_fmt(r) for r in _morning[:15]]
-        _lines += _mp
-        _pcts = [(_res(r["code"], r.get("px"))[1]) for r in _morning]
-        _pcts = [x for x in _pcts if x is not None]
-        if _pcts:
-            _lines.append(f"   → 평균 {sum(_pcts)/len(_pcts):+.1f}% · 승률 {sum(1 for x in _pcts if x>0)/len(_pcts)*100:.0f}%")
+        _lines += [_fmt(r) for r in _morning[:15]]
+        _s = _summary(_morning)
+        if _s:
+            _lines.append(_s)
     else:
         _lines.append("   (신호 없음)")
     _lines.append(f"\n🌒 어제 저녁 종배·브리핑 ({yday} → 오늘 결과)")
     if _evening:
         _lines += [_fmt(r) for r in _evening[:15]]
-        _pcts = [(_res(r["code"], r.get("px"))[1]) for r in _evening]
-        _pcts = [x for x in _pcts if x is not None]
-        if _pcts:
-            _lines.append(f"   → 평균 {sum(_pcts)/len(_pcts):+.1f}% · 승률 {sum(1 for x in _pcts if x>0)/len(_pcts)*100:.0f}%")
+        _s = _summary(_evening)
+        if _s:
+            _lines.append(_s)
     else:
         _lines.append("   (기록 없음)")
     if _today_on:                                   # 오늘 수동/자동 등록된 종배·브리핑(결과는 내일)
         _lines.append(f"\n📌 오늘 등록 종배·브리핑 ({today} · 결과는 내일)")
         _lines += [f"• {r.get('name', r['code'])} [{r.get('kind')}] 등록가 {r.get('px', 0):,}" for r in _today_on[:15]]
-    _lines.append("\n※ 현재가 기준 실시간 대조 — 추천가 대비 등락")
+    _lines.append("\n※ 현재가+장중 고/저 대조 · 🎯익절도달=장중 +3% 찍음(규칙대로면 익절 성공) · ✂️손절이탈=장중 -2% 터치")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
     print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
 
