@@ -1682,6 +1682,7 @@ def _naver_ranking_news(top=15):
     개미 심리(뭘 실제로 찾아봤나)에 더 직접적인 신호. 반환 제목 리스트(최신 랭킹순), 실패 시 [].
     ⚠️ finance.naver.com 구버전 페이지 구조 기반(HTML 바뀌면 깨질 수 있음) — 0건이면 진단 로그 확인."""
     import re as _re
+    import html as _html_mod
     _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
             "Referer": "https://finance.naver.com/news/", "Accept-Language": "ko-KR,ko;q=0.9"}
@@ -1695,11 +1696,15 @@ def _naver_ranking_news(top=15):
         return []
     # 기사 링크(/news/news_read.naver?... 또는 /news/read.naver?...) 안의 텍스트만 제목 후보로 추출.
     # 클래스명 등 마크업이 바뀌어도 안 깨지게 href 패턴(구조)만으로 매칭 — _market_investor()와 동일 전략.
-    _cands = _re.findall(r'<a[^>]+href="[^"]*news_read\.naver\?[^"]*"[^>]*>([^<]+)</a>', _html)
+    # (.*?)는 DOTALL로 <a>...</a> 내부의 중첩 태그(예: 말줄임 아이콘 <span>)까지 통째로 잡은 뒤
+    # 아래서 태그를 벗겨낸다 — [^<]+로 첫 중첩 태그에서 끊기면 제목이 잘리는 문제 방지.
+    _cands = _re.findall(r'<a[^>]+href="[^"]*news_read\.naver\?[^"]*"[^>]*>(.*?)</a>', _html, _re.S)
     if not _cands:
-        _cands = _re.findall(r'<a[^>]+href="[^"]*/news/read\.naver\?[^"]*"[^>]*>([^<]+)</a>', _html)
+        _cands = _re.findall(r'<a[^>]+href="[^"]*/news/read\.naver\?[^"]*"[^>]*>(.*?)</a>', _html, _re.S)
     titles, seen = [], set()
     for _t in _cands:
+        _t = _re.sub(r"<[^>]+>", "", _t)                # 중첩 태그 제거
+        _t = _html_mod.unescape(_t)                      # &hellip;·&ldquo; 등 HTML 엔티티 디코딩
         _t = _re.sub(r"\s+", " ", _t).strip()
         if len(_t) < 6 or _t in seen:                  # 너무 짧은 건 아이콘·번호 텍스트일 가능성
             continue
