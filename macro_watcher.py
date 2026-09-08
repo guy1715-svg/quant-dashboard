@@ -24,6 +24,7 @@ import json
 import time
 import argparse
 import datetime
+import tempfile
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -84,6 +85,52 @@ def _to_int(v, d=0):
         return d
 
 
+def _atomic_write_json(path, obj, indent=None):
+    """[실전투자 안정성] JSON을 임시파일에 쓴 뒤 os.replace로 원자적 교체.
+    감시 중지·정전·강제종료가 저장 도중 발생해도 절반만 써진 파일이 남지 않게 함
+    (기존 방식은 쓰기 중 죽으면 파일이 깨지고, load 쪽 except가 조용히 {}로 리셋해
+    당일 중복알림·성적기록(signal_scorecard 등) 유실을 못 알아채는 문제가 있었음).
+    반환: 성공 True / 실패 False."""
+    _d = os.path.dirname(path) or "."
+    _tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=_d, delete=False,
+                                         suffix=".tmp") as f:
+            _tmp = f.name
+            json.dump(obj, f, ensure_ascii=False, indent=indent)
+        os.replace(_tmp, path)                          # 같은 파일시스템 내 rename = 원자적(Windows도 3.3+ 지원)
+        return True
+    except Exception as _e:
+        print(f"[저장 진단] {os.path.basename(path)} 저장 실패: {type(_e).__name__}: {_e}")
+        if _tmp and os.path.exists(_tmp):
+            try:
+                os.remove(_tmp)
+            except OSError:
+                pass
+        return False
+
+
+def _atomic_write_text(path, text):
+    """_atomic_write_json과 동일한 원자적 교체를 텍스트 파일(market_review.md 등)에 적용."""
+    _d = os.path.dirname(path) or "."
+    _tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=_d, delete=False,
+                                         suffix=".tmp") as f:
+            _tmp = f.name
+            f.write(text)
+        os.replace(_tmp, path)
+        return True
+    except Exception as _e:
+        print(f"[저장 진단] {os.path.basename(path)} 저장 실패: {type(_e).__name__}: {_e}")
+        if _tmp and os.path.exists(_tmp):
+            try:
+                os.remove(_tmp)
+            except OSError:
+                pass
+        return False
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -93,11 +140,7 @@ def load_state():
 
 
 def save_state(d):
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(STATE_FILE, d)
 
 
 # [1단계] 초고속 웹 속보판(live_dashboard.html)이 읽을 스냅샷 — 매 루프마다 최신값 저장.
@@ -106,11 +149,7 @@ SNAPSHOT_FILE = os.path.join(BASE, "snapshot.json")
 
 
 def save_snapshot(snap):
-    try:
-        with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
-            json.dump(snap, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(SNAPSHOT_FILE, snap)
 
 
 # [1단계-b] snapshot.json을 GitHub 'data' 브랜치에 업로드 → GitHub Pages 속보판이 읽는다.
@@ -200,6 +239,8 @@ _ALERT_FEED = []      # [V13.2] 모든 텔레그램 알람의 당일 버퍼 — 
 
 
 def send_telegram(token, chat_id, text):
+    # [실전투자 안전장치] 텔레그램이 유일한 알림 채널인데 재시도가 없어서, 순간 네트워크 끊김·
+    # 텔레그램 서버 일시 5xx 한 번에 손절 알림 같은 중요 메시지가 그냥 유실됐음. 청크별 최대 3회 재시도.
     _ok = False
     try:
         # [V21.8] POST 방식 + 4096자 초과 자동 분할 — 긴 브리핑(뉴스+차트검증)도 안전 전송.
@@ -210,11 +251,20 @@ def send_telegram(token, chat_id, text):
             _chunks.append(_t[:3900]); _t = _t[3900:]
         _ok = True
         for _c in _chunks:
-            _r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                               data={"chat_id": chat_id, "text": _c}, timeout=8)
-            _seg_ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
+            _seg_ok = False
+            for _attempt in range(3):
+                try:
+                    _r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                       data={"chat_id": chat_id, "text": _c}, timeout=8)
+                    _seg_ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
+                    if _seg_ok:
+                        break
+                    print(f"텔레그램 전송 실패({_attempt+1}/3): HTTP {_r.status_code} {_r.text[:200]}")
+                except Exception as _re2:
+                    print(f"텔레그램 전송 예외({_attempt+1}/3): {type(_re2).__name__}: {_re2}")
+                if _attempt < 2:
+                    time.sleep(2)
             if not _seg_ok:
-                print(f"텔레그램 전송 실패: HTTP {_r.status_code} {_r.text[:200]}")
                 _ok = False
                 break
     except Exception as e:
@@ -515,11 +565,7 @@ def kis_token(key, secret):
         if not _tok:
             return None
         _exp = _now + int(_j.get("expires_in", 86400))
-        try:
-            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                json.dump({"fp": _fp, "token": _tok, "exp": _exp}, f)
-        except Exception:
-            pass
+        _atomic_write_json(TOKEN_FILE, {"fp": _fp, "token": _tok, "exp": _exp})
         return _tok
     except Exception:
         return None
@@ -643,14 +689,9 @@ def auto_lineup_from_secs(secs, n=6):
 
 def save_auto_lineup(pairs):
     """자동 선정 라인업을 manju_watchlist.json에 기록(대시보드와 공유). auto 플래그 유지."""
-    try:
-        _payload = {"auto": True, "_설명": "완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신).",
-                    "lineup": [[c, n] for c, n in pairs]}
-        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(_payload, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    _payload = {"auto": True, "_설명": "완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신).",
+                "lineup": [[c, n] for c, n in pairs]}
+    return _atomic_write_json(WATCHLIST_FILE, _payload, indent=2)
 
 
 SNIPER_LARGE = 30_000_000_000   # 대형주 임계 300억
@@ -717,11 +758,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
         return
     rows.append({"date": today, "t": now_kst.strftime("%H:%M"), "kind": kind,
                  "code": cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None})
-    try:
-        with open(SCORECARD_FILE, "w", encoding="utf-8") as f:
-            json.dump(rows[-2000:], f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(SCORECARD_FILE, rows[-2000:])
 
 
 _DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅")
@@ -1511,10 +1548,7 @@ def _remove_review_blocks(date_strs):
     if not _removed:
         return 0
     _new_txt = _kept[0] + "".join("\n## " + _p for _p in _kept[1:])
-    try:
-        with open(MARKET_REVIEW_FILE, "w", encoding="utf-8") as _f:
-            _f.write(_new_txt)
-    except OSError:
+    if not _atomic_write_text(MARKET_REVIEW_FILE, _new_txt):
         return 0
     return _removed
 
@@ -2783,9 +2817,35 @@ def _read_holdings():
             d = json.load(f)
         if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
             return d["stocks"]
-    except Exception:
-        pass
+    except Exception as _e:
+        # [실전투자 안전장치] 예전엔 여기서 그냥 조용히 []을 반환 — 메모장으로 손절값 고치다
+        # JSON 문법을 깨뜨리면 손절/익절 감시 전체가 '아무 표시도 없이' 영구히 꺼져버렸음.
+        print(f"[보유종목 진단] my_holdings.json 파싱 실패: {type(_e).__name__}: {_e}")
     return []
+
+
+def _holdings_health_check(now_kst, state, token_tg, chat_id):
+    """[실전투자 안전장치] my_holdings.json이 '의도적으로 off/빈 상태'가 아니라 문법 깨짐 등으로
+    조용히 감시 불능이 된 경우를 매일 1회(장 시작 무렵) 잡아내 텔레그램으로 경고. off:false를
+    사용자가 일부러 껐을 수도 있어 그건 경고하지 않고, 파싱 자체가 실패할 때만 경고."""
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("holdings_health_day") == today:
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((8 * 60 + 30) <= m <= (9 * 60 + 30)):        # 장 시작 무렵 하루 1회면 충분
+        return
+    state["holdings_health_day"] = today                 # 결과 무관 오늘은 1회만 시도
+    if not os.path.exists(HOLDINGS_FILE):
+        return                                            # 파일 자체가 없으면 애초에 미사용(정상)
+    try:
+        with open(HOLDINGS_FILE, encoding="utf-8-sig") as f:
+            _raw = f.read()
+        json.loads(_raw)                                  # 파싱만 검증(스키마는 _read_holdings 몫)
+    except Exception as _e:
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_CAUTION}\n⚠️ [보유관리] my_holdings.json 파싱 실패({type(_e).__name__}) — "
+                      "손절/익절 자동감시가 전체적으로 꺼져 있을 수 있습니다. 파일 문법을 확인하세요.")
+        print(f"[보유종목 진단] 일일 헬스체크 실패 경보 발송: {_e}")
 
 
 def _holding_judge(token, key, secret, code, px, prev_close):
@@ -2834,6 +2894,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
     if not (_reg or _pre or _aft):
         return
     _mrkt = "J" if _reg else "NX"
+    _holdings_health_check(now_kst, state, token_tg, chat_id)
     hold = _read_holdings()
     if not hold:
         return
@@ -2841,6 +2902,10 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
     hs = state.get("holdings_sent", {})
     if hs.get("_day") != today:
         hs = {"_day": today}
+    # [실전투자 안전장치] 시세 조회 실패 시 그냥 continue로 넘어가면 손절·익절 감시가
+    # "조용히" 멈춘다 — 사용자는 "알림이 없으니 괜찮다"고 착각할 위험이 커서 가장 위험한 침묵 실패.
+    # 종목별 연속 실패를 세다가 임계 넘으면(=수 분간 지속) 딱 1번 "감시 중단 중" 경보를 보낸다(쿨다운 60분).
+    _hf = state.get("holdings_fail", {})
     for s in hold:
         code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
         avg = s.get("avg") or 0
@@ -2853,7 +2918,19 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
         except Exception:
             px = None
         if not px:
+            _fe = _hf.get(code, {"n": 0, "warned_ts": 0})
+            _fe["n"] = _fe.get("n", 0) + 1
+            _now_ts0 = int(now_kst.timestamp())
+            if _fe["n"] >= 3 and (_now_ts0 - _fe.get("warned_ts", 0)) > 3600:
+                if send_telegram(token_tg, chat_id,
+                                 f"{SIG_CAUTION}\n⚠️ [보유관리] {name} 시세 조회 {_fe['n']}회 연속 실패 — "
+                                 "손절/익절 자동감시가 안 되고 있습니다. HTS/앱으로 직접 확인하세요."):
+                    _fe["warned_ts"] = _now_ts0
+                    print(f"[보유관리] {name} 시세조회 연속실패 경보 발송({_fe['n']}회)")
+            _hf[code] = _fe
             continue
+        if code in _hf:
+            del _hf[code]                                 # 성공하면 실패 카운트 리셋
         _ret = (px / avg - 1) * 100
         _pl = int((px - avg) * qty) if qty else 0
         # [V25.21] 8시 프리마켓 오버나이트 홀딩 판정 — 보유 전체에 '9시 보유 vs 8시 매도'(당일 1회/종목)
@@ -2906,6 +2983,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             hs[_ck] = {"ts": _now_ts, "st": ("이탈" if _is_exit else "근접" if _fam == "손절" else "익절")}
             print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
     state["holdings_sent"] = hs
+    state["holdings_fail"] = _hf
 
 
 def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
@@ -3840,11 +3918,7 @@ def _pick_read():
 
 
 def _pick_write(rows):
-    try:
-        with open(PICK_FILE, "w", encoding="utf-8") as f:
-            json.dump(rows[-1500:], f, ensure_ascii=False)
-    except OSError:
-        pass
+    _atomic_write_json(PICK_FILE, rows[-1500:])
 
 
 def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
@@ -4798,11 +4872,7 @@ def log_program_history(now_kst, token, key, secret, lineup):
         if not ser or (m - ser[-1][0]) >= 3:          # 최소 3분 간격 적립(중복 방지)
             ser.append([m, int(_a or 0), int(_q or 0)])
             codes[code] = ser[-200:]                   # 하루 상한
-    try:
-        with open(PROG_HIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(PROG_HIST_FILE, hist)
 
 
 # [V13.2 오신호 차단] 수급 전환 격발 임계 —
