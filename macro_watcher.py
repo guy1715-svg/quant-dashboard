@@ -1382,25 +1382,36 @@ def _gemini_factcheck(gkey, brief, mdetail=""):
     return ""
 
 
-def _gemini_grounded(gkey, prompt):
-    """[V25.52] 구글검색 grounding 범용 생성(팩트체크와 동일 SDK 폴백) — 과거 복기 등 실시간 검색용. 실패 시 ''."""
+def _gemini_grounded(gkey, prompt, diag=True):
+    """[V25.52] 구글검색 grounding 범용 생성(팩트체크와 동일 SDK 폴백) — 과거 복기 등 실시간 검색용.
+    실패 시 '' + 진단 출력(diag). 429(쿼터)면 자동 재시도(간격↑)."""
     if not gkey or not prompt:
         return ""
+    _errs = []
+    # ── 신SDK(google-genai) + grounding — 429/일시오류는 짧은 대기 후 재시도 ──
     try:
         from google import genai as _ng
         from google.genai import types as _nt
         _client = _ng.Client(api_key=gkey)
         for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
-            try:
-                _resp = _client.models.generate_content(
-                    model=_mn, contents=prompt,
-                    config=_nt.GenerateContentConfig(tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
-                if getattr(_resp, "text", None):
-                    return _resp.text.strip()
-            except Exception:
-                pass
-    except Exception:
-        pass
+            for _attempt in range(2):
+                try:
+                    _resp = _client.models.generate_content(
+                        model=_mn, contents=prompt,
+                        config=_nt.GenerateContentConfig(tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
+                    if getattr(_resp, "text", None):
+                        return _resp.text.strip()
+                    _errs.append(f"신/{_mn}:빈응답")
+                    break
+                except Exception as _ne:
+                    _msg = str(_ne)
+                    _errs.append(f"신/{_mn}:{type(_ne).__name__}")
+                    if ("429" in _msg or "quota" in _msg.lower() or "resource" in _msg.lower()) and _attempt == 0:
+                        time.sleep(12); continue          # 쿼터/레이트 → 12초 대기 후 1회 재시도
+                    break
+    except Exception as _nie:
+        _errs.append(f"신SDK미설치:{type(_nie).__name__}")
+    # ── 구SDK 폴백 ──
     try:
         import google.generativeai as genai
         genai.configure(api_key=gkey)
@@ -1413,10 +1424,12 @@ def _gemini_grounded(gkey, prompt):
                     _resp = genai.GenerativeModel(_mn).generate_content(prompt, **_kw)
                     if getattr(_resp, "text", None):
                         return _resp.text.strip()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as _ge:
+                    _errs.append(f"구/{_mn}/{'검색' if _tv else '기본'}:{type(_ge).__name__}")
+    except Exception as _oie:
+        _errs.append(f"구SDK:{type(_oie).__name__}")
+    if diag:
+        print(f"[grounded 진단] 실패 — {' / '.join(_errs)[:250]}")
     return ""
 
 
@@ -1461,7 +1474,7 @@ def backfill_market_review(gemini_key, days=10):
             print(f"[backfill] {_dstr} 복기 완료")
         else:
             print(f"[backfill] {_dstr} Gemini 실패(스킵)")
-        time.sleep(2)
+        time.sleep(6)                                 # [V25.52] grounding 무료쿼터 배려(2→6초)
     if _out:
         try:
             _new = not os.path.exists(MARKET_REVIEW_FILE)
