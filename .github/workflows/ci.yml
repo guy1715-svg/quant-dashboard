@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 문법 오류·병합 충돌 마커 등을 전체 파일에서 조기에 잡는다.
+      # (KIS/Gemini/Telegram 등 실키가 필요한 무거운 의존성은 CI에서 설치하지 않음)
+      - name: Compile-check all Python files
+        run: python -m compileall -q .
+
+      - name: Run AI briefing logic test
+        run: python test_ai_briefing.py
