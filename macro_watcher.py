@@ -1153,6 +1153,35 @@ def _kospi_index_kis(token, key, secret):
     return None
 
 
+def _index_snapshot(token, key, secret, iscd="0001"):
+    """[V25.51 C] 지수 스냅샷 — 현재·등락%·시가·고가·저가(FHPUP02100000). iscd 0001=코스피 1001=코스닥.
+    마감 복기용 '오전 강세→오후 반전' 감지에 쓰임. 반환 dict 또는 None."""
+    if not (token and key and secret):
+        return None
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPUP02100000"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": iscd}, timeout=6)
+        o = r.json().get("output") or {}
+        if not isinstance(o, dict):
+            return None
+
+        def _f(k):
+            _v = str(o.get(k, "")).replace(",", "").strip()
+            try:
+                return float(_v) if _v not in ("", "None") else None
+            except ValueError:
+                return None
+        _cur, _hi = _f("bstp_nmix_prpr"), _f("bstp_nmix_hgpr")
+        return {"chg": _f("bstp_nmix_prdy_ctrt"), "cur": _cur,
+                "open": _f("bstp_nmix_oprc"), "hi": _hi, "lo": _f("bstp_nmix_lwpr"),
+                # 오후 반전% = 고가 대비 종가 하락폭(윗꼬리) — 오전 강세→마감 밀림 감지
+                "fade": (((_cur / _hi) - 1) * 100 if (_cur and _hi) else None)}
+    except Exception:
+        return None
+
+
 def _kospi_fut_session(now_kst):
     """코스피200 선물 거래 세션 태그 — 주간(09:00~15:45)/야간(18:00~익일05:00)/휴장."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -5388,8 +5417,12 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
         state["brief_day"] = today
 
 
-def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on):
-    """15:35~15:50 마감 복기 리포트 1회 — 오늘 뜬 신호 총정리 + 라인업 성적 + 코칭."""
+MARKET_REVIEW_FILE = os.path.join(BASE, "market_review.md")
+
+
+def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key=None):
+    """15:35~15:50 마감 복기 리포트 1회 — 오늘 뜬 신호 총정리 + 라인업 성적 + 코칭.
+    [V25.51 C] + 시장 복기 학습: 지수 궤적(오전강세→오후반전)·화제 테마·급등주로 'Gemini 왜 이렇게 움직였나' 분석·누적저장."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
         return
@@ -5429,6 +5462,48 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
     lines += ["", _verdict,
               "🧭 복기 체크(초보): ①신호 종목 실제로 올랐나? ②감으로 산 것 없나? ③손절 지켰나?",
               "   신호+원칙만 반복하면 실력 늡니다. 오늘도 수고했어요 👏"]
+    # [V25.51 C] 시장 복기 학습 — 지수 궤적+화제테마+급등주 → Gemini '왜 이렇게 움직였나' 분석·누적 저장(market_review.md)
+    if gemini_key and kis_on:
+        try:
+            _tk = kis_token(kis_key, kis_secret)
+            _ks = _index_snapshot(_tk, kis_key, kis_secret, "0001")
+            _kq = _index_snapshot(_tk, kis_key, kis_secret, "1001")
+            _mv = _volume_rank(_tk, kis_key, kis_secret, top=30) or []
+            _up = sorted([x for x in _mv if (x.get("chg") or 0) > 0], key=lambda x: x["chg"], reverse=True)[:6]
+            _dn = sorted([x for x in _mv if (x.get("chg") or 0) < 0], key=lambda x: x["chg"])[:4]
+            _arts = [a.split(" :: ")[0].split("] ")[-1] for a in
+                     [f"[x] {it.get('title','')}" for it in _rss_news(30, 12)]][:40]
+            _buzz2 = _topic_buzz(_arts)
+
+            def _ixtxt(nm, s):
+                if not s or s.get("chg") is None:
+                    return f"{nm} —"
+                _fd = ""
+                if s.get("fade") is not None:
+                    _fd = f"·고점대비 {s['fade']:+.1f}%({'오후반전' if s['fade'] <= -1 else '강세유지'})"
+                return f"{nm} {s['chg']:+.2f}%{_fd}"
+            _uptxt = ", ".join(f"{x['name']}+{x['chg']:.0f}%" for x in _up) or "—"
+            _dntxt = ", ".join(f"{x['name']}{x['chg']:.0f}%" for x in _dn) or "—"
+            _idxtxt = f"{_ixtxt('코스피', _ks)} / {_ixtxt('코스닥', _kq)}"
+            _pr = ("오늘 한국증시 마감 복기. "
+                   f"지수: {_idxtxt}. 화제 테마(반복언급): {_buzz2 or '—'}. "
+                   f"급등: {_uptxt}. 급락: {_dntxt}. "
+                   "→ ① 오늘 시장이 왜 이렇게 움직였나(특히 오전 강세→오후 반전이면 그 원인) "
+                   "② 어떤 뉴스/이슈에 개미가 반응했나 ③ 내일 참고할 교훈 1가지. "
+                   "각 1~2줄·간결·이모지. 추측이면 '추정' 명시, 모르면 '불명'.")
+            _wv = _gemini_generate(gemini_key, _pr)
+            if _wv:
+                lines.append(f"\n🧠 시장 복기(왜 이렇게 움직였나):\n{_wv.strip()}")
+                try:
+                    with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
+                        _f.write(f"\n## {now_kst.strftime('%Y-%m-%d(%a)')}\n"
+                                 f"- 지수: {_idxtxt}\n- 화제: {_buzz2 or '—'}\n"
+                                 f"- 급등: {_uptxt}\n- 급락: {_dntxt}\n{_wv.strip()}\n")
+                    print("[복기] market_review.md 누적 저장")
+                except OSError:
+                    pass
+        except Exception as _rve:
+            print("시장복기 오류:", _rve)
     if send_telegram(token_tg, chat_id, "\n".join(lines)):
         state["review_day"] = today
 
@@ -6046,7 +6121,7 @@ def main():
             journal_accumulate(st, snap)
             try:
                 send_morning_brief(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
-                send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
+                send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key)
             except Exception as _je:
                 print("일지/복기 발송 오류:", _je)
 
