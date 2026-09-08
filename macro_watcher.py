@@ -1433,14 +1433,31 @@ def _gemini_grounded(gkey, prompt, diag=True):
     return ""
 
 
+_WKD_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+# [피드백 반영] Gemini가 지식컷 경계 때문에 실제 지난 과거 날짜를 "아직 안 온 미래"로
+# 착각해 검색을 포기하는 응답을 걸러내기 위한 키워드. 이런 응답은 저장하지 않고 스킵.
+_FUTURE_CONFUSION_MARKERS = (
+    "아직 도래하지 않", "아직 오지 않은 날짜", "미래의 날짜", "발생하지 않은 날짜",
+    "아직 일어나지 않", "예정된 미래", "확인할 수 없는 미래", "미래 날짜이므로", "아직 도래하지 않은",
+)
+
+
+def _is_future_confused(text):
+    """Gemini 응답이 '이 날짜는 아직 안 왔다'는 지식컷 착각 문구를 담고 있는지 감지."""
+    return any(_m in (text or "") for _m in _FUTURE_CONFUSION_MARKERS)
+
+
 def backfill_market_review(gemini_key, days=10):
     """[V25.53 C-backfill] 과거 N거래일 시장 복기 미리학습 — Gemini 웹검색(grounding)이 그날 지수 등락·원인을
     직접 검색·복기 → market_review.md 누적. yfinance 지수조회 불안정('possibly delisted')이라 제거,
-    날짜(평일)만 생성하고 grounding이 숫자·이유 모두 찾게 함. 휴장일은 Gemini가 '휴장' 판정."""
+    날짜(평일)만 생성하고 grounding이 숫자·이유 모두 찾게 함. 휴장일은 Gemini가 '휴장' 판정.
+    [피드백 반영] ①오늘 실제 날짜를 명시해 과거 날짜를 미래로 착각하는 지식컷 오류 방지
+    ②확인된 사실/시장 해석을 분리하고 단일 원인 단정을 금지(가능성 언어 강제)."""
     if not gemini_key:
         print("[backfill] Gemini 키 없음 — 웹검색 복기 불가"); return
     _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-    _wkd = ["월", "화", "수", "목", "금", "토", "일"]
+    _today_str = _now.strftime("%Y년 %m월 %d일")
     _dates, _d = [], _now.date()
     while len(_dates) < days:                          # 최근 N개 평일(주말 제외; 휴장은 Gemini가 판정)
         _d -= datetime.timedelta(days=1)
@@ -1449,13 +1466,19 @@ def backfill_market_review(gemini_key, days=10):
     _dates.reverse()                                   # 오래된→최신
     _out = []
     for _dd in _dates:
-        _dstr = _dd.strftime("%Y-%m-%d") + f"({_wkd[_dd.weekday()]})"
-        _pr = (f"{_dstr} 한국 증시 마감 복기. 구글 검색으로 그날 실제를 확인해 "
-               "① 코스피·코스닥 등락%와 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인) "
-               "② 어떤 뉴스/테마/종목이 주도·반응했나 ③ 다음에 참고할 교훈 1가지. "
-               "각 1~2줄·간결·이모지. 그날 휴장이면 '휴장'만. 추측이면 '추정', 근거 없으면 '불명' 명시.")
+        _dstr = _dd.strftime("%Y-%m-%d") + f"({_WKD_KO[_dd.weekday()]})"
+        _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
+               "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급해 "
+               f"구글 검색으로 그날 실제를 확인하라. {_dstr} 한국 증시 마감 복기.\n"
+               "[확인된 사실] 코스피·코스닥 등락%, 주요 지수/종목 수치, 공식 보도만(숫자 위주 1~2줄).\n"
+               "[시장 해석] 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인 포함) · 어떤 뉴스/테마가 반응했나 — "
+               "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
+               "[다음 참고] 교훈 1가지.\n"
+               "간결·이모지. 그날 휴장이면 '휴장'만 적어라. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
         _wv = _gemini_grounded(gemini_key, _pr)
-        if _wv:
+        if _wv and _is_future_confused(_wv):
+            print(f"[backfill] {_dstr} 미래착각 응답 감지(스킵) — 지식컷 경계: {_wv[:80]!r}")
+        elif _wv:
             _out.append(f"\n## {_dstr}\n{_wv.strip()}\n")
             print(f"[backfill] {_dstr} 복기 완료")
         else:
@@ -5645,18 +5668,21 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
             _uptxt = ", ".join(f"{x['name']}+{x['chg']:.0f}%" for x in _up) or "—"
             _dntxt = ", ".join(f"{x['name']}{x['chg']:.0f}%" for x in _dn) or "—"
             _idxtxt = f"{_ixtxt('코스피', _ks)} / {_ixtxt('코스닥', _kq)}"
-            _pr = ("오늘 한국증시 마감 복기. "
+            _pr = ("오늘 한국증시 마감 복기. 아래 수치는 실제 확인된 사실이다: "
                    f"지수: {_idxtxt}. 화제 테마(반복언급): {_buzz2 or '—'}. "
                    f"급등: {_uptxt}. 급락: {_dntxt}. "
-                   "→ ① 오늘 시장이 왜 이렇게 움직였나(특히 오전 강세→오후 반전이면 그 원인) "
-                   "② 어떤 뉴스/이슈에 개미가 반응했나 ③ 내일 참고할 교훈 1가지. "
-                   "각 1~2줄·간결·이모지. 추측이면 '추정' 명시, 모르면 '불명'.")
+                   "→ ① 오늘 시장이 왜 이렇게 움직였나(특히 오전 강세→오후 반전이면 그 원인) — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로 서술 "
+                   "② 어떤 뉴스/이슈에 개미가 반응했나(출처 불명확하면 '추정' 명시) "
+                   "③ 내일 참고할 교훈 1가지(가능하면 IF~THEN 행동 규칙 형태로). "
+                   "각 1~2줄·간결·이모지. 근거 없으면 '불명'.")
             _wv = _gemini_generate(gemini_key, _pr)
             if _wv:
                 lines.append(f"\n🧠 시장 복기(왜 이렇게 움직였나):\n{_wv.strip()}")
                 try:
+                    _dstr = now_kst.strftime("%Y-%m-%d") + f"({_WKD_KO[now_kst.weekday()]})"
                     with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
-                        _f.write(f"\n## {now_kst.strftime('%Y-%m-%d(%a)')}\n"
+                        _f.write(f"\n## {_dstr}\n"
                                  f"- 지수: {_idxtxt}\n- 화제: {_buzz2 or '—'}\n"
                                  f"- 급등: {_uptxt}\n- 급락: {_dntxt}\n{_wv.strip()}\n")
                     print("[복기] market_review.md 누적 저장")
@@ -5721,7 +5747,8 @@ def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=Fals
     _pr = (f"아래는 한국 증시 최근 {_start}~{_end} 일별 마감 복기 기록입니다. 이걸 종합해서 "
            "① 이번 주 반복된 시장 패턴·테마(있다면) ② 어떤 신호·조건이 실제로 잘 먹혔나(반복 검증된 것) "
            "③ 다음 주 참고할 포커스 1~2가지 ④ 규칙원장(rules_ledger) 반영을 검토할만한 신규 규칙 후보(없으면 '없음') "
-           "각 항목 1~3줄·간결·이모지. 근거 부족하면 '불명' 명시.\n\n" + _body)
+           "각 항목 1~3줄·간결·이모지. 단일 사례로 일반화하지 말고(최소 2~3회 반복 확인된 것만 '패턴'), "
+           "원인은 '~가 기여했을 가능성' 같은 가능성 언어로. 근거 부족하면 '불명' 명시.\n\n" + _body)
     _wv = _gemini_generate(gemini_key, _pr)
     if not _wv:
         print("[주간메타복기] Gemini 생성 실패 — 스킵"); return
