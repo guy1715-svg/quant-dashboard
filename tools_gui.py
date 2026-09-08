@@ -254,6 +254,7 @@ _specs = [
     ("💼 보유종목 조회", lambda: _run(["--holdings"], "보유조회")),
     ("🕰 과거복기 학습(10일)", lambda: _run(["--backfill-review", "10"], "과거복기")),
     ("📓 시장복기 보기", _view_market_review),
+    ("🔄 자사주 반전 테스트", lambda: _run(["--test-buyback"], "자사주테스트")),
 ]
 for i, (txt, fn) in enumerate(_specs):
     tk.Button(_btns, text=txt, width=22, height=2, command=fn,

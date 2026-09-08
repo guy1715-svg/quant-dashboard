@@ -2155,6 +2155,45 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
     state["dart_sent"] = sent
 
 
+def test_buyback_scan(now_kst, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None):
+    """[V25.54] 자사주 반전 신호 테스트 — 오늘 실제 DART '자기주식취득' 공시를 스캔해
+    각 종목 현재 등락·조건충족(-2%↓) 여부를 보여줌. 파이프라인(DART감지→급락판정) 확인용. --test-buyback."""
+    if not dart_key:
+        send_telegram(token_tg, chat_id, "⚠️ DART 키 없음 — 자사주 테스트 불가"); return
+    today = now_kst.strftime("%Y%m%d")
+    try:
+        r = requests.get("https://opendart.fss.or.kr/api/list.json",
+                         params={"crtfc_key": dart_key, "bgn_de": today, "end_de": today,
+                                 "page_no": "1", "page_count": "100", "sort": "date", "sort_mth": "desc"}, timeout=8)
+        j = r.json()
+    except Exception as _e:
+        send_telegram(token_tg, chat_id, f"⚠️ DART 조회 실패: {type(_e).__name__}"); return
+    if j.get("status") not in ("000", "013"):
+        send_telegram(token_tg, chat_id, f"⚠️ DART status={j.get('status')} {j.get('message','')}"); return
+    _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _hits = [x for x in (j.get("list") or []) if "자기주식" in (x.get("report_nm") or "") and (x.get("stock_code") or "").strip()]
+    if not _hits:
+        send_telegram(token_tg, chat_id,
+                      f"🔄 [자사주 반전 테스트] 오늘({today}) 자기주식 공시 0건 — 실제 공시 나오는 날 발동.\n"
+                      "※ 신호 조건: 자기주식취득 공시 + 종목 급락(-2%↓). 둘 다여야 뜸(평소엔 안 뜨는 게 정상).")
+        print("[자사주테스트] 자기주식 공시 0건"); return
+    _lines = [f"🔄 [자사주 반전 테스트] 오늘 자기주식 공시 {len(_hits)}건 — 조건(-2%↓) 충족 여부:"]
+    for x in _hits[:12]:
+        _cd = x["stock_code"].strip(); _cp = x.get("corp_name", ""); _rn = x.get("report_nm", "")
+        _chg = None
+        if _tok:
+            try:
+                _, _chg, _ = _price_and_turnover(_tok, kis_key, kis_secret, _cd)
+            except Exception:
+                pass
+        _mark = ("✅발동(급락+자사주)" if (_chg is not None and _chg <= -2.0)
+                 else f"⚪조건미달(급락 아님)" if _chg is not None else "❔시세없음")
+        _lines.append(f"• {_cp}({_cd}) {(f'{_chg:+.1f}%' if _chg is not None else '—')} · {_rn[:20]} → {_mark}")
+    _lines.append("\n※ ✅면 실제 신호도 발동. ⚪면 그 종목이 오늘 급락 아니라서(자사주 공시는 정상 감지됨).")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[자사주테스트] 자기주식 공시 {len(_hits)}건 발송")
+
+
 # [V18.3] 종목 뉴스 재료 등급 — watcher 시가저격/진입에 뉴스 확인 연계(악재 스킵·재료 태그).
 _NEWS_S_KW = ("수주", "계약 체결", "공급 계약", "납품", "수출 계약", "어닝 서프라이즈",
               "예상 상회", "컨센 상회", "목표주가 상향", "목표가 상향", "투자의견 상향", "기술수출", "FDA 승인")
@@ -5645,6 +5684,8 @@ def main():
     ap.add_argument("--backfill-review", dest="backfill_review", type=int, metavar="N", nargs="?",
                     const=10, default=None,
                     help="과거 N거래일 시장 복기 미리학습(지수 궤적+Gemini 웹검색) → market_review.md 누적(기본 10)")
+    ap.add_argument("--test-buyback", dest="test_buyback", action="store_true",
+                    help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -5652,6 +5693,11 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.test_buyback:                         # [V25.54] 자사주 반전 신호 테스트
+        _bnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        test_buyback_scan(_bnow, token_tg, chat_id, read_dart_key(), kis_key, kis_secret)
+        sys.exit(0)
 
     if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
         _gk = read_gemini_key()
