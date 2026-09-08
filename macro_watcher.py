@@ -1990,7 +1990,16 @@ def _news_grade(code):
             _res = ("S", False)
         elif any(k in blob for k in _NEWS_A_KW):
             _res = ("A", False)
-    _NEWS_GRADE_CACHE[_key] = _res                            # 성공 결과만 캐시 → 이후 안정
+    # [V25.47] 등급 안정화 — 뉴스 피드가 하루 종일 갱신돼 등급이 S/A→none으로 튀던 문제(삼성전자 none→A→S 널뛰기).
+    #   그날 이미 잡힌 등급은 '강등' 안 함(재료는 사라지지 않음). 업그레이드(none→A→S)만 허용. 악재는 sticky(하루 유지).
+    _prev = _NEWS_GRADE_CACHE.get(_key)
+    if (_prev and _prev[1]) or _res[1]:                       # 이전 or 이번이 악재 → 악재 유지
+        _res = ("none", True)
+    elif _prev:
+        _rank = {"S": 2, "A": 1, "none": 0}
+        if _rank.get(_prev[0], 0) > _rank.get(_res[0], 0):    # 캐시가 더 강하면 강등 방지
+            _res = _prev
+    _NEWS_GRADE_CACHE[_key] = _res                            # 최강 등급 유지(강등 차단·업그레이드 허용)
     return _res
 
 
@@ -2411,8 +2420,21 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             _kind = ("⚠️ 손절 근접", f"손절선({_stop:+.0f}%) 0.5%p 이내 — 이탈 시 정리 준비")
         if not _kind:
             continue
-        _ck = f"{code}_{_kind[0][:2]}"                     # 종목+상태별 쿨다운(중복 방지)
-        if (int(now_kst.timestamp()) - int(hs.get(_ck, 0))) < 4 * 60 * 60:   # [V25.30] 60분→4시간(손절 매시간 반복 스팸 해결·하루 2회)
+        # [V25.47] 손절 알림 통합 — 근접·이탈을 '손절' 한 키로 묶어 종목당 스팸(근접2+이탈2=4회) 방지.
+        #   단 근접→이탈 '에스컬레이션'은 1회 허용(경고 뒤 실제 이탈은 알려줘야 함). 익절은 별도 키.
+        _is_exit = _kind[0].startswith("🔴")
+        _fam = "익절" if _kind[0].startswith("🟢") else "손절"
+        _ck = f"{code}_{_fam}"
+        _now_ts = int(now_kst.timestamp())
+        _prev = hs.get(_ck)
+        _within = False
+        _prev_st = None
+        if isinstance(_prev, dict):
+            _within = (_now_ts - int(_prev.get("ts", 0))) < 4 * 60 * 60
+            _prev_st = _prev.get("st")
+        elif isinstance(_prev, (int, float)):                # 구버전 int 호환
+            _within = (_now_ts - int(_prev)) < 4 * 60 * 60
+        if _within and not (_is_exit and _prev_st == "근접"):   # 쿨다운 중 — 단 근접→이탈 에스컬레이션만 통과
             continue
         _sess = "정규장" if _reg else "NXT 프리(8시)" if _pre else "NXT 애프터"
         if send_telegram(token_tg, chat_id,
@@ -2420,7 +2442,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
                          f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%"
                          + (f" · 평가손익 {_pl:+,}원" if qty else "") + "\n"
                          f"{_kind[1]}"):
-            hs[_ck] = int(now_kst.timestamp())
+            hs[_ck] = {"ts": _now_ts, "st": ("이탈" if _is_exit else "근접" if _fam == "손절" else "익절")}
             print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
     state["holdings_sent"] = hs
 
