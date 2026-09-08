@@ -46,7 +46,7 @@
 | `check_limitup_follow`·`check_pair_trade` (상따/짝꿍) | 장중 | **관찰용(SIG_WATCH)** — 실시간 상한가잔량/VI는 API 한계라 근사 |
 | `check_dart_disclosures` | 07:00~20:00 | 공시 호재/악재. **🔄자사주 반전 신호**(급락-2%↓ + 자기주식**취득**; 해지·처분 제외) |
 | `check_holdings` | 상시 | 손절/익절 알림(근접·이탈 통합 쿨다운)·8시 NXT 홀딩판정(재료A급 단독 매도 안 함) |
-| `check_evening_news` (저녁브리핑) | 17~22시 | RSS(연합+한경+이데일리)→Gemini 브리핑+**구글검색 팩트체크(grounding)**·**뉴스 화제성 랭킹** |
+| `check_evening_news` (저녁브리핑) | 17~22시 | RSS(연합+한경+이데일리)→Gemini 브리핑+**구글검색 팩트체크(grounding)**·**뉴스 화제성 랭킹**·**네이버 많이 본 뉴스(실제 클릭 랭킹, 텔레그램에도 별도 표기)** |
 | `send_daily_review` (마감복기) | 15:35~50 | 신호총정리 + **Gemini 시장복기(왜 움직였나)→market_review.md 누적** |
 
 **매크로 킬스위치** `compute_macro`: 미국 나스닥선물·SOX·WTI + 코스피(KIS). sev 0/1/2(양호/중립/리스크오프). **미국 휴장 감지**(NQ·WTI 둘다 0 → 판단보류). data outage시 sev2 fail-safe.
@@ -79,9 +79,10 @@
 2. **과거 장중 수급·거래대금 랭킹 소급 불가** — 신규 신호(수급·프로그램 의존)는 백테스트 불가, **포워드(--analyze)로만 검증**.
 3. **yfinance 지수(^KS11/^KQ11) 불안정** — 'possibly delisted' 빈발. 지수는 KIS(_kospi_index_kis/_index_snapshot) 우선.
 4. **Gemini grounding 무료쿼터** — 연속 호출(backfill 10연타)시 실패 가능. 12초 재시도·6초 간격 넣음. 일부 과거일자 '미래날짜'로 착각하는 응답은 `_is_future_confused()`로 감지해 스킵(저장 안 함).
-7. **`_index_daily_range`(KIS 지수 일별시세, FHKUP03500100) 필드명 미검증** — 실제 KIS 키로 한 번도 테스트 못 함(이 세션엔 키 없음). `stck_bsop_date`/`bstp_nmix_*` 필드명은 다른 KIS 지수 엔드포인트 관례를 따른 추정. 응답은 왔는데 파싱이 0건이면 콘솔에 `[지수일별시세 진단]`으로 실제 필드명을 찍으니, 실키로 `--backfill-review` 처음 돌릴 때 로그 확인 필요. 틀렸으면 그 로그의 필드명으로 `_index_daily_range` 수정.
 5. **개인 순매수는 근사**(=-(외인+기관)). 기타법인/자사주 수급 직접 필드 미사용.
 6. **재료 등급**(_news_grade)은 네이버 뉴스 제목 기반 → 6일전 계약 등 못 잡을 수 있음. 그날 최강등급 유지(강등차단)로 안정화.
+7. **`_index_daily_range`(KIS 지수 일별시세, FHKUP03500100) 필드명 미검증** — 실제 KIS 키로 한 번도 테스트 못 함(이 세션엔 키 없음). `stck_bsop_date`/`bstp_nmix_*` 필드명은 다른 KIS 지수 엔드포인트 관례를 따른 추정. 응답은 왔는데 파싱이 0건이면 콘솔에 `[지수일별시세 진단]`으로 실제 필드명을 찍으니, 실키로 `--backfill-review` 처음 돌릴 때 로그 확인 필요. 틀렸으면 그 로그의 필드명으로 `_index_daily_range` 수정.
+8. **`_naver_ranking_news`(네이버 '많이 본 뉴스', finance.naver.com/news/news_list.naver?mode=RANK) 구조 미검증** — 이 세션은 네이버 도메인 자체가 네트워크 정책상 차단돼 있어 실제 페이지 HTML을 한 번도 못 봤음. `news_read.naver?` 링크 패턴으로 제목을 추출하는데, 이 URL 패턴/페이지 구조가 실제와 다르면 0건이 나옴 — 그러면 콘솔에 `[많이본뉴스 진단] 파싱 0건`이 찍히니, 그때 실제 HTML(브라우저 개발자도구로 `news_list.naver?mode=RANK` 응답 확인)을 보내주면 정확히 고칠 수 있음.
 
 ---
 

@@ -1676,6 +1676,41 @@ def _topic_buzz(arts, top=6):
     return " · ".join(f"{_th} {_n}건" for _th, _n in _rank)
 
 
+def _naver_ranking_news(top=15):
+    """[피드백 반영] 네이버 금융 '많이 본 뉴스' 실제 클릭 랭킹 — finance.naver.com/news 스크랩.
+    _topic_buzz(여러 매체 반복언급=화제성 근사)와 달리, 이건 독자가 실제로 많이 '클릭'한 뉴스라
+    개미 심리(뭘 실제로 찾아봤나)에 더 직접적인 신호. 반환 제목 리스트(최신 랭킹순), 실패 시 [].
+    ⚠️ finance.naver.com 구버전 페이지 구조 기반(HTML 바뀌면 깨질 수 있음) — 0건이면 진단 로그 확인."""
+    import re as _re
+    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Referer": "https://finance.naver.com/news/", "Accept-Language": "ko-KR,ko;q=0.9"}
+    try:
+        _r = requests.get("https://finance.naver.com/news/news_list.naver?mode=RANK",
+                          headers=_hdr, timeout=8)
+        _r.encoding = "euc-kr"
+        _html = _r.text
+    except Exception as _e:
+        print(f"[많이본뉴스 진단] 요청 실패: {type(_e).__name__}: {_e}")
+        return []
+    # 기사 링크(/news/news_read.naver?... 또는 /news/read.naver?...) 안의 텍스트만 제목 후보로 추출.
+    # 클래스명 등 마크업이 바뀌어도 안 깨지게 href 패턴(구조)만으로 매칭 — _market_investor()와 동일 전략.
+    _cands = _re.findall(r'<a[^>]+href="[^"]*news_read\.naver\?[^"]*"[^>]*>([^<]+)</a>', _html)
+    if not _cands:
+        _cands = _re.findall(r'<a[^>]+href="[^"]*/news/read\.naver\?[^"]*"[^>]*>([^<]+)</a>', _html)
+    titles, seen = [], set()
+    for _t in _cands:
+        _t = _re.sub(r"\s+", " ", _t).strip()
+        if len(_t) < 6 or _t in seen:                  # 너무 짧은 건 아이콘·번호 텍스트일 가능성
+            continue
+        seen.add(_t); titles.append(_t)
+        if len(titles) >= top:
+            break
+    if not titles:
+        print(f"[많이본뉴스 진단] 파싱 0건 — 페이지 구조 확인 필요(응답 {len(_html)}자)")
+    return titles
+
+
 def _rss_news(per_feed=40, hours=12):
     """국내 증권 + 세계/산업 RSS에서 최근 `hours`시간 이내 뉴스 수집(피드별 상한 per_feed).
     [{title,description,src,time,ts}]. pubDate로 12시간 필터 → 최신순. feedparser 없이 stdlib 파싱."""
@@ -1936,6 +1971,11 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     _buzz = _topic_buzz(arts)                              # [V25.50 D] 뉴스 화제성 랭킹(반복 언급=심리 몰림)
     if _buzz:
         print(f"[저녁뉴스] 화제성 랭킹: {_buzz}")
+    # [피드백 반영] 네이버 '많이 본 뉴스' 실제 클릭 랭킹 — _buzz(매체 반복언급)와 다른 신호(독자 실제 클릭).
+    _ranking = _naver_ranking_news(15)
+    if _ranking:
+        print(f"[저녁뉴스] 많이본뉴스 {len(_ranking)}건 확보")
+    _ranking_txt = "\n".join(f"{_i}. {_t}" for _i, _t in enumerate(_ranking, 1)) or "(수집 실패)"
     report = None
     if gemini_key:
         _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(각 줄 앞 [출처 시각] — 증권/세계/산업). "
@@ -1956,8 +1996,11 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "그 모멘텀이 단발인지 며칠 갈지(지속성), 내일도 자금이 더 들어올지 판정해. 이게 '정답(자금)을 먼저 보고 이유를 찾는' 방식이야.★★\n"
                    "★★중요5: [뉴스 화제성 랭킹]은 오늘 여러 매체가 반복 언급한 테마(=개미 관심 몰림) 순위야. 상위 테마일수록 "
                    "내일 개미 수급이 붙기 쉬우니 TOP3 선정 시 가중치를 높여. 단 이미 급등·선반영이면 오히려 차익실현 경계로 판단해.★★\n"
+                   "★★중요6: [네이버 많이 본 뉴스]는 매체 보도량이 아니라 '독자가 실제로 클릭해서 읽은' 순위야 — "
+                   "화제성 랭킹보다 더 직접적인 개미 관심 지표. 여기 상위권 종목/테마는 시장심리·주목테마 판단에 우선 반영해.★★\n"
                    f"[실측 시장데이터]\n{_mdetail}\n\n"
                    f"[뉴스 화제성 랭킹]\n{_buzz or '(집계 없음)'}\n\n"
+                   f"[네이버 많이 본 뉴스]\n{_ranking_txt}\n\n"
                    f"[오늘 거래대금 상위]\n{_vrank_txt or '(조회 실패)'}\n\n"
                    f"[거래대금 주도주 뉴스]\n{_vlead_news or '(조회 실패)'}\n\n"
                    f"[뉴스]\n{_batch}\n\n"
@@ -2021,12 +2064,17 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         except Exception as _ae:
             print("팩트체크 강등 저장 오류:", _ae)
         _fc_block = f"\n\n━━ 🔎 검색 교차검증 ━━\n{_fc}" if _fc else ""
-        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}{_fc_block}\n\n"
+        _rank_block = f"\n\n📌 네이버 많이 본 뉴스(개미 관심)\n{_ranking_txt}" if _ranking else ""
+        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}{_fc_block}{_rank_block}\n\n"
                 "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
     else:
         _heads = "\n".join("• " + a.split(" :: ")[0] for a in arts[:8])
-        _msg = (f"{SIG_WATCH}\n🌙 내일 참고 뉴스(헤드라인)\n{_heads}\n"
-                "※ AI 판정 미가동(Gemini 키 없음/실패) — 헤드라인만")
+        # [피드백 반영] 키는 있는데 호출만 실패한 경우와 "키 자체가 없음"을 구분 — 콘솔의
+        # [Gemini 진단] 로그(모델별 실패 사유)를 봐야 하는 상황을 메시지에서부터 명확히 안내.
+        _reason = "Gemini 키 없음" if not gemini_key else "Gemini 호출 실패(콘솔 [Gemini 진단] 로그 확인)"
+        _rank_block = f"\n\n📌 네이버 많이 본 뉴스(개미 관심)\n{_ranking_txt}" if _ranking else ""
+        _msg = (f"{SIG_WATCH}\n🌙 내일 참고 뉴스(헤드라인)\n{_heads}{_rank_block}\n"
+                f"※ AI 판정 미가동({_reason}) — 헤드라인만")
     if send_telegram(token_tg, chat_id, _msg):
         state["evening_news_day"] = today
         print(f"[저녁뉴스] 브리핑 발송 — 수집 {len(arts)}건 · AI {'ON' if report else 'OFF'}")
