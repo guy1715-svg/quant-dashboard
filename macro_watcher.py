@@ -4105,10 +4105,11 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         # [V24.3] 초대형주 페널티 — 거래대금 초상위 대형주(삼성/하이닉스급)는 지수종속·갭 작아 종배 부적합.
         if turn >= 300_000_000_000:                   # 3천억↑ = 초대형(지수 대장주)
             score -= 12
-        # [V24.7] 브리핑 테마 가점 — 종배 재설계 핵심. 검증된 선행 신호와 겹치면 강한 우선순위.
+        # [V24.7→V25.55 가중치↑] 브리핑 테마 가점 — 종배 재설계 핵심. 검증된 선행 신호와 겹치면 강한 우선순위.
+        #   (사용자 요청: 저녁뉴스 품질 개선 후 브리핑 우선순위를 더 세게 반영 — 25→35)
         _isbrief = cd in _brief
         if _isbrief:
-            score += 25
+            score += 35
         # [V25.34] 강의 1강 반영 — 수급 연속성·재무(적자감점)·거래대금 상대증가·전고점 가감점
         _ex, _extag = _pick_extra_score(token, key, secret, cd, px, turn, ds)
         score += _ex
@@ -4142,7 +4143,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _bng, _bnbad = _news_grade(_bc)
             if _bnbad:
                 continue
-            _bscore = 40.0 + 25                        # 기본 + 브리핑(선행) 가점
+            _bscore = 40.0 + 35                        # 기본 + 브리핑(선행) 가점(V25.55 가중치↑, 위 본루프와 동일)
             if _bds.get("above5"):
                 _bscore += 8
             if _bds.get("kij_cross"):
