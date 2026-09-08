@@ -1182,6 +1182,44 @@ def _index_snapshot(token, key, secret, iscd="0001"):
         return None
 
 
+def _index_daily_range(token, key, secret, iscd, date_from, date_to):
+    """[피드백 반영] 지수 과거 일별시세(실측) — inquire-daily-indexchartprice(FHKUP03500100).
+    date_from/date_to는 'YYYYMMDD' 문자열. iscd 0001=코스피 1001=코스닥.
+    반환 {'YYYYMMDD': {'close','chg','open','hi','lo'}, ...} — 해당일이 없으면(휴장/주말) 키 자체가 없음.
+    (KIS가 실제로 거래일에만 행을 주므로, 날짜가 맵에 없다는 것 자체가 '휴장' 판정 근거가 됨)
+    실패 시 {} — Gemini 추측 대신 실측 수치로 backfill 신뢰도를 올리기 위한 함수."""
+    if not (token and key and secret):
+        return {}
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKUP03500100"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": iscd,
+                                  "fid_input_date_1": date_from, "fid_input_date_2": date_to,
+                                  "fid_period_div_code": "D"}, timeout=8)
+        rows = [x for x in (r.json().get("output2") or []) if isinstance(x, dict)]
+    except Exception as _e:
+        print(f"[지수일별시세 진단] 조회 실패({iscd}): {type(_e).__name__}: {_e}")
+        return {}
+
+    def _f(o, k):
+        _v = str(o.get(k, "")).replace(",", "").strip()
+        try:
+            return float(_v) if _v not in ("", "None") else None
+        except ValueError:
+            return None
+    out = {}
+    for _o in rows:
+        _dt = str(_o.get("stck_bsop_date", "")).strip()
+        if len(_dt) == 8 and _dt.isdigit():
+            out[_dt] = {"close": _f(_o, "bstp_nmix_prpr"), "chg": _f(_o, "bstp_nmix_prdy_ctrt"),
+                        "open": _f(_o, "bstp_nmix_oprc"), "hi": _f(_o, "bstp_nmix_hgpr"),
+                        "lo": _f(_o, "bstp_nmix_lwpr")}
+    if not out and rows:
+        print(f"[지수일별시세 진단] 응답은 왔으나 파싱 0건({iscd}) — 필드명 확인 필요: {list(rows[0].keys())[:10]}")
+    return out
+
+
 def _kospi_fut_session(now_kst):
     """코스피200 선물 거래 세션 태그 — 주간(09:00~15:45)/야간(18:00~익일05:00)/휴장."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -1448,39 +1486,83 @@ def _is_future_confused(text):
     return any(_m in (text or "") for _m in _FUTURE_CONFUSION_MARKERS)
 
 
-def backfill_market_review(gemini_key, days=10):
-    """[V25.53 C-backfill] 과거 N거래일 시장 복기 미리학습 — Gemini 웹검색(grounding)이 그날 지수 등락·원인을
-    직접 검색·복기 → market_review.md 누적. yfinance 지수조회 불안정('possibly delisted')이라 제거,
-    날짜(평일)만 생성하고 grounding이 숫자·이유 모두 찾게 함. 휴장일은 Gemini가 '휴장' 판정.
-    [피드백 반영] ①오늘 실제 날짜를 명시해 과거 날짜를 미래로 착각하는 지식컷 오류 방지
-    ②확인된 사실/시장 해석을 분리하고 단일 원인 단정을 금지(가능성 언어 강제)."""
+def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
+    """[V25.53 C-backfill] 과거 N거래일 시장 복기 미리학습 → market_review.md 누적.
+    [피드백 반영] KIS 지수 일별시세(inquire-daily-indexchartprice)가 있으면 코스피/코스닥 종가·등락률은
+    그 실측치를 쓰고(Gemini 추측 금지), 그 날짜가 KIS 응답에 아예 없으면 '휴장/데이터없음'으로 확정 처리
+    (Gemini가 임의로 지어내지 않음). Gemini/웹검색은 '왜 그렇게 움직였나'라는 해석에만 쓰고,
+    사실(숫자)과 해석을 분리해 기록한다. KIS 키가 없으면 예전처럼 Gemini 단독 추정으로 폴백.
+    ①오늘 실제 날짜를 명시해 과거 날짜를 미래로 착각하는 지식컷 오류 방지
+    ②단일 원인 단정을 금지(가능성 언어 강제)."""
     if not gemini_key:
         print("[backfill] Gemini 키 없음 — 웹검색 복기 불가"); return
     _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
     _today_str = _now.strftime("%Y년 %m월 %d일")
     _dates, _d = [], _now.date()
-    while len(_dates) < days:                          # 최근 N개 평일(주말 제외; 휴장은 Gemini가 판정)
+    while len(_dates) < days:                          # 최근 N개 평일(주말은 미리 제외; 공휴일은 KIS 실데이터로 판정)
         _d -= datetime.timedelta(days=1)
         if _d.weekday() < 5:
             _dates.append(_d)
     _dates.reverse()                                   # 오래된→최신
+
+    _ks_map, _kq_map = {}, {}
+    if kis_key and kis_secret:
+        _tok = kis_token(kis_key, kis_secret)
+        _d1, _d2 = _dates[0].strftime("%Y%m%d"), _now.strftime("%Y%m%d")
+        _ks_map = _index_daily_range(_tok, kis_key, kis_secret, "0001", _d1, _d2)
+        _kq_map = _index_daily_range(_tok, kis_key, kis_secret, "1001", _d1, _d2)
+        print(f"[backfill] KIS 지수 실측 {len(_ks_map)}일(코스피)/{len(_kq_map)}일(코스닥) 확보")
+    else:
+        print("[backfill] KIS 키 없음 — 지수 실측 불가, Gemini 추정으로 폴백(신뢰도 낮음)")
+
     _out = []
     for _dd in _dates:
         _dstr = _dd.strftime("%Y-%m-%d") + f"({_WKD_KO[_dd.weekday()]})"
-        _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
-               "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급해 "
-               f"구글 검색으로 그날 실제를 확인하라. {_dstr} 한국 증시 마감 복기.\n"
-               "[확인된 사실] 코스피·코스닥 등락%, 주요 지수/종목 수치, 공식 보도만(숫자 위주 1~2줄).\n"
-               "[시장 해석] 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인 포함) · 어떤 뉴스/테마가 반응했나 — "
-               "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
-               "[다음 참고] 교훈 1가지.\n"
-               "간결·이모지. 그날 휴장이면 '휴장'만 적어라. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
+        _ds8 = _dd.strftime("%Y%m%d")
+        _ks, _kq = _ks_map.get(_ds8), _kq_map.get(_ds8)
+        _has_kis = bool(_ks_map or _kq_map)             # KIS 조회 자체는 시도했는가
+
+        if _has_kis and not _ks and not _kq:
+            # KIS 실측 응답에 해당일이 없음 = 휴장(주말 아닌 평일 공휴일) — 추측하지 않고 확정 기록
+            _out.append(f"\n## {_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)\n")
+            print(f"[backfill] {_dstr} 휴장(KIS 데이터 없음) — Gemini 호출 생략")
+            continue
+
+        _fact_line = ""
+        if _ks or _kq:
+            def _one(nm, s):
+                return f"{nm} {s['close']:,.2f}({s['chg']:+.2f}%)" if (s and s.get("close") is not None) else f"{nm} —"
+            _fact_line = f"[확인된 사실](KIS 실측) {_one('코스피', _ks)} · {_one('코스닥', _kq)}"
+
+        if _fact_line:
+            _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
+                   "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급하라.\n"
+                   f"{_dstr} 한국 증시 마감 복기. 아래 지수 수치는 이미 실측 확인된 사실이니 그대로 인정하고, "
+                   f"이 결과가 나온 이유만 구글 검색으로 찾아라: {_fact_line}\n"
+                   "[시장 해석] 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인 포함) · 어떤 뉴스/테마가 반응했나 — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
+                   "[다음 참고] 교훈 1가지.\n"
+                   "간결·이모지. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
+        else:
+            # KIS 실측 실패(키 없음/API 오류) — 예전처럼 Gemini 단독 추정(신뢰도 낮음, 명시)
+            _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
+                   "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급해 "
+                   f"구글 검색으로 그날 실제를 확인하라. {_dstr} 한국 증시 마감 복기.\n"
+                   "[확인된 사실](검색 기반 추정 — KIS 실측 아님) 코스피·코스닥 등락%, 공식 보도만(숫자 위주 1~2줄).\n"
+                   "[시장 해석] 왜 그렇게 움직였나 · 어떤 뉴스/테마가 반응했나 — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
+                   "[다음 참고] 교훈 1가지.\n"
+                   "간결·이모지. 그날 휴장이면 '휴장'만 적어라. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
+
         _wv = _gemini_grounded(gemini_key, _pr)
         if _wv and _is_future_confused(_wv):
             print(f"[backfill] {_dstr} 미래착각 응답 감지(스킵) — 지식컷 경계: {_wv[:80]!r}")
         elif _wv:
-            _out.append(f"\n## {_dstr}\n{_wv.strip()}\n")
-            print(f"[backfill] {_dstr} 복기 완료")
+            _block = f"\n## {_dstr}\n"
+            if _fact_line:
+                _block += _fact_line + "\n"
+            _out.append(_block + _wv.strip() + "\n")
+            print(f"[backfill] {_dstr} 복기 완료" + (" (KIS 실측 반영)" if _fact_line else ""))
         else:
             print(f"[backfill] {_dstr} Gemini 실패(스킵) — 위 [grounded 진단] 참조")
         time.sleep(6)                                 # grounding 무료쿼터 배려
@@ -5791,7 +5873,7 @@ def main():
                     help="종배 청산 타이밍 분석 — 익일 시가청산 vs 종가청산, NXT거래/미거래 분리(쌓인 데이터)")
     ap.add_argument("--backfill-review", dest="backfill_review", type=int, metavar="N", nargs="?",
                     const=10, default=None,
-                    help="과거 N거래일 시장 복기 미리학습(지수 궤적+Gemini 웹검색) → market_review.md 누적(기본 10)")
+                    help="과거 N거래일 시장 복기 미리학습(KIS 지수 실측+Gemini 웹검색 해석) → market_review.md 누적(기본 10)")
     ap.add_argument("--test-buyback", dest="test_buyback", action="store_true",
                     help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
     ap.add_argument("--weekly-review", dest="weekly_review", action="store_true",
@@ -5819,7 +5901,7 @@ def main():
         _gk = read_gemini_key()
         if not _gk:
             print("⚠️ Gemini 키 없음 — 웹검색 복기 불가"); sys.exit(1)
-        backfill_market_review(_gk, args.backfill_review)
+        backfill_market_review(_gk, args.backfill_review, kis_key, kis_secret)
         sys.exit(0)
 
     if args.report:                               # [V23.3] 추천 성적표 수동 발송
