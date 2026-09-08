@@ -1382,6 +1382,99 @@ def _gemini_factcheck(gkey, brief, mdetail=""):
     return ""
 
 
+def _gemini_grounded(gkey, prompt):
+    """[V25.52] 구글검색 grounding 범용 생성(팩트체크와 동일 SDK 폴백) — 과거 복기 등 실시간 검색용. 실패 시 ''."""
+    if not gkey or not prompt:
+        return ""
+    try:
+        from google import genai as _ng
+        from google.genai import types as _nt
+        _client = _ng.Client(api_key=gkey)
+        for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
+            try:
+                _resp = _client.models.generate_content(
+                    model=_mn, contents=prompt,
+                    config=_nt.GenerateContentConfig(tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
+                if getattr(_resp, "text", None):
+                    return _resp.text.strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gkey)
+        for _mn in ("gemini-2.5-flash", "gemini-flash-latest"):
+            for _tv in ("google_search_retrieval", None):
+                try:
+                    _kw = {"request_options": {"timeout": 60}}
+                    if _tv:
+                        _kw["tools"] = _tv
+                    _resp = genai.GenerativeModel(_mn).generate_content(prompt, **_kw)
+                    if getattr(_resp, "text", None):
+                        return _resp.text.strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return ""
+
+
+def backfill_market_review(gemini_key, days=10):
+    """[V25.52 C-backfill] 과거 N거래일 시장 복기 미리학습 — 지수 일봉(궤적) + Gemini 웹검색으로
+    '왜 움직였나' 분석 → market_review.md 누적. RSS는 소급 불가하나 grounding이 그날 이슈를 검색해줌."""
+    if not gemini_key:
+        print("[backfill] Gemini 키 없음 — 웹검색 복기 불가"); return
+    _idx = {}
+    for _sym, _nm in (("^KS11", "코스피"), ("^KQ11", "코스닥")):
+        try:
+            _idx[_nm] = yf.Ticker(_sym).history(period="45d")[["Open", "High", "Low", "Close"]].dropna()
+        except Exception:
+            _idx[_nm] = None
+    _ks = _idx.get("코스피")
+    if _ks is None or len(_ks) < 2:
+        print("[backfill] 코스피 일봉 조회 실패(yfinance)"); return
+    _dates = list(_ks.index)[-(days + 1):]
+
+    def _ixline(nm, _d):
+        _hh = _idx.get(nm)
+        if _hh is None or _d not in _hh.index:
+            return f"{nm} —"
+        _loc = _hh.index.get_loc(_d)
+        _row = _hh.loc[_d]
+        _prev = _hh.iloc[_loc - 1]["Close"] if _loc > 0 else _row["Open"]
+        _chg = (_row["Close"] / _prev - 1) * 100 if _prev else 0
+        _fade = (_row["Close"] / _row["High"] - 1) * 100 if _row["High"] else 0
+        return f"{nm} {_chg:+.2f}%·고점대비 {_fade:+.1f}%({'오후반전' if _fade <= -1 else '강세유지'})"
+
+    _out = []
+    for _d in _dates[1:]:
+        _dstr = _d.strftime("%Y-%m-%d")
+        _idxtxt = f"{_ixline('코스피', _d)} / {_ixline('코스닥', _d)}"
+        _pr = (f"{_dstr} 한국 증시 마감 복기. 지수 실측: {_idxtxt}. "
+               "구글 검색으로 그날 실제를 확인해 ① 왜 이렇게 움직였나(오전강세→오후반전이면 그 원인) "
+               "② 어떤 뉴스/테마/종목이 주도·반응했나 ③ 다음에 참고할 교훈 1가지. "
+               "각 1~2줄·간결. 위 지수 실측과 검색이 다르면 검색 최종값 우선. 추측이면 '추정', 근거 없으면 '불명' 명시.")
+        _wv = _gemini_grounded(gemini_key, _pr)
+        if _wv:
+            _out.append(f"\n## {_dstr}\n- 지수: {_idxtxt}\n{_wv.strip()}\n")
+            print(f"[backfill] {_dstr} 복기 완료")
+        else:
+            print(f"[backfill] {_dstr} Gemini 실패(스킵)")
+        time.sleep(2)
+    if _out:
+        try:
+            _new = not os.path.exists(MARKET_REVIEW_FILE)
+            with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
+                if _new:
+                    _f.write("# 시장 복기 원장 (market_review.md)\n")
+                _f.write(f"\n# ── 과거 backfill {days}일 (생성 {datetime.datetime.now().strftime('%Y-%m-%d')}) ──\n"
+                         + "".join(_out))
+            print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료")
+        except OSError as _e:
+            print("[backfill] 저장 실패:", _e)
+
+
 def _naver_news(cid, csec, query, display=10):
     """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 [](진단 출력)."""
     try:
@@ -5533,6 +5626,9 @@ def main():
                     help="보유종목 현황·홀딩판정(my_holdings.json) 텔레그램·종료")
     ap.add_argument("--exit-analysis", dest="exit_analysis", action="store_true",
                     help="종배 청산 타이밍 분석 — 익일 시가청산 vs 종가청산, NXT거래/미거래 분리(쌓인 데이터)")
+    ap.add_argument("--backfill-review", dest="backfill_review", type=int, metavar="N", nargs="?",
+                    const=10, default=None,
+                    help="과거 N거래일 시장 복기 미리학습(지수 궤적+Gemini 웹검색) → market_review.md 누적(기본 10)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -5540,6 +5636,13 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
+        _gk = read_gemini_key()
+        if not _gk:
+            print("⚠️ Gemini 키 없음 — 웹검색 복기 불가"); sys.exit(1)
+        backfill_market_review(_gk, args.backfill_review)
+        sys.exit(0)
 
     if args.report:                               # [V23.3] 추천 성적표 수동 발송
         if not kis_on:
