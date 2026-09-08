@@ -2067,6 +2067,23 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             pass
         _dtxt = f" · 이격 {_disp:+.0f}%" if _disp is not None else ""
         _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
+        # [V25.54] 자사주 반전 신호(복기 학습 8/25·9/1·9/3) — 급락(-2%↓) 중 자기주식취득 공시 =
+        #   기타법인 수급으로 V자 반전 동력. 일반 호재보다 우선 처리(급락+자사주 조합).
+        if ("자기주식" in _nm) and ((_chg or 0) <= -2.0):
+            _mc = None
+            try:
+                _mc = _market_cap(_tok, kis_key, kis_secret, _stock)
+            except Exception:
+                pass
+            _big = " · 대형주(반전 탄력↑)" if (_mc and _mc >= 10000) else ""
+            _bstop = int(_px * 0.97)
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n🔄 [자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
+                          f"{_st}{_dtxt}{_big}\n"
+                          f"📚 복기: 급락 대형주 자사주 매입은 기타법인 수급으로 V자 반전 동력(8/25·9/3 사례)\n"
+                          f"※ 저가 분할 관찰 · 손절 {_bstop:,}(−3%) · 지수/미선물 추가급락 지속시 보류 · 확인 후 진입\n{_url}")
+            _log_signal(state, now_kst, "자사주반전", _corp, _stock, _px)
+            continue
         # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '관찰'로만(장전 0억 강매수 오발 차단)
         if (not _turn) or _turn < 5_000_000_000:
             send_telegram(token_tg, chat_id,
