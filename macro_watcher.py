@@ -6026,10 +6026,22 @@ def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=Fals
     _hdr = f"{_WEEKLY_META_TAG} ({_start}~{_end}, {len(_blocks)}일치)"
     _msg = f"{_hdr}\n\n{_wv.strip()}"
     if send_telegram(token_tg, chat_id, _msg):
+        # [피드백 반영] 예전엔 append만 해서, 같은 주(_start~_end)에 버튼을 여러 번 누르거나
+        # 수동 테스트+자동실행이 겹치면 market_review.md에 똑같은 주간요약이 중복 저장됐음
+        # (실사용에서 확인됨). 같은 날짜범위의 기존 블록을 지우고 교체 — 재실행해도 1개만 유지.
+        _new_block = f"\n## {_hdr}\n{_wv.strip()}\n"
         try:
-            with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
-                _f.write(f"\n## {_hdr}\n{_wv.strip()}\n")
-            print("[주간메타복기] market_review.md 누적 저장")
+            _old = ""
+            if os.path.exists(MARKET_REVIEW_FILE):
+                with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
+                    _old = _f.read()
+            _range_tag = f"({_start}~{_end}"
+            _parts = _old.split("\n## ")
+            _kept = [_parts[0]] + [p for p in _parts[1:]
+                                   if not (p.startswith(_WEEKLY_META_TAG) and _range_tag in p[:60])]
+            _new_txt = _kept[0] + "".join("\n## " + p for p in _kept[1:]) + _new_block
+            if _atomic_write_text(MARKET_REVIEW_FILE, _new_txt):
+                print("[주간메타복기] market_review.md 누적 저장")
         except OSError as _e:
             print("[주간메타복기] 저장 실패:", _e)
         state["weekly_review_week"] = now_kst.strftime("%G-W%V")
@@ -6083,7 +6095,11 @@ def main():
     if args.weekly_review:                        # 주간 메타복기 강제 실행
         _gk = read_gemini_key()
         _wnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-        weekly_meta_review(_wnow, load_state(), token_tg, chat_id, _gk, force=True)
+        _wst = load_state()
+        weekly_meta_review(_wnow, _wst, token_tg, chat_id, _gk, force=True)
+        # [피드백 반영] state를 저장 안 해서 "이번 주는 이미 만듦" 표시가 디스크에 안 남았고,
+        # 버튼을 여러 번 누르면 market_review.md에 같은 주 요약이 계속 중복 저장됐음(실사용에서 확인됨).
+        save_state(_wst)
         sys.exit(0)
 
     if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
