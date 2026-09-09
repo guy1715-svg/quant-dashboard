@@ -776,11 +776,22 @@ _DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "�
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
+def _prev_trading_day_str(now_kst, fmt="%Y-%m-%d"):
+    """[실전투자 점검 발견] 직전 거래일(주말 제외) 문자열 — 단순 date-1은 월요일 아침에 '어제'가
+    일요일이 되어, 실제 참고해야 할 금요일 종배·브리핑 기록을 못 찾는 문제가 있었음(성적표·갭분석·
+    프리마켓 유니버스 3곳에서 반복 확인). 공휴일까지는 미대응(트레이딩 캘린더 없이는 판정 불가) —
+    최소한 매주 월요일마다 재발하던 다수 케이스는 해결."""
+    d = now_kst.date() - datetime.timedelta(days=1)
+    while d.weekday() >= 5:                # 5=토, 6=일
+        d -= datetime.timedelta(days=1)
+    return d.strftime(fmt)
+
+
 def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
     """[V23.3] 추천 종목 성적표 — signal_scorecard+pick_history 읽어 현재가 대조.
     🌅 오늘 아침(당일단타) / 🌒 어제 저녁(종배·브리핑) 구분해 텔레그램 1건. 복붙 불필요."""
     today = now_kst.strftime("%Y-%m-%d")
-    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
     try:
         with open(SCORECARD_FILE, encoding="utf-8") as f:
             rows = json.load(f)
@@ -1028,7 +1039,9 @@ def _analyze_exit_timing(token, key, secret, now_kst, token_tg, chat_id):
         _so, _sh, _sc = _stat(_agg[_b]["open"]), _stat(_agg[_b]["high"]), _stat(_agg[_b]["close"])
         if not _so:
             continue
-        _lines.append(f"\n■ {_b} ({_so[0]}건)")
+        # [일관성] --analyze와 같은 기준 — 소표본으로 청산방식(조기 vs 홀딩)을 성급히 바꾸지 않도록.
+        _bwarn = " ⚠️표본작음(참고용)" if _so[0] < 10 else ""
+        _lines.append(f"\n■ {_b} ({_so[0]}건){_bwarn}")
         _lines.append(f"  ⏱️ 9시 시초가: 승률 {_so[1]:.0f}% · 평균 {_so[2]:+.1f}%")
         if _sh:
             _lines.append(f"  🚀 익일 고가(팝 완벽청산): 승률 {_sh[1]:.0f}% · 평균 {_sh[2]:+.1f}%")
@@ -1052,8 +1065,13 @@ def _deep_stock(token, key, secret, code, name="", gemini_key=None):
     _align = "🟢정배열(5>20MA↑)" if (_ma5 and _ma20 and px > _ma5 > _ma20) else "🔴비정배열"
     _vr = _vol_ratio_5d(token, key, secret, code)
     _vt = f"{_vr[2]:.1f}배" if _vr else "–"
-    _f, _o = _investor_est(token, key, secret, code)
-    _sup = f"외인 {_f*px/1e8:+.0f}억·기관 {_o*px/1e8:+.0f}억 " + ("✅유입" if (_f + _o) > 0 else "⚠️이탈")
+    # [실전투자 점검] distinguish_fail=True로 조회실패를 "외인 0·기관 0"(순매수 없음)이 아니라
+    # 명시적 미확인으로 표시 — 안 그러면 API 실패가 '수급 중립'처럼 보여 오판 유발 가능.
+    _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
+    if _f is None or _o is None:
+        _sup = "수급 ⚠️미확인(조회 실패)"
+    else:
+        _sup = f"외인 {_f*px/1e8:+.0f}억·기관 {_o*px/1e8:+.0f}억 " + ("✅유입" if (_f + _o) > 0 else "⚠️이탈")
     _bt = _big_trend_tag(token, key, secret, code, px).strip() or "60분 추세 –"
     _ng, _nbad = _news_grade(code)
     _ngt = "🔴악재" if _nbad else ("🔥재료S급" if _ng == "S" else "🟢재료A급" if _ng == "A" else "⚠️재료 미확인")
@@ -2770,7 +2788,9 @@ def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
         #   재료 확인은 --stock / 저녁브리핑 팩트체크(검색 grounding)가 정확.
         _sup = ""
         try:
-            _f, _o = _investor_est(token, key, secret, c["code"])
+            # [실전투자 점검] distinguish_fail=True 없이는 조회실패도 (0,0)이라 아래 None 체크가
+            # 죽은 코드였음 — 실패가 "수급 0억✅"로 잘못 표시되던 문제.
+            _f, _o = _investor_est(token, key, secret, c["code"], distinguish_fail=True)
             if _f is not None and _o is not None:
                 _net = (_f + _o) * c["px"] / 1e8
                 _sup = f" · 수급 {_net:+.0f}억" + ("✅" if _net >= 0 else "⚠️")
@@ -2931,7 +2951,10 @@ def _holding_judge(token, key, secret, code, px, prev_close, ret=None, stop=None
     _strong = _ng in ("S", "A")
     _sup_pos = None
     try:
-        _f, _o = _investor_est(token, key, secret, code)
+        # [실전투자 점검] distinguish_fail=True 없이는 조회실패도 (0,0)이라 이 None 체크가 죽은
+        # 코드였음 — API 실패가 "수급 확인됨(0>=0 True)·✅유입"으로 잘못 표시되던 문제
+        # (보유 판정에 쓰이는 함수라 거짓 안심 표시는 특히 위험).
+        _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
         if _f is not None and _o is not None:
             _sup_pos = (_f + _o) >= 0
     except Exception:
@@ -3889,7 +3912,7 @@ def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, ge
         state["gap_analysis_day"] = today
         print("[갭분석] 갭상승 3%+ 종목 없음")
         return
-    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
     _pred = set()
     try:
         with open(SCORECARD_FILE, encoding="utf-8") as f:
@@ -4027,7 +4050,10 @@ def _elite_tag(token, key, secret, code):
     if _nbad or _ng not in ("S", "A"):
         return ""
     try:
-        _f, _o = _investor_est(token, key, secret, code)
+        # [실전투자 점검] distinguish_fail=True — 독스트링·주석이 "당일 수급 미확인 → 정예 아님"이라고
+        # 명시했는데 distinguish_fail 없이는 실패도 (0,0)이라 이 None 체크가 죽은 코드였음(조회
+        # 실패 시에도 (0+0)<0이 False라 정예 태그가 그대로 붙어버림 — 문서화된 의도와 정반대 동작).
+        _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
         if _f is None or _o is None or (_f + _o) < 0:   # 당일 수급 미확인 or 이탈 → 정예 아님
             return ""
     except Exception:
@@ -4459,7 +4485,9 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V23.4 종배룰 #3] 외인·기관 수급 방향
     _sup = ""; _supply_neg = False
     try:
-        _f, _o = _investor_est(token, key, secret, pick["code"])
+        # [실전투자 점검] distinguish_fail=True로 조회실패(None)와 실제 0 순매수를 구분 —
+        # 예전엔 _investor_est가 실패해도 (0,0)을 반환해 이 None 체크가 죽은 코드였음.
+        _f, _o = _investor_est(token, key, secret, pick["code"], distinguish_fail=True)
         if _f is None or _o is None:
             raise ValueError("수급 데이터 없음")
         _fa, _oa = _f * pick["px"] / 1e8, _o * pick["px"] / 1e8
@@ -4673,7 +4701,9 @@ def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
         _strong_mat = (_ng in ("S", "A")) or _isbrief
         _sup_pos = None
         try:
-            _f, _o = _investor_est(token, key, secret, _info["code"])
+            # [실전투자 점검] distinguish_fail=True — 위 _holding_judge와 동일한 죽은 코드 버그
+            # (조회실패가 "수급 확인·유입"으로 잘못 표시되던 문제).
+            _f, _o = _investor_est(token, key, secret, _info["code"], distinguish_fail=True)
             if _f is not None and _o is not None:
                 _sup_pos = (_f + _o) >= 0
         except Exception:
@@ -4867,8 +4897,14 @@ def _supply_daily_tag_from(d):
     return "", False
 
 
-def _investor_est(token, key, secret, code):
-    """종목 장중 외국인/기관 추정 순매수 '수량' — investor-trend-estimate. (frn_qty, org_qty)."""
+def _investor_est(token, key, secret, code, distinguish_fail=False):
+    """종목 장중 외국인/기관 추정 순매수 '수량' — investor-trend-estimate. (frn_qty, org_qty).
+    [실전투자 점검 발견] 기본값(distinguish_fail=False)은 기존 그대로 실패 시 (0,0) 반환 —
+    이 함수를 쓰는 기존 18개 호출부 대부분은 '조회 실패=0'을 점수 보너스 미부여 정도로만 써서
+    안전하지만, check_dolpanty_pick처럼 "수급 조회 실패"를 "확인된 0" 대신 명시적으로 경고해야
+    하는 호출부는 distinguish_fail=True로 넘겨 실패 시 (None, None)을 받아야 함
+    (기존엔 항상 (0,0)이라 '조회 실패 시 명시' 로직이 죽은 코드였음 — 진짜 실패를 실제 0 순매수와
+    구분 못 하고 있었음)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -4881,7 +4917,7 @@ def _investor_est(token, key, secret, code):
                     return _to_int(row.get("frgn_fake_ntby_qty")), _to_int(row.get("orgn_fake_ntby_qty"))
     except Exception:
         pass
-    return 0, 0
+    return (None, None) if distinguish_fail else (0, 0)
 
 
 # [V17.2] 종목별 프로그램매매 순매수 금액(원) — 진단(diag_program_trade)으로 실전 검증한 엔드포인트.
@@ -5229,7 +5265,7 @@ def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineu
     for _c, _n in lineup:
         if _c not in _seen:
             _univ.append((_c, _n, "라인업")); _seen.add(_c)
-    yday = (now_kst - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
     try:
         with open(SCORECARD_FILE, encoding="utf-8") as f:
             _sc = json.load(f)
