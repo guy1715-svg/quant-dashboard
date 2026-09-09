@@ -1637,10 +1637,14 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
     _ks_map, _kq_map = {}, {}
     if kis_key and kis_secret:
         _tok = kis_token(kis_key, kis_secret)
-        _d1, _d2 = _dates[0].strftime("%Y%m%d"), _now.strftime("%Y%m%d")
+        # [실사용 발견] _d1을 요청 범위의 첫날로 잡으면 그 날은 '전일 종가'가 없어 등락률 자체계산
+        # 폴백이 못 먹힘(실제로 매 backfill마다 그 배치의 첫날이 "등락률 미확인"으로 남는 걸 확인) —
+        # 여유분 7일 앞서 조회해서 항상 계산용 전일 종가를 확보.
+        _d1 = (_dates[0] - datetime.timedelta(days=7)).strftime("%Y%m%d")
+        _d2 = _now.strftime("%Y%m%d")
         _ks_map = _index_daily_range(_tok, kis_key, kis_secret, "0001", _d1, _d2)
         _kq_map = _index_daily_range(_tok, kis_key, kis_secret, "1001", _d1, _d2)
-        print(f"[backfill] KIS 지수 실측 {len(_ks_map)}일(코스피)/{len(_kq_map)}일(코스닥) 확보")
+        print(f"[backfill] KIS 지수 실측 {len(_ks_map)}일(코스피)/{len(_kq_map)}일(코스닥) 확보(여유분 포함)")
     else:
         print("[backfill] KIS 키 없음 — 지수 실측 불가, Gemini 추정으로 폴백(신뢰도 낮음)")
 
