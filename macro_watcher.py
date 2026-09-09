@@ -1257,6 +1257,10 @@ def _index_daily_range(token, key, secret, iscd, date_from, date_to):
                         "lo": _f(_o, "bstp_nmix_lwpr")}
     if not out and rows:
         print(f"[지수일별시세 진단] 응답은 왔으나 파싱 0건({iscd}) — 필드명 확인 필요: {list(rows[0].keys())[:10]}")
+    _no_chg = sum(1 for v in out.values() if v["close"] is not None and v["chg"] is None)
+    if _no_chg:
+        print(f"[지수일별시세 진단] close는 있는데 등락률(chg) None {_no_chg}건({iscd}) "
+              f"— bstp_nmix_prdy_ctrt 필드명/값 확인 필요: {list(rows[0].keys())[:10]}")
     return out
 
 
@@ -1601,7 +1605,11 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
         _fact_line = ""
         if _ks or _kq:
             def _one(nm, s):
-                return f"{nm} {s['close']:,.2f}({s['chg']:+.2f}%)" if (s and s.get("close") is not None) else f"{nm} —"
+                # [실사용 크래시 수정] close는 파싱됐는데 chg만 None인 날이 실측 확인됨 — 둘 다 있어야 안전.
+                if not s or s.get("close") is None:
+                    return f"{nm} —"
+                _chgtxt = f"{s['chg']:+.2f}%" if s.get("chg") is not None else "등락률 미확인"
+                return f"{nm} {s['close']:,.2f}({_chgtxt})"
             _fact_line = f"[확인된 사실](KIS 실측) {_one('코스피', _ks)} · {_one('코스닥', _kq)}"
 
         if _fact_line:
