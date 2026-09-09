@@ -346,25 +346,31 @@ def read_kis_keys():
 
 
 # ── 매크로 ──────────────────────────────────────────────────────────────────
-def _pct(sym):
+def _pct(sym, _retry=True):
+    # [실사용 발견] 실제로 NQ=F·^SOX·NVDA 등 활성 종목 전부가 동시에 "possibly delisted"로
+    # 실패하는 경우 확인 — yfinance/Yahoo 쪽 일시적 네트워크·레이트리밋일 가능성이 높아 1회 재시도.
     try:
         fi = yf.Ticker(sym).fast_info
         l, p = float(fi.last_price), float(fi.previous_close)
         if l > 0 and p > 0:
             return (l / p - 1) * 100
     except Exception:
-        pass
+        if _retry:
+            time.sleep(1)
+            return _pct(sym, _retry=False)
     return None
 
 
-def _hist_pct(sym):
+def _hist_pct(sym, _retry=True):
     """일봉 종가 2개로 전일대비% — fast_info.previous_close가 튀는 지수(코스피 등)용 안정 산출."""
     try:
         h = yf.Ticker(sym).history(period="5d")["Close"].dropna()
         if len(h) >= 2:
             return (float(h.iloc[-1]) / float(h.iloc[-2]) - 1) * 100
     except Exception:
-        pass
+        if _retry:
+            time.sleep(1)
+            return _hist_pct(sym, _retry=False)
     return None
 
 
@@ -1835,7 +1841,10 @@ def _rss_news(per_feed=40, hours=12):
     return arts
 
 
-_GEMINI_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro")   # flash 우선(빠름)·pro 폴백
+# [실사용 발견] 콘솔 [Gemini 진단]에서 "gemini-2.5-pro:NotFound" 확인 — 이 계정/API 버전에서
+# 모델명 자체가 안 잡힘(할당량과 무관한 영구 실패). 쿼터 상황과 무관하게 항상 시도해볼 안정적인
+# 모델을 폴백에 추가(gemini-2.5-flash의 ResourceExhausted는 오늘 테스트로 인한 일시적 쿼터 소진으로 추정).
+_GEMINI_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-pro")
 
 
 def _gemini_generate(gkey, prompt):
@@ -4172,11 +4181,15 @@ def _pick_extra_score(token, key, secret, code, px, turn, ds):
 
 
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
-                        gemini_key=None):
+                        gemini_key=None, data_state="ok"):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
     창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 정규장 거래대금 랭킹 기준이나,
     NXT 시간대(18:00~19:50)엔 각 후보의 현재가를 NX(넥스트레이드)로 실시간 갱신 — 종가 아닌 실시간가로 판정.
-    force=True: 시간창·당일락 무시(수동 강제). 리스크오프(sev2)면 관망."""
+    force=True: 시간창·당일락 무시(수동 강제). 리스크오프(sev2)면 관망.
+    data_state: compute_macro()의 4번째 반환값("ok"/"partial"/"outage") — sev=2가 진짜 리스크오프인지
+    야후파이낸스 등 지표 조회 자체가 실패한 'outage'인지 구분해 메시지를 다르게 보내기 위함
+    (실사용 로그에서 NQ=F·^SOX·NVDA 등 전종목이 동시에 "possibly delisted"로 실패해 sev=2가 됐는데
+    텔레그램엔 "리스크오프"라고 나가서 실제 시황과 무관한 메시지로 오인될 수 있음이 확인됨)."""
     m = now_kst.hour * 60 + now_kst.minute
     # 정규장 마감권(15:05~15:30) 또는 NXT 야간(18:00~19:50). 그 사이 휴장 갭(15:30~18:00)은 스킵.
     if not force and not (((15 * 60 + 5) <= m <= (15 * 60 + 30)) or ((18 * 60) <= m <= (19 * 60 + 50))):
@@ -4333,11 +4346,17 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
 
     if sev == 2:                                     # [V20.9] 리스크오프 — 관망 발송 + 그림자만 로깅(검증 유지)
         _log_shadow()
-        if send_telegram(token_tg, chat_id,
-                         "🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
-                         "매크로 🟢 전환·낙폭 진정 후 재산출."):
+        if data_state == "outage":
+            # [실사용 발견] 야후파이낸스 지표(나스닥·SOX·유가 등) 전체 조회 실패로 sev=2가 된 경우.
+            # 실제 리스크오프인지 알 수 없는 상태라 '리스크오프'라고 단정하면 오해를 일으킴 — 구분 발송.
+            _msg = ("🌒[종배] 매크로 지표(야후파이낸스) 조회 실패로 판단 보류 — "
+                    "실제 리스크오프 여부 불명, 데이터 소스 장애로 종가베팅 스킵(현금 방어).")
+        else:
+            _msg = ("🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
+                    "매크로 🟢 전환·낙폭 진정 후 재산출.")
+        if send_telegram(token_tg, chat_id, _msg):
             state["dolpanty_pick_day"] = today
-        print("[종배픽] 리스크오프 관망 — 그림자만 로깅")
+        print(f"[종배픽] {'데이터 장애' if data_state == 'outage' else '리스크오프'} 관망 — 그림자만 로깅")
         return
     if not cands:
         _log_shadow()                                # 관망 날에도 검증 데이터 축적
@@ -6276,12 +6295,12 @@ def main():
         st = load_state()
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
         _tok = kis_token(kis_key, kis_secret)
-        _sev, _, _, _ = compute_macro(_tok, kis_key, kis_secret)
+        _sev, _, _, _dstate_fp = compute_macro(_tok, kis_key, kis_secret)
         _gk_fp = read_gemini_key()                # AI 뉴스판정용
-        print(f"[강제] 종배픽 실행 — sev={_sev} · {_now.strftime('%H:%M')} 기준"
+        print(f"[강제] 종배픽 실행 — sev={_sev}({_dstate_fp}) · {_now.strftime('%H:%M')} 기준"
               + (" · NXT 실시간가" if _nxt_now else " · 종가"))
         check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
-                            gemini_key=_gk_fp)
+                            gemini_key=_gk_fp, data_state=_dstate_fp)
         save_state(st)
         sys.exit(0)
     if not kis_on:
@@ -6647,7 +6666,7 @@ def main():
                     # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
                     try:
                         check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
-                                            gemini_key=gemini_key)
+                                            gemini_key=gemini_key, data_state=_dstate)
                     except Exception as _dpe:
                         print("종배픽 오류:", _dpe)
                     # [V23.0] 종배 진입 타이밍 리마인더(15:23~15:29 종가 동시호가)
