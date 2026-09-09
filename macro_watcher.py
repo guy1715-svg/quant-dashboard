@@ -2862,9 +2862,14 @@ def _holdings_health_check(now_kst, state, token_tg, chat_id):
         print(f"[보유종목 진단] 일일 헬스체크 실패 경보 발송: {_e}")
 
 
-def _holding_judge(token, key, secret, code, px, prev_close):
+def _holding_judge(token, key, secret, code, px, prev_close, ret=None, stop=None):
     """[V25.21] 보유종목 오버나이트 홀딩 판정 — 4요인(재료질·수급·선반영·밤사이등락)으로
-    '9시까지 보유 vs 지금 매도'. 반환: 텔레그램 1줄 판정 텍스트."""
+    '9시까지 보유 vs 지금 매도'. 반환: 텔레그램 1줄 판정 텍스트.
+    [피드백 반영] ret(매수평균 대비 수익률)·stop(손절 기준)을 넘기면, 이미 손절선을
+    이탈한 상태에서 "재료 좋으니 9시까지 보유"라고 결론 내던 모순을 막는다 — 같은 시각에
+    '홀딩 판정: 보유하라'와 '손절 알림: 정리하라'가 동시에 발송돼 사용자가 혼란스러워하던 문제
+    (예: 알테오젠 -5.2%인데 홀딩판정은 '9시까지 보유'). 손절선 이탈 시엔 재료가 아무리 좋아도
+    손절 원칙(칼손절·존버 금지)이 최우선이라는 걸 결론에 명시한다."""
     _ng, _nbad = _news_grade(code)
     _strong = _ng in ("S", "A")
     _sup_pos = None
@@ -2893,6 +2898,12 @@ def _holding_judge(token, key, secret, code, px, prev_close):
     else:
         _verdict = ("🟡 신규재료 없음 — 9시 첫 5~10분 수급 확인 후 판단 "
                     "(NXT 지지·수급 유입 중이면 성급한 8시 매도 금지 · 기존 계약/재료 있으면 유지)")
+    # [피드백 반영] 이 함수는 원래 '밤사이 등락'만 보고 판단해서, 매수평균 대비 이미 손절선을
+    # 넘긴 종목에도 "재료 좋으니 9시까지 보유"라고 결론 내는 모순이 있었다(같은 시각에 별도
+    # 발송되는 손절 알림과 정면 충돌). 손절선 이탈이 확인되면 재료 판단과 무관하게 결론을 덮어쓴다.
+    if ret is not None and stop is not None and ret <= stop:
+        _verdict = (f"🔴 단, 이미 손절선({stop:+.0f}%) 이탈(수익률 {ret:+.1f}%) — "
+                     "재료·수급이 좋아도 손절 원칙이 우선(존버 금지). 위 판단은 '재진입 시점' 참고용으로만.")
     _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
     return f"재료:{_ng or '없음'} · 수급:{_supmark} · 밤사이:{_g:+.1f}%(선반영 {'예' if _reflected else '아니오'})\n→ {_verdict}"
 
@@ -2954,7 +2965,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
                 try:
                     _cl = _daily_closes(token, key, secret, code)
                     _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
-                    _jtxt = _holding_judge(token, key, secret, code, px, _prevc)
+                    _jtxt = _holding_judge(token, key, secret, code, px, _prevc, ret=_ret, stop=_stop)
                     send_telegram(token_tg, chat_id,
                                   f"{SIG_WATCH}\n🌅 보유 홀딩 판정(8시) — {name}\n"
                                   f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%\n{_jtxt}\n"
@@ -3024,10 +3035,11 @@ def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
             continue
         _ret = (px / avg - 1) * 100; _pl = int((px - avg) * qty) if qty else 0
         _tot += _pl
+        _stop = float(s.get("stop", -2.0))
         try:
             _cl = _daily_closes(token, key, secret, code)
             _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
-            _j = _holding_judge(token, key, secret, code, px, _prevc)
+            _j = _holding_judge(token, key, secret, code, px, _prevc, ret=_ret, stop=_stop)
         except Exception:
             _j = "판정 조회 실패"
         _lines.append(f"\n■ {name} {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · {_ret:+.1f}%"
