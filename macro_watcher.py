@@ -1551,34 +1551,44 @@ def _is_future_confused(text):
     return any(_m in (text or "") for _m in _FUTURE_CONFUSION_MARKERS)
 
 
-def _remove_review_blocks(date_strs):
-    """[피드백 반영] market_review.md에서 지정 날짜(YYYY-MM-DD 문자열 set)와 일치하는
-    기존 '## 날짜' 블록을 제거 — backfill을 재실행할 때 예전에 지식컷 미래착각 등으로
-    망가졌던 구버전 블록이 새로 만든 정상 블록과 중복으로 쌓이지 않고 교체되게 함.
-    '📊 주간 메타복기' 블록은 날짜로 시작하지 않아 자연히 대상에서 제외됨. 반환: 제거한 블록 수."""
-    if not date_strs or not os.path.exists(MARKET_REVIEW_FILE):
-        return 0
+def _mr_read_all():
+    """market_review.md 전체를 (일별블록 dict{'YYYY-MM-DD': 헤더제외 본문}, 기타블록 list[본문])으로 파싱.
+    [실사용 리뷰 반영] 예전엔 backfill/일일복기/주간메타복기가 각자 파일 끝에 append만 해서, 실행
+    순서에 따라 날짜가 뒤죽박죽 섞인 로그가 됨(9/7 다음에 9/3이 오는 식). '# ── 과거 backfill
+    N일(생성 ...) ──' 구분줄은 정렬에 쓸 날짜가 없는 생성이력일 뿐이라 다시 쓰지 않고 버린다
+    (각 '## 날짜' 블록이 이미 자기 날짜를 헤더에 갖고 있어 없어도 정보 손실 없음)."""
+    _daily, _other = {}, []
+    if not os.path.exists(MARKET_REVIEW_FILE):
+        return _daily, _other
     import re as _re
     try:
         with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
             _txt = _f.read()
     except OSError:
-        return 0
-    _parts = _txt.split("\n## ")
-    _kept = [_parts[0]]
-    _removed = 0
-    for _p in _parts[1:]:
-        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _p)
-        if _m and _m.group(1) in date_strs:
-            _removed += 1
+        return _daily, _other
+    for _p in _txt.split("\n## ")[1:]:
+        # 구버전 '# ── 과거 backfill ... ──' 구분줄은 "\n## "로 안 갈라져서 앞 블록 끝에 그대로
+        # 붙어있음 — 정보 없는 생성이력이니 어디 붙어있든 제거(안 지우면 재작성마다 계속 남음).
+        _p = _re.sub(r"\n# ── [^\n]*──\s*$", "", _p.rstrip("\n"))
+        if not _p.strip():
             continue
-        _kept.append(_p)
-    if not _removed:
-        return 0
-    _new_txt = _kept[0] + "".join("\n## " + _p for _p in _kept[1:])
-    if not _atomic_write_text(MARKET_REVIEW_FILE, _new_txt):
-        return 0
-    return _removed
+        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _p)
+        if _m:
+            _daily[_m.group(1)] = _p               # 같은 날짜 재등장 시 마지막 것으로 자동 교체(dedup)
+        else:
+            _other.append(_p)
+    return _daily, _other
+
+
+def _mr_write_all(daily, other):
+    """일별 블록은 날짜 오름차순으로 위에, 그 외(주간메타복기 등)는 아래에 몰아서 market_review.md를
+    통째로 재작성 — 실행 순서와 무관하게 항상 날짜순 원장 상태를 유지. 성공 시 True."""
+    _txt = "# 시장 복기 원장 (market_review.md)\n"
+    for _d in sorted(daily):
+        _txt += "\n## " + daily[_d] + "\n"
+    for _o in other:
+        _txt += "\n## " + _o + "\n"
+    return _atomic_write_text(MARKET_REVIEW_FILE, _txt)
 
 
 def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
@@ -1619,7 +1629,7 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
 
         if _has_kis and not _ks and not _kq:
             # KIS 실측 응답에 해당일이 없음 = 휴장(주말 아닌 평일 공휴일) — 추측하지 않고 확정 기록
-            _out.append((_dd.strftime("%Y-%m-%d"), f"\n## {_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)\n"))
+            _out.append((_dd.strftime("%Y-%m-%d"), f"{_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)"))
             print(f"[backfill] {_dstr} 휴장(KIS 데이터 없음) — Gemini 호출 생략")
             continue
 
@@ -1660,31 +1670,24 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
         if _wv and _is_future_confused(_wv):
             print(f"[backfill] {_dstr} 미래착각 응답 감지(스킵) — 지식컷 경계: {_wv[:80]!r}")
         elif _wv:
-            _block = f"\n## {_dstr}\n"
+            _body = f"{_dstr}\n"
             if _fact_line:
-                _block += _fact_line + "\n"
-            _out.append((_dd.strftime("%Y-%m-%d"), _block + _wv.strip() + "\n"))
+                _body += _fact_line + "\n"
+            _out.append((_dd.strftime("%Y-%m-%d"), _body + _wv.strip()))
             print(f"[backfill] {_dstr} 복기 완료" + (" (KIS 실측 반영)" if _fact_line else ""))
         else:
             print(f"[backfill] {_dstr} Gemini 실패(스킵) — 위 [grounded 진단] 참조")
         time.sleep(6)                                 # grounding 무료쿼터 배려
     if _out:
         try:
-            # [피드백 반영] 재실행 시 같은 날짜의 구버전 블록(예: 지식컷 미래착각으로 망가졌던 것)이
-            # 새 결과와 중복으로 쌓이지 않도록, 이번에 새로 만든 날짜는 기존 블록을 먼저 제거하고 교체.
-            _fresh_dates = {_ds for _ds, _ in _out}
-            _removed = _remove_review_blocks(_fresh_dates)
-            if _removed:
-                print(f"[backfill] 동일 날짜 구버전 블록 {_removed}건 교체(제거 후 재기록)")
-            _new = not os.path.exists(MARKET_REVIEW_FILE)
-            with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
-                if _new:
-                    _f.write("# 시장 복기 원장 (market_review.md)\n")
-                # [실사용 발견] datetime.now()는 로컬 시스템 시간대라 KST와 어긋날 수 있음(헤더가 하루
-                #   앞서 찍히는 원인) — 함수 전체가 기준으로 쓰는 KST _now로 통일.
-                _f.write(f"\n# ── 과거 backfill {days}일 (생성 {_now.strftime('%Y-%m-%d')}) ──\n"
-                         + "".join(_b for _, _b in _out))
-            print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료")
+            # [실사용 리뷰 반영 — 날짜 뒤죽박죽 문제] 예전엔 파일 끝에 append만 해서 backfill을
+            # 여러 번 실행하면 날짜 순서가 뒤섞였음. 이제 기존 파일 전체를 읽어 이번에 만든 날짜를
+            # dict에 덮어쓴 뒤(자동 dedup) 날짜 오름차순으로 통째로 재작성 — 항상 정렬 상태 유지.
+            _daily, _other = _mr_read_all()
+            for _ds, _body in _out:
+                _daily[_ds] = _body
+            if _mr_write_all(_daily, _other):
+                print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료(날짜순 재정렬)")
         except OSError as _e:
             print("[backfill] 저장 실패:", _e)
 
@@ -5996,12 +5999,16 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
             if _wv:
                 lines.append(f"\n🧠 시장 복기(왜 이렇게 움직였나):\n{_wv.strip()}")
                 try:
-                    _dstr = now_kst.strftime("%Y-%m-%d") + f"({_WKD_KO[now_kst.weekday()]})"
-                    with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
-                        _f.write(f"\n## {_dstr}\n"
-                                 f"- 지수: {_idxtxt}\n- 화제: {_buzz2 or '—'}\n"
-                                 f"- 급등: {_uptxt}\n- 급락: {_dntxt}\n{_wv.strip()}\n")
-                    print("[복기] market_review.md 누적 저장")
+                    # [실사용 리뷰 반영] 파일 끝 append 대신 날짜순 재작성 — backfill/주간메타복기와
+                    # 실행 순서가 섞여도 market_review.md는 항상 날짜 오름차순 유지.
+                    _ds = now_kst.strftime("%Y-%m-%d")
+                    _dstr = _ds + f"({_WKD_KO[now_kst.weekday()]})"
+                    _body = (f"{_dstr}\n- 지수: {_idxtxt}\n- 화제: {_buzz2 or '—'}\n"
+                             f"- 급등: {_uptxt}\n- 급락: {_dntxt}\n{_wv.strip()}")
+                    _daily, _other = _mr_read_all()
+                    _daily[_ds] = _body
+                    if _mr_write_all(_daily, _other):
+                        print("[복기] market_review.md 누적 저장(날짜순)")
                 except OSError:
                     pass
         except Exception as _rve:
@@ -6074,19 +6081,17 @@ def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=Fals
         # [피드백 반영] 예전엔 append만 해서, 같은 주(_start~_end)에 버튼을 여러 번 누르거나
         # 수동 테스트+자동실행이 겹치면 market_review.md에 똑같은 주간요약이 중복 저장됐음
         # (실사용에서 확인됨). 같은 날짜범위의 기존 블록을 지우고 교체 — 재실행해도 1개만 유지.
-        _new_block = f"\n## {_hdr}\n{_wv.strip()}\n"
+        # [실사용 리뷰 반영] 일별 블록과 같은 날짜순 재작성 방식(_mr_read_all/_mr_write_all)으로 통일 —
+        # 주간메타복기는 '기타' 섹션(파일 하단)에 모여서 일별 원장과 뒤섞이지 않음.
+        _new_block = f"{_hdr}\n{_wv.strip()}"
+        _range_tag = f"({_start}~{_end}"
         try:
-            _old = ""
-            if os.path.exists(MARKET_REVIEW_FILE):
-                with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
-                    _old = _f.read()
-            _range_tag = f"({_start}~{_end}"
-            _parts = _old.split("\n## ")
-            _kept = [_parts[0]] + [p for p in _parts[1:]
-                                   if not (p.startswith(_WEEKLY_META_TAG) and _range_tag in p[:60])]
-            _new_txt = _kept[0] + "".join("\n## " + p for p in _kept[1:]) + _new_block
-            if _atomic_write_text(MARKET_REVIEW_FILE, _new_txt):
-                print("[주간메타복기] market_review.md 누적 저장")
+            _daily, _other = _mr_read_all()
+            _other = [p for p in _other
+                      if not (p.startswith(_WEEKLY_META_TAG) and _range_tag in p[:60])]
+            _other.append(_new_block)
+            if _mr_write_all(_daily, _other):
+                print("[주간메타복기] market_review.md 누적 저장(중복 제거)")
         except OSError as _e:
             print("[주간메타복기] 저장 실패:", _e)
         state["weekly_review_week"] = now_kst.strftime("%G-W%V")
