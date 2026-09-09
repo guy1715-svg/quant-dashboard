@@ -26,7 +26,12 @@ import argparse
 import datetime
 import tempfile
 import warnings
+import logging
 warnings.filterwarnings("ignore")
+# [V25.6x] google-genai SDK가 generate_content 직접 호출 시 매번 찍는 "AFC 비권장" 안내 로그 억제
+#   — 에러 아닌 정보성 문구인데 크래시 로그 직후 보면 오해하기 쉬워 소음 제거.
+for _gl in ("google_genai", "google.genai", "google.generativeai"):
+    logging.getLogger(_gl).setLevel(logging.ERROR)
 
 # [V25.22] stdout/stderr을 UTF-8로 강제 — GUI/일반 콘솔(cp949)에서 print(—·특수문자) 크래시 방지.
 #   (tools.bat은 chcp 65001로 됐지만 GUI subprocess·기본 콘솔은 cp949라 UnicodeEncodeError 발생)
