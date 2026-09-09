@@ -5342,13 +5342,26 @@ TA_UNIVERSE = [("005930", "삼성전자"), ("000660", "SK하이닉스"), ("04270
 
 
 def _price_full(token, key, secret, code):
-    """현재가·등락률·시가·고가·저가 — inquire-price. 실패 시 (None,...)."""
+    """현재가·등락률·시가·고가·저가 — inquire-price. 실패 시 (None,...).
+    [실전투자 점검 — 성적표 이상현상 추적] rt_cd 검증 없이 'output이 비어있지 않으면 성공'으로만
+    판정했었음 — 이 코드베이스 전체에서 rt_cd를 확인하는 곳이 단 한 곳도 없었음(레이트리밋 등으로
+    rt_cd!=0인데 output에 정상처럼 보이는(그러나 실은 stale/기본값) 데이터가 들어있는 응답을 그대로
+    신뢰했을 가능성). 실제 성적표에서 5종목이 '현재가==추천가(원단위 일치)인데 고/저는 실제로 다름'
+    이라는, 우연으론 설명 안 되는 모순이 재현 확인됨 — rt_cd 검증을 추가해 실제 원인인지 확인."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010100"},
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
-        o = r.json().get("output", {})
+        _j = r.json()
+        _rt = str(_j.get("rt_cd", "")).strip()
+        o = _j.get("output", {})
+        if _rt not in ("0", ""):
+            _osnap = ({k: o.get(k) for k in ("stck_prpr", "stck_hgpr", "stck_lwpr")}
+                      if isinstance(o, dict) else o)
+            print(f"[시세조회 진단] {code} rt_cd={_rt!r} msg={_j.get('msg1', '')!r} "
+                  f"— 정상 아닌데 output={_osnap}")
+            return None, None, None, None, None
         if isinstance(o, dict) and o:
             return (_to_int(o.get("stck_prpr")),
                     float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0),
