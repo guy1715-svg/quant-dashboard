@@ -1531,6 +1531,8 @@ _WKD_KO = ["월", "화", "수", "목", "금", "토", "일"]
 _FUTURE_CONFUSION_MARKERS = (
     "아직 도래하지 않", "아직 오지 않은 날짜", "미래의 날짜", "발생하지 않은 날짜",
     "아직 일어나지 않", "예정된 미래", "확인할 수 없는 미래", "미래 날짜이므로", "아직 도래하지 않은",
+    # [실사용 발견 — 2026-08-28 복기에서 확인] 같은 지식컷 착각을 다른 문구로 표현한 케이스 추가.
+    "실시간 미래 데이터", "미래 데이터 검색", "정보 접근 한계",
 )
 
 
@@ -1665,7 +1667,9 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
             with open(MARKET_REVIEW_FILE, "a", encoding="utf-8") as _f:
                 if _new:
                     _f.write("# 시장 복기 원장 (market_review.md)\n")
-                _f.write(f"\n# ── 과거 backfill {days}일 (생성 {datetime.datetime.now().strftime('%Y-%m-%d')}) ──\n"
+                # [실사용 발견] datetime.now()는 로컬 시스템 시간대라 KST와 어긋날 수 있음(헤더가 하루
+                #   앞서 찍히는 원인) — 함수 전체가 기준으로 쓰는 KST _now로 통일.
+                _f.write(f"\n# ── 과거 backfill {days}일 (생성 {_now.strftime('%Y-%m-%d')}) ──\n"
                          + "".join(_b for _, _b in _out))
             print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료")
         except OSError as _e:
