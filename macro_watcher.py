@@ -1262,9 +1262,19 @@ def _index_daily_range(token, key, secret, iscd, date_from, date_to):
                         "lo": _f(_o, "bstp_nmix_lwpr")}
     if not out and rows:
         print(f"[지수일별시세 진단] 응답은 왔으나 파싱 0건({iscd}) — 필드명 확인 필요: {list(rows[0].keys())[:10]}")
+    # [실사용 발견 — 등락률(chg) 필드가 전건 None이었음] 필드명 확정 전이라도, 같은 응답 안의
+    # 연속 종가로 등락률을 직접 계산하면 필드명 문제와 무관하게 정확한 값을 얻을 수 있음.
+    _prev_close = None
+    for _dt in sorted(out):
+        _row = out[_dt]
+        if _row["chg"] is None and _row["close"] is not None and _prev_close:
+            _row["chg"] = (_row["close"] / _prev_close - 1) * 100
+        if _row["close"] is not None:
+            _prev_close = _row["close"]
     _no_chg = sum(1 for v in out.values() if v["close"] is not None and v["chg"] is None)
     if _no_chg:
-        print(f"[지수일별시세 진단] close는 있는데 등락률(chg) None {_no_chg}건({iscd}) "
+        print(f"[지수일별시세 진단] close는 있는데 등락률(chg) 원본필드+전일종가계산 둘 다 실패 {_no_chg}건"
+              f"({iscd}, 대부분 범위 첫날이라 전일종가 없어서일 수 있음) "
               f"— bstp_nmix_prdy_ctrt 필드명/값 확인 필요: {list(rows[0].keys())[:10]}")
     return out
 
@@ -1628,6 +1638,9 @@ def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
                    "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급하라.\n"
                    f"{_dstr} 한국 증시 마감 복기. 아래 지수 수치는 이미 실측 확인된 사실이니 그대로 인정하고, "
                    f"이 결과가 나온 이유만 구글 검색으로 찾아라: {_fact_line}\n"
+                   "★출력에 서론·요약 문단을 쓰지 마라 — 지수 수치·등락률은 위에 이미 나왔으니 네가 다시 "
+                   "언급하거나 재계산하지 마라(특히 '등락률 미확인'인 값을 네가 검색으로 대신 채워 넣지 마라 — "
+                   "숫자가 없으면 없는 대로 두고 원인 해석만 하라). 아래 두 섹션만, 각 한 번씩 출력해라.★\n"
                    "[시장 해석] 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인 포함) · 어떤 뉴스/테마가 반응했나 — "
                    "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
                    "[다음 참고] 교훈 1가지.\n"
@@ -5874,7 +5887,7 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
     _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
     sev, mtext, mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
     cg = _cash_guide(sev)
-    lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d(%a)')} 장전 브리핑",
+    lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d')}({_WKD_KO[now_kst.weekday()]}) 장전 브리핑",
              f"",
              f"① 국면: {mtext}",
              f"   {mdetail}",
@@ -5917,7 +5930,7 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
         return
     j = state.get("journal") or {}
     _SEVN = {0: "🟢 양호", 1: "🟡 중립/경고", 2: "🔴 리스크오프"}
-    lines = [f"📓 오늘의 복기 — {now_kst.strftime('%m/%d(%a)')} 마감 리포트",
+    lines = [f"📓 오늘의 복기 — {now_kst.strftime('%m/%d')}({_WKD_KO[now_kst.weekday()]}) 마감 리포트",
              f"",
              f"■ 매크로 국면: 최선 {_SEVN.get(j.get('sev_lo',1))} ~ 최악 {_SEVN.get(j.get('sev_hi',1))}",
              f"   마감: {j.get('macro_last','—')}"]
