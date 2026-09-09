@@ -965,8 +965,11 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
             _wr = sum(1 for x in rets if x > 0) / len(rets) * 100
             _avg = sum(rets) / len(rets)
             _ic = "🟢" if _avg > 0 else "🔴"
-            _lines.append(f"{_ic} {kind}: {len(rets)}건 · 승률 {_wr:.0f}% · 평균 {_avg:+.1f}%")
-    _lines.append("\n💡 승률↑·평균+ 신호는 살리고, 승률↓·평균− 신호는 실행 중단 판단 근거")
+            # [V25.6x] 표본 10건 미만은 노이즈로 뒤집히기 쉬움 — 실행중단 판단에 오용 방지 라벨.
+            _warn = " ⚠️표본작음(참고용)" if len(rets) < 10 else ""
+            _lines.append(f"{_ic} {kind}: {len(rets)}건 · 승률 {_wr:.0f}% · 평균 {_avg:+.1f}%{_warn}")
+    _lines.append("\n💡 승률↑·평균+ 신호는 살리고, 승률↓·평균− 신호는 실행 중단 판단 근거"
+                  "\n   (단, ⚠️표본작음 신호는 10건 이상 쌓일 때까지 판단 보류)")
     send_telegram(token_tg, chat_id, "\n".join(_lines))
     print(f"[신호분석] {sum(len(v) for v in _by_kind.values())}건 집계 · {len(_by_kind)}종류")
 
