@@ -1431,7 +1431,9 @@ def _gemini_factcheck(gkey, brief, mdetail=""):
     try:
         from google import genai as _ng
         from google.genai import types as _nt
-        _client = _ng.Client(api_key=gkey)
+        # [실사용 무응답 수정] 신SDK 클라이언트에 타임아웃 미설정 시 네트워크 문제로 영구 대기(먹통) 가능 —
+        #   구SDK 경로처럼 60초 타임아웃 강제(ms 단위).
+        _client = _ng.Client(api_key=gkey, http_options=_nt.HttpOptions(timeout=60_000))
         for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
             try:
                 _resp = _client.models.generate_content(
@@ -1479,7 +1481,9 @@ def _gemini_grounded(gkey, prompt, diag=True):
     try:
         from google import genai as _ng
         from google.genai import types as _nt
-        _client = _ng.Client(api_key=gkey)
+        # [실사용 무응답 수정] 신SDK 클라이언트에 타임아웃 미설정 시 네트워크 문제로 영구 대기(먹통) 가능 —
+        #   구SDK 경로처럼 60초 타임아웃 강제(ms 단위).
+        _client = _ng.Client(api_key=gkey, http_options=_nt.HttpOptions(timeout=60_000))
         for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
             for _attempt in range(2):
                 try:

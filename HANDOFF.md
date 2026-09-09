@@ -165,6 +165,21 @@
     이런 미스를 스스로 찾아내는 기능이 이미 있으므로, 그 누적 로그를 나중에 --analyze류로 정리하면
     "왜 놓쳤는지" 패턴을 더 볼 수 있을 것.
 
+### 7.9 backfill "먹통"(무응답 정지) 수정 — 신SDK 클라이언트 타임아웃 누락
+
+7.8 수정 후 사용자가 재실행했더니 크래시는 없어졌는데 이번엔 `▶ 과거복기 실행...`에서
+**그대로 멈춰서 응답이 없는(먹통)** 증상 보고. 원인: `_gemini_stock_news_verdict`와
+`_gemini_grounded` 둘 다 신SDK(`google-genai`) 경로에서 `genai.Client(api_key=gkey)`를
+**타임아웃 설정 없이** 생성 — 구SDK 폴백 경로는 `request_options={"timeout": 60}`을 항상
+넣었는데 신SDK 경로만 빠져 있었음. 네트워크가 응답을 안 주는 상황(방화벽/프록시가 조용히
+패킷을 드롭하는 등)에서 이 호출이 **영구 대기**해 backfill 루프 전체가 멈춰버림(최대 10일치
+반복 호출 중 한 번만 걸려도 전체 정지).
+- **수정**: 두 곳 모두 `genai.Client(api_key=gkey, http_options=types.HttpOptions(timeout=60_000))`
+  로 60초 타임아웃 강제(ms 단위, 구SDK 경로와 동일 기준). sandbox에서 `google-genai` 패키지를
+  임시 설치해 `HttpOptions(timeout=...)` 파라미터가 실제로 존재/동작함을 확인 후 반영.
+- **참고**: `_gemini_grounded`의 429/쿼터 재시도(`time.sleep(12)`)는 원래도 유한 대기라 문제 아님 —
+  먹통의 원인은 그 이전 단계인 HTTP 요청 자체의 무한 대기였음.
+
 ### 7.8 backfill 실제 실행 크래시 수정 — KIS chg 필드 None 처리 (실제 트레이스백으로 발견)
 
 사용자가 실키로 `과거복기 학습(10일)` 버튼을 재실행해 처음으로 진짜 크래시 로그를 확보:
