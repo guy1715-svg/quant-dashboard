@@ -813,10 +813,25 @@ def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
             _pf = _price_full(token, key, secret, _ck)
         except Exception:
             pass
-        if not _pf or not base:
+        # [실전투자 점검] _price_full()은 실패해도 (None,None,None,None,None) '튜플'을 반환하는데
+        # 튜플 자체는 항상 참(truthy)이라 "if not _pf"가 죽은 코드였음 — 실패 시 _cur=None으로
+        # 이어져 아래 (None/base) 나눗셈에서 크래시할 수 있었음(원래는 크래시로 드러났어야 할 실패가
+        # 숨어있던 셈). base 다음 _cur 자체를 명시적으로 확인.
+        if not base:
             _mcache[_ck] = None
             return None
         _cur, _, _o, _hi, _lo = _pf
+        if _cur is None:
+            _mcache[_ck] = None
+            return None
+        # [실사용 발견] 여러 종목에서 현재가가 추천가와 원 단위까지 완전히 동일한데 장중 고/저는
+        # 실제로 크게 움직인 값이 나오는 모순 사례 확인(예: 우리기술 -16.6%까지 밀렸는데 '현재'는
+        # 추천가와 정확히 일치) — KIS API가 특정 상황에서 최신 체결가 대신 다른 값(기준가 등)을
+        # 반환하는 것으로 의심되나 원본 응답 없이는 확정 불가. 값은 그대로 쓰되 재현 시 원인 추적용
+        # 진단 로그만 남김.
+        if _cur == base and _hi and _lo and (_hi != base or _lo != base):
+            print(f"[성적표 진단] {r.get('name', _ck)}({_ck}) 현재가==추천가({base:,})인데 "
+                  f"고{_hi:,}/저{_lo:,}는 다름 — API 응답 이상 의심")
         _m = {"cur": _cur, "pct": (_cur / base - 1) * 100,
               "hipct": ((_hi / base - 1) * 100 if _hi else None),
               "lopct": ((_lo / base - 1) * 100 if _lo else None),
@@ -2066,8 +2081,14 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
     try:
         if _vtok:
             _vr = _volume_rank(_vtok, kis_key, kis_secret, top=20)
-            _vrank_txt = "\n".join(f"- {s['name']}({s['code']}) {s['chg']:+.1f}% 거래대금 {s['turnover']/1e8:,.0f}억"
-                                   for s in _vr if s.get("turnover"))
+            # [실사용 발견 — 우리기술 사례] 전일+21.2%·이격+22%·재료불명 종목이 추천 후 장중 -16.6%까지
+            # 밀린 실제 사례 확인. Gemini가 재료직접성만으로 과열도를 스스로 계산하긴 어려워서, 이미
+            # 계산돼있는 등락률에 과열 여부를 직접 태그로 박아 판단 부담을 줄임(중요7의 근거 데이터로 사용).
+            _vrank_txt = "\n".join(
+                f"- {s['name']}({s['code']}) {s['chg']:+.1f}%"
+                + (" ⚠️단기과열(전일+15%↑)" if s['chg'] >= 15 else "")
+                + f" 거래대금 {s['turnover']/1e8:,.0f}억"
+                for s in _vr if s.get("turnover"))
             # [V22.5] 역방향 — 거래대금 상위 8종의 종목뉴스 조회(돈 몰린 이유·모멘텀 지속성 분석용)
             _lead = []
             for s in [x for x in _vr if x.get("turnover")][:8]:
@@ -2126,7 +2147,10 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                    "⑥ 서로 다른 두 종목을 하나의 재료로 묶지 마라 — B종목을 추천하려면 B종목 자체의 당일 직접 뉴스·공시가 있어야 한다 "
                    "(예: '경쟁사/동종업계 A종목에 호재가 있으니 B종목도 좋다'는 식으로 무관한 종목에 재료를 갖다 붙이는 것 금지) "
                    "⑦ [뉴스] 각 줄 앞 [출처 시각]을 확인해 — 오늘/전날 뉴스가 아니라 며칠 전(3거래일↑) 뉴스면 "
-                   "'오늘 새로 나온 신규 트리거'로 쓰지 말고 기존 재료의 지속성 참고 정도로만 등급을 낮춰서 반영해.★★\n"
+                   "'오늘 새로 나온 신규 트리거'로 쓰지 말고 기존 재료의 지속성 참고 정도로만 등급을 낮춰서 반영해 "
+                   "⑧ [오늘 거래대금 상위]에 '⚠️단기과열' 태그가 붙은 종목(전일 +15%↑ 급등)은, 직접재료(A/A-)가 "
+                   "명확히 확인되지 않으면 📌주목 테마에서 반드시 제외해라 — 거래대금·모멘텀만으로는 재진입 근거 부족하다 "
+                   "(실사용에서 확인된 실패 사례: 전일+21%·이격+22%·재료불명 종목을 추천했다가 다음날 장중 -16.6%까지 밀림).★★\n"
                    f"[실측 시장데이터]\n{_mdetail}\n\n"
                    f"[뉴스 화제성 랭킹]\n{_buzz or '(집계 없음)'}\n\n"
                    f"[네이버 많이 본 뉴스]\n{_ranking_txt}\n\n"
