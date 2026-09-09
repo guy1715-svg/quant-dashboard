@@ -247,14 +247,12 @@ _specs = [
     ("🌒 종배픽 강제", lambda: _run(["--force-pick"], "종배픽")),
     ("🌙 저녁뉴스 테스트", lambda: _run(["--test-news"], "저녁뉴스")),
     ("📋 성적표(Report)", lambda: _run(["--report"], "성적표")),
-    ("📊 신호분석", lambda: _run(["--analyze"], "신호분석")),
+    ("📊 신호분석(+청산분석)", lambda: _run(["--analyze"], "신호분석")),
     ("📈 변동성 스캐너", lambda: _run(["--volatility"], "변동성")),
     ("🧭 장세 판독기", lambda: _run(["--regime"], "장세판독")),
-    ("⏱️ 종배 청산분석", lambda: _run(["--exit-analysis"], "청산분석")),
     ("💼 보유종목 조회", lambda: _run(["--holdings"], "보유조회")),
     ("🕰 과거복기 학습(10일)", lambda: _run(["--backfill-review", "10"], "과거복기")),
     ("📓 시장복기 보기", _view_market_review),
-    ("🔄 자사주 반전 테스트", lambda: _run(["--test-buyback"], "자사주테스트")),
     ("📊 주간 메타복기", lambda: _run(["--weekly-review"], "주간메타복기")),
 ]
 for i, (txt, fn) in enumerate(_specs):

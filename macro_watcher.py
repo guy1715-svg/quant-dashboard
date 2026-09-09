@@ -6228,6 +6228,8 @@ def main():
         _at = kis_token(kis_key, kis_secret)
         _anow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _analyze_history(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
+        # [GUI 정리] 종배 청산분석 버튼을 따로 안 두고 신호분석에 합침 — 버튼 한 번으로 둘 다 확인.
+        _analyze_exit_timing(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
         sys.exit(0)
 
     if args.exit_analysis:                        # [V25.18] 종배 청산 타이밍 분석(시가 vs 종가·NXT별)
