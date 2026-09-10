@@ -214,6 +214,94 @@ def _pct_color(x):
 
 
 # ══════════════════════════════════════════
+# 🚦 AI 브리핑 신호등 — 환율·외국인수급 레짐 게이트 (순수 로직, test_ai_briefing.py로 검증됨)
+# ══════════════════════════════════════════
+FX_DANGER = 1520.0                            # 위험: 1,520원 초과 = 리스크오프 지속
+FOREIGN_SELL_PANIC_KRW = -1_000_000_000_000   # 외국인 -1조 순매도 = 패닉셀(원 단위)
+
+
+def generate_ai_briefing(krw=None, foreign_net_krw=None, top1=None):
+    """5AI Top-Down 레짐 브리핑 — 3줄 자동 생성.
+    krw: 원/달러 환율(float) / foreign_net_krw: 코스피 외국인 순매수액(원, +매수 -매도)
+    top1: 1위 종목 dict 또는 (score, is_aligned) — 절대조건(점수≥70 AND 정배열) 판정용
+    반환: {'lines': [str,str,str], 'verdict': str, 'light': 'green'|'amber'|'red'}
+    절대 예외 없이 반환(결측은 '데이터 확인 필요'로 처리)."""
+    def _num(x):
+        return isinstance(x, (int, float)) and (x == x)
+
+    # ── 1줄: 환율(리스크오프 레짐) ──
+    if _num(krw) and krw > 0:
+        if krw <= 1480:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 안정권에 머물며 리스크 오프 압력이 낮습니다."
+            s1 = 1
+        elif krw <= FX_DANGER:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 1,520원 아래에서 진정되며 리스크 오프 레짐이 완화 중입니다."
+            s1 = 1
+        else:
+            l1 = f"1. 환율이 {krw:,.0f}원으로 1,520원을 넘어 리스크 오프(외국인 환차손) 압력이 지속됩니다."
+            s1 = 0
+    else:
+        l1 = "1. 환율 데이터 확인 필요 — 레짐 판정 보류."
+        s1 = -1
+
+    # ── 2줄: 외국인 수급(매크로 게이트) ──
+    if _num(foreign_net_krw):
+        if foreign_net_krw > 0:
+            l2 = "2. 외국인 수급이 순매수로 전환되어 매크로 레짐 게이트가 개방되었습니다."
+            s2 = 1
+        elif foreign_net_krw <= FOREIGN_SELL_PANIC_KRW:
+            l2 = "2. 외국인이 1조원 이상 순매도하며 레짐 게이트가 굳게 닫혀 있습니다."
+            s2 = 0
+        else:
+            l2 = "2. 외국인 순매도가 이어져 매크로 레짐 게이트가 닫혀 있습니다."
+            s2 = 0
+    else:
+        l2 = "2. 외국인 수급 데이터 미수신 — 게이트 상태 미확인(보수적 보류)."
+        s2 = -1
+
+    # ── 3줄: 1위 종목 절대조건(점수≥70 AND 정배열) → 매수 승인 여부 ──
+    _score, _aligned = None, None
+    if isinstance(top1, dict):
+        try:
+            _score = float(top1.get('종합점수', 0))
+        except (TypeError, ValueError):
+            _score = None
+        _aligned = (str(top1.get('정배열', '')) == '✅')
+    elif isinstance(top1, (tuple, list)) and len(top1) >= 2:
+        try:
+            _score = float(top1[0])
+        except (TypeError, ValueError):
+            _score = None
+        _aligned = bool(top1[1])
+
+    if _score is None:
+        l3 = "3. 1위 종목 데이터 확인 필요 — 신규 진입 판정 보류."
+        s3 = -1
+    elif _score >= 70 and _aligned:
+        l3 = f"3. 신규 진입 1위 종목의 절대 조건(점수 {int(_score)}·정배열)이 충족되어 매수를 승인합니다."
+        s3 = 1
+    else:
+        _why = []
+        if _score < 70: _why.append(f"점수 {int(_score)}<70")
+        if not _aligned: _why.append("역배열")
+        l3 = f"3. 1위 종목 절대 조건 미달({' · '.join(_why)}) — 신규 진입 보류."
+        s3 = 0
+
+    # ── 종합 신호등: 셋 다 양호=green / 하나라도 결측=amber / 위험=red ──
+    _pos = [s for s in (s1, s2, s3)]
+    if all(s == 1 for s in _pos):
+        light, verdict = "green", "🟢 오늘은 신규 진입·추가 매집 승인 (3대 조건 충족)"
+    elif any(s == 0 for s in _pos):
+        light, verdict = "red", "🔴 오늘은 신규 진입 보류 (조건 미충족)"
+    else:
+        light, verdict = "amber", "🟡 데이터 일부 미확인 — 신규 진입 신중 검토"
+
+    return {"lines": [l1, l2, l3], "verdict": verdict, "light": light,
+            "states": {"krw": s1, "flow": s2, "score": s3},
+            "score_val": _score}
+
+
+# ══════════════════════════════════════════
 # 사이드바 — 매크로 국면 상시 표시
 # ══════════════════════════════════════════
 with st.sidebar:
@@ -251,11 +339,33 @@ st.caption("macro_watcher.py가 실제로 텔레그램에 보내는 판단을 �
 # 탭 1 — 🏠 오늘 현황
 # ══════════════════════════════════════════
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _ai_briefing_cached(_bust):
+    try:
+        krw, _ = mw._level("KRW=X")
+    except Exception:
+        krw = None
+    try:
+        frn, _org, _basis = mw._market_investor()
+    except Exception:
+        frn = None
+    return generate_ai_briefing(krw=krw, foreign_net_krw=frn, top1=None)
+
+
 def render_home():
     today = datetime.now().strftime("%Y-%m-%d")
     scorecard = _read_json_safe(mw.SCORECARD_FILE, [])
     if not isinstance(scorecard, list):
         scorecard = []
+
+    st.subheader("🚦 AI 브리핑 신호등")
+    import time as _t
+    briefing = _ai_briefing_cached(_t.time() // 300)
+    _box = {"green": st.success, "amber": st.warning, "red": st.error}.get(briefing["light"], st.info)
+    _box(briefing["verdict"])
+    for line in briefing["lines"]:
+        st.caption(line)
+    st.caption("※ 3번째 줄(1위 종목 절대조건)은 대시보드 재구축으로 자체 스코어링을 제거해 항상 '데이터 확인 필요'로 표시됩니다 — 환율·외국인수급 2줄만 실데이터입니다.")
 
     c1, c2, c3 = st.columns(3)
     today_rows = [r for r in scorecard if r.get("date") == today]
