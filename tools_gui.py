@@ -80,12 +80,36 @@ def _load_holdings():
     return []
 
 
+def _git_sync_holdings():
+    """[대시보드 자동반영] my_holdings.json은 git으로 배포되는 클라우드 대시보드가 그대로 읽는
+    파일이라, 여기서 로컬 파일만 바꾸면 대시보드는 옛 내용을 계속 보여준다 — commit+push까지
+    해야 반영됨. 저장 직후 백그라운드로 자동 실행(느린 네트워크에도 GUI가 멈추지 않게)."""
+    def _run_git():
+        try:
+            subprocess.run(["git", "add", "my_holdings.json"], cwd=BASE, capture_output=True, timeout=15)
+            _commit = subprocess.run(["git", "commit", "-m", "보유종목 갱신(GUI 자동 커밋)"],
+                                      cwd=BASE, capture_output=True, text=True, timeout=15)
+            if _commit.returncode != 0 and "nothing to commit" in (_commit.stdout + _commit.stderr):
+                return  # 이전과 내용 동일 — 반영할 변경 없음
+            _push = subprocess.run(["git", "push"], cwd=BASE, capture_output=True, text=True, timeout=30)
+            if _push.returncode == 0:
+                root.after(0, lambda: _log("☁️ 대시보드(GitHub)에 자동 반영 완료\n"))
+            else:
+                root.after(0, lambda: _log(
+                    f"⚠️ GitHub 푸시 실패 — 대시보드는 아직 안 바뀝니다: {_push.stderr.strip()[:200]}\n"))
+        except Exception as _e:
+            root.after(0, lambda: _log(f"⚠️ GitHub 자동 반영 실패({type(_e).__name__}) — "
+                                        "수동으로 git push 해주세요.\n"))
+    threading.Thread(target=_run_git, daemon=True).start()
+
+
 def _save_holdings(stocks):
     d = {"on": True,
          "_설명": "보유종목 손절/익절. code=코드,name=이름,avg=매수평균,qty=수량,stop=손절%(기본-2),target=익절%(기본+3)",
          "stocks": stocks}
     with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
+    _git_sync_holdings()
 
 
 def _resolve_stock(query):
