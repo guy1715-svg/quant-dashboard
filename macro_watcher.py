@@ -3039,6 +3039,9 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
     # "조용히" 멈춘다 — 사용자는 "알림이 없으니 괜찮다"고 착각할 위험이 커서 가장 위험한 침묵 실패.
     # 종목별 연속 실패를 세다가 임계 넘으면(=수 분간 지속) 딱 1번 "감시 중단 중" 경보를 보낸다(쿨다운 60분).
     _hf = state.get("holdings_fail", {})
+    _nxt_ok = state.get("holdings_nxt_ok", {})
+    if _nxt_ok.get("_day") != today:
+        _nxt_ok = {"_day": today}
     for s in hold:
         code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
         avg = s.get("avg") or 0
@@ -3050,6 +3053,14 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             px, chg, _ = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
         except Exception:
             px = None
+        # [실전투자 안전장치] 애프터/프리마켓(NX)은 NXT 비거래 종목이면 시세가 원래 존재하지
+        # 않는다 — 이걸 API 장애로 오인해 "감시 중단" 경보를 반복 발송하면 안 되므로,
+        # 실패로 카운트하기 전에 NXT 거래 가능 종목인지 하루 1회만 확인해 캐싱한다.
+        if not px and _mrkt == "NX":
+            if code not in _nxt_ok:
+                _nxt_ok[code] = _nxt_tradable(token, key, secret, code)
+            if _nxt_ok[code] is False:
+                continue
         if not px:
             _fe = _hf.get(code, {"n": 0, "warned_ts": 0})
             _fe["n"] = _fe.get("n", 0) + 1
@@ -3117,6 +3128,7 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
             print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
     state["holdings_sent"] = hs
     state["holdings_fail"] = _hf
+    state["holdings_nxt_ok"] = _nxt_ok
 
 
 def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
