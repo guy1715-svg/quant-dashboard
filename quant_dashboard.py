@@ -321,6 +321,26 @@ with st.sidebar:
     else:
         st.info("KIS 키 없음 — 국면 조회 불가")
     st.divider()
+    st.markdown("### 🛰️ 수급 펌프 추적기")
+    if _tok:
+        for _code, _name in (("005930", "삼성전자"), ("000660", "SK하이닉스")):
+            try:
+                _px, _chg, _ = mw._price_and_turnover(_tok, _key, _sec, _code)
+                _frn, _org = mw._investor_est(_tok, _key, _sec, _code, distinguish_fail=True)
+            except Exception:
+                _px = None
+            if not _px:
+                st.caption(f"{_name} 조회 실패")
+                continue
+            st.markdown(f"**{_name}** {_px:,}원 ({_chg or 0:+.1f}%)")
+            if _frn is None or _org is None:
+                st.caption("수급 ⚠️미확인(조회 실패)")
+            else:
+                _icon = "✅유입" if (_frn + _org) > 0 else "⚠️이탈"
+                st.caption(f"외인 {_frn*_px/1e8:+.0f}억 · 기관 {_org*_px/1e8:+.0f}억 {_icon}")
+    else:
+        st.caption("KIS 키 없음 — 수급 조회 불가")
+    st.divider()
     st.caption(f"👤 {_current_username()}")
     if st.button("로그아웃", use_container_width=True):
         st.session_state.clear()
@@ -637,7 +657,34 @@ def render_scanner():
 
 
 # ══════════════════════════════════════════
-# 탭 8 — ⚙️ 설정 · 진단
+# 탭 8 — 🔬 종목 분석기 (macro_watcher._deep_stock 그대로 호출 — --stock CLI와 동일 로직)
+# ══════════════════════════════════════════
+
+def render_stock_analyzer():
+    tok, key, sec = _kis()
+    if not tok:
+        st.info("KIS 키 없음 — 분석 불가")
+        return
+    c1, c2, c3 = st.columns([2, 2, 1])
+    code = c1.text_input("종목코드(6자리)", key="analyzer_code")
+    name = c2.text_input("종목명(선택)", key="analyzer_name")
+    go = c3.button("🔬 분석", use_container_width=True)
+    if go and code.strip().isdigit():
+        gemini_key = mw.read_gemini_key()
+        with st.spinner("분석 중..."):
+            try:
+                text = mw._deep_stock(tok, key, sec, code.strip().zfill(6),
+                                       name=name.strip(), gemini_key=gemini_key)
+                st.markdown(text.replace("\n", "  \n"))
+            except Exception as _e:
+                st.error(f"분석 실패: {type(_e).__name__}: {_e}")
+    elif go:
+        st.warning("종목코드는 숫자 6자리로 입력해주세요.")
+    st.caption("※ macro_watcher.py --stock(원샷 종목 해석)과 동일 로직 — 관심종목에 등록 안 한 종목도 즉석 분석 가능.")
+
+
+# ══════════════════════════════════════════
+# 탭 9 — ⚙️ 설정 · 진단
 # ══════════════════════════════════════════
 
 def render_settings():
@@ -686,7 +733,8 @@ def render_settings():
 # 렌더
 # ══════════════════════════════════════════
 tabs = st.tabs(["🏠 오늘 현황", "📊 성과 분석", "🌙 시장 복기", "💼 보유종목",
-                "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너", "⚙️ 설정·진단"])
+                "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너",
+                "🔬 종목 분석기", "⚙️ 설정·진단"])
 
 with tabs[0]:
     render_home()
@@ -703,6 +751,8 @@ with tabs[5]:
 with tabs[6]:
     render_scanner()
 with tabs[7]:
+    render_stock_analyzer()
+with tabs[8]:
     render_settings()
 
 st.divider()
