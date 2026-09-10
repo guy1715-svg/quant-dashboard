@@ -165,6 +165,52 @@
     이런 미스를 스스로 찾아내는 기능이 이미 있으므로, 그 누적 로그를 나중에 --analyze류로 정리하면
     "왜 놓쳤는지" 패턴을 더 볼 수 있을 것.
 
+### 7.20 quant_dashboard.py 전면 재구축 (21,025줄 → ~700줄)
+
+**배경**: 실제 하루치 텔레그램 로그 분석 중 사용자가 "대시보드를 macro_watcher의 최신 버전으로
+업데이트하자, 완전히 처음부터 재구축"을 요청. 조사 결과 기존 대시보드는 macro_watcher.py와
+**완전히 분리되어 독자 진화**한 21,025줄짜리 코드였음 — 특히 "종배" 스코어링을 대시보드가 자체
+재구현(`_dolpanty_score`/`scan_tomorrow_candidates`)하고 있어 텔레그램 실제 판단과 대시보드가
+보여주는 판단이 서로 다를 수 있는 구조적 문제가 있었음. 또한 상당 부분(만쥬 스캘프 모니터,
+페이퍼 트레이딩, 연기금 추적, Night/Day Strike 등 ~3000줄, `generate_ai_briefing`)이 죽은 코드거나
+기능 플래그(`_SHOW_PENSION/_SHOW_SWING/_SHOW_REALTRADE`)로 꺼져서 실제로는 안 보이는 상태였음.
+
+**핵심 설계 원칙 — "재구현 금지, 재사용"**: 새 대시보드는 `import macro_watcher as mw`로
+macro_watcher.py를 그대로 불러와서 실시간 판단 함수(`compute_macro`·`_holding_judge`·
+`_regime_detect`·`_volatility_scan`·`_price_and_turnover`·`read_kis_keys`·`kis_token` 등)를
+직접 호출한다. 집계 데이터(신호별 성적)는 macro_watcher가 이미 쓰는 파일
+(`signal_scorecard.json`·`pick_history.json`)을 pandas로 읽어 화면용으로만 재현(순수 집계라
+로직 드리프트 위험 낮음). `market_review.md`는 `mw._mr_read_all()`로, 보유종목/관심종목은
+`my_holdings.json`/`my_watch.json`을 **macro_watcher와 동일 파일 그대로** 공유. 이 구조 덕분에
+앞으로 macro_watcher.py를 고치면 대시보드도 자동으로 최신 로직을 반영 — 오늘 겪었던
+"코드는 고쳤는데 실제 동작은 예전 버전"류 드리프트가 이 축에서는 구조적으로 사라짐.
+
+**사용자 결정사항 반영**:
+- 가상 페이퍼트레이딩(Firebase 가상계좌·매매내역, 실신호와 무관) → 삭제
+- KIS 실주문 코드(`REAL_TRADING_ENABLED=False`) → macro_watcher는 처음부터 신호전용(자동매매 없음)
+  원칙이라 대시보드도 일관되게 실주문 UI 자체를 만들지 않음(저수준 함수도 새 대시보드엔 없음 —
+  필요해지면 그때 별도로 이식)
+- 로그인(Firebase 멀티유저 인증) → 그대로 포팅
+- 관심종목 Google Sheets 이중저장 → 제거, `my_watch.json` 직접 CRUD로 대체
+
+**새 구성 (8탭)**: 🏠오늘현황(매크로배지·보유요약·오늘신호타임라인) · 📊성과분석(신호별
+승률/평균수익, `_analyze_history`와 동일 알고리즘) · 🌙시장복기(`market_review.md` 카드뷰) ·
+💼보유종목(`_holding_judge` 실시간 배지) · 🎯종배픽·재료등급(`_regime_detect` + 종배 기록) ·
+🔍관심종목(`my_watch.json` CRUD) · 🔎라이브스캐너(`_volatility_scan` 그대로 호출) ·
+⚙️설정·진단(키 연결 상태·감시 프로세스 최근 갱신시각).
+
+**검증**: `python -m py_compile` 통과, `streamlit.testing.v1.AppTest`로 헤드리스 실행 —
+예외 0건, 8개 탭 전부 정상 렌더, 시크릿 없는 이 sandbox에서도 "KIS 키 없음" 등 폴백 문구가
+깨지지 않고 나옴. 실제로 `my_holdings.json`(3종)·`my_watch.json`(6종)을 읽어 정확한 개수를
+표시하는 것까지 확인 — macro_watcher와의 파일 공유가 실제로 작동함.
+
+**requirements.txt 정리**: pykrx·finance-datareader·cloudscraper·beautifulsoup4·lxml·gspread·
+google-auth·aiohttp·nest_asyncio 제거(더 이상 안 씀), streamlit(원래 누락돼 있었음)·google-genai 추가.
+
+**미확인 사항(사용자 환경에서 확인 필요)**: 이 sandbox엔 KIS/Firebase/Gemini 실키가 없어 실제
+로그인·실시간 시세·매크로 조회까지는 검증 불가 — 시크릿 있는 실제 환경에서 로그인부터 각 탭
+데이터가 실제로 잘 뜨는지 최종 확인 필요.
+
 ### 7.19 성적표 이상현상 추적 — KIS rt_cd 미검증 발견(코드베이스 전체 패턴)
 
 7.18에서 추가한 진단 로그로 재현 확인 — 같은 5종목(삼성전기·중앙에너비스·한화오션·대한광통신·
