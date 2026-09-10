@@ -3584,6 +3584,7 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
     _nq = _us_fut_pct(state, now_kst)                 # 미국 나스닥선물%(해외발 동조 판정)
     _brief = _recent_brief_codes(now_kst)
     _budget = 0
+    _sent_n = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
@@ -3649,9 +3650,16 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
                          f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·시초가 이탈시) · 1차익절 {_t1:,}\n"
                          f"⚠️ 첫 슈팅 분할익절 · 물타기 금지 · 시초가 이탈 후 회복 실패면 즉시 손절(스윙 전환 금지)"):
             sent[cd] = True
+            _sent_n += 1
             _log_signal(state, now_kst, "시가배팅", nm, cd, px)
             print(f"[시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%)")
     state["openbet_sent"] = sent
+    if _sent_n == 0:
+        # [진단] 아무것도 안 보냈을 때도 흔적을 남긴다 — "감시가 안 돌았다"와 "돌았는데 조건 맞는
+        # 종목이 없었다"를 로그만으로 구분 못 하던 사각지대(사용자가 "왜 신호가 없냐" 문의해서 발견).
+        print(f"[시가배팅] {now_kst.strftime('%H:%M')} 스캔 완료 — 갭 조건(상 1~8%/하 -13~-4%,"
+              f"거래대금30억+) 통과 후보 {_budget}종 중 발송 0건"
+              + ("(후보 자체가 없음)" if _budget == 0 else "(재료·수급·프로그램 등 후속 게이트 미충족)"))
 
 
 def _round_level(px):
