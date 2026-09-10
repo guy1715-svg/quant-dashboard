@@ -22,7 +22,39 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="퀀트 관제탑", page_icon="📊", layout="wide",
-                    initial_sidebar_state="expanded")
+                    initial_sidebar_state="auto")
+
+# ══════════════════════════════════════════
+# 🎨 전역 스타일 — 모바일 대응(좁은 화면에서 컬럼 세로 스택) + 가독성 개선
+# ══════════════════════════════════════════
+st.markdown("""
+<style>
+/* 좁은 화면(휴대폰)에서는 st.columns를 가로 압착 대신 세로로 쌓는다 */
+@media (max-width: 680px) {
+  [data-testid="stHorizontalBlock"] {
+    flex-direction: column !important;
+  }
+  [data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+    width: 100% !important;
+    min-width: 100% !important;
+  }
+}
+/* 탭 라벨을 조금 더 크고 진하게 — 터치 타깃 개선 */
+button[data-baseweb="tab"] {
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    padding: 8px 14px !important;
+}
+/* 카드형 컨테이너(border=True) 여백·모서리 다듬기 */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 10px !important;
+}
+/* 지표(st.metric) 라벨 살짝 진하게 */
+[data-testid="stMetricLabel"] {
+    font-weight: 600 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 if BASE not in sys.path:
@@ -372,20 +404,34 @@ def _ai_briefing_cached(_bust):
     return generate_ai_briefing(krw=krw, foreign_net_krw=frn, top1=None)
 
 
+_BRIEFING_STYLE = {
+    "green": ("#16a34a", "#f0fdf4", "🟢"),
+    "amber": ("#d97706", "#fffbeb", "🟡"),
+    "red":   ("#dc2626", "#fef2f2", "🔴"),
+}
+
+
 def render_home():
     today = datetime.now().strftime("%Y-%m-%d")
     scorecard = _read_json_safe(mw.SCORECARD_FILE, [])
     if not isinstance(scorecard, list):
         scorecard = []
 
-    st.subheader("🚦 AI 브리핑 신호등")
+    # ── 최상단: AI 브리핑 신호등을 눈에 띄는 카드로 — 오늘의 결론부터 ──
     import time as _t
     briefing = _ai_briefing_cached(_t.time() // 300)
-    _box = {"green": st.success, "amber": st.warning, "red": st.error}.get(briefing["light"], st.info)
-    _box(briefing["verdict"])
-    for line in briefing["lines"]:
-        st.caption(line)
-    st.caption("※ 3번째 줄(1위 종목 절대조건)은 대시보드 재구축으로 자체 스코어링을 제거해 항상 '데이터 확인 필요'로 표시됩니다 — 환율·외국인수급 2줄만 실데이터입니다.")
+    _color, _bg, _icon = _BRIEFING_STYLE.get(briefing["light"], ("#64748b", "#f8fafc", "⚪"))
+    st.markdown(
+        f"<div style='border-left:6px solid {_color};background:{_bg};"
+        f"padding:14px 18px;border-radius:8px;margin-bottom:10px'>"
+        f"<div style='font-size:12px;color:#64748b;font-weight:600;letter-spacing:.03em'>오늘의 AI 브리핑</div>"
+        f"<div style='font-size:19px;font-weight:800;margin-top:2px'>{briefing['verdict']}</div>"
+        f"</div>", unsafe_allow_html=True)
+    with st.expander("상세 3줄 보기"):
+        for line in briefing["lines"]:
+            st.caption(line)
+        st.caption("※ 3번째 줄(1위 종목 절대조건)은 자체 스코어링을 제거한 설계상 항상 "
+                   "'데이터 확인 필요'로 표시됩니다 — 환율·외국인수급 2줄만 실데이터입니다.")
 
     c1, c2, c3 = st.columns(3)
     today_rows = [r for r in scorecard if r.get("date") == today]
@@ -407,6 +453,7 @@ def render_home():
             for i, s in enumerate(holdings):
                 code = str(s.get("code", "")).zfill(6)
                 avg = s.get("avg") or 0
+                stop = float(s.get("stop", -2.0))
                 with cols[i % len(cols)]:
                     try:
                         px, chg, _ = mw._price_and_turnover(_tok, _key, _sec, code)
@@ -414,16 +461,19 @@ def render_home():
                         px = None
                     if px and avg:
                         ret = (px / avg - 1) * 100
-                        st.metric(s.get("name", code), f"{px:,}", f"{ret:+.1f}%")
+                        _label = s.get("name", code)
+                        if ret <= stop:
+                            _label = f"🔴 {_label}"
+                        st.metric(_label, f"{px:,}", f"{ret:+.1f}%")
                     else:
                         st.metric(s.get("name", code), "조회실패")
 
-    st.subheader("🕒 오늘 신호 타임라인 (최신순)")
-    if not today_rows:
-        st.caption("오늘 기록된 신호가 없습니다(감시가 켜져 있어야 쌓입니다).")
-    else:
-        df = pd.DataFrame(sorted(today_rows, key=lambda r: r.get("t", ""), reverse=True))
-        st.dataframe(df[["t", "kind", "name", "code", "px"]], use_container_width=True, hide_index=True)
+    with st.expander(f"🕒 오늘 신호 타임라인 (최신순, {len(today_rows)}건)", expanded=bool(today_rows)):
+        if not today_rows:
+            st.caption("오늘 기록된 신호가 없습니다(감시가 켜져 있어야 쌓입니다).")
+        else:
+            df = pd.DataFrame(sorted(today_rows, key=lambda r: r.get("t", ""), reverse=True))
+            st.dataframe(df[["t", "kind", "name", "code", "px"]], use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════
@@ -549,7 +599,9 @@ def render_holdings():
             total_pl += pl
             cols = st.columns([2, 2, 2, 3])
             cols[0].markdown(f"**{name}** `{code}`")
+            cols[1].caption("현재가")
             cols[1].markdown(f"{px:,}원 ({chg or 0:+.1f}%)")
+            cols[2].caption("수익률 · 평가손익")
             cols[2].markdown(f":{'red' if ret < 0 else 'green'}[{ret:+.1f}%]  ·  {pl:+,}원")
             try:
                 cl = mw._daily_closes(tok, key, sec, code)
@@ -557,6 +609,7 @@ def render_holdings():
                 verdict = mw._holding_judge(tok, key, sec, code, px, prevc, ret=ret, stop=stop)
             except Exception as _e:
                 verdict = f"판정 조회 실패: {type(_e).__name__}"
+            cols[3].caption("판정")
             cols[3].markdown(verdict.replace("\n", "  \n"))
     st.metric("💰 총 평가손익", f"{total_pl:+,}원")
 
