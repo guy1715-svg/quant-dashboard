@@ -24,8 +24,22 @@ import json
 import time
 import argparse
 import datetime
+import tempfile
 import warnings
+import logging
 warnings.filterwarnings("ignore")
+# [V25.6x] google-genai SDK가 generate_content 직접 호출 시 매번 찍는 "AFC 비권장" 안내 로그 억제
+#   — 에러 아닌 정보성 문구인데 크래시 로그 직후 보면 오해하기 쉬워 소음 제거.
+for _gl in ("google_genai", "google.genai", "google.generativeai"):
+    logging.getLogger(_gl).setLevel(logging.ERROR)
+
+# [V25.22] stdout/stderr을 UTF-8로 강제 — GUI/일반 콘솔(cp949)에서 print(—·특수문자) 크래시 방지.
+#   (tools.bat은 chcp 65001로 됐지만 GUI subprocess·기본 콘솔은 cp949라 UnicodeEncodeError 발생)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 try:
     import requests
@@ -76,6 +90,52 @@ def _to_int(v, d=0):
         return d
 
 
+def _atomic_write_json(path, obj, indent=None):
+    """[실전투자 안정성] JSON을 임시파일에 쓴 뒤 os.replace로 원자적 교체.
+    감시 중지·정전·강제종료가 저장 도중 발생해도 절반만 써진 파일이 남지 않게 함
+    (기존 방식은 쓰기 중 죽으면 파일이 깨지고, load 쪽 except가 조용히 {}로 리셋해
+    당일 중복알림·성적기록(signal_scorecard 등) 유실을 못 알아채는 문제가 있었음).
+    반환: 성공 True / 실패 False."""
+    _d = os.path.dirname(path) or "."
+    _tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=_d, delete=False,
+                                         suffix=".tmp") as f:
+            _tmp = f.name
+            json.dump(obj, f, ensure_ascii=False, indent=indent)
+        os.replace(_tmp, path)                          # 같은 파일시스템 내 rename = 원자적(Windows도 3.3+ 지원)
+        return True
+    except Exception as _e:
+        print(f"[저장 진단] {os.path.basename(path)} 저장 실패: {type(_e).__name__}: {_e}")
+        if _tmp and os.path.exists(_tmp):
+            try:
+                os.remove(_tmp)
+            except OSError:
+                pass
+        return False
+
+
+def _atomic_write_text(path, text):
+    """_atomic_write_json과 동일한 원자적 교체를 텍스트 파일(market_review.md 등)에 적용."""
+    _d = os.path.dirname(path) or "."
+    _tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=_d, delete=False,
+                                         suffix=".tmp") as f:
+            _tmp = f.name
+            f.write(text)
+        os.replace(_tmp, path)
+        return True
+    except Exception as _e:
+        print(f"[저장 진단] {os.path.basename(path)} 저장 실패: {type(_e).__name__}: {_e}")
+        if _tmp and os.path.exists(_tmp):
+            try:
+                os.remove(_tmp)
+            except OSError:
+                pass
+        return False
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -85,11 +145,7 @@ def load_state():
 
 
 def save_state(d):
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(STATE_FILE, d)
 
 
 # [1단계] 초고속 웹 속보판(live_dashboard.html)이 읽을 스냅샷 — 매 루프마다 최신값 저장.
@@ -98,11 +154,7 @@ SNAPSHOT_FILE = os.path.join(BASE, "snapshot.json")
 
 
 def save_snapshot(snap):
-    try:
-        with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
-            json.dump(snap, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(SNAPSHOT_FILE, snap)
 
 
 # [1단계-b] snapshot.json을 GitHub 'data' 브랜치에 업로드 → GitHub Pages 속보판이 읽는다.
@@ -192,17 +244,37 @@ _ALERT_FEED = []      # [V13.2] 모든 텔레그램 알람의 당일 버퍼 — 
 
 
 def send_telegram(token, chat_id, text):
+    # [실전투자 안전장치] 텔레그램이 유일한 알림 채널인데 재시도가 없어서, 순간 네트워크 끊김·
+    # 텔레그램 서버 일시 5xx 한 번에 손절 알림 같은 중요 메시지가 그냥 유실됐음. 청크별 최대 3회 재시도.
     _ok = False
     try:
-        # [V17.1] 실제 전송 성공 여부 확인 — HTTP 200 + Telegram JSON ok:true 일 때만 성공.
-        #   (기존엔 예외만 없으면 성공 처리 → 400/429/메시지초과에도 dedup 잠겨 신호 유실)
-        _r = requests.get(f"https://api.telegram.org/bot{token}/sendMessage",
-                          params={"chat_id": chat_id, "text": text}, timeout=8)
-        _ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
-        if not _ok:
-            print(f"텔레그램 전송 실패: HTTP {_r.status_code} {_r.text[:200]}")
+        # [V21.8] POST 방식 + 4096자 초과 자동 분할 — 긴 브리핑(뉴스+차트검증)도 안전 전송.
+        #   (기존 GET은 긴 한글 URL 초과로 전송 실패/누락 발생)
+        _chunks = []
+        _t = text or ""
+        while _t:
+            _chunks.append(_t[:3900]); _t = _t[3900:]
+        _ok = True
+        for _c in _chunks:
+            _seg_ok = False
+            for _attempt in range(3):
+                try:
+                    _r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                       data={"chat_id": chat_id, "text": _c}, timeout=8)
+                    _seg_ok = bool(_r.status_code == 200 and (_r.json() or {}).get("ok"))
+                    if _seg_ok:
+                        break
+                    print(f"텔레그램 전송 실패({_attempt+1}/3): HTTP {_r.status_code} {_r.text[:200]}")
+                except Exception as _re2:
+                    print(f"텔레그램 전송 예외({_attempt+1}/3): {type(_re2).__name__}: {_re2}")
+                if _attempt < 2:
+                    time.sleep(2)
+            if not _seg_ok:
+                _ok = False
+                break
     except Exception as e:
         print("텔레그램 전송 실패:", e)
+        _ok = False
     # 발송 성공/실패 무관하게 피드에 기록(대시보드에서 오늘 알람 타임라인으로 표시)
     try:
         _n = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
@@ -274,28 +346,64 @@ def read_kis_keys():
 
 
 # ── 매크로 ──────────────────────────────────────────────────────────────────
-def _pct(sym):
+def _pct(sym, _retry=True):
+    # [실사용 발견] 실제로 NQ=F·^SOX·NVDA 등 활성 종목 전부가 동시에 "possibly delisted"로
+    # 실패하는 경우 확인 — yfinance/Yahoo 쪽 일시적 네트워크·레이트리밋일 가능성이 높아 1회 재시도.
     try:
         fi = yf.Ticker(sym).fast_info
         l, p = float(fi.last_price), float(fi.previous_close)
         if l > 0 and p > 0:
             return (l / p - 1) * 100
     except Exception:
-        pass
+        if _retry:
+            time.sleep(1)
+            return _pct(sym, _retry=False)
+    return None
+
+
+def _hist_pct(sym, _retry=True):
+    """일봉 종가 2개로 전일대비% — fast_info.previous_close가 튀는 지수(코스피 등)용 안정 산출."""
+    try:
+        h = yf.Ticker(sym).history(period="5d")["Close"].dropna()
+        if len(h) >= 2:
+            return (float(h.iloc[-1]) / float(h.iloc[-2]) - 1) * 100
+    except Exception:
+        if _retry:
+            time.sleep(1)
+            return _hist_pct(sym, _retry=False)
     return None
 
 
 def _wti_pct():
-    try:
-        h = yf.Ticker("CL=F").history(period="5d")["Close"].dropna()
-        if len(h) >= 2:
-            return (float(h.iloc[-1]) / float(h.iloc[-2]) - 1) * 100
-    except Exception:
-        pass
-    return None
+    return _hist_pct("CL=F")
 
 
-def compute_macro():
+def _us_fut_pct(state, now_kst, ttl=600):
+    """[V25.33] 나스닥100 선물 전일대비%(10분 캐시) — 눌림/낙주 '오버나이트 게이트'용.
+    강의: 눌림 홀딩은 밤사이 미국장이 받쳐줄 때만. 한국 장중 NQ=F=오늘밤 미국장 방향 선반영. None 가능."""
+    c = state.get("_usfut_cache") or {}
+    ts = int(now_kst.timestamp())
+    if c.get("ts") and (ts - c["ts"]) < ttl and "nq" in c:
+        return c["nq"]
+    nq = _pct("NQ=F")
+    state["_usfut_cache"] = {"ts": ts, "nq": nq}
+    return nq
+
+
+def _overnight_note(nq):
+    """미국선물%로 오버나이트(홀딩) 여건 한 줄. (태그문자열, 홀딩가능bool)."""
+    if nq is None:
+        return "", True                                   # 데이터 없음 → 판단보류(막지 않음)
+    if abs(nq) < 0.05:                                    # [V25.45] 사실상 0 = 미국 휴장/데이터없음 → '약세' 오해 방지
+        return "\n🌙 미국선물 데이터 없음(미 휴장 가능) — 오버나이트 판단 보류", True
+    if nq <= -0.7:
+        return f"\n🌙 미국선물 {nq:+.1f}% 약세 — 오버나이트 비권장, 당일 청산 우선", False
+    if nq >= 0.2:
+        return f"\n🌙 미국선물 {nq:+.1f}% — 홀딩 여건 OK(눌림 종배 가능)", True
+    return f"\n🌙 미국선물 {nq:+.1f}% 보합 — 홀딩은 소량만", True
+
+
+def compute_macro(kis_token=None, kis_key=None, kis_secret=None):
     nq, sox = _pct("NQ=F"), _pct("^SOX")
     peers = [x for x in (_pct("NVDA"), _pct("AVGO"), _pct("MU")) if x is not None]
     wti = _wti_pct()
@@ -305,18 +413,65 @@ def compute_macro():
     # [SOX 방어막] K-국장은 반도체 시총 비중 커 SOX 급락에 종속 동조 → −5% 폭락=차단 / −3% 조정=경고
     sox_crash = (sox is not None and sox <= -5.0)
     sox_warn  = (sox is not None and sox <= -3.0)
-    if riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash:
+    # [SOX 예외] 나스닥이 '완만한 음전'(NQ_BLOCK~-0.8%)뿐인데 SOX가 강세(+1%↑)면 반도체 장세로 보고
+    #   리스크오프→중립으로 완화(반도체 선별 서치 허용). WTI 리스크오프·SOX 폭락·나스닥 급락(-0.8%↓)은 차단 유지.
+    sox_strong = (sox is not None and sox >= 1.0)
+    nq_mild = (nq is not None and NQ_BLOCK >= nq > -0.8)
+    sox_rescue = (nq_mild and sox_strong and semi_sync and not riskoff and not sox_crash)
+    # [V24.9] fail-safe — 미국 3대 지표(나스닥·SOX·WTI)가 전부 None(데이터 outage)이면
+    #   킬스위치가 '중립(sev1)'으로 열려버리는 fail-open 방지: 보수적으로 sev=2(신규매수 억제).
+    if nq is None and sox is None and wti is None:
+        _us = "미국지표 조회 실패(데이터 지연·보수적 차단)"
+        ks_fs = _kospi_index_kis(kis_token, kis_key, kis_secret)
+        if ks_fs is None:
+            ks_fs = _hist_pct("^KS11")
+            if ks_fs is not None and abs(ks_fs) > 4.0:
+                ks_fs = None
+        ewy_fs = _pct("EWY"); fxl_fs, fxc_fs = _level("USDKRW=X")
+        _kr_fs = ("코스피 " + (f"{ks_fs:+.2f}%" if ks_fs is not None else "—")
+                  + " · 야간(EWY) " + (f"{ewy_fs:+.2f}%" if ewy_fs is not None else "—")
+                  + " · 환율 " + (f"{fxl_fs:,.0f}({fxc_fs:+.2f}%)" if (fxl_fs is not None and fxc_fs is not None) else "—"))
+        return 2, "🔴 데이터 outage · 신규매수 보수적 차단(지표 조회 실패)", f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr_fs}", "outage"
+    if (riskoff or (nq is not None and nq <= NQ_BLOCK) or sox_crash) and not sox_rescue:
         sev = 2
         text = "🔴 리스크오프 · 신규매수 차단" + (f" (반도체 폭락 SOX {sox:+.1f}%)" if sox_crash else "")
+    elif sox_rescue:
+        sev = 1
+        text = f"🟠 나스닥 약보합({nq:+.1f}%)이나 SOX 강세({sox:+.1f}%) — 반도체 선별 진입"
     elif (nq is not None and nq >= NQ_GO) and semi_sync and not sox_warn:
         sev, text = 0, "🟢 진입 허용 (매크로 3대 양호)"
     elif sox_warn:
         sev, text = 1, f"🟠 경고 · 반도체 조정(SOX {sox:+.1f}%) — 한도 50%"
     else:
         sev, text = 1, "🟡 중립 · 선별 진입"
-    detail = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
-              if None not in (nq, sox, wti) else "일부 데이터 대기")
-    return sev, text, detail
+    # [V25.45] 미국 휴장/데이터없음 감지 — 24시간 거래되는 NQ선물·WTI가 둘 다 사실상 0.00%면
+    #   미국 휴장(예: 노동절·추수감사절) 또는 데이터 스테일. SOX(지수)는 휴장일에도 직전 종가라 오해 유발 → 라벨로 명시.
+    _us_stale = (nq is not None and wti is not None and abs(nq) < 0.05 and abs(wti) < 0.05)
+    if _us_stale:
+        _us = f"🌙미국 휴장/데이터없음(판단보류) · SOX {sox:+.2f}%(스테일)" if sox is not None else "🌙미국 휴장/데이터없음(판단보류)"
+    else:
+        _us = (f"나스닥 {nq:+.2f}% · SOX {sox:+.2f}% · WTI {wti:+.2f}%"
+               if None not in (nq, sox, wti) else "미국지표 대기")
+    # [V20.1] 코스피 주간(^KS11)·야간 프록시(EWY 美상장 한국ETF)·원달러 환율 추가.
+    #   EWY=한국 밤(美장중) 거래 → 익일 갭 선행. 환율↑=외국인 이탈 압력.
+    #   코스피는 fast_info.previous_close가 튀는 케이스(+5%대 오류) 있어 히스토리 기반으로 산출.
+    # [V24.9] 코스피는 KIS 지수 우선(yfinance ^KS11 하루 지연 버그 회피), 실패 시 yfinance 폴백
+    ks = _kospi_index_kis(kis_token, kis_key, kis_secret)
+    if ks is None:
+        ks = _hist_pct("^KS11")
+        if ks is not None and abs(ks) > 4.0:          # 코스피 하루 ±4% 초과=데이터 이상 → 표기 제외
+            ks = None
+    ewy = _pct("EWY")
+    fxl, fxc = _level("USDKRW=X")
+    _kr = ("코스피 " + (f"{ks:+.2f}%" if ks is not None else "—")
+           + " · 야간(EWY) " + (f"{ewy:+.2f}%" if ewy is not None else "—")
+           + " · 환율 " + (f"{fxl:,.0f}({fxc:+.2f}%)" if (fxl is not None and fxc is not None) else "—"))
+    # 미국(밤)/한국 두 그룹으로 줄 분리 — 한눈에 구분되게(heartbeat·텔레그램 공통)
+    detail = f"🇺🇸 미국(밤) {_us}\n🇰🇷 한국    {_kr}"
+    # [V25.1] data_state: "ok"(3대 지표 정상) / "partial"(일부 None — sev 튈 수 있어 직전 유지)
+    #   full outage(전부 None)는 위에서 별도 처리(sev=2 fail-safe·"outage").
+    data_state = "ok" if (nq is not None and sox is not None and wti is not None) else "partial"
+    return sev, text, detail, data_state
 
 
 def _level(sym):
@@ -421,11 +576,7 @@ def kis_token(key, secret):
         if not _tok:
             return None
         _exp = _now + int(_j.get("expires_in", 86400))
-        try:
-            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-                json.dump({"fp": _fp, "token": _tok, "exp": _exp}, f)
-        except Exception:
-            pass
+        _atomic_write_json(TOKEN_FILE, {"fp": _fp, "token": _tok, "exp": _exp})
         return _tok
     except Exception:
         return None
@@ -549,14 +700,9 @@ def auto_lineup_from_secs(secs, n=6):
 
 def save_auto_lineup(pairs):
     """자동 선정 라인업을 manju_watchlist.json에 기록(대시보드와 공유). auto 플래그 유지."""
-    try:
-        _payload = {"auto": True, "_설명": "완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신).",
-                    "lineup": [[c, n] for c, n in pairs]}
-        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(_payload, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    _payload = {"auto": True, "_설명": "완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신).",
+                "lineup": [[c, n] for c, n in pairs]}
+    return _atomic_write_json(WATCHLIST_FILE, _payload, indent=2)
 
 
 SNIPER_LARGE = 30_000_000_000   # 대형주 임계 300억
@@ -623,11 +769,344 @@ def _scorecard_append(now_kst, kind, code, name, px):
         return
     rows.append({"date": today, "t": now_kst.strftime("%H:%M"), "kind": kind,
                  "code": cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None})
+    _atomic_write_json(SCORECARD_FILE, rows[-2000:])
+
+
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅")
+_OVERNIGHT_KINDS = ("종배픽", "브리핑")
+
+
+def _prev_trading_day_str(now_kst, fmt="%Y-%m-%d"):
+    """[실전투자 점검 발견] 직전 거래일(주말 제외) 문자열 — 단순 date-1은 월요일 아침에 '어제'가
+    일요일이 되어, 실제 참고해야 할 금요일 종배·브리핑 기록을 못 찾는 문제가 있었음(성적표·갭분석·
+    프리마켓 유니버스 3곳에서 반복 확인). 공휴일까지는 미대응(트레이딩 캘린더 없이는 판정 불가) —
+    최소한 매주 월요일마다 재발하던 다수 케이스는 해결."""
+    d = now_kst.date() - datetime.timedelta(days=1)
+    while d.weekday() >= 5:                # 5=토, 6=일
+        d -= datetime.timedelta(days=1)
+    return d.strftime(fmt)
+
+
+def _scorecard_report(token, key, secret, now_kst, token_tg, chat_id):
+    """[V23.3] 추천 종목 성적표 — signal_scorecard+pick_history 읽어 현재가 대조.
+    🌅 오늘 아침(당일단타) / 🌒 어제 저녁(종배·브리핑) 구분해 텔레그램 1건. 복붙 불필요."""
+    today = now_kst.strftime("%Y-%m-%d")
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
     try:
-        with open(SCORECARD_FILE, "w", encoding="utf-8") as f:
-            json.dump(rows[-2000:], f, ensure_ascii=False)
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
     except Exception:
-        pass
+        rows = []
+
+    _mcache = {}
+
+    def _metrics(r):
+        """[V25.48] 종가만 아니라 장중 고/저까지 — '올랐다 빠졌는지' + 익절(+3%)/손절(-2%) 도달 여부 판정."""
+        _ck = r["code"]
+        if _ck in _mcache:
+            return _mcache[_ck]
+        base = r.get("px")
+        _pf = None
+        try:
+            _pf = _price_full(token, key, secret, _ck)
+        except Exception:
+            pass
+        # [실전투자 점검] _price_full()은 실패해도 (None,None,None,None,None) '튜플'을 반환하는데
+        # 튜플 자체는 항상 참(truthy)이라 "if not _pf"가 죽은 코드였음 — 실패 시 _cur=None으로
+        # 이어져 아래 (None/base) 나눗셈에서 크래시할 수 있었음(원래는 크래시로 드러났어야 할 실패가
+        # 숨어있던 셈). base 다음 _cur 자체를 명시적으로 확인.
+        if not base:
+            _mcache[_ck] = None
+            return None
+        _cur, _, _o, _hi, _lo = _pf
+        if _cur is None:
+            _mcache[_ck] = None
+            return None
+        # [실사용 발견] 여러 종목에서 현재가가 추천가와 원 단위까지 완전히 동일한데 장중 고/저는
+        # 실제로 크게 움직인 값이 나오는 모순 사례 확인(예: 우리기술 -16.6%까지 밀렸는데 '현재'는
+        # 추천가와 정확히 일치) — KIS API가 특정 상황에서 최신 체결가 대신 다른 값(기준가 등)을
+        # 반환하는 것으로 의심되나 원본 응답 없이는 확정 불가. 값은 그대로 쓰되 재현 시 원인 추적용
+        # 진단 로그만 남김.
+        if _cur == base and _hi and _lo and (_hi != base or _lo != base):
+            print(f"[성적표 진단] {r.get('name', _ck)}({_ck}) 현재가==추천가({base:,})인데 "
+                  f"고{_hi:,}/저{_lo:,}는 다름 — API 응답 이상 의심")
+        _m = {"cur": _cur, "pct": (_cur / base - 1) * 100,
+              "hipct": ((_hi / base - 1) * 100 if _hi else None),
+              "lopct": ((_lo / base - 1) * 100 if _lo else None),
+              "hit_t": bool(_hi and _hi >= base * 1.03),      # 장중 익절가(+3%) 도달
+              "hit_s": bool(_lo and _lo <= base * 0.98)}      # 장중 손절가(-2%) 이탈
+        _mcache[_ck] = _m
+        return _m
+
+    def _fmt(r):
+        _m = _metrics(r)
+        if _m is None:
+            return f"• {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} → 조회실패"
+        _pct = _m["pct"]
+        _ic = "🔴" if _pct < 0 else "🟢" if _pct > 0 else "⚪"
+        _rng = (f" · 장중 고{_m['hipct']:+.1f}%/저{_m['lopct']:+.1f}%"
+                if (_m["hipct"] is not None and _m["lopct"] is not None) else "")
+        _tag = ""
+        if _m["hit_t"]:
+            _tag += " 🎯익절도달"                            # 장중 +3% 찍음 = 규칙대로면 익절 성공
+        if _m["hit_s"]:
+            _tag += " ✂️손절이탈"
+        return (f"{_ic} {r.get('name', r['code'])} ({r.get('t', '')}) 추천 {r.get('px', 0):,} "
+                f"→ 현재 {_m['cur']:,} ({_pct:+.1f}%){_rng}{_tag}")
+
+    def _summary(rows_):
+        """평균(종가) · 종가승률 · 익절도달률(장중 +3% 찍은 비율)."""
+        _ms = [_metrics(r) for r in rows_]
+        _ms = [x for x in _ms if x]
+        if not _ms:
+            return ""
+        _avg = sum(x["pct"] for x in _ms) / len(_ms)
+        _wr = sum(1 for x in _ms if x["pct"] > 0) / len(_ms) * 100
+        _tr = sum(1 for x in _ms if x["hit_t"]) / len(_ms) * 100
+        return f"   → 평균 {_avg:+.1f}% · 종가승률 {_wr:.0f}% · 🎯장중 익절도달 {_tr:.0f}%"
+
+    _morning = [r for r in rows if r.get("date") == today and r.get("kind") in _DAYTRADE_KINDS]
+    _evening = [r for r in rows if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS]
+    _today_on = [r for r in rows if r.get("date") == today and r.get("kind") in _OVERNIGHT_KINDS]
+    if not rows:
+        send_telegram(token_tg, chat_id,
+                      "📋 추천 성적표 — 기록 없음\n"
+                      "signal_scorecard.json이 비어있어. ①감시(옵션3)를 장중(09~15시) 켜둬야 신호가 쌓임 "
+                      "②기록 파일은 PC마다 따로(집/회사 다름). 감시 며칠 돌린 PC에서 --report 하세요.")
+        print("[성적표] 기록 파일 비어있음(0건)")
+        return
+    _lines = ["📋 추천 종목 성적표"]
+    _lines.append(f"\n🌅 오늘 아침 당일단타 ({today})")
+    if _morning:
+        _lines += [_fmt(r) for r in _morning[:15]]
+        _s = _summary(_morning)
+        if _s:
+            _lines.append(_s)
+    else:
+        _lines.append("   (신호 없음)")
+    _lines.append(f"\n🌒 어제 저녁 종배·브리핑 ({yday} → 오늘 결과)")
+    if _evening:
+        _lines += [_fmt(r) for r in _evening[:15]]
+        _s = _summary(_evening)
+        if _s:
+            _lines.append(_s)
+    else:
+        _lines.append("   (기록 없음)")
+    if _today_on:                                   # 오늘 수동/자동 등록된 종배·브리핑(결과는 내일)
+        _lines.append(f"\n📌 오늘 등록 종배·브리핑 ({today} · 결과는 내일)")
+        _lines += [f"• {r.get('name', r['code'])} [{r.get('kind')}] 등록가 {r.get('px', 0):,}" for r in _today_on[:15]]
+    _lines.append("\n※ 현재가+장중 고/저 대조 · 🎯익절도달=장중 +3% 찍음(규칙대로면 익절 성공) · ✂️손절이탈=장중 -2% 터치")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[성적표] 아침 {len(_morning)}건 · 저녁 {len(_evening)}건 · 오늘등록 {len(_today_on)}건 발송")
+
+
+def _daily_ohlc(token, key, secret, code):
+    """종목 최근 일봉 {YYYYMMDD: {'o':시가,'h':고가,'c':종가}} — 청산 타이밍 분석용(1콜). 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date")
+                _o, _h, _c = _to_int(x.get("stck_oprc")), _to_int(x.get("stck_hgpr")), _to_int(x.get("stck_clpr"))
+                if _d and _o and _c:
+                    out[_d] = {"o": _o, "h": _h or _c, "c": _c}
+        return out
+    except Exception:
+        return {}
+
+
+def _daily_opens(token, key, secret, code):
+    """종목 최근 일봉 시가 맵 {YYYYMMDD: 시가} — 종배(익일 시가 청산) 갭 측정용. 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date"); _o = _to_int(x.get("stck_oprc"))
+                if _d and _o:
+                    out[_d] = _o
+        return out
+    except Exception:
+        return {}
+
+
+def _daily_closes(token, key, secret, code):
+    """종목 최근 일봉 종가 맵 {YYYYMMDD: 종가} — inquire-daily-price. 실패 시 {}."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        out = {}
+        for x in (r.json().get("output", []) or []):
+            if isinstance(x, dict):
+                _d = x.get("stck_bsop_date"); _c = _to_int(x.get("stck_clpr"))
+                if _d and _c:
+                    out[_d] = _c
+        return out
+    except Exception:
+        return {}
+
+
+def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
+    """[V24.2] 과거 누적 신호 종합 분석 — signal_scorecard+pick_history 전체를 KIS 일봉으로
+    익일 종가 대조, 신호 종류별 승률·평균수익 집계. 이미 쌓인 데이터로 '뭐가 먹히나' 판정."""
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            rows = []
+    except Exception:
+        rows = []
+    # pick_history(종배/그림자)도 합침 — signal→kind 매핑
+    _kmap = {"dolpanty": "종배픽(NXT)", "dolpanty_nonxt": "종배픽(NXT미거래)",
+             "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
+    for p in _pick_read():
+        rows.append({"date": p.get("date"), "code": p.get("code"), "name": p.get("name"),
+                     "px": p.get("px"), "kind": _kmap.get(p.get("signal"), p.get("signal", "종배"))})
+    if not rows:
+        send_telegram(token_tg, chat_id, "📊 신호 분석 — 기록 없음(signal_scorecard/pick_history 비어있음). 감시 며칠 돌린 PC에서.")
+        return
+    from collections import defaultdict
+    _by_kind = defaultdict(list)
+    _cache = {}
+    for r in rows[-200:]:                          # 최근 200건(일봉 30일 커버 범위)
+        code, date, px, kind = str(r.get("code", "")).zfill(6), r.get("date", ""), r.get("px"), r.get("kind")
+        if not (code.isdigit() and px and kind and date):
+            continue
+        _ymd = date.replace("-", "")
+        if code not in _cache:
+            _cache[code] = _daily_closes(token, key, secret, code)
+        _cl = _cache[code]
+        _later = sorted(d for d in _cl if d > _ymd)   # 신호 다음 거래일들
+        if _later:
+            _by_kind[kind].append((_cl[_later[0]] / px - 1) * 100)   # 익일 종가 대비 %
+    if not any(_by_kind.values()):
+        send_telegram(token_tg, chat_id, "📊 신호 분석 — 익일 결과 대조 가능한 기록이 아직 없음(최근 신호는 내일 이후 집계).")
+        return
+    _lines = ["📊 신호별 종합 성적 (과거 누적 · 익일 종가 대비)"]
+    for kind, rets in sorted(_by_kind.items(), key=lambda x: -len(x[1])):
+        if rets:
+            _wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+            _avg = sum(rets) / len(rets)
+            _ic = "🟢" if _avg > 0 else "🔴"
+            # [V25.6x] 표본 10건 미만은 노이즈로 뒤집히기 쉬움 — 실행중단 판단에 오용 방지 라벨.
+            _warn = " ⚠️표본작음(참고용)" if len(rets) < 10 else ""
+            _lines.append(f"{_ic} {kind}: {len(rets)}건 · 승률 {_wr:.0f}% · 평균 {_avg:+.1f}%{_warn}")
+    _lines.append("\n💡 승률↑·평균+ 신호는 살리고, 승률↓·평균− 신호는 실행 중단 판단 근거"
+                  "\n   (단, ⚠️표본작음 신호는 10건 이상 쌓일 때까지 판단 보류)")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[신호분석] {sum(len(v) for v in _by_kind.values())}건 집계 · {len(_by_kind)}종류")
+
+
+def _analyze_exit_timing(token, key, secret, now_kst, token_tg, chat_id):
+    """[V25.18] 종배 청산 타이밍 분석 — 쌓인 종배픽으로 '익일 시가 청산 vs 익일 종가 청산'을
+    KIS 일봉(시가·종가)으로 소급 대조 + NXT거래/미거래 분리. '조기(시가)가 나은가 홀딩(종가)이 나은가' 답.
+    ※ NXT 애프터 그날저녁가는 과거 미저장이라 소급 불가(시가/종가만)."""
+    _picks = [p for p in _pick_read()
+              if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow")]
+    if not _picks:
+        send_telegram(token_tg, chat_id, "📊 종배 청산분석 — 종배 기록 없음(감시 며칠 돌린 PC에서).")
+        return
+    _ohlc, _nxt_cache = {}, {}
+    _agg = {k: {"open": [], "high": [], "close": []} for k in ("전체", "NXT거래", "NXT미거래")}
+    for p in _picks:
+        cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
+        if not px:
+            continue
+        if cd not in _ohlc:
+            _ohlc[cd] = _daily_ohlc(token, key, secret, cd)
+        _pdate = str(p.get("date", "")).replace("-", "")
+        _nx = next((d for d in sorted(_ohlc[cd]) if d > _pdate), None)
+        if not _nx:
+            continue
+        _bar = _ohlc[cd][_nx]
+        _gopen = (_bar["o"] / px - 1) * 100
+        _ghigh = (_bar["h"] / px - 1) * 100
+        _gclose = (_bar["c"] / px - 1) * 100
+        if cd not in _nxt_cache:
+            _nxt_cache[cd] = _nxt_tradable(token, key, secret, cd)
+        _buckets = ["전체"] + (["NXT거래"] if _nxt_cache[cd] is True else ["NXT미거래"] if _nxt_cache[cd] is False else [])
+        for _b in _buckets:
+            _agg[_b]["open"].append(_gopen)
+            _agg[_b]["high"].append(_ghigh)
+            _agg[_b]["close"].append(_gclose)
+
+    def _stat(xs):
+        if not xs:
+            return None
+        _w = sum(1 for x in xs if x > 0) / len(xs) * 100
+        return (len(xs), _w, sum(xs) / len(xs))
+    _lines = ["📊 종배 청산 타이밍 분석 (쌓인 데이터)"]
+    for _b in ("전체", "NXT거래", "NXT미거래"):
+        _so, _sh, _sc = _stat(_agg[_b]["open"]), _stat(_agg[_b]["high"]), _stat(_agg[_b]["close"])
+        if not _so:
+            continue
+        # [일관성] --analyze와 같은 기준 — 소표본으로 청산방식(조기 vs 홀딩)을 성급히 바꾸지 않도록.
+        _bwarn = " ⚠️표본작음(참고용)" if _so[0] < 10 else ""
+        _lines.append(f"\n■ {_b} ({_so[0]}건){_bwarn}")
+        _lines.append(f"  ⏱️ 9시 시초가: 승률 {_so[1]:.0f}% · 평균 {_so[2]:+.1f}%")
+        if _sh:
+            _lines.append(f"  🚀 익일 고가(팝 완벽청산): 승률 {_sh[1]:.0f}% · 평균 {_sh[2]:+.1f}%")
+        if _sc:
+            _lines.append(f"  🌆 종가(하루홀딩): 승률 {_sc[1]:.0f}% · 평균 {_sc[2]:+.1f}%")
+        if _sh:
+            _lines.append(f"  → 팝 여력(시초가→고가): {_sh[2] - _so[2]:+.1f}%p (아침 튐 노려 팔 여지)")
+    _lines.append("\n※ 고가=당일 최고가 완벽 청산(상한선) · 네 방식(9~9:30 팝 매도)은 시초가~고가 사이 · 종가=하루홀딩")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print("[청산분석] 발송:", " / ".join(_lines).replace("\n", " "))
+
+
+def _deep_stock(token, key, secret, code, name="", gemini_key=None):
+    """[V24.6] 특정종목 종합 해석 — 차트(이격·정배열·거래량)+수급(외인·기관)+큰추세(60분)+뉴스(AI)+타점.
+    '이 종목 어때?' 한 방 분석. 반환: 텔레그램용 텍스트."""
+    px, chg, turn = _price_and_turnover(token, key, secret, code)
+    if not px:
+        return f"❌ {code} — 시세 조회 실패(코드 확인)"
+    ds = _daily_setup(token, key, secret, code, px) or {}
+    _ma5, _ma20, _disp = ds.get("ma5"), ds.get("ma20"), ds.get("disp")
+    _align = "🟢정배열(5>20MA↑)" if (_ma5 and _ma20 and px > _ma5 > _ma20) else "🔴비정배열"
+    _vr = _vol_ratio_5d(token, key, secret, code)
+    _vt = f"{_vr[2]:.1f}배" if _vr else "–"
+    # [실전투자 점검] distinguish_fail=True로 조회실패를 "외인 0·기관 0"(순매수 없음)이 아니라
+    # 명시적 미확인으로 표시 — 안 그러면 API 실패가 '수급 중립'처럼 보여 오판 유발 가능.
+    _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
+    if _f is None or _o is None:
+        _sup = "수급 ⚠️미확인(조회 실패)"
+    else:
+        _sup = f"외인 {_f*px/1e8:+.0f}억·기관 {_o*px/1e8:+.0f}억 " + ("✅유입" if (_f + _o) > 0 else "⚠️이탈")
+    _bt = _big_trend_tag(token, key, secret, code, px).strip() or "60분 추세 –"
+    _ng, _nbad = _news_grade(code)
+    _ngt = "🔴악재" if _nbad else ("🔥재료S급" if _ng == "S" else "🟢재료A급" if _ng == "A" else "⚠️재료 미확인")
+    _dispt = f"{_disp:+.0f}%" if _disp is not None else "–"
+    _heat = "🔴심한과열" if (_disp or 0) >= 12 else "🟠과열" if (_disp or 0) >= 7 else "🟢정상" if (_disp or 0) >= -2 else "🔵낙폭과대"
+    _pull = _pullback_levels(token, key, secret, code, px, chg, ds)
+    _stop = int(px * 0.98); _t1 = int(px * 1.03)
+    _lines = [f"🔎 [종목 해석] {name or code} ({code})",
+              f"현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억 · 거래량 {_vt}(5일평균)",
+              f"📊 20MA 이격 {_dispt} {_heat} · {_align}",
+              f"💰 수급: {_sup}",
+              f"📈 {_bt} · 재료: {_ngt}"]
+    if _pull:
+        _lines.append(_pull.strip())
+    _lines.append(f"진입 {px:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)")
+    if gemini_key:
+        _ai = _gemini_stock_news_verdict(gemini_key, code, name or code)
+        if _ai:
+            _lines.append(_ai.strip())
+    return "\n".join(_lines)
 
 
 def _log_signal(state, now_kst, kind, name, code, px):
@@ -646,9 +1125,10 @@ def _log_signal(state, now_kst, kind, name, code, px):
         pass
 
 
-def _recent_high(token, key, secret, code, days=20):
-    """최근 N일 고가 중 현재가 위의 '저항선' 근사 — inquire-daily-price. 실패 시 None.
-    현재가보다 높은 최근 고가들 중 가장 가까운 값(=다음 저항). 없으면 최근 최고가."""
+def _recent_high(token, key, secret, code, days=20, exclude_today=False):
+    """최근 N일 고가 — inquire-daily-price. 실패 시 None.
+    exclude_today=True면 오늘 봉(o[0]) 제외한 '직전 N일 전고' 반환(돌파 판정용 — 오늘 고가 포함 시
+    px>=전고가 HOD에서만 참이 되는 버그 방지)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -656,7 +1136,8 @@ def _recent_high(token, key, secret, code, days=20):
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
                                  "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
         o = r.json().get("output", [])
-        highs = [_to_int(row.get("stck_hgpr")) for row in (o or [])[:days] if isinstance(row, dict)]
+        _rows = (o or [])[1:days + 1] if exclude_today else (o or [])[:days]
+        highs = [_to_int(row.get("stck_hgpr")) for row in _rows if isinstance(row, dict)]
         highs = [h for h in highs if h]
         return max(highs) if highs else None
     except Exception:
@@ -684,6 +1165,18 @@ def _prev_3min_high(token, key, secret, code):
     except Exception:
         pass
     return None
+
+
+def _nxt_tradable(token, key, secret, code):
+    """[V25.17] 넥스트레이드(NXT) 거래 가능 종목인지 — NX 시세 조회로 판별. True/False/None(미확인).
+    NXT 거래 종목: 밤 재료가 NXT에 흡수돼 9시 갭 작음·대신 NXT서 오버나이트 청산 가능.
+    NXT 미거래 종목: 9시 갭 엣지 살아있으나 밤새 탈출 불가(풀노출) → 소액·손절 철저.
+    ※ 정규장~애프터 사이(15:30~16:00 등)엔 NX 시세가 비어 None(미확인) 나올 수 있음."""
+    try:
+        _p, _c, _t = _price_and_turnover(token, key, secret, code, mrkt="NX")
+        return bool(_p and _p > 0)
+    except Exception:
+        return None
 
 
 # [V13.2] 시가저격에 '3분봉 전고 돌파'를 필수 조건으로 강제할지. 기본 False = 태그 표시만(거래대금 임계 유지).
@@ -721,6 +1214,108 @@ def kospi200_futures(token, key, secret):
     except Exception:
         pass
     return None
+
+
+def _kospi_index_kis(token, key, secret):
+    """[V24.9] 코스피 종합지수 전일대비% — KIS 국내업종 현재가(FHPUP02100000, U/0001).
+    yfinance ^KS11은 일봉이 하루 밀려(stale) 목요일값을 금요일로 오산하는 버그가 있어 KIS로 대체.
+    반환: float(%) 또는 None(키·데이터 없음)."""
+    if not (token and key and secret):
+        return None
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPUP02100000"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": "0001"}, timeout=6)
+        o = r.json().get("output") or {}
+        if isinstance(o, dict):
+            _c = str(o.get("bstp_nmix_prdy_ctrt", "")).replace(",", "").strip()
+            if _c not in ("", None):
+                return float(_c)
+    except Exception as _e:
+        print(f"[KIS코스피 진단] {type(_e).__name__}: {_e}")
+    return None
+
+
+def _index_snapshot(token, key, secret, iscd="0001"):
+    """[V25.51 C] 지수 스냅샷 — 현재·등락%·시가·고가·저가(FHPUP02100000). iscd 0001=코스피 1001=코스닥.
+    마감 복기용 '오전 강세→오후 반전' 감지에 쓰임. 반환 dict 또는 None."""
+    if not (token and key and secret):
+        return None
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPUP02100000"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": iscd}, timeout=6)
+        o = r.json().get("output") or {}
+        if not isinstance(o, dict):
+            return None
+
+        def _f(k):
+            _v = str(o.get(k, "")).replace(",", "").strip()
+            try:
+                return float(_v) if _v not in ("", "None") else None
+            except ValueError:
+                return None
+        _cur, _hi = _f("bstp_nmix_prpr"), _f("bstp_nmix_hgpr")
+        return {"chg": _f("bstp_nmix_prdy_ctrt"), "cur": _cur,
+                "open": _f("bstp_nmix_oprc"), "hi": _hi, "lo": _f("bstp_nmix_lwpr"),
+                # 오후 반전% = 고가 대비 종가 하락폭(윗꼬리) — 오전 강세→마감 밀림 감지
+                "fade": (((_cur / _hi) - 1) * 100 if (_cur and _hi) else None)}
+    except Exception:
+        return None
+
+
+def _index_daily_range(token, key, secret, iscd, date_from, date_to):
+    """[피드백 반영] 지수 과거 일별시세(실측) — inquire-daily-indexchartprice(FHKUP03500100).
+    date_from/date_to는 'YYYYMMDD' 문자열. iscd 0001=코스피 1001=코스닥.
+    반환 {'YYYYMMDD': {'close','chg','open','hi','lo'}, ...} — 해당일이 없으면(휴장/주말) 키 자체가 없음.
+    (KIS가 실제로 거래일에만 행을 주므로, 날짜가 맵에 없다는 것 자체가 '휴장' 판정 근거가 됨)
+    실패 시 {} — Gemini 추측 대신 실측 수치로 backfill 신뢰도를 올리기 위한 함수."""
+    if not (token and key and secret):
+        return {}
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKUP03500100"},
+                         params={"fid_cond_mrkt_div_code": "U", "fid_input_iscd": iscd,
+                                  "fid_input_date_1": date_from, "fid_input_date_2": date_to,
+                                  "fid_period_div_code": "D"}, timeout=8)
+        rows = [x for x in (r.json().get("output2") or []) if isinstance(x, dict)]
+    except Exception as _e:
+        print(f"[지수일별시세 진단] 조회 실패({iscd}): {type(_e).__name__}: {_e}")
+        return {}
+
+    def _f(o, k):
+        _v = str(o.get(k, "")).replace(",", "").strip()
+        try:
+            return float(_v) if _v not in ("", "None") else None
+        except ValueError:
+            return None
+    out = {}
+    for _o in rows:
+        _dt = str(_o.get("stck_bsop_date", "")).strip()
+        if len(_dt) == 8 and _dt.isdigit():
+            out[_dt] = {"close": _f(_o, "bstp_nmix_prpr"), "chg": _f(_o, "bstp_nmix_prdy_ctrt"),
+                        "open": _f(_o, "bstp_nmix_oprc"), "hi": _f(_o, "bstp_nmix_hgpr"),
+                        "lo": _f(_o, "bstp_nmix_lwpr")}
+    if not out and rows:
+        print(f"[지수일별시세 진단] 응답은 왔으나 파싱 0건({iscd}) — 필드명 확인 필요: {list(rows[0].keys())[:10]}")
+    # [실사용 발견 — 등락률(chg) 필드가 전건 None이었음] 필드명 확정 전이라도, 같은 응답 안의
+    # 연속 종가로 등락률을 직접 계산하면 필드명 문제와 무관하게 정확한 값을 얻을 수 있음.
+    _prev_close = None
+    for _dt in sorted(out):
+        _row = out[_dt]
+        if _row["chg"] is None and _row["close"] is not None and _prev_close:
+            _row["chg"] = (_row["close"] / _prev_close - 1) * 100
+        if _row["close"] is not None:
+            _prev_close = _row["close"]
+    _no_chg = sum(1 for v in out.values() if v["close"] is not None and v["chg"] is None)
+    if _no_chg:
+        print(f"[지수일별시세 진단] close는 있는데 등락률(chg) 원본필드+전일종가계산 둘 다 실패 {_no_chg}건"
+              f"({iscd}, 대부분 범위 첫날이라 전일종가 없어서일 수 있음) "
+              f"— bstp_nmix_prdy_ctrt 필드명/값 확인 필요: {list(rows[0].keys())[:10]}")
+    return out
 
 
 def _kospi_fut_session(now_kst):
@@ -772,6 +1367,875 @@ def read_dart_key():
     return None
 
 
+# ── [V21.4] 뉴스 시황 — 네이버 검색 API + Gemini 판정 ──────────────────────────
+def read_naver_keys():
+    """네이버 검색 API Client ID/Secret — 환경변수 우선. 없으면 (None,None)."""
+    return (os.environ.get("NAVER_CLIENT_ID"), os.environ.get("NAVER_CLIENT_SECRET"))
+
+
+def _read_secret_alias(aliases):
+    """secrets.toml에서 별칭 키 값 탐색(공용). 없으면 None."""
+    _al = {a.lower() for a in aliases}
+    try:
+        import tomllib
+        with open(SECRETS_FILE, "rb") as f:
+            _d = tomllib.load(f)
+        _found = [None]
+
+        def _w(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if isinstance(v, dict):
+                        _w(v)
+                    elif str(k).lower() in _al and isinstance(v, str) and not _found[0]:
+                        _found[0] = v.strip()
+        if isinstance(_d, dict):
+            _w(_d)
+        if _found[0]:
+            return _found[0]
+    except Exception:
+        pass
+    return None
+
+
+def read_gemini_key():
+    """Gemini API 키 — 환경변수 → secrets.toml. 없으면 None(뉴스 브리핑은 헤드라인만)."""
+    for _n in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_KEY", "GOOGLE_GEMINI_API_KEY"):
+        if os.environ.get(_n):
+            return os.environ[_n].strip()
+    return _read_secret_alias({"gemini_api_key", "google_api_key", "gemini_key", "gemini"})
+
+
+def _factcheck_avoid_codes(report, fc):
+    """[V25.44] 팩트체크 '🚫강등/제외' 종목의 코드 추출 — 종배가 회피하도록. 반환 코드 리스트.
+    이름→코드 맵은 브리핑 본문의 '이름(123456)' 패턴에서 만든다. 실패 시 []."""
+    if not fc:
+        return []
+    import re as _re
+    name2code = {}
+    for _m in _re.finditer(r'([가-힣A-Za-z0-9·&]+)\s*\((\d{6})\)', report or ""):
+        name2code[_m.group(1)] = _m.group(2)
+    _seg = ""
+    for _mk in ("🚫", "강등/제외", "강등"):
+        _i = fc.find(_mk)
+        if _i >= 0:
+            _seg = fc[_i:_i + 800]                     # 강등 섹션 이후 일부
+            break
+    if not _seg:
+        return []
+    codes = set(_re.findall(r'\((\d{6})\)', _seg))     # 섹션 내 직접 코드
+    for _nm, _cd in name2code.items():                 # 섹션 내 이름 → 코드
+        if len(_nm) >= 2 and _nm in _seg:
+            codes.add(_cd)
+    return list(codes)
+
+
+def _gemini_factcheck(gkey, brief, mdetail=""):
+    """[V24.8] Gemini 브리핑을 Gemini+구글검색(grounding)으로 팩트체크·보정.
+    Perplexity API(유료) 대신 기존 Gemini 키로 실시간 검색 교차검증. grounding 미지원 시
+    검색 없이 실측데이터 대조로 폴백(최소한 유가 '급등' 등 실측과 안 맞는 오탐은 잡음).
+    반환: 텔레그램용 간결 텍스트. 키 없거나 실패 시 ''(브리핑은 그대로 발송)."""
+    if not gkey or not brief:
+        return ""
+    _today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
+    _prompt = (
+        f"★오늘 날짜는 {_today}(KST)다. 모든 뉴스 최신성을 이 날짜 기준으로 판단하라.★\n"
+        "너는 한국 주식 트레이더의 애널리스트다. 아래 [1차 브리핑]은 다른 패스가 RSS 뉴스로 만든 것이라 "
+        "팩트 오류·과장이 있을 수 있다. 구글 검색으로 교차검증하라.\n"
+        "★중립 규칙: 사용자가 '듣고 싶어할 답'이 아니라 '사실'만 말하라. 매수를 유도하지 말고, "
+        "좋은 픽이 없으면 '오늘은 살 것 없음'이라고 솔직히 결론내라(억지 추천 금지).★\n"
+        f"★날짜 규칙(중요): 각 재료의 '발생일'을 반드시 확인하라. 오늘({_today})로부터 2일 넘게 지난 뉴스는 "
+        "이미 주가에 선반영됐거나 재료 소멸이다 → 보정 우선순위에 올리지 말고 '⚠️구뉴스(N일 전·선반영)'로 강등하라. "
+        "며칠·몇달 전 뉴스를 '오늘 나와서 선반영 덜 됨'이라고 절대 쓰지 마라(치명적 오류). "
+        "발생일이 불확실하면 검색으로 확인하고, 각 재료 옆에 발생일(MM/DD)을 명시하라.★\n"
+        "규칙: ①지수 등락·유가·실적·수주·인물발언 등 구체 수치/사실을 검증하고 틀리면 실제값으로 보정. "
+        "②각 핵심 주장(재료)은 반드시 구글 검색을 실제로 실행해 '✅확인/⚠️부분확인/❌반박' 중 하나로 판정하고, "
+        "확인되면 근거(회사·금액·날짜)를 1줄로 요약하라. '❓미확인'은 검색을 진짜 해봐도 근거가 안 나올 때만 쓰고 남발 금지. "
+        "확인 가능한 재료를 게을러서 미확인으로 뭉개지 마라(실제 호재를 놓치면 손해다). "
+        "③뉴스만 있고 수주·계약·공시 근거 없는 테마는 '추격주의'로 강등. "
+        "★선반영 규칙(가장 중요): 재료가 '진짜'인 것과 '지금 살 만한 것'은 다르다. "
+        "각 종목마다 검색으로 '그 재료가 언제 나왔고, 그 뒤 주가가 이미 크게 올랐는지'를 확인하라. "
+        "재료가 며칠 전 뉴스이고 주가가 이미 급등했으면 = 선반영 → '⚠️선반영(추격금지)'로 표시하고 보정 우선순위에서 제외/강등하라. "
+        "보정 우선순위 TOP3는 '재료가 확인되면서도 아직 주가에 덜 반영된(선반영 안 된)' 종목만 올려라. 확인만 됐다고 이미 오른 종목을 1위로 올리지 마라.★ "
+        "④[실측 시장데이터]와 브리핑이 다르면 실측을 정답으로 간주. "
+        "특히 유가·지수는 '인트라데이 등락'과 '최종/주간 종가'가 다를 수 있으니, 검색으로 최종 종가를 확인해 방향을 재판정하라.\n"
+        "★★재료 분류(각 종목·테마마다 필수)★★\n"
+        "⑤직접성: [직접수혜(그 기업의 공시·계약·실적·수주)] / [산업수혜(공급망·업황)] / [심리수혜(정책발언·지정학·해외사례)] / [무관·억지연결] 중 하나로 분류.\n"
+        "⑥등급: A=공시·계약·실적·정부확정 / B=Reuters·Bloomberg 등 구체 산업뉴스 / C=정책·지정학·해외사례(심리) / D=루머·과거뉴스·직접수혜 미확인. A·B만 매매 근거로, C는 심리 참고, D는 사용 금지.\n"
+        "⑦테마금지: 해외 전쟁·방공계약→국내 방산, 해외 로봇·자율주행→국내 로봇·전장, 재난·유가→국내 건설·정유 — 이런 연결은 "
+        "국내 기업의 '직접 계약·공급관계·공시'가 검색으로 확인되지 않으면 절대 '직접수혜'로 쓰지 말고 '심리수혜(C)'로 강등하라.\n"
+        "★안전규칙: 검색 결과가 없을 때만, 뉴스의 '시점·최신성·진위'를 단정하지 마라. "
+        "특히 학습기억으로 '과거 뉴스다/몇년도 일이다'라고 추측해 실제 오늘 재료를 가짜로 몰지 마라(과거 사건이 지금 재발할 수도 있음). "
+        "이 경우에만 '❓미확인(개장 후 확인)'으로 표기.★\n\n"
+        f"[실측 시장데이터]\n{mdetail}\n\n[1차 브리핑]\n{brief}\n\n"
+        "★출력 규칙: 검색·분석 과정이나 서론을 절대 쓰지 마라. 아래 4개 항목만, 딱 한 번씩, "
+        "정확히 이 순서·이 제목으로 출력하라(항목 제목이나 형식을 반복 출력 금지). 텔레그램용으로 간결하게.★\n"
+        "🔎 팩트체크: (틀린/과장된 수치·주장 2~4개를 '주장→✅확인/⚠️부분/❌반박(근거 1줄)'로)\n"
+        "🏆 보정 우선순위 TOP3: (재료 확인+선반영 안 된 종목만·딱 3개 — '종목명 [등급A~D·직접성] 재료(발생일) / ⚡반대근거:안 갈 이유 1개' 형식)\n"
+        "🚫 강등/제외: (억지 테마연결·심리수혜(C)·이미 급등한 선반영·D등급 — 종목/테마·이유 1줄)\n"
+        "🔴 자기비평: (위 보정안을 비평가 입장에서 다시 봐 — 이 판단이 틀릴 수 있는 최대 약점 1개를 솔직히)\n"
+        "한 줄 결론:")
+    _errs = []
+    # ── 1순위: 신버전 SDK(google-genai) + 구글검색 grounding (Gemini 2.x 정식 방식) ──
+    try:
+        from google import genai as _ng
+        from google.genai import types as _nt
+        # [실사용 무응답 수정] 신SDK 클라이언트에 타임아웃 미설정 시 네트워크 문제로 영구 대기(먹통) 가능 —
+        #   구SDK 경로처럼 60초 타임아웃 강제(ms 단위).
+        _client = _ng.Client(api_key=gkey, http_options=_nt.HttpOptions(timeout=60_000))
+        for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
+            try:
+                _resp = _client.models.generate_content(
+                    model=_mn, contents=_prompt,
+                    config=_nt.GenerateContentConfig(
+                        tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
+                _txt = getattr(_resp, "text", None)
+                if _txt:
+                    return _txt.strip() + "\n🌐(구글검색 grounding)"
+            except Exception as _ne:
+                _errs.append(f"신SDK/{_mn}:{type(_ne).__name__}")
+    except Exception as _nie:
+        _errs.append(f"신SDK미설치:{type(_nie).__name__}")
+    # ── 2순위: 구버전 SDK(google-generativeai) — grounding 시도 후 실패 시 검색 없이 폴백 ──
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gkey)
+        _tool_variants = ("google_search_retrieval", [{"google_search_retrieval": {}}], None)
+        for _mn in ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"):
+            for _tv in _tool_variants:
+                try:
+                    _kw = {"request_options": {"timeout": 60}}
+                    if _tv is not None:
+                        _kw["tools"] = _tv
+                    _resp = genai.GenerativeModel(_mn).generate_content(_prompt, **_kw)
+                    _txt = getattr(_resp, "text", None)
+                    if _txt:
+                        return _txt.strip() + ("\n🌐(구글검색 grounding)" if _tv is not None
+                                               else "\n(검색 미지원 — 실측 대조만·구SDK)")
+                except Exception as _ge:
+                    _errs.append(f"구SDK/{_mn}/{('검색' if _tv else '기본')}:{type(_ge).__name__}")
+    except Exception as _oie:
+        _errs.append(f"구SDK설정:{type(_oie).__name__}")
+    print(f"[팩트체크 진단] 전 시도 실패 — {' / '.join(_errs)[:300]}")
+    return ""
+
+
+def _gemini_grounded(gkey, prompt, diag=True):
+    """[V25.52] 구글검색 grounding 범용 생성(팩트체크와 동일 SDK 폴백) — 과거 복기 등 실시간 검색용.
+    실패 시 '' + 진단 출력(diag). 429(쿼터)면 자동 재시도(간격↑)."""
+    if not gkey or not prompt:
+        return ""
+    _errs = []
+    # ── 신SDK(google-genai) + grounding — 429/일시오류는 짧은 대기 후 재시도 ──
+    try:
+        from google import genai as _ng
+        from google.genai import types as _nt
+        # [실사용 무응답 수정] 신SDK 클라이언트에 타임아웃 미설정 시 네트워크 문제로 영구 대기(먹통) 가능 —
+        #   구SDK 경로처럼 60초 타임아웃 강제(ms 단위).
+        _client = _ng.Client(api_key=gkey, http_options=_nt.HttpOptions(timeout=60_000))
+        for _mn in ("gemini-2.5-flash", "gemini-2.5-pro"):
+            for _attempt in range(2):
+                try:
+                    _resp = _client.models.generate_content(
+                        model=_mn, contents=prompt,
+                        config=_nt.GenerateContentConfig(tools=[_nt.Tool(google_search=_nt.GoogleSearch())]))
+                    if getattr(_resp, "text", None):
+                        return _resp.text.strip()
+                    _errs.append(f"신/{_mn}:빈응답")
+                    break
+                except Exception as _ne:
+                    _msg = str(_ne)
+                    _errs.append(f"신/{_mn}:{type(_ne).__name__}")
+                    if ("429" in _msg or "quota" in _msg.lower() or "resource" in _msg.lower()) and _attempt == 0:
+                        time.sleep(12); continue          # 쿼터/레이트 → 12초 대기 후 1회 재시도
+                    break
+    except Exception as _nie:
+        _errs.append(f"신SDK미설치:{type(_nie).__name__}")
+    # ── 구SDK 폴백 ──
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gkey)
+        for _mn in ("gemini-2.5-flash", "gemini-flash-latest"):
+            for _tv in ("google_search_retrieval", None):
+                try:
+                    _kw = {"request_options": {"timeout": 60}}
+                    if _tv:
+                        _kw["tools"] = _tv
+                    _resp = genai.GenerativeModel(_mn).generate_content(prompt, **_kw)
+                    if getattr(_resp, "text", None):
+                        return _resp.text.strip()
+                except Exception as _ge:
+                    _errs.append(f"구/{_mn}/{'검색' if _tv else '기본'}:{type(_ge).__name__}")
+    except Exception as _oie:
+        _errs.append(f"구SDK:{type(_oie).__name__}")
+    if diag:
+        print(f"[grounded 진단] 실패 — {' / '.join(_errs)[:250]}")
+    return ""
+
+
+_WKD_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+# [피드백 반영] Gemini가 지식컷 경계 때문에 실제 지난 과거 날짜를 "아직 안 온 미래"로
+# 착각해 검색을 포기하는 응답을 걸러내기 위한 키워드. 이런 응답은 저장하지 않고 스킵.
+_FUTURE_CONFUSION_MARKERS = (
+    "아직 도래하지 않", "아직 오지 않은 날짜", "미래의 날짜", "발생하지 않은 날짜",
+    "아직 일어나지 않", "예정된 미래", "확인할 수 없는 미래", "미래 날짜이므로", "아직 도래하지 않은",
+    # [실사용 발견 — 2026-08-28 복기에서 확인] 같은 지식컷 착각을 다른 문구로 표현한 케이스 추가.
+    "실시간 미래 데이터", "미래 데이터 검색", "정보 접근 한계",
+)
+
+
+def _is_future_confused(text):
+    """Gemini 응답이 '이 날짜는 아직 안 왔다'는 지식컷 착각 문구를 담고 있는지 감지."""
+    return any(_m in (text or "") for _m in _FUTURE_CONFUSION_MARKERS)
+
+
+def _mr_read_all():
+    """market_review.md 전체를 (일별블록 dict{'YYYY-MM-DD': 헤더제외 본문}, 기타블록 list[본문])으로 파싱.
+    [실사용 리뷰 반영] 예전엔 backfill/일일복기/주간메타복기가 각자 파일 끝에 append만 해서, 실행
+    순서에 따라 날짜가 뒤죽박죽 섞인 로그가 됨(9/7 다음에 9/3이 오는 식). '# ── 과거 backfill
+    N일(생성 ...) ──' 구분줄은 정렬에 쓸 날짜가 없는 생성이력일 뿐이라 다시 쓰지 않고 버린다
+    (각 '## 날짜' 블록이 이미 자기 날짜를 헤더에 갖고 있어 없어도 정보 손실 없음)."""
+    _daily, _other = {}, []
+    if not os.path.exists(MARKET_REVIEW_FILE):
+        return _daily, _other
+    import re as _re
+    try:
+        with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
+            _txt = _f.read()
+    except OSError:
+        return _daily, _other
+    for _p in _txt.split("\n## ")[1:]:
+        # 구버전 '# ── 과거 backfill ... ──' 구분줄은 "\n## "로 안 갈라져서 앞 블록 끝에 그대로
+        # 붙어있음 — 정보 없는 생성이력이니 어디 붙어있든 제거(안 지우면 재작성마다 계속 남음).
+        _p = _re.sub(r"\n# ── [^\n]*──\s*$", "", _p.rstrip("\n"))
+        if not _p.strip():
+            continue
+        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _p)
+        if _m:
+            _daily[_m.group(1)] = _p               # 같은 날짜 재등장 시 마지막 것으로 자동 교체(dedup)
+        else:
+            _other.append(_p)
+    return _daily, _other
+
+
+def _mr_write_all(daily, other):
+    """일별 블록은 날짜 오름차순으로 위에, 그 외(주간메타복기 등)는 아래에 몰아서 market_review.md를
+    통째로 재작성 — 실행 순서와 무관하게 항상 날짜순 원장 상태를 유지. 성공 시 True."""
+    _txt = "# 시장 복기 원장 (market_review.md)\n"
+    for _d in sorted(daily):
+        _txt += "\n## " + daily[_d] + "\n"
+    for _o in other:
+        _txt += "\n## " + _o + "\n"
+    return _atomic_write_text(MARKET_REVIEW_FILE, _txt)
+
+
+def backfill_market_review(gemini_key, days=10, kis_key=None, kis_secret=None):
+    """[V25.53 C-backfill] 과거 N거래일 시장 복기 미리학습 → market_review.md 누적.
+    [피드백 반영] KIS 지수 일별시세(inquire-daily-indexchartprice)가 있으면 코스피/코스닥 종가·등락률은
+    그 실측치를 쓰고(Gemini 추측 금지), 그 날짜가 KIS 응답에 아예 없으면 '휴장/데이터없음'으로 확정 처리
+    (Gemini가 임의로 지어내지 않음). Gemini/웹검색은 '왜 그렇게 움직였나'라는 해석에만 쓰고,
+    사실(숫자)과 해석을 분리해 기록한다. KIS 키가 없으면 예전처럼 Gemini 단독 추정으로 폴백.
+    ①오늘 실제 날짜를 명시해 과거 날짜를 미래로 착각하는 지식컷 오류 방지
+    ②단일 원인 단정을 금지(가능성 언어 강제)."""
+    if not gemini_key:
+        print("[backfill] Gemini 키 없음 — 웹검색 복기 불가"); return
+    _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    _today_str = _now.strftime("%Y년 %m월 %d일")
+    _dates, _d = [], _now.date()
+    while len(_dates) < days:                          # 최근 N개 평일(주말은 미리 제외; 공휴일은 KIS 실데이터로 판정)
+        _d -= datetime.timedelta(days=1)
+        if _d.weekday() < 5:
+            _dates.append(_d)
+    _dates.reverse()                                   # 오래된→최신
+
+    _ks_map, _kq_map = {}, {}
+    if kis_key and kis_secret:
+        _tok = kis_token(kis_key, kis_secret)
+        # [실사용 발견] _d1을 요청 범위의 첫날로 잡으면 그 날은 '전일 종가'가 없어 등락률 자체계산
+        # 폴백이 못 먹힘(실제로 매 backfill마다 그 배치의 첫날이 "등락률 미확인"으로 남는 걸 확인) —
+        # 여유분 7일 앞서 조회해서 항상 계산용 전일 종가를 확보.
+        _d1 = (_dates[0] - datetime.timedelta(days=7)).strftime("%Y%m%d")
+        _d2 = _now.strftime("%Y%m%d")
+        _ks_map = _index_daily_range(_tok, kis_key, kis_secret, "0001", _d1, _d2)
+        _kq_map = _index_daily_range(_tok, kis_key, kis_secret, "1001", _d1, _d2)
+        print(f"[backfill] KIS 지수 실측 {len(_ks_map)}일(코스피)/{len(_kq_map)}일(코스닥) 확보(여유분 포함)")
+    else:
+        print("[backfill] KIS 키 없음 — 지수 실측 불가, Gemini 추정으로 폴백(신뢰도 낮음)")
+
+    _out = []
+    for _dd in _dates:
+        _dstr = _dd.strftime("%Y-%m-%d") + f"({_WKD_KO[_dd.weekday()]})"
+        _ds8 = _dd.strftime("%Y%m%d")
+        _ks, _kq = _ks_map.get(_ds8), _kq_map.get(_ds8)
+        _has_kis = bool(_ks_map or _kq_map)             # KIS 조회 자체는 시도했는가
+
+        if _has_kis and not _ks and not _kq:
+            # KIS 실측 응답에 해당일이 없음 = 휴장(주말 아닌 평일 공휴일) — 추측하지 않고 확정 기록
+            _out.append((_dd.strftime("%Y-%m-%d"), f"{_dstr}\n[데이터 상태] 휴장(KIS 지수 데이터 없음 — 실측 기준)"))
+            print(f"[backfill] {_dstr} 휴장(KIS 데이터 없음) — Gemini 호출 생략")
+            continue
+
+        _fact_line = ""
+        if _ks or _kq:
+            def _one(nm, s):
+                # [실사용 크래시 수정] close는 파싱됐는데 chg만 None인 날이 실측 확인됨 — 둘 다 있어야 안전.
+                if not s or s.get("close") is None:
+                    return f"{nm} —"
+                _chgtxt = f"{s['chg']:+.2f}%" if s.get("chg") is not None else "등락률 미확인"
+                return f"{nm} {s['close']:,.2f}({_chgtxt})"
+            _fact_line = f"[확인된 사실](KIS 실측) {_one('코스피', _ks)} · {_one('코스닥', _kq)}"
+
+        if _fact_line:
+            _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
+                   "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급하라.\n"
+                   f"{_dstr} 한국 증시 마감 복기. 아래 지수 수치는 이미 실측 확인된 사실이니 그대로 인정하고, "
+                   f"이 결과가 나온 이유만 구글 검색으로 찾아라: {_fact_line}\n"
+                   "★출력에 서론·요약 문단을 쓰지 마라 — 지수 수치·등락률은 위에 이미 나왔으니 네가 다시 "
+                   "언급하거나 재계산하지 마라(특히 '등락률 미확인'인 값을 네가 검색으로 대신 채워 넣지 마라 — "
+                   "숫자가 없으면 없는 대로 두고 원인 해석만 하라). 아래 두 섹션만, 각 한 번씩 출력해라.★\n"
+                   "[시장 해석] 왜 그렇게 움직였나(오전 강세→오후 반전이면 그 원인 포함) · 어떤 뉴스/테마가 반응했나 — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
+                   "[다음 참고] 교훈 1가지.\n"
+                   "간결·이모지. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
+        else:
+            # KIS 실측 실패(키 없음/API 오류) — 예전처럼 Gemini 단독 추정(신뢰도 낮음, 명시)
+            _pr = (f"오늘은 {_today_str}이다. {_dstr}는 오늘보다 이전인 실제 지난 과거 거래일이다 — "
+                   "이 날짜를 '아직 발생하지 않은 미래'로 판단하지 말고 반드시 지난 일로 취급해 "
+                   f"구글 검색으로 그날 실제를 확인하라. {_dstr} 한국 증시 마감 복기.\n"
+                   "[확인된 사실](검색 기반 추정 — KIS 실측 아님) 코스피·코스닥 등락%, 공식 보도만(숫자 위주 1~2줄).\n"
+                   "[시장 해석] 왜 그렇게 움직였나 · 어떤 뉴스/테마가 반응했나 — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로만 서술(1~2줄).\n"
+                   "[다음 참고] 교훈 1가지.\n"
+                   "간결·이모지. 그날 휴장이면 '휴장'만 적어라. 검색으로도 확인 안 되면 추측하지 말고 '확인 불가' 명시.")
+
+        _wv = _gemini_grounded(gemini_key, _pr)
+        if _wv and _is_future_confused(_wv):
+            print(f"[backfill] {_dstr} 미래착각 응답 감지(스킵) — 지식컷 경계: {_wv[:80]!r}")
+        elif _wv:
+            _body = f"{_dstr}\n"
+            if _fact_line:
+                _body += _fact_line + "\n"
+            _out.append((_dd.strftime("%Y-%m-%d"), _body + _wv.strip()))
+            print(f"[backfill] {_dstr} 복기 완료" + (" (KIS 실측 반영)" if _fact_line else ""))
+        else:
+            print(f"[backfill] {_dstr} Gemini 실패(스킵) — 위 [grounded 진단] 참조")
+        time.sleep(6)                                 # grounding 무료쿼터 배려
+    if _out:
+        try:
+            # [실사용 리뷰 반영 — 날짜 뒤죽박죽 문제] 예전엔 파일 끝에 append만 해서 backfill을
+            # 여러 번 실행하면 날짜 순서가 뒤섞였음. 이제 기존 파일 전체를 읽어 이번에 만든 날짜를
+            # dict에 덮어쓴 뒤(자동 dedup) 날짜 오름차순으로 통째로 재작성 — 항상 정렬 상태 유지.
+            _daily, _other = _mr_read_all()
+            for _ds, _body in _out:
+                _daily[_ds] = _body
+            if _mr_write_all(_daily, _other):
+                print(f"[backfill] market_review.md에 {len(_out)}일치 저장 완료(날짜순 재정렬)")
+        except OSError as _e:
+            print("[backfill] 저장 실패:", _e)
+
+
+def _naver_news(cid, csec, query, display=10):
+    """네이버 뉴스 검색 최신순 — [{title,description,link}]. 실패 시 [](진단 출력)."""
+    try:
+        r = requests.get("https://openapi.naver.com/v1/search/news.json",
+                         headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
+                         params={"query": query, "display": display, "sort": "date"}, timeout=6)
+        if r.status_code == 200:
+            return r.json().get("items", []) or []
+        print(f"[네이버뉴스 진단] '{query}' HTTP {r.status_code} · 응답: {r.text[:200]}")
+    except Exception as _e:
+        print(f"[네이버뉴스 진단] '{query}' 예외: {type(_e).__name__}: {_e}")
+    return []
+
+
+# [V21.5] RSS 폴백 — 네이버 검색 스코프 없거나 실패 시 국내 경제 RSS로 뉴스 수집(키 불필요).
+_RSS_FEEDS = (
+    ("증권", "https://www.yna.co.kr/rss/market.xml"),         # 국내 증권(재료 밀집) — 핵심
+    ("세계", "https://www.yna.co.kr/rss/international.xml"),   # 세계 메인(미국장·지정학·중국·유가)
+    ("산업", "https://www.yna.co.kr/rss/industry.xml"),       # 산업(반도체·기업 글로벌)
+    # [V25.49 B] 특징주 '사유' 소스 — "왜 올랐나"(뉴스→심리 연결). 실패해도 graceful(연합만으로도 동작).
+    ("한경증권", "https://www.hankyung.com/feed/finance"),     # 한국경제 금융·증권
+    ("한경마켓", "https://www.hankyung.com/feed/economy"),     # 한국경제 경제(시황·정책)
+    ("이데일리증권", "https://rss.edaily.co.kr/stock_news.xml"),  # 이데일리 증권(특징주 밀집)
+)   # [V21.9] 경제 일반(정치·부고 노이즈) 제외 — 연합 증권+세계+산업 + 한경·이데일리 특징주(V25.49)
+
+
+# [V25.50 D] 뉴스 화제성 — 수집 기사에서 테마 키워드 반복 빈도로 '오늘 시장이 많이 떠든 테마' 근사.
+#   조회수 직접수집은 소스 한계로 불안정 → '여러 매체가 반복 언급=화제=개미 관심 몰림'으로 대체.
+_BUZZ_THEMES = {
+    "반도체/AI": ("반도체", "HBM", "D램", "디램", "엔비디아", "AI ", "인공지능", "파운드리", "온디바이스", "메모리"),
+    "원전/SMR": ("원전", "SMR", "소형모듈", "한수원", "웨스팅하우스", "우라늄"),
+    "방산/우주": ("방산", "자주포", "K9", "천무", "무기", "전차", "항공우주", "누리호", "위성"),
+    "2차전지": ("2차전지", "배터리", "양극재", "음극재", "전해질", "리튬", "전기차", "LFP"),
+    "바이오/제약": ("바이오", "제약", "임상", "신약", "FDA", "기술수출", "항체", "비만치료", "위고비"),
+    "조선/해운": ("조선", "선박", "LNG운반", "해운", "한화오션"),
+    "로봇": ("로봇", "휴머노이드", "협동로봇"),
+    "전력/데이터센터": ("데이터센터", "전력", "냉각", "변압기", "전선", "송전"),
+    "정책/정부": ("정책", "예산", "국회", "법안", "규제완화", "정부 지원"),
+    "지정학/에너지": ("이란", "호르무즈", "중동", "유가", "이스라엘", "원유"),
+}
+
+
+def _topic_buzz(arts, top=6):
+    """[V25.50 D] 수집 기사에서 테마 키워드 등장 빈도 집계 → 화제성 랭킹 문자열. '많이 다뤄짐=심리 몰림' 근사."""
+    if not arts:
+        return ""
+    _blob = " ".join(arts)
+    _cnt = {}
+    for _th, _kws in _BUZZ_THEMES.items():
+        _n = sum(_blob.count(_k) for _k in _kws)
+        if _n:
+            _cnt[_th] = _n
+    if not _cnt:
+        return ""
+    _rank = sorted(_cnt.items(), key=lambda x: x[1], reverse=True)[:top]
+    return " · ".join(f"{_th} {_n}건" for _th, _n in _rank)
+
+
+def _naver_ranking_news(top=15):
+    """[피드백 반영] 네이버 금융 '많이 본 뉴스' 실제 클릭 랭킹 — finance.naver.com/news 스크랩.
+    _topic_buzz(여러 매체 반복언급=화제성 근사)와 달리, 이건 독자가 실제로 많이 '클릭'한 뉴스라
+    개미 심리(뭘 실제로 찾아봤나)에 더 직접적인 신호. 반환 제목 리스트(최신 랭킹순), 실패 시 [].
+    ⚠️ finance.naver.com 구버전 페이지 구조 기반(HTML 바뀌면 깨질 수 있음) — 0건이면 진단 로그 확인."""
+    import re as _re
+    import html as _html_mod
+    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Referer": "https://finance.naver.com/news/", "Accept-Language": "ko-KR,ko;q=0.9"}
+    try:
+        _r = requests.get("https://finance.naver.com/news/news_list.naver?mode=RANK",
+                          headers=_hdr, timeout=8)
+        _r.encoding = "euc-kr"
+        _html = _r.text
+    except Exception as _e:
+        print(f"[많이본뉴스 진단] 요청 실패: {type(_e).__name__}: {_e}")
+        return []
+    # 기사 링크(/news/news_read.naver?... 또는 /news/read.naver?...) 안의 텍스트만 제목 후보로 추출.
+    # 클래스명 등 마크업이 바뀌어도 안 깨지게 href 패턴(구조)만으로 매칭 — _market_investor()와 동일 전략.
+    # (.*?)는 DOTALL로 <a>...</a> 내부의 중첩 태그(예: 말줄임 아이콘 <span>)까지 통째로 잡은 뒤
+    # 아래서 태그를 벗겨낸다 — [^<]+로 첫 중첩 태그에서 끊기면 제목이 잘리는 문제 방지.
+    _cands = _re.findall(r'<a[^>]+href="[^"]*news_read\.naver\?[^"]*"[^>]*>(.*?)</a>', _html, _re.S)
+    if not _cands:
+        _cands = _re.findall(r'<a[^>]+href="[^"]*/news/read\.naver\?[^"]*"[^>]*>(.*?)</a>', _html, _re.S)
+    titles, seen = [], set()
+    for _t in _cands:
+        _t = _re.sub(r"<[^>]+>", "", _t)                # 중첩 태그 제거
+        _t = _html_mod.unescape(_t)                      # &hellip;·&ldquo; 등 HTML 엔티티 디코딩
+        _t = _re.sub(r"\s+", " ", _t).strip()
+        if len(_t) < 6 or _t in seen:                  # 너무 짧은 건 아이콘·번호 텍스트일 가능성
+            continue
+        seen.add(_t); titles.append(_t)
+        if len(titles) >= top:
+            break
+    if not titles:
+        print(f"[많이본뉴스 진단] 파싱 0건 — 페이지 구조 확인 필요(응답 {len(_html)}자)")
+    return titles
+
+
+def _rss_news(per_feed=40, hours=12):
+    """국내 증권 + 세계/산업 RSS에서 최근 `hours`시간 이내 뉴스 수집(피드별 상한 per_feed).
+    [{title,description,src,time,ts}]. pubDate로 12시간 필터 → 최신순. feedparser 없이 stdlib 파싱."""
+    import xml.etree.ElementTree as _ET
+    import re as _re
+    from email.utils import parsedate_to_datetime as _pdt
+    _kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    _cutoff = _kst - datetime.timedelta(hours=hours)
+    arts = []
+    for _nm, _url in _RSS_FEEDS:
+        try:
+            r = requests.get(_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                print(f"[RSS 진단] {_nm} HTTP {r.status_code}")
+                continue
+            _root = _ET.fromstring(r.content)
+            _cnt = 0
+            for _it in _root.iter("item"):
+                if _cnt >= per_feed:
+                    break
+                _t = (_it.findtext("title") or "").strip()
+                _d = _re.sub(r"<[^>]+>", "", _it.findtext("description") or "").strip()
+                _pd = _it.findtext("pubDate") or ""
+                _tm, _ts = "", None
+                try:
+                    _dt = _pdt(_pd)                        # RFC822 → datetime
+                    if _dt.tzinfo:
+                        _dt = _dt.astimezone(datetime.timezone(datetime.timedelta(hours=9))).replace(tzinfo=None)
+                    _ts = _dt
+                    _tm = _dt.strftime("%H:%M")
+                except Exception:
+                    pass
+                if _ts is not None and _ts < _cutoff:     # 12시간 초과된 오래된 뉴스 제외
+                    continue
+                if _t:
+                    arts.append({"title": _t, "description": _d, "src": _nm, "time": _tm, "ts": _ts})
+                    _cnt += 1
+            print(f"[RSS 진단] {_nm} {_cnt}건(최근 {hours}h)")
+        except Exception as _e:
+            print(f"[RSS 진단] {_nm} 예외: {type(_e).__name__}")
+    # 최신순 정렬(시각 있는 것 우선)
+    arts.sort(key=lambda a: a.get("ts") or datetime.datetime(1970, 1, 1), reverse=True)
+    return arts
+
+
+# [실사용 발견] 콘솔 [Gemini 진단]에서 "gemini-2.5-pro:NotFound" 확인 — 이 계정/API 버전에서
+# 모델명 자체가 안 잡힘(할당량과 무관한 영구 실패). 쿼터 상황과 무관하게 항상 시도해볼 안정적인
+# 모델을 폴백에 추가(gemini-2.5-flash의 ResourceExhausted는 오늘 테스트로 인한 일시적 쿼터 소진으로 추정).
+_GEMINI_MODELS = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-pro")
+
+
+def _gemini_generate(gkey, prompt):
+    """Gemini 텍스트 생성 — 모델 후보 순차 시도. 실패/미설치 시 None(진단 출력)."""
+    try:
+        import google.generativeai as genai
+    except Exception as _ie:
+        print(f"[Gemini 진단] 라이브러리 미설치 → py -m pip install google-generativeai  ({_ie})")
+        return None
+    try:
+        genai.configure(api_key=gkey)
+    except Exception as _ce:
+        print(f"[Gemini 진단] 설정 오류: {_ce}")
+        return None
+    _errs = []
+    for _mn in _GEMINI_MODELS:
+        try:
+            _resp = genai.GenerativeModel(_mn).generate_content(
+                prompt, request_options={"timeout": 60})   # 큰 프롬프트 대비(무한대기 방지)
+            _txt = getattr(_resp, "text", None)
+            if _txt:
+                return _txt.strip()
+            _errs.append(f"{_mn}:빈응답")
+        except Exception as _ge:
+            _errs.append(f"{_mn}:{type(_ge).__name__}")
+    print(f"[Gemini 진단] 전 모델 실패 — {' / '.join(_errs)[:250]}")
+    return None
+
+
+_NEWS_KEYWORDS = ("특징주", "수주", "실적", "신약 임상", "정책 수혜")
+
+
+def _stock_news_titles(code, n=10):
+    """종목 최근 뉴스 제목 리스트 — 네이버 모바일 뉴스 API. 실패 시 []."""
+    titles = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={n}&page=1",
+                         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
+                         timeout=5)
+        _j = r.json()
+
+        def _w(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str):
+                        titles.append(v)
+                    else:
+                        _w(v)
+            elif isinstance(o, list):
+                for it in o:
+                    _w(it)
+        _w(_j)
+    except Exception:
+        pass
+    # 중복 제거·상한
+    _out = []
+    for t in titles:
+        if t not in _out:
+            _out.append(t)
+    return _out[:n]
+
+
+def _gemini_stock_news_verdict(gemini_key, code, name):
+    """[V21.7] 종배 확정픽 AI 뉴스판정 — 최근 뉴스 제목을 Gemini가 읽고 오버나이트 적합성 한 줄.
+    반환: '\\n🤖 AI뉴스: ...' or ''. Gemini/뉴스 없으면 빈 문자열(무영향)."""
+    if not gemini_key:
+        return ""
+    _titles = _stock_news_titles(code, 10)
+    if not _titles:
+        return ""
+    _prompt = (f"종목 {name}({code})의 최근 뉴스 제목이야. "
+               "종가배팅(오늘 종가 매수→내일 아침 시가에 익절하는 오버나이트 단타)에 적합한지 딱 한 줄로 판정해.\n"
+               "[뉴스제목]\n" + "\n".join("- " + t for t in _titles) + "\n"
+               "[출력 형식·한 줄]: 판정(호재/중립/악재) · 재료강도(상/중/하) · "
+               "오버나이트적합(적합/주의/부적합) · 핵심이유(짧게). "
+               "이미 재료로 급등해 차익실현 위험이면 '주의', 악재면 '부적합'.")
+    _v = _gemini_generate(gemini_key, _prompt)
+    return f"\n🤖 AI뉴스: {_v.strip()}" if _v else ""
+
+
+def _watchlist_check(token, key, secret, code, px, chg, turn, ng=None):
+    """[V22.6] 관심종목 10대 기준 중 자동측정 가능 항목 체크(사용자 매매원칙 적용).
+    측정: ①거래대금상위 ②500억+ ③외인/기관수급 ⑤정배열·전고/신고 ⑥재료 ⑨끼(변동성). 반환: 통과 리스트."""
+    _p = []
+    try:
+        if turn and turn >= 50_000_000_000:                 # ② 거래대금 500억+
+            _p.append("거래대금500억+")
+        if code in {s["code"] for s in _volume_rank(token, key, secret, top=40)}:  # ① 거래대금 상위
+            _p.append("거래대금상위")
+        _f, _o = _investor_est(token, key, secret, code)    # ③ 외인/기관 수급(+)
+        if (_f + _o) > 0:
+            _p.append("수급유입")
+        ds = _daily_setup(token, key, secret, code, px)     # ⑤ 정배열(px>5MA>20MA)
+        if ds and ds.get("ma5") and ds.get("ma20") and px > ds["ma5"] > ds["ma20"]:
+            _p.append("정배열")
+        _rh = _recent_high(token, key, secret, code, 20)    # ⑤ 전고 근접/신고가
+        if _rh and px >= _rh:
+            _p.append("신고가")
+        elif _rh and px >= _rh * 0.98:
+            _p.append("전고근접")
+        if ng in ("S", "A"):                                # ⑥ 재료 모멘텀
+            _p.append(f"재료{ng}급")
+    except Exception:
+        pass
+    return _p
+
+
+def _verify_news_picks(token, key, secret, report):
+    """[V21.6] Gemini 브리핑에서 6자리 종목코드 추출 → KIS로 오늘 차트상태 검증(선반영/거래대금).
+    반환: 검증 텍스트 or ''. 뉴스픽이 이미 급등했으면 sell-the-news, 안 움직였으면 내일 여지."""
+    if not (token and report):
+        return ""
+    import re as _re
+    # [V25.14] 추천 구간(📌 주목 테마 ~ ⚠️피할것 앞)만 검증 — 피할것·주도주 서술 종목을
+    #   '✅내일 주목'으로 표시하던 모순 제거(브리핑 성적표 기록과 동일 기준).
+    _c1 = report.find("📌"); _c2 = report.find("⚠️")
+    if _c2 < 0:
+        _c2 = report.find("피할")
+    _region = report[(_c1 if _c1 >= 0 else 0):(_c2 if _c2 > 0 else len(report))]
+    # '종목명(코드)' 쌍에서 이름 맵 추출 → 검증줄에 코드 대신 종목명 표시
+    _name_map = {}
+    for _nm, _cd in _re.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", _region):
+        _name_map.setdefault(_cd, _nm.strip())
+    _codes = []
+    for _c in _re.findall(r"\(?(\d{6})\)?", _region):        # 괄호 안/밖 6자리(추천 구간만)
+        if _c not in _codes:
+            _codes.append(_c)
+    _codes = _codes[:8]
+    if not _codes:
+        return ""
+    _lines = []
+    for _cd in _codes:
+        try:
+            _px, _chg, _turn = _price_and_turnover(token, key, secret, _cd)
+            if not _px:
+                continue
+            _disp = _ma20_disparity(token, key, secret, _cd, _px)
+            _dt = f"이격 {_disp:+.0f}%" if _disp is not None else "이격 –"
+            _tk = f"거래대금 {(_turn or 0)/1e8:,.0f}억"
+            # 판정: 이미 급등(등락≥5 or 이격≥10) = sell-the-news / 저조 거래 = 관심밖 / 그 외 = 주목
+            if (_chg or 0) >= 5.0 or (_disp is not None and _disp >= 10.0):
+                _vd = "⚠️이미 급등(선반영·추격주의)"
+            elif (_turn or 0) < 10_000_000_000:
+                _vd = "💤거래 저조(관심 유입 확인 필요)"
+            else:
+                _vd = "✅거래 받쳐줌(내일 주목)"
+            _dn = _name_map.get(_cd, _cd)              # 종목명(없으면 코드)
+            _lines.append(f"• {_dn} {_px:,}({(_chg or 0):+.1f}%)·{_dt}·{_tk} → {_vd}")
+        except Exception:
+            continue
+    if not _lines:
+        return ""
+    return "\n🔍 뉴스픽 차트검증(오늘 종가 기준)\n" + "\n".join(_lines)
+
+
+def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key,
+                       kis_key=None, kis_secret=None):
+    """[V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 마감 후 뉴스는 내일 갭·수급 선행지표.
+    네이버/RSS 뉴스 수집 → Gemini가 '내일 주목 테마·대장주·해외변수·선반영주의' 브리핑 → KIS 차트검증 첨부.
+    매수 아님(참고)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((17 * 60) <= m <= (22 * 60)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("evening_news_day") == today:
+        return
+    import re as _re
+    seen = set(); arts = []
+    # [V22.1] 네이버 검색 API는 스코프 막힘(401 영구) → 시도 스킵, RSS만 사용(국내+세계 피드별 골고루)
+    _src = "RSS"
+    # [V22.8] 뉴스 기간 — 평일 24h(신선 재료). 월요일은 주말·금요일 마감후 뉴스 커버 위해 72h로 자동 확대.
+    # [V25.9] 저녁 브리핑은 '항상 다음 거래일용' → 언제나 24h(최신 재료).
+    #   월요일 저녁도 화요일용이라 주말(72h) 뉴스는 이미 월요일 장에 소화돼 노이즈일 뿐. 주말 커버는 '월요일 아침' 몫.
+    _news_hours = 24
+    for it in _rss_news(50, _news_hours):                 # 피드별 최대 50건·최근 N시간
+        _t = it.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
+        _d = it.get("description", "")
+        _k = _t[:40]
+        if not _t or _k in seen:
+            continue
+        _tg = f"{it.get('src', '')} {it.get('time', '')}".strip()
+        seen.add(_k); arts.append(f"[{_tg}] {_t} :: {_d}")   # [출처 시각] 태그(최근·구분)
+    if not arts:
+        print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
+        return
+    print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건(최근 {_news_hours}h)")
+    _batch = "\n".join(arts[:80])
+    # [V22.2] 실측 시장데이터 주입 — AI가 뉴스 서사로 방향 상상(예:'유가 상승') 못 하게, 실제 수치를 우선시키게.
+    try:
+        _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+        _, _, _mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
+    except Exception:
+        _mdetail = ""
+    # [V22.4] 오늘 거래대금 상위 20종 주입 — 뉴스 테마 vs 실제 자금 몰린 종목 교차(거래대금이 먼저)
+    _vtok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _vrank_txt = ""; _vlead_news = ""
+    try:
+        if _vtok:
+            _vr = _volume_rank(_vtok, kis_key, kis_secret, top=20)
+            # [실사용 발견 — 우리기술 사례] 전일+21.2%·이격+22%·재료불명 종목이 추천 후 장중 -16.6%까지
+            # 밀린 실제 사례 확인. Gemini가 재료직접성만으로 과열도를 스스로 계산하긴 어려워서, 이미
+            # 계산돼있는 등락률에 과열 여부를 직접 태그로 박아 판단 부담을 줄임(중요7의 근거 데이터로 사용).
+            _vrank_txt = "\n".join(
+                f"- {s['name']}({s['code']}) {s['chg']:+.1f}%"
+                + (" ⚠️단기과열(전일+15%↑)" if s['chg'] >= 15 else "")
+                + f" 거래대금 {s['turnover']/1e8:,.0f}억"
+                for s in _vr if s.get("turnover"))
+            # [V22.5] 역방향 — 거래대금 상위 8종의 종목뉴스 조회(돈 몰린 이유·모멘텀 지속성 분석용)
+            _lead = []
+            for s in [x for x in _vr if x.get("turnover")][:8]:
+                _tt = _stock_news_titles(s["code"], 3)
+                if _tt:
+                    _lead.append(f"● {s['name']}({s['code']}) {s['chg']:+.1f}%·{s['turnover']/1e8:,.0f}억: "
+                                 + " / ".join(_tt[:3]))
+            _vlead_news = "\n".join(_lead)
+    except Exception as _vre:
+        print("거래대금랭킹 주입 오류:", _vre)
+    _buzz = _topic_buzz(arts)                              # [V25.50 D] 뉴스 화제성 랭킹(반복 언급=심리 몰림)
+    if _buzz:
+        print(f"[저녁뉴스] 화제성 랭킹: {_buzz}")
+    # [피드백 반영] 네이버 '많이 본 뉴스' 실제 클릭 랭킹 — _buzz(매체 반복언급)와 다른 신호(독자 실제 클릭).
+    _ranking = _naver_ranking_news(15)
+    if _ranking:
+        print(f"[저녁뉴스] 많이본뉴스 {len(_ranking)}건 확보")
+    _ranking_txt = "\n".join(f"{_i}. {_t}" for _i, _t in enumerate(_ranking, 1)) or "(수집 실패)"
+    report = None
+    if gemini_key:
+        _prompt = ("너는 한국 주식 실전 트레이더야. 아래는 오늘 장 마감 후 뉴스(각 줄 앞 [출처 시각] — 증권/세계/산업). "
+                   "★장 마감(15:30) 이후 나온 최근 뉴스일수록 내일 갭·수급에 더 직접적이니 우선 고려해★ "
+                   "한국 증시는 미국장·반도체 글로벌·지정학·환율에 크게 좌우되니 "
+                   "★[세계] 뉴스가 내일 한국장(코스피/코스닥)에 미칠 영향을 반드시 반영해★ 내일 주목 종목/테마를 골라줘. "
+                   "이미 오늘 크게 오른 재료는 sell-the-news 주의, 불확실하면 솔직히 '재료 약함'이라고 해.\n\n"
+                   "★★중요1: 아래 [실측 시장데이터]가 실제 현재 수치야. 뉴스에서 '유가 상승·환율 급등' 같은 방향을 "
+                   "네 마음대로 추론하지 말고, 반드시 이 실측값을 우선해. 뉴스 서사와 실측이 다르면(예: 지정학 우려 뉴스지만 "
+                   "WTI 실제 하락) 실측을 따르고 그 괴리를 명시해.★★\n"
+                   "★★중요2: 주가는 팩트보다 '개인투자자(개미) 군중심리'로 움직여. 각 재료가 개미에게 어떤 감정"
+                   "(공포/탐욕/추격/기대/실망)을 유발할지, 그래서 내일 수급이 몰릴지(매수 유입) 빠질지(회피) 예측해. "
+                   "단, 심리는 추정이니 실측·차트와 충돌하면 무리한 낙관 금지.★★\n"
+                   "★★중요3: [오늘 거래대금 상위]가 오늘 실제 자금이 몰린 종목이야. 뉴스 테마가 여기 상위 종목과 겹치면 "
+                   "'실제 수급 확인=강한 재료', 뉴스만 있고 거래대금 상위에 없으면 '재료만·자금 미유입=약함'으로 판정해. "
+                   "거래대금 상위인데 관련 뉴스 없으면 '숨은 주도주'로 이유를 추정해봐.★★\n"
+                   "★★중요4: [거래대금 주도주 뉴스]는 오늘 실제 돈이 몰린 종목의 뉴스야. 각 종목이 오늘 왜 올랐는지(재료), "
+                   "그 모멘텀이 단발인지 며칠 갈지(지속성), 내일도 자금이 더 들어올지 판정해. 이게 '정답(자금)을 먼저 보고 이유를 찾는' 방식이야.★★\n"
+                   "★★중요5: [뉴스 화제성 랭킹]은 오늘 여러 매체가 반복 언급한 테마(=개미 관심 몰림) 순위야. 상위 테마일수록 "
+                   "내일 개미 수급이 붙기 쉬우니 TOP3 선정 시 가중치를 높여. 단 이미 급등·선반영이면 오히려 차익실현 경계로 판단해.★★\n"
+                   "★★중요6: [네이버 많이 본 뉴스]는 매체 보도량이 아니라 '독자가 실제로 클릭해서 읽은' 순위야 — "
+                   "화제성 랭킹보다 더 직접적인 개미 관심 지표. 단, 이건 '개미가 뭘 보고 있나'라는 심리 보조지표일 뿐 "
+                   "사실 등급이 아니야 — 🧠시장심리 문단에서만 참고하고, 📌주목 테마(대장주 선정)의 근거로 직접 쓰지 마. "
+                   "(예: K뷰티가 많이 본 뉴스 상위여도 그 자체로 K뷰티를 주목 테마에 넣을 근거는 안 됨).★★\n"
+                   "★★중요7: 재료의 '직접성'을 구분해 — 같은 '호재처럼 보이는' 뉴스도 종류에 따라 등급이 다르다:\n"
+                   "  A(직접): DART 공시·확정 공급계약/수주·실적 발표·임상·허가 결과 — 금액·상대방·기간이 명확\n"
+                   "  A-(직접 임박): 계약 체결 예정·구체적 파트너십·투자 라운드 주도\n"
+                   "  B(간접): 산업 전반 수혜 가능성·증권사 리포트(목표가는 의견일 뿐 계약 아님)·경쟁사 이슈\n"
+                   "  C(거시/테마): 유가·환율·금리·지정학 뉴스로 인한 국내 테마 반응(해당 종목의 직접 계약이 없으면 여기)\n"
+                   "  D: 루머·출처불명·오래된 재탕\n"
+                   "  ★특히 아래는 실무에서 자주 과대평가되니 주의: "
+                   "① ETF 편입은 그 종목의 매출·실적 계약이 아니다(설정액·순유입 불명이면 B, A급 아님) "
+                   "② 오너家 등 특수관계인 간 장외 지분매매는 정규시장 장내 매도 물량·거래대금 증가와 다른 이벤트다(수급 영향 직접 연결 금지) "
+                   "③ 국내기업의 해외기업 투자 라운드 참여는, 개별 투자금·지분율·공급계약이 공개 안 됐으면 '확인 불가'이지 확정 매출 호재가 아니다 "
+                   "④ 유가 급등 뉴스 하나로 관련 테마주 전체를 강한 재료로 묶지 마라 — 실제 거래대금·이격 확인 전엔 신규 추격 근거 약함 "
+                   "⑤ 구글·MS·아마존 등 해외 대기업의 데이터센터·AI·클라우드 투자 발표는, 그 국내 종목의 직접 납품·공급계약이 "
+                   "공시·IR로 확인 안 됐으면 자동으로 그 종목 수혜(A/A-)로 연결 금지 — 확인 안 되면 B 이하 간접 테마일 뿐 "
+                   "⑥ 서로 다른 두 종목을 하나의 재료로 묶지 마라 — B종목을 추천하려면 B종목 자체의 당일 직접 뉴스·공시가 있어야 한다 "
+                   "(예: '경쟁사/동종업계 A종목에 호재가 있으니 B종목도 좋다'는 식으로 무관한 종목에 재료를 갖다 붙이는 것 금지) "
+                   "⑦ [뉴스] 각 줄 앞 [출처 시각]을 확인해 — 오늘/전날 뉴스가 아니라 며칠 전(3거래일↑) 뉴스면 "
+                   "'오늘 새로 나온 신규 트리거'로 쓰지 말고 기존 재료의 지속성 참고 정도로만 등급을 낮춰서 반영해 "
+                   "⑧ [오늘 거래대금 상위]에 '⚠️단기과열' 태그가 붙은 종목(전일 +15%↑ 급등)은, 직접재료(A/A-)가 "
+                   "명확히 확인되지 않으면 📌주목 테마에서 반드시 제외해라 — 거래대금·모멘텀만으로는 재진입 근거 부족하다 "
+                   "(실사용에서 확인된 실패 사례: 전일+21%·이격+22%·재료불명 종목을 추천했다가 다음날 장중 -16.6%까지 밀림).★★\n"
+                   f"[실측 시장데이터]\n{_mdetail}\n\n"
+                   f"[뉴스 화제성 랭킹]\n{_buzz or '(집계 없음)'}\n\n"
+                   f"[네이버 많이 본 뉴스]\n{_ranking_txt}\n\n"
+                   f"[오늘 거래대금 상위]\n{_vrank_txt or '(조회 실패)'}\n\n"
+                   f"[거래대금 주도주 뉴스]\n{_vlead_news or '(조회 실패)'}\n\n"
+                   f"[뉴스]\n{_batch}\n\n"
+                   "[출력: 텔레그램용·간결·이모지]\n"
+                   "🌍 해외 변수: (미국장·반도체·지정학·환율 중 내일 국장에 영향줄 것 1~2줄, 실측 기준)\n"
+                   "🧠 시장심리: (내일 개미 심리 방향 — 공포/탐욕/관망 중 + 자금 몰릴 섹터 vs 회피할 섹터, 1~2줄)\n"
+                   "💰 거래대금 주도주 모멘텀: (오늘 자금 몰린 상위 종목 2~3개 — 각: 종목 · 오른 이유 · 지속성(단발/며칠+) · 내일 추격가능?)\n"
+                   "🌙 내일 시황 브리핑\n"
+                   "📌 주목 테마 TOP 3 — 최대 3개(집중·고확신). 각: 테마 · 대장주(반드시 종목명 옆에 6자리 종목코드 괄호로! 예: 두산에너빌리티(034020)) · "
+                   "재료등급(A/A-/B/C/D, 위 중요7 기준) · 직접성 한줄(예: 'DART 공급계약 확정' vs 'ETF편입·간접') · "
+                   "지속성(단발/며칠) · 개미심리(몰릴/빠질) · 선반영주의 · "
+                   "★반대근거(이 종목이 안 갈/빠질 이유 1개 — 선반영·수급이탈·재료약함·차익실현 등 반드시 명시)★\n"
+                   "   ※C·D등급 재료만 있는 종목은 실제 거래대금·이격이 뒷받침 안 되면 3개에서 빼라(진짜 확신 3개만). "
+                   "★고확신 종목이 2개면 2개만, 1개면 1개만, 0개면 '고확신 신규 없음(관망)'이라고 써라 — "
+                   "개수를 채우려고 약한 재료를 억지로 끼워넣지 마라. 추천 0개도 정상적인 결과다.★\n"
+                   "⚠️ 피할 것 (재료소멸·이미급등·악재·심리악화)\n"
+                   "한 줄 총평.")
+        print("[저녁뉴스] 🤖 Gemini 판정 중... (5~20초 소요)")
+        report = _gemini_generate(gemini_key, _prompt)
+        print(f"[저녁뉴스] Gemini 판정 {'완료' if report else '실패→헤드라인'}")
+    if report:
+        _verify = ""
+        try:
+            _verify = _verify_news_picks(_vtok, kis_key, kis_secret, report)   # 위에서 만든 토큰 재사용
+            if _verify:
+                print("[저녁뉴스] 차트검증 첨부 완료")
+        except Exception as _ve:
+            print("차트검증 오류:", _ve)
+        # [V25.14] 브리핑 픽 기록 — ★'📌 주목 테마 TOP5(대장주)' 구간만★ 성적표에 적립.
+        #   (버그: 이전엔 리포트 전체를 긁어 ⚠️피할것·거래대금 주도주 서술의 종목까지 '브리핑 픽'으로
+        #    저장 → 추천 안 한/경고한 종목이 '적중'으로 찍히고 --analyze 승률 오염. 추천 구간만 기록.)
+        try:
+            import re as _re2
+            _c1 = report.find("📌")                       # 주목 테마 시작
+            _c2 = report.find("⚠️")                       # 피할 것 시작(그 앞까지가 추천)
+            if _c2 < 0:
+                _c2 = report.find("피할")
+            _pick_region = report[(_c1 if _c1 >= 0 else 0):(_c2 if _c2 > 0 else len(report))]
+            _seen_bc = set()
+            for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", _pick_region):
+                if _bc in _seen_bc:
+                    continue
+                _seen_bc.add(_bc)
+                _bp, _, _ = _price_and_turnover(_vtok, kis_key, kis_secret, _bc) if _vtok else (None, None, None)
+                if _bp:
+                    _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
+        except Exception as _be:
+            print("브리핑 성적표 기록 오류:", _be)
+        # [V24.8] 팩트체크 레이어 — Gemini+구글검색(grounding)으로 1차 브리핑 교차검증·보정
+        _fc = ""
+        try:
+            if gemini_key:
+                print("[저녁뉴스] 🔎 Gemini 검색 팩트체크 중... (10~40초)")
+                _fc = _gemini_factcheck(gemini_key, report, _mdetail)
+                print(f"[저녁뉴스] 팩트체크 {'완료' if _fc else '실패/생략'}")
+        except Exception as _fce:
+            print("팩트체크 오류:", _fce)
+        # [V25.44] 팩트체크 강등/제외 종목 저장 → 종배가 회피(흥구석유式: 아침엔 제외인데 오후 종배 원톱 모순 방지)
+        try:
+            _avoid = _factcheck_avoid_codes(report, _fc)
+            if _avoid:
+                state["factcheck_avoid"] = {"ts": int(now_kst.timestamp()), "codes": _avoid}
+                print(f"[저녁뉴스] 팩트체크 강등 저장(종배 회피): {_avoid}")
+        except Exception as _ae:
+            print("팩트체크 강등 저장 오류:", _ae)
+        _fc_block = f"\n\n━━ 🔎 검색 교차검증 ━━\n{_fc}" if _fc else ""
+        _rank_block = f"\n\n📌 네이버 많이 본 뉴스(개미 관심)\n{_ranking_txt}" if _ranking else ""
+        _msg = (f"{SIG_WATCH}\n{report}\n{_verify}{_fc_block}{_rank_block}\n\n"
+                "※ AI 참고용 — 개장 후 거래대금·수급 확인 필수(뉴스는 보조·후행 가능)")
+    else:
+        _heads = "\n".join("• " + a.split(" :: ")[0] for a in arts[:8])
+        # [피드백 반영] 키는 있는데 호출만 실패한 경우와 "키 자체가 없음"을 구분 — 콘솔의
+        # [Gemini 진단] 로그(모델별 실패 사유)를 봐야 하는 상황을 메시지에서부터 명확히 안내.
+        _reason = "Gemini 키 없음" if not gemini_key else "Gemini 호출 실패(콘솔 [Gemini 진단] 로그 확인)"
+        _rank_block = f"\n\n📌 네이버 많이 본 뉴스(개미 관심)\n{_ranking_txt}" if _ranking else ""
+        _msg = (f"{SIG_WATCH}\n🌙 내일 참고 뉴스(헤드라인)\n{_heads}{_rank_block}\n"
+                f"※ AI 판정 미가동({_reason}) — 헤드라인만")
+    if send_telegram(token_tg, chat_id, _msg):
+        state["evening_news_day"] = today
+        print(f"[저녁뉴스] 브리핑 발송 — 수집 {len(arts)}건 · AI {'ON' if report else 'OFF'}")
+
+
 _DART_POS = ("공급계약체결", "단일판매", "수주", "기술이전", "특허권취득", "품목허가", "임상시험결과",
              "자기주식취득결정", "무상증자결정")
 # [V18.8] 악재는 '진짜 중대'만 — 안내/조정 류 오탐 제거(전환가액조정 등 잡음 컷)
@@ -786,13 +2250,94 @@ _DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "�
 _DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
 
 
-def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None):
+def _sector_name(token, key, secret, code):
+    """종목 업종명 — inquire-price bstp_kor_isnm. 종배 분산(다른 섹터) 판정용. 실패 시 ''."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return (o.get("bstp_kor_isnm") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _market_cap(token, key, secret, code):
+    """시가총액(억원) — inquire-price hts_avls. 실패 시 None. 수주 임팩트 = 계약금액/시총 판정용."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return _to_int(o.get("hts_avls"))     # 억원 단위
+    except Exception:
+        pass
+    return None
+
+
+def _contract_detail(dart_key, rcept_no):
+    """[Phase2] DART 공급계약 상세문서에서 '최근매출액 대비(%)'·계약기간(년) 추출(best-effort).
+    반환 {'sales_ratio': float|None, 'years': float|None, 'amount': float|None(억원)}. 파싱 실패 시 None."""
+    out = {"sales_ratio": None, "years": None, "amount": None}
+    try:
+        import io as _io, zipfile as _zip, re as _re
+        r = requests.get("https://opendart.fss.or.kr/api/document.xml",
+                         params={"crtfc_key": dart_key, "rcept_no": rcept_no}, timeout=8)
+        if r.status_code != 200 or not r.content:
+            return out
+        try:
+            _zf = _zip.ZipFile(_io.BytesIO(r.content))
+            _raw = b"".join(_zf.read(n) for n in _zf.namelist())
+        except Exception:
+            _raw = r.content
+        try:
+            txt = _raw.decode("utf-8", "ignore")
+        except Exception:
+            txt = _raw.decode("cp949", "ignore")
+        txt = _re.sub(r"<[^>]+>", " ", txt)       # 태그 제거
+        txt = _re.sub(r"\s+", " ", txt)
+        # 최근 매출액 대비(%) — 라벨 뒤 첫 숫자
+        m = _re.search(r"매출액\s*대비[^0-9\-]{0,15}([0-9]+(?:\.[0-9]+)?)", txt)
+        if m:
+            out["sales_ratio"] = float(m.group(1))
+        # [V25.16] 계약금액(절대액) — 대형주라도 절대 규모 크면 강신호 유지용(삼성전기 1조722억 놓침 대응)
+        ma = _re.search(r"계약금액[^0-9]{0,20}([0-9][0-9,]{7,})", txt)   # 8자리↑(천만원↑) 숫자
+        if ma:
+            try:
+                out["amount"] = int(ma.group(1).replace(",", "")) / 1e8    # 원 → 억원
+            except Exception:
+                pass
+        # 계약기간: 시작~종료일(YYYY.MM.DD 또는 YYYY-MM-DD 2개)로 연수 추정
+        ds = _re.findall(r"(20[0-9]{2})[.\-/ ]\s*([01]?[0-9])[.\-/ ]\s*([0-3]?[0-9])", txt)
+        if len(ds) >= 2:
+            try:
+                y0, m0, d0 = map(int, ds[0]); y1, m1, d1 = map(int, ds[-1])
+                _days = (datetime.date(y1, m1, d1) - datetime.date(y0, m0, d0)).days
+                if _days > 0:
+                    out["years"] = round(_days / 365.0, 1)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None, sev=1):
     """DART 당일 신규 공시 폴링 → 호재 공시는 우리 엔진(거래대금·이격)으로 교차검증해 '진입후보 선정'.
-    악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음."""
+    악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음.
+    [V20.5] 승률 개선: 계약 해지/철회=악재 재분류 · 거래대금 0/미미=선점만 · 리스크오프(sev2)=강매수 억제 ·
+            하락과대(-3%↓)·낙폭과대(이격-15%↓)=강매수 금지(관망)."""
     if not dart_key:
         return
     m = now_kst.hour * 60 + now_kst.minute
-    if not ((7 * 60) <= m <= (17 * 60)):        # 장전~마감후 공시창(07:00~17:00)
+    # [V25.16] 창 확대 07:00~20:00 — 대형 공급계약·수주는 장 마감 후(16~18시) 공시 많음(삼성전기 놓침 대응).
+    #   마감후 공시는 종가 매수 불가지만 NXT(16~20시)/익일 대응 가능 → 알림 가치 큼.
+    if not ((7 * 60) <= m <= (20 * 60)):
         return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("dart_sent", {})
@@ -814,6 +2359,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         return
     state["dart_err_warned"] = False
     _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _vrank_codes = None                            # [V21.0] 당일 거래대금 랭킹 top40(주도주 교차검증용·지연조회)
     for _it in (j.get("list") or []):
         _rcp = _it.get("rcept_no")
         _stock = (_it.get("stock_code") or "").strip()
@@ -821,12 +2367,22 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             continue                            # 신규·상장사(종목코드 有)만
         _nm = _it.get("report_nm", "") or ""
         _corp = _it.get("corp_name", "")
-        if any(k in _nm for k in _DART_SKIP):     # [V18.6] 형식·노이즈 공시 제외(증권발행실적 등)
-            sent[_rcp] = True
-            continue
         _neg = any(k in _nm for k in _DART_NEG)
         _pos = any(k in _nm for k in _DART_POS)
         _perf = any(k in _nm for k in _DART_PERF)  # [V18.6] 진짜 잠정실적만(증권발행실적 오탐 제거)
+        # [V25.16] SKIP은 '호재·악재 키워드 없을 때만' 적용 — "단일판매ㆍ공급계약체결(자율공시)"가
+        #   '자율공시)'에 걸려 스킵되던 버그(삼성전기 1조722억 놓침). 진짜 재료면 자율공시여도 처리.
+        if any(k in _nm for k in _DART_SKIP) and not (_pos or _neg):
+            sent[_rcp] = True
+            continue
+        # [V20.5 버그수정] 호재 키워드라도 '해지·철회·취소·무산·불발·중단' 붙으면 계약 무산 = 악재로 재분류
+        #   예: "단일판매공급계약해지" → '단일판매'로 호재 오탐 → 실제론 악재
+        if _pos and any(k in _nm for k in ("해지", "철회", "취소", "무산", "불발", "중단")):
+            _pos = False
+            _neg = True
+        # [V20.5] '매매거래정지해제'=거래재개(악재 아님) → 악재 오탐 제거
+        if _neg and ("매매거래정지" in _nm) and ("해제" in _nm):
+            _neg = False
         if not (_neg or _pos or _perf):
             continue
         sent[_rcp] = True
@@ -848,9 +2404,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                 pass
         if not _px:                             # 장외/거래 전 → 선점 후보(재료만)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_BUY}\n🎯 [공시 발굴·선점] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
                           f"공시: {_nm} (호재 재료)\n"
-                          f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 후 소액 진입\n{_url}")
+                          f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 · 아직 매수 아님\n{_url}")
             continue
         _disp = None
         try:
@@ -859,24 +2415,143 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             pass
         _dtxt = f" · 이격 {_disp:+.0f}%" if _disp is not None else ""
         _st = f"지금 {_px:,}({(_chg or 0):+.1f}%) 상승중" if (_chg or 0) > 0 else f"지금 {_px:,}({(_chg or 0):+.1f}%)"
-        if _turn and _turn < 3_000_000_000:      # [V18.6] 거래대금 30억↓ = 거래 안 붙음 → 발송 안 함(소음 제거)
-            continue                              # 소형주 수주라도 거래 붙어야 의미 → 급증스캔이 잡음
+        # [V25.54] 자사주 반전 신호(복기 학습 8/25·9/1·9/3) — 급락(-2%↓) 중 자기주식취득 공시 =
+        #   기타법인 수급으로 V자 반전 동력. 일반 호재보다 우선 처리(급락+자사주 조합).
+        _is_buyback = ("자기주식" in _nm and "취득" in _nm
+                       and not any(k in _nm for k in ("해지", "처분", "매도", "반대매매", "종료")))
+        if _is_buyback and ((_chg or 0) <= -2.0):     # 취득(매입)만 — 신탁해지·처분은 오히려 매입중단(제외)
+            _mc = None
+            try:
+                _mc = _market_cap(_tok, kis_key, kis_secret, _stock)
+            except Exception:
+                pass
+            _big = " · 대형주(반전 탄력↑)" if (_mc and _mc >= 10000) else ""
+            _bstop = int(_px * 0.97)
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n🔄 [자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
+                          f"{_st}{_dtxt}{_big}\n"
+                          f"📚 복기: 급락 대형주 자사주 매입은 기타법인 수급으로 V자 반전 동력(8/25·9/3 사례)\n"
+                          f"※ 저가 분할 관찰 · 손절 {_bstop:,}(−3%) · 지수/미선물 추가급락 지속시 보류 · 확인 후 진입\n{_url}")
+            _log_signal(state, now_kst, "자사주반전", _corp, _stock, _px)
+            continue
+        # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '관찰'로만(장전 0억 강매수 오발 차단)
+        if (not _turn) or _turn < 5_000_000_000:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
+                          f"공시: {_nm} (호재 재료)\n"
+                          f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
+                          f"🔥 거래 붙는지 확인 후 — 아직 매수 아님\n{_url}")
+            continue
         _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
         if _overheat:                            # 이미 급등 → 추격 금지
             send_telegram(token_tg, chat_id,
                           f"{SIG_WATCH}\n📢 [공시·과열] {_corp}({_stock})\n"
                           f"공시: {_nm}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
             continue
-        # 🎯 진입후보 선정 — 호재 공시 + 거래대금 살아있음 + 비과열
+        # [V20.5 버그3] 리스크오프(sev2) = 강매수 억제(모순 방지) — 관망 정보만
+        if sev == 2:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [공시·리스크오프 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} — 매크로 리스크오프라 강매수 보류(재료만 참고)\n{_url}")
+            continue
+        # [V20.5 버그4] 하락과대(-3%↓)·낙폭과대(이격 -15%↓) = 떨어지는 칼 → 강매수 금지, 관망
+        if ((_chg or 0) <= -3.0) or (_disp is not None and _disp <= -15.0):
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [공시·하락중 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
+            continue
+        # [V20.8] 수주/공급계약 임팩트 판정(멘토 피드백) — 금액 크기만 X, 매출대비·계약기간·시총으로.
+        #   Phase2: DART 상세문서에서 '매출액 대비%'·계약기간→연환산 임팩트. 연 5% 미만=미미.
+        #   Phase1(폴백): 매출대비 파싱 실패 시 시총으로 — 시총 5조+ 대형주는 수주 임팩트 작음.
+        _impact_txt = ""
+        if any(k in _nm for k in ("공급계약", "단일판매", "수주")):
+            _cd = _contract_detail(dart_key, _rcp)
+            _ratio, _yrs, _amt = _cd.get("sales_ratio"), _cd.get("years"), _cd.get("amount")
+            _weak = False; _why = ""
+            if _ratio is not None:
+                _eff = _ratio / max(_yrs or 1.0, 1.0)     # 연환산 매출대비%
+                _impact_txt = (f" · 매출대비 {_ratio:.0f}%"
+                               + (f"·{_yrs:.0f}년→연 {_eff:.1f}%" if _yrs else ""))
+                if _eff < 5.0:                            # 연매출 대비 5% 미만 = 실적 영향 미미
+                    _weak = True; _why = f"매출대비 임팩트 미미(연 {_eff:.1f}%)"
+            elif _amt is not None and _amt >= 3000:       # [V25.16] 계약금액 3천억+ = 절대 규모 큼 → 대형주라도 강신호
+                _impact_txt = f" · 계약 {_amt/10000:.2f}조(대형 수주)" if _amt >= 10000 else f" · 계약 {_amt:,.0f}억(대형 수주)"
+            else:
+                _mc = _market_cap(_tok, kis_key, kis_secret, _stock)   # Phase1 폴백
+                if _mc and _mc >= 50_000:                 # 시총 5조+ 대형주 = 수주 임팩트 작음
+                    _weak = True; _why = f"시총 {_mc/10000:.0f}조 대형주(수주 임팩트 작음)"
+                elif _mc:
+                    _impact_txt = f" · 시총 {_mc/10000:.1f}조"
+            if _weak:
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_WATCH}\n📢 [공시·임팩트 약함 관망] {_corp}({_stock})\n"
+                              f"공시: {_nm}\n{_st}{_dtxt} — {_why} → 강신호 아님(참고만)\n{_url}")
+                continue
+        # [V23.5] 거래대금 랭킹은 '태그'로만 — 공시는 선행 재료라 아직 거래대금 안 붙은 게 정상.
+        #   랭킹 강등(V21.0)은 공시 선행성과 모순 → 매수(강)은 유지하고 주도/비주도만 표시.
+        if _vrank_codes is None:
+            _vrank_codes = {s["code"] for s in _volume_rank(_tok, kis_key, kis_secret, top=100)}
+        _lead_tag = "🔥주도주(거래대금 랭킹 內)" if _stock in _vrank_codes else "🌱비주도(선행 재료·거래 확인 필요)"
+        # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
+        _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= 7) else ""
         send_telegram(token_tg, chat_id,
-                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보] {_corp}({_stock})\n"
+                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
-                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억 · 비과열 ✅\n"
-                      f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%)\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · {_lead_tag} · 비과열 ✅\n"
+                      f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%){_pull}\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
     state["dart_sent"] = sent
+
+
+def test_buyback_scan(now_kst, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None):
+    """[V25.54] 자사주 반전 신호 테스트 — 오늘 실제 DART '자기주식취득' 공시를 스캔해
+    각 종목 현재 등락·조건충족(-2%↓) 여부를 보여줌. 파이프라인(DART감지→급락판정) 확인용. --test-buyback."""
+    if not dart_key:
+        send_telegram(token_tg, chat_id, "⚠️ DART 키 없음 — 자사주 테스트 불가"); return
+    today = now_kst.strftime("%Y%m%d")
+    try:
+        r = requests.get("https://opendart.fss.or.kr/api/list.json",
+                         params={"crtfc_key": dart_key, "bgn_de": today, "end_de": today,
+                                 "page_no": "1", "page_count": "100", "sort": "date", "sort_mth": "desc"}, timeout=8)
+        j = r.json()
+    except Exception as _e:
+        send_telegram(token_tg, chat_id, f"⚠️ DART 조회 실패: {type(_e).__name__}"); return
+    if j.get("status") not in ("000", "013"):
+        send_telegram(token_tg, chat_id, f"⚠️ DART status={j.get('status')} {j.get('message','')}"); return
+    _tok = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    _hits = [x for x in (j.get("list") or []) if "자기주식" in (x.get("report_nm") or "") and (x.get("stock_code") or "").strip()]
+
+    def _is_bb(nm):                                   # 진짜 매입(취득)만 — 해지·처분·매도는 매입중단(제외)
+        return ("자기주식" in nm and "취득" in nm
+                and not any(k in nm for k in ("해지", "처분", "매도", "반대매매", "종료")))
+    if not _hits:
+        send_telegram(token_tg, chat_id,
+                      f"🔄 [자사주 반전 테스트] 오늘({today}) 자기주식 공시 0건 — 실제 공시 나오는 날 발동.\n"
+                      "※ 신호 조건: 자기주식취득 공시 + 종목 급락(-2%↓). 둘 다여야 뜸(평소엔 안 뜨는 게 정상).")
+        print("[자사주테스트] 자기주식 공시 0건"); return
+    _lines = [f"🔄 [자사주 반전 테스트] 오늘 자기주식 공시 {len(_hits)}건 — 조건(-2%↓) 충족 여부:"]
+    for x in _hits[:12]:
+        _cd = x["stock_code"].strip(); _cp = x.get("corp_name", ""); _rn = x.get("report_nm", "")
+        _chg = None
+        if _tok:
+            try:
+                _, _chg, _ = _price_and_turnover(_tok, kis_key, kis_secret, _cd)
+            except Exception:
+                pass
+        if not _is_bb(_rn):
+            _mark = "🚫제외(해지·처분=매입중단, 반전 아님)"
+        elif _chg is None:
+            _mark = "❔시세없음"
+        elif _chg <= -2.0:
+            _mark = "✅발동(급락+자사주 매입)"
+        else:
+            _mark = "⚪조건미달(급락 아님)"
+        _lines.append(f"• {_cp}({_cd}) {(f'{_chg:+.1f}%' if _chg is not None else '—')} · {_rn[:24]} → {_mark}")
+    _lines.append("\n※ ✅=실제 발동 / ⚪=자사주 매입공시 정상감지지만 급락 아님 / 🚫=해지·처분(매입중단이라 반전 아님).")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[자사주테스트] 자기주식 공시 {len(_hits)}건 발송")
 
 
 # [V18.3] 종목 뉴스 재료 등급 — watcher 시가저격/진입에 뉴스 확인 연계(악재 스킵·재료 태그).
@@ -887,14 +2562,19 @@ _NEWS_NEG_KW = ("무산", "해지", "철회", "횡령", "배임", "상장폐지"
                 "소송", "불성실공시", "분식", "거래정지", "관리종목", "리콜")
 
 
+_NEWS_GRADE_CACHE = {}   # [V25.23] {code_YYYYMMDD: (grade, is_bad)} — 일당 캐시로 판정 안정화
+
+
 def _news_grade(code):
     """종목 뉴스 재료 등급 — 네이버 모바일 뉴스 제목 키워드. 반환 (grade, is_bad).
-    grade: 'S'/'A'/'none'. is_bad: 악재 감지. 실패 시 ('none', False) — 매매 방해 안 함."""
+    grade: 'S'/'A'/'none'. is_bad: 악재. [V25.23] 일당 캐시 — 조회 실패/빈응답이면 그날 성공한
+    등급을 재사용(같은 날 판정이 A→none 뒤집히던 버그 방지). 성공 결과만 캐시."""
+    _key = code + (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
     titles = []
     try:
         r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize=15&page=1",
                          headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
-                         timeout=5)
+                         timeout=7)
         _j = r.json()
 
         def _walk(o):
@@ -909,18 +2589,30 @@ def _news_grade(code):
                     _walk(it)
         _walk(_j)
     except Exception:
-        return "none", False
+        return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 조회 실패 → 그날 캐시 재사용(판정 안정)
     if not titles:
-        return "none", False
+        return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 빈응답(일시적) → 캐시 우선
+    _res = ("none", False)
     for t in titles:
         if any(n in t for n in _NEWS_NEG_KW):
-            return "none", True                # 제목 하나라도 악재 → 악재 판정
-    blob = " ".join(titles)
-    if any(k in blob for k in _NEWS_S_KW):
-        return "S", False
-    if any(k in blob for k in _NEWS_A_KW):
-        return "A", False
-    return "none", False
+            _res = ("none", True); break                      # 제목 하나라도 악재 → 악재 판정
+    else:
+        blob = " ".join(titles)
+        if any(k in blob for k in _NEWS_S_KW):
+            _res = ("S", False)
+        elif any(k in blob for k in _NEWS_A_KW):
+            _res = ("A", False)
+    # [V25.47] 등급 안정화 — 뉴스 피드가 하루 종일 갱신돼 등급이 S/A→none으로 튀던 문제(삼성전자 none→A→S 널뛰기).
+    #   그날 이미 잡힌 등급은 '강등' 안 함(재료는 사라지지 않음). 업그레이드(none→A→S)만 허용. 악재는 sticky(하루 유지).
+    _prev = _NEWS_GRADE_CACHE.get(_key)
+    if (_prev and _prev[1]) or _res[1]:                       # 이전 or 이번이 악재 → 악재 유지
+        _res = ("none", True)
+    elif _prev:
+        _rank = {"S": 2, "A": 1, "none": 0}
+        if _rank.get(_prev[0], 0) > _rank.get(_res[0], 0):    # 캐시가 더 강하면 강등 방지
+            _res = _prev
+    _NEWS_GRADE_CACHE[_key] = _res                            # 최강 등급 유지(강등 차단·업그레이드 허용)
+    return _res
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -928,7 +2620,9 @@ def _news_grade(code):
 #   거래대금 랭킹 → 일봉 셋업(기준선·5일선·이격·급증배수) → 조기포착/급증진입 판정 + 뉴스.
 # ══════════════════════════════════════════════════════════════════════════
 _EARLY_ETF_KW = ("ETN", "ETF", "선물", "레버리지", "인버스", "KODEX", "TIGER", "PLUS",
-                 "ACE", "SOL", "KBSTAR", "리츠", "스팩", "채권")
+                 "ACE", "SOL", "KBSTAR", "리츠", "스팩", "채권",
+                 "RISE", "KoAct", "히어로즈", "마이티", "WON", "BNK", "TIMEFOLIO",
+                 "1Q", "FOCUS", "파워", "KIWOOM", "HANARO", "액티브", "커버드콜")   # [V22.9] 신규 ETF 브랜드 추가
 
 
 def _volume_rank(token, key, secret, top=40):
@@ -960,6 +2654,60 @@ def _volume_rank(token, key, secret, top=40):
         return []
 
 
+def _vol_ratio_5d(token, key, secret, code):
+    """[V22.7] 오늘 거래량 / 최근 5거래일(전일까지) 평균 거래량 배수. (오늘vol, 5일평균, 배수) or None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)]
+        vols = [_to_int(x.get("acml_vol")) for x in rows]      # 최신순(오늘=[0])
+        if len(vols) >= 6 and vols[0]:
+            _avg5 = sum(vols[1:6]) / 5.0                        # 전일부터 5거래일 평균
+            if _avg5 > 0:
+                return vols[0], _avg5, vols[0] / _avg5
+    except Exception:
+        pass
+    return None
+
+
+def check_vol_surge(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V22.7] 거래량 급증 서치(마감권 15:00~15:25, 당일 1회) — 거래대금 상위 중
+    '오늘 거래량 > 5일평균 2배' 종목을 거래대금 순위와 함께 알림. 관심종목 발굴용(매수 아님)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60) <= m <= (15 * 60 + 25)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("volsurge_day") == today:
+        return
+    hits = []
+    for _i, s in enumerate(_volume_rank(token, key, secret, top=40), start=1):
+        if any(k in str(s["name"]) for k in _EARLY_ETF_KW):
+            continue
+        _vr = _vol_ratio_5d(token, key, secret, s["code"])
+        if not _vr:
+            continue
+        _tv, _avg5, _mult = _vr
+        if _mult >= 2.0:                                    # 오늘 거래량이 5일평균의 2배+
+            hits.append((_mult, f"• {s['name']} {s['chg']:+.1f}% · 거래량 {_mult:.1f}배(5일평균) · "
+                                f"거래대금 {s['turnover']/1e8:,.0f}억(거래대금 {_i}위)"))
+        if len(hits) >= 15:
+            break
+    if hits:
+        hits.sort(reverse=True)                             # 급증 배수 큰 순
+        _body = "\n".join(h[1] for h in hits[:12])
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n📊 [거래량 급증 서치] 오늘 거래량 > 5일평균 2배 + 거래대금 상위\n"
+                         f"{_body}\n※ 관심종목 후보 — 개장 후/익일 수급·차트 확인(매수 아님)"):
+            state["volsurge_day"] = today
+        print(f"[거래량급증] {len(hits)}종 발송")
+    else:
+        state["volsurge_day"] = today
+        print("[거래량급증] 해당 종목 없음")
+
+
 def _daily_setup(token, key, secret, code, px):
     """일봉 셋업 — inquire-daily-price 최근 30일. ma5/ma20/이격/기준선(26)/돌파·근접/5일선위/20일평균거래대금."""
     try:
@@ -983,20 +2731,1267 @@ def _daily_setup(token, key, secret, code, px):
         prevc = clpr[1] if len(clpr) >= 2 else px
         _turns = [clpr[i] * vol[i] for i in range(1, min(21, len(clpr))) if clpr[i] and vol[i]]
         turnavg = (sum(_turns) / len(_turns)) if _turns else 0
+        _hi20 = max([h for h in hgpr[1:21] if h]) if any(hgpr[1:21]) else 0   # 전고점(오늘 제외 최근20일 최고가)
         return {"ma5": ma5, "ma20": ma20,
                 "disp": ((px / ma20 - 1) * 100) if ma20 else 0,
                 "above5": bool(ma5 and px >= ma5),
                 "kij_cross": bool(kijun and prevc < kijun <= px),
                 "kij_near": bool(kijun and abs(px / kijun - 1) <= 0.02),
-                "turnavg": turnavg}
+                "turnavg": turnavg, "hi20": _hi20,
+                "prevlow": (lwpr[1] if len(lwpr) >= 2 and lwpr[1] else 0)}   # 전일 저점(익일 무효화 기준)
     except Exception:
         return None
+
+
+def _big_trend_tag(token, key, secret, code, px):
+    """[V23.7] MTF 큰추세 필터(방식B) — 일봉 정배열로 큰 방향 판정, 진입신호에 태그.
+    큰 봉(추세)이 방향, 작은 봉이 타점 — 신호 떠도 큰추세 하락이면 '역방향 주의'로 걸러줌. 실패 시 ''."""
+    try:
+        ds = _daily_setup(token, key, secret, code, px)
+        if not ds:
+            return ""
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20):
+            return ""
+        if px > _ma5 > _ma20:
+            return "\n📈 큰추세(일봉): 상승 ✅ (진입 방향 일치 — 큰 봉이 허락)"
+        if px < _ma5 < _ma20:
+            return "\n📉 큰추세(일봉): 하락 ⚠️ (역방향 진입 — 속임수 주의·보류 권장)"
+        return "\n➖ 큰추세(일봉): 횡보 (방향 불명확 — 신중)"
+    except Exception:
+        return ""
+
+
+def _weekly_volatility(token, key, secret, code):
+    """[V25.0] 이번주(최근 5거래일) 변동성 — 주간 레인지%·5일 수익률·최신 종가.
+    변동성 = (5일 최고가 − 5일 최저가) / 5일 최저가 × 100. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)][:5]
+        if len(rows) < 3:
+            return None
+        highs = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lows = [_to_int(x.get("stck_lwpr")) for x in rows]
+        clos = [_to_int(x.get("stck_clpr")) for x in rows]
+        if not (all(highs) and all(lows) and all(clos)):
+            return None
+        hi, lo = max(highs), min(lows)
+        vol_pct = ((hi - lo) / lo * 100) if lo else 0
+        ret5 = ((clos[0] / clos[-1] - 1) * 100) if clos[-1] else 0   # 최신순: [0]=오늘 [-1]=주초
+        return {"vol": vol_pct, "ret5": ret5, "close": clos[0], "hi": hi, "lo": lo}
+    except Exception:
+        return None
+
+
+def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
+    """[V25.0] 주간 변동성 상위 스캐너(래리 윌리엄스式 물색). 거래대금 상위 유니버스에서
+    이번주 변동성 큰 종목을 랭킹 → 재료/선반영/수급/눌림 필터 태그 첨부.
+    ★매수신호 아님 — '관찰 후보 리스트'. 진입은 필터 통과분만.★ 반환: 텔레그램 텍스트."""
+    cands = []
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg = s["code"], s["name"], s["px"], s["chg"]
+        if not px or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        _budget += 1
+        if _budget > 32:
+            break
+        wv = _weekly_volatility(token, key, secret, cd)
+        if not wv:
+            continue
+        cands.append({"code": cd, "name": nm, "px": px, "chg": chg, **wv})
+    if not cands:
+        return "📊 주간 변동성 스캐너 — 후보 없음(데이터 조회 실패/휴장)."
+    cands.sort(key=lambda c: c["vol"], reverse=True)
+    lines = ["📊 주간 변동성 상위 (래리 윌리엄스式 물색 · 이번주 5일 레인지)",
+             "⚠️ 매수신호 아님 — 관찰 후보. 재료·수급·눌림 필터 통과분만 진입.", ""]
+    for i, c in enumerate(cands[:top_n], 1):
+        ds = _daily_setup(token, key, secret, c["code"], c["px"])
+        disp = ds["disp"] if ds else None
+        # [V25.2] 재료(키워드) 태그 제거 — 오탐 많음(삼성전기 '악재' 등). 대신 신뢰도 높은 수급 표시.
+        #   재료 확인은 --stock / 저녁브리핑 팩트체크(검색 grounding)가 정확.
+        _sup = ""
+        try:
+            # [실전투자 점검] distinguish_fail=True 없이는 조회실패도 (0,0)이라 아래 None 체크가
+            # 죽은 코드였음 — 실패가 "수급 0억✅"로 잘못 표시되던 문제.
+            _f, _o = _investor_est(token, key, secret, c["code"], distinguish_fail=True)
+            if _f is not None and _o is not None:
+                _net = (_f + _o) * c["px"] / 1e8
+                _sup = f" · 수급 {_net:+.0f}억" + ("✅" if _net >= 0 else "⚠️")
+        except Exception:
+            pass
+        if c["ret5"] >= 15 or (disp is not None and disp >= 12):
+            _pre = " ⚠️선반영(이미급등·추격주의)"
+        elif disp is not None and 0 <= disp <= 4:
+            _pre = " 🟢눌림권(진입 여지)"
+        else:
+            _pre = ""
+        lines.append(f"{i}. {c['name']}({c['code']}) {c['px']:,}({c['chg']:+.1f}%)")
+        lines.append(f"   변동성 {c['vol']:.0f}% · 주간 {c['ret5']:+.0f}%"
+                     + (f" · 20MA이격 {disp:+.0f}%" if disp is not None else "")
+                     + f"{_sup}{_pre}")
+    lines.append("\n※ 변동성=물색만. 재료는 --stock/저녁브리핑 팩트체크로 확인 · 선반영 회피 · 눌림 타점 필수")
+    return "\n".join(lines)
+
+
+MY_WATCH_FILE = os.path.join(BASE, "my_watch.json")
+
+
+def _read_my_watch():
+    """내 관심종목 — my_watch.json({"on":true,"stocks":[{"code","name"}]}). off/없으면 []."""
+    try:
+        with open(MY_WATCH_FILE, encoding="utf-8-sig") as f:  # utf-8-sig: 메모장 BOM 허용
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
+            return d["stocks"]
+    except Exception:
+        pass
+    return []
+
+
+def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목을 장중 실시간 감시.
+    큰추세(일봉 정배열) 상승 + ①모멘텀(거래량 급증·양전) or ②5일선 눌림반등이면 타점 알림. 종목별 30분 쿨다운.
+    감시창: 정규장 09:00~15:30 + NXT 야간 18:00~20:00(넥스트레이드 실시간가)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _reg = (9 * 60) <= m <= (15 * 60 + 30)
+    _nxt = (18 * 60) <= m <= (20 * 60)
+    if not (_reg or _nxt):
+        return
+    _mrkt = "NX" if _nxt else "J"                        # NXT는 넥스트레이드 실시간가
+    stocks = _read_my_watch()
+    if not stocks:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    mw = state.get("my_watch_ts", {})
+    if mw.get("_day") != today:
+        mw = {"_day": today}
+    for s in stocks:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
+        if not (code.isdigit() and len(code) == 6):
+            continue
+        px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
+        if not px:
+            continue
+        ds = _daily_setup(token, key, secret, code, px)
+        if not ds:
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        _up = bool(_ma5 and _ma20 and px > _ma5 > _ma20)         # 큰추세 상승(정배열)
+        _vr = _vol_ratio_5d(token, key, secret, code)
+        _mult = _vr[2] if _vr else 0
+        # [V25.4] 🚀 돌파 확인 알림 — 20일 전고 돌파 + 거래량 2배↑(가짜돌파 필터). 별도 쿨다운(60분).
+        #   ※ 진짜 돌파 조건: 전고 위 + 거래량 동반. 장중 잠깐 찍는 속임수 걸러내려 배수 게이트.
+        _bk = code + "_brk"
+        _rhigh = _recent_high(token, key, secret, code, days=20, exclude_today=True)  # 직전 20일 전고(오늘 제외)
+        if (_rhigh and px >= _rhigh and _mult >= 2.0
+                and (int(now_kst.timestamp()) - int(mw.get(_bk, 0))) >= 60 * 60):
+            _bstop = int(_rhigh * 0.98); _bt1 = int(px * 1.05)
+            _sess_b = "NXT 야간 실시간" if _nxt else "정규장"
+            if send_telegram(token_tg, chat_id,
+                             f"{SIG_BUY}\n🚀 [돌파 확인·{_sess_b}] {name} — 20일 전고 돌파!\n"
+                             f"현재 {px:,}({(chg or 0):+.1f}%) · 전고 {_rhigh:,} 상향 · 거래량 {_mult:.1f}배 동반\n"
+                             f"진입 {px:,} · 손절 {_bstop:,}(전고 아래 −2%) · 익절 {_bt1:,}(+5%)\n"
+                             f"⚠️ 종가로 돌파 굳는지 확인 · 눌림 없이 급하면 소액 · 거래량 빠지면 속임수 주의"):
+                mw[_bk] = int(now_kst.timestamp())
+                print(f"[돌파확인] {name} {px:,} 전고 {_rhigh:,} 돌파(거래량 {_mult:.1f}배)")
+        if (int(now_kst.timestamp()) - int(mw.get(code, 0))) < 120 * 60:  # [V25.15] 쿨다운 30→120분(같은 종목 반복 발송 방지)
+            continue
+        if not _up:
+            continue                                              # 큰추세 하락/횡보 = 타점 아님(역추세 회피)
+        # [V25.15] 눌림도 '반등 확인'(저가 5일선 터치 후 현재가 회복)일 때만 — 5일선 근처 하루종일 맴돌 때
+        #   반복 발송(SK하이닉스 등)하던 문제 해결. 시장 눌림 스캐너와 동일 기준.
+        _pf = _price_full(token, key, secret, code)
+        _low = _pf[4] if _pf else None
+        _sig = None
+        if (chg or 0) > 0 and _mult >= 1.5:
+            _sig = ("🎯 모멘텀 타점", f"큰추세 상승 + 오늘 {(chg or 0):+.1f}% + 거래량 {_mult:.1f}배 급증 → 상승 초입")
+        elif (_ma5 and _low and _low <= _ma5 * 1.005 and px >= _ma5 * 0.998
+                and px > _low * 1.002 and (chg or 0) >= -1.0):
+            _sig = ("🎯 눌림 반등", f"큰추세 상승 · 저가 {int(_low):,}(5일선 터치) → 현재 5일선 회복 · 반등 확인")
+        if _sig:
+            _stop = int(px * 0.98); _t1 = int(px * 1.03)
+            _sess = "NXT 야간 실시간" if _nxt else "정규장"
+            if send_telegram(token_tg, chat_id,
+                             f"{SIG_BUY}\n👁️ [내 관심종목 타점·{_sess}] {name} — {_sig[0]}\n"
+                             f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                             f"진입 {px:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)\n"
+                             f"※ 니가 지정한 관심종목 타점 · 개장 후 수급 확인 · -2% 손절"):
+                mw[code] = int(now_kst.timestamp())
+                print(f"[내관심타점] {name} — {_sig[0]}")
+    state["my_watch_ts"] = mw
+
+
+HOLDINGS_FILE = os.path.join(BASE, "my_holdings.json")
+
+
+def _read_holdings():
+    """보유종목 — my_holdings.json({"on":true,"stocks":[{code,name,avg,qty,stop?,target?}]}). off/없으면 []."""
+    try:
+        with open(HOLDINGS_FILE, encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("on") and isinstance(d.get("stocks"), list):
+            return d["stocks"]
+    except Exception as _e:
+        # [실전투자 안전장치] 예전엔 여기서 그냥 조용히 []을 반환 — 메모장으로 손절값 고치다
+        # JSON 문법을 깨뜨리면 손절/익절 감시 전체가 '아무 표시도 없이' 영구히 꺼져버렸음.
+        print(f"[보유종목 진단] my_holdings.json 파싱 실패: {type(_e).__name__}: {_e}")
+    return []
+
+
+def _holdings_health_check(now_kst, state, token_tg, chat_id):
+    """[실전투자 안전장치] my_holdings.json이 '의도적으로 off/빈 상태'가 아니라 문법 깨짐 등으로
+    조용히 감시 불능이 된 경우를 매일 1회(장 시작 무렵) 잡아내 텔레그램으로 경고. off:false를
+    사용자가 일부러 껐을 수도 있어 그건 경고하지 않고, 파싱 자체가 실패할 때만 경고."""
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("holdings_health_day") == today:
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((8 * 60 + 30) <= m <= (9 * 60 + 30)):        # 장 시작 무렵 하루 1회면 충분
+        return
+    state["holdings_health_day"] = today                 # 결과 무관 오늘은 1회만 시도
+    if not os.path.exists(HOLDINGS_FILE):
+        return                                            # 파일 자체가 없으면 애초에 미사용(정상)
+    try:
+        with open(HOLDINGS_FILE, encoding="utf-8-sig") as f:
+            _raw = f.read()
+        json.loads(_raw)                                  # 파싱만 검증(스키마는 _read_holdings 몫)
+    except Exception as _e:
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_CAUTION}\n⚠️ [보유관리] my_holdings.json 파싱 실패({type(_e).__name__}) — "
+                      "손절/익절 자동감시가 전체적으로 꺼져 있을 수 있습니다. 파일 문법을 확인하세요.")
+        print(f"[보유종목 진단] 일일 헬스체크 실패 경보 발송: {_e}")
+
+
+def _holding_judge(token, key, secret, code, px, prev_close, ret=None, stop=None):
+    """[V25.21] 보유종목 오버나이트 홀딩 판정 — 4요인(재료질·수급·선반영·밤사이등락)으로
+    '9시까지 보유 vs 지금 매도'. 반환: 텔레그램 1줄 판정 텍스트.
+    [피드백 반영] ret(매수평균 대비 수익률)·stop(손절 기준)을 넘기면, 이미 손절선을
+    이탈한 상태에서 "재료 좋으니 9시까지 보유"라고 결론 내던 모순을 막는다 — 같은 시각에
+    '홀딩 판정: 보유하라'와 '손절 알림: 정리하라'가 동시에 발송돼 사용자가 혼란스러워하던 문제
+    (예: 알테오젠 -5.2%인데 홀딩판정은 '9시까지 보유'). 손절선 이탈 시엔 재료가 아무리 좋아도
+    손절 원칙(칼손절·존버 금지)이 최우선이라는 걸 결론에 명시한다."""
+    _ng, _nbad = _news_grade(code)
+    _strong = _ng in ("S", "A")
+    _sup_pos = None
+    try:
+        # [실전투자 점검] distinguish_fail=True 없이는 조회실패도 (0,0)이라 이 None 체크가 죽은
+        # 코드였음 — API 실패가 "수급 확인됨(0>=0 True)·✅유입"으로 잘못 표시되던 문제
+        # (보유 판정에 쓰이는 함수라 거짓 안심 표시는 특히 위험).
+        _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
+        if _f is not None and _o is not None:
+            _sup_pos = (_f + _o) >= 0
+    except Exception:
+        pass
+    _g = ((px / prev_close - 1) * 100) if prev_close else 0
+    _reflected = _g >= 3.0
+    _nxt_weak = _g <= -2.0                                 # [V25.46] NXT 밤사이 명확한 약세(-2%↓). 8시 NXT는 얇아 노이즈 고려해 보수적
+    # [V25.46] 완화 — '재료 A급 아님' 단독으로는 매도 판정 안 함(삼성전기式: 기존 계약 있어도 신규없어 none 분류될 수 있음).
+    #   매도 검토 = ①선반영(밤 +3%↑) ②수급 이탈 ③(재료 약함 AND NXT 약세) 中 하나. 그 외 재료약함은 '9시 수급 확인 후 판단'.
+    _why = []; _sell = False
+    if _reflected:
+        _sell = True; _why.append(f"밤사이 +{_g:.1f}%(선반영)")
+    if _sup_pos is False:
+        _sell = True; _why.append("수급 이탈")
+    if (not _strong) and _nxt_weak:
+        _sell = True; _why.append(f"신규재료 없음+NXT약세({_g:+.1f}%)")
+    if _sell:
+        _verdict = "🔴 지금(8시 NXT) 매도 검토 (" + "·".join(_why) + ")"
+    elif _strong:
+        _verdict = "🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 여력)"
+    else:
+        _verdict = ("🟡 신규재료 없음 — 9시 첫 5~10분 수급 확인 후 판단 "
+                    "(NXT 지지·수급 유입 중이면 성급한 8시 매도 금지 · 기존 계약/재료 있으면 유지)")
+    # [피드백 반영] 이 함수는 원래 '밤사이 등락'만 보고 판단해서, 매수평균 대비 이미 손절선을
+    # 넘긴 종목에도 "재료 좋으니 9시까지 보유"라고 결론 내는 모순이 있었다(같은 시각에 별도
+    # 발송되는 손절 알림과 정면 충돌). 손절선 이탈이 확인되면 재료 판단과 무관하게 결론을 덮어쓴다.
+    if ret is not None and stop is not None and ret <= stop:
+        _verdict = (f"🔴 단, 이미 손절선({stop:+.0f}%) 이탈(수익률 {ret:+.1f}%) — "
+                     "재료·수급이 좋아도 손절 원칙이 우선(존버 금지). 위 판단은 '재진입 시점' 참고용으로만.")
+    _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
+    return f"재료:{_ng or '없음'} · 수급:{_supmark} · 밤사이:{_g:+.1f}%(선반영 {'예' if _reflected else '아니오'})\n→ {_verdict}"
+
+
+def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V25.20] 보유종목 관리 알림 — my_holdings.json의 매수평균 대비 손절/익절 감시.
+    수익률 ≤ 손절%(기본-2) → 🔴손절 / ≥ 익절%(기본+3) → 🟢익절 / 손절 근접(-1.5%) → ⚠️경고.
+    감시창: 정규장 09:00~15:30 + NXT 프리(08:00~08:50)·애프터(16:00~20:00). 종목·상태별 60분 쿨다운."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _reg = (9 * 60) <= m <= (15 * 60 + 30)
+    _pre = (8 * 60) <= m <= (8 * 60 + 50)
+    _aft = (16 * 60) <= m <= (20 * 60)
+    if not (_reg or _pre or _aft):
+        return
+    _mrkt = "J" if _reg else "NX"
+    _holdings_health_check(now_kst, state, token_tg, chat_id)
+    hold = _read_holdings()
+    if not hold:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    hs = state.get("holdings_sent", {})
+    if hs.get("_day") != today:
+        hs = {"_day": today}
+    # [실전투자 안전장치] 시세 조회 실패 시 그냥 continue로 넘어가면 손절·익절 감시가
+    # "조용히" 멈춘다 — 사용자는 "알림이 없으니 괜찮다"고 착각할 위험이 커서 가장 위험한 침묵 실패.
+    # 종목별 연속 실패를 세다가 임계 넘으면(=수 분간 지속) 딱 1번 "감시 중단 중" 경보를 보낸다(쿨다운 60분).
+    _hf = state.get("holdings_fail", {})
+    for s in hold:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
+        avg = s.get("avg") or 0
+        if not (code.isdigit() and len(code) == 6) or not avg:
+            continue
+        qty = s.get("qty") or 0
+        _stop = float(s.get("stop", -2.0)); _target = float(s.get("target", 3.0))
+        try:
+            px, chg, _ = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
+        except Exception:
+            px = None
+        if not px:
+            _fe = _hf.get(code, {"n": 0, "warned_ts": 0})
+            _fe["n"] = _fe.get("n", 0) + 1
+            _now_ts0 = int(now_kst.timestamp())
+            if _fe["n"] >= 3 and (_now_ts0 - _fe.get("warned_ts", 0)) > 3600:
+                if send_telegram(token_tg, chat_id,
+                                 f"{SIG_CAUTION}\n⚠️ [보유관리] {name} 시세 조회 {_fe['n']}회 연속 실패 — "
+                                 "손절/익절 자동감시가 안 되고 있습니다. HTS/앱으로 직접 확인하세요."):
+                    _fe["warned_ts"] = _now_ts0
+                    print(f"[보유관리] {name} 시세조회 연속실패 경보 발송({_fe['n']}회)")
+            _hf[code] = _fe
+            continue
+        if code in _hf:
+            del _hf[code]                                 # 성공하면 실패 카운트 리셋
+        _ret = (px / avg - 1) * 100
+        _pl = int((px - avg) * qty) if qty else 0
+        # [V25.21] 8시 프리마켓 오버나이트 홀딩 판정 — 보유 전체에 '9시 보유 vs 8시 매도'(당일 1회/종목)
+        if _pre:
+            _jk = code + "_judge"
+            if hs.get(_jk) != today:
+                try:
+                    _cl = _daily_closes(token, key, secret, code)
+                    _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
+                    _jtxt = _holding_judge(token, key, secret, code, px, _prevc, ret=_ret, stop=_stop)
+                    send_telegram(token_tg, chat_id,
+                                  f"{SIG_WATCH}\n🌅 보유 홀딩 판정(8시) — {name}\n"
+                                  f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%\n{_jtxt}\n"
+                                  f"※ 8시 NXT 하락은 얇아 가짜일 수 있음 — 애매하면 9시 첫10분 저점 확인")
+                    hs[_jk] = today
+                    print(f"[보유판정] {name} 8시 홀딩판정")
+                except Exception as _je:
+                    print("보유판정 오류:", _je)
+        _kind = None
+        if _ret <= _stop:
+            _kind = ("🔴 손절선 이탈", f"손절 기준({_stop:+.0f}%) 이탈 — 규칙대로 정리 검토(존버 금지)")
+        elif _ret >= _target:
+            _kind = ("🟢 익절 도달", f"익절 목표({_target:+.0f}%) 도달 — 분할 익절·이익 확보 검토")
+        elif _ret <= _stop + 0.5:
+            _kind = ("⚠️ 손절 근접", f"손절선({_stop:+.0f}%) 0.5%p 이내 — 이탈 시 정리 준비")
+        if not _kind:
+            continue
+        # [V25.47] 손절 알림 통합 — 근접·이탈을 '손절' 한 키로 묶어 종목당 스팸(근접2+이탈2=4회) 방지.
+        #   단 근접→이탈 '에스컬레이션'은 1회 허용(경고 뒤 실제 이탈은 알려줘야 함). 익절은 별도 키.
+        _is_exit = _kind[0].startswith("🔴")
+        _fam = "익절" if _kind[0].startswith("🟢") else "손절"
+        _ck = f"{code}_{_fam}"
+        _now_ts = int(now_kst.timestamp())
+        _prev = hs.get(_ck)
+        _within = False
+        _prev_st = None
+        if isinstance(_prev, dict):
+            _within = (_now_ts - int(_prev.get("ts", 0))) < 4 * 60 * 60
+            _prev_st = _prev.get("st")
+        elif isinstance(_prev, (int, float)):                # 구버전 int 호환
+            _within = (_now_ts - int(_prev)) < 4 * 60 * 60
+        if _within and not (_is_exit and _prev_st == "근접"):   # 쿨다운 중 — 단 근접→이탈 에스컬레이션만 통과
+            continue
+        _sess = "정규장" if _reg else "NXT 프리(8시)" if _pre else "NXT 애프터"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_CAUTION}\n💼 [보유관리·{_sess}] {name} — {_kind[0]}\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · 수익률 {_ret:+.1f}%"
+                         + (f" · 평가손익 {_pl:+,}원" if qty else "") + "\n"
+                         f"{_kind[1]}"):
+            hs[_ck] = {"ts": _now_ts, "st": ("이탈" if _is_exit else "근접" if _fam == "손절" else "익절")}
+            print(f"[보유관리] {name} {_ret:+.1f}% — {_kind[0]}")
+    state["holdings_sent"] = hs
+    state["holdings_fail"] = _hf
+
+
+def _holdings_report(token, key, secret, now_kst, token_tg, chat_id):
+    """[V25.21] 보유종목 수동 조회 — 전 보유종목 수익률·평가손익 + 오버나이트 홀딩 판정. --holdings."""
+    hold = _read_holdings()
+    if not hold:
+        send_telegram(token_tg, chat_id, "💼 보유종목 없음 — my_holdings.json 확인(on:true·stocks 등록).")
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    _mrkt = "J" if ((9 * 60) <= m <= (15 * 60 + 30)) else "NX"
+    _lines = ["💼 보유종목 현황·판정"]
+    _tot = 0
+    for s in hold:
+        code = str(s.get("code", "")).zfill(6); name = s.get("name", code); avg = s.get("avg") or 0
+        qty = s.get("qty") or 0
+        if not avg:
+            continue
+        try:
+            px, chg, _ = _price_and_turnover(token, key, secret, code, mrkt=_mrkt)
+        except Exception:
+            px = None
+        if not px:
+            _lines.append(f"\n■ {name} — 시세 조회 실패")
+            continue
+        _ret = (px / avg - 1) * 100; _pl = int((px - avg) * qty) if qty else 0
+        _tot += _pl
+        _stop = float(s.get("stop", -2.0))
+        try:
+            _cl = _daily_closes(token, key, secret, code)
+            _prevc = _cl[sorted(_cl)[-1]] if _cl else avg
+            _j = _holding_judge(token, key, secret, code, px, _prevc, ret=_ret, stop=_stop)
+        except Exception:
+            _j = "판정 조회 실패"
+        _lines.append(f"\n■ {name} {px:,}({(chg or 0):+.1f}%) · 평단 {avg:,} · {_ret:+.1f}%"
+                      + (f" · {_pl:+,}원" if qty else "") + f"\n  {_j}")
+    _lines.append(f"\n💰 총 평가손익 {_tot:+,}원")
+    send_telegram(token_tg, chat_id, "\n".join(_lines))
+    print(f"[보유조회] {len(hold)}종 · 총손익 {_tot:+,}")
+
+
+def _box_range(token, key, secret, code, days=20):
+    """[V25.29] 박스권 범위 — 최근 N일 고가최고(상단)·저가최저(하단)·ma5·ma20. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)][:days]
+        if len(rows) < 15:
+            return None
+        highs = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lows = [_to_int(x.get("stck_lwpr")) for x in rows]
+        clos = [_to_int(x.get("stck_clpr")) for x in rows]
+        if not (all(highs) and all(lows) and all(clos)):
+            return None
+        return {"top": max(highs), "bottom": min(lows),
+                "ma5": sum(clos[:5]) / 5.0, "ma20": sum(clos) / len(clos)}
+    except Exception:
+        return None
+
+
+def check_range_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False):
+    """[V25.29] 레인지(박스) 매매 — 박스장 전용 무기. 횡보 종목이 박스 하단 지지에서 반등하면
+    '하단 매수→상단 목표' 알림. 추세장 종목은 배제(ma5≈ma20 횡보만). 09:05~15:20, 리스크오프 억제, 종목별 당일1회.
+    force=True: 시간창·쿨다운·당일락 무시(수동 테스트, --range)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not force and (not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("range_sent", {})
+    if force:
+        sent = {"_day": today}                        # 강제: 당일락 무시하고 새로 스캔
+    elif sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW) or sent.get(cd):
+            continue
+        if not (-2.5 <= (chg or 0) <= 3.0):          # 급락(박스깨짐)·급등(상단탈출) 사전 컷
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        br = _box_range(token, key, secret, cd)
+        if not br:
+            continue
+        _top, _bot, _ma5, _ma20 = br["top"], br["bottom"], br["ma5"], br["ma20"]
+        if not (_bot and _top and _ma20):
+            continue
+        _width = (_top / _bot - 1) * 100
+        if not (8.0 <= _width <= 35.0):              # 박스다운 폭(너무 좁으면 무의미·너무 넓으면 추세)
+            continue
+        if abs(_ma5 / _ma20 - 1) * 100 > 3.5:        # 횡보 확인 — 추세장(정/역배열 강함) 배제
+            continue
+        _d_bot = (px / _bot - 1) * 100               # 박스 하단 이격
+        if not (0 <= _d_bot <= 5.0):                 # 하단 5% 이내(지지 근처)만
+            continue
+        if px <= _bot * 0.98:                        # 하단 이탈(박스 붕괴) → 매수 아님
+            continue
+        _pf = _price_full(token, key, secret, cd)
+        _low = _pf[4] if _pf else None
+        if not _low or _low > _bot * 1.03 or px <= _low * 1.002:   # 저가 하단 터치 + 현재가 반등 확인
+            continue
+        _exp = (_top / px - 1) * 100                 # 상단까지 여력
+        if _exp < 3.0:                               # 먹을 여력 3%+ 있어야 의미
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _stop = max(int(px * 0.965), int(_bot * 0.97)); _t1 = int(_top)    # [V25.30] 손절 -3.5% 상한(하단 멀면)·목표=박스 상단
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n📦 [레인지 매매·박스하단] {nm} {px:,}({(chg or 0):+.1f}%)\n"
+                         f"박스 {int(_bot):,}~{int(_top):,}({_width:.0f}%) · 하단 지지 반등(하단+{_d_bot:.1f}%) · 상단여력 +{_exp:.0f}%\n"
+                         f"진입 {px:,} · 손절 {_stop:,}(하단 이탈) · 목표 {_t1:,}(박스 상단)\n"
+                         f"※ 박스장 무기 — 상단서 익절·하단 깨지면 손절 · 횡보 종목 전용"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "레인지매매", nm, cd, px)
+            print(f"[레인지매매] {nm} {px:,} 박스 {int(_bot):,}~{int(_top):,}")
+    state["range_sent"] = sent
+
+
+def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.7] 눌림 타점 스캐너(시장 전역) — 저갭 장세의 주력 무기. 거래대금 상위 중
+    정배열(큰추세 상승·ma5>ma20) 종목이 지지선(5일선/20일선)까지 눌렸다가 지지·반등하면 타점 알림.
+    ★하락추세 종목은 제외(떨어지는 칼 방지) — 정배열만.★ 09:05~15:20, 리스크오프 억제. 종목별 40분 쿨다운."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("pullback_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _onote, _ = _overnight_note(_us_fut_pct(state, now_kst))   # [V25.33] 미국선물 오버나이트 게이트(안내)
+    # [V25.43] my_watch 종목은 check_my_watch(내관심타점)가 담당 → 중복 발송 방지 위해 여기서 제외
+    _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _mywatch:                            # 내관심타점이 처리 → 중복 억제
+            continue
+        if sent.get(cd):                              # [V25.30] 같은 종목 하루 1회(40분 반복 스팸 해결)
+            continue
+        if not (-2.0 <= (chg or 0) <= 4.0):          # 급락(칼)·급등(눌림 아님) 사전 컷 → 일봉조회 절약
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds:
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20 and _ma5 > _ma20):    # 정배열(큰추세 상승) 필수 — 하락추세 눌림 금지
+            continue
+        _disp = ds.get("disp", 0)
+        if _disp >= 10.0:                            # 과열은 '눌림' 아님
+            continue
+        _d5 = (px / _ma5 - 1) * 100                  # 5일선 이격
+        _d20 = (px / _ma20 - 1) * 100                # 20일선 이격
+        # [V25.10] 반등 확인 — '지지선 근처'만으로 발송하면 떨어지는 칼을 잡음(감사 지적).
+        #   진짜 눌림 = 오늘 저가가 지지선(MA) 근처까지 눌렸다가 현재가가 그 위로 회복(반등)한 것.
+        _pf = _price_full(token, key, secret, cd)     # (현재가,등락,시가,고가,저가)
+        _low = _pf[4] if _pf else None
+        if not _low or (chg or 0) < -1.5:             # 저가 미확보 or 오늘 크게 밀리는 중 → 반등 아님
+            continue
+        _sig = None
+        if (_low <= _ma5 * 1.005 and px >= _ma5 * 0.998   # 저가 5일선 터치 + 현재가 5일선 회복(반등)
+                and px > _low * 1.002 and _d5 <= 3.0):
+            _sig = ("5일선 눌림반등", f"큰추세 상승 · 저가 {int(_low):,}(5일선 터치) → 현재 5일선 회복 · 반등 확인")
+        elif (px < _ma5 and _low <= _ma20 * 1.01 and px >= _ma20 * 0.998   # 5일선 아래 조정 후 20일선 반등
+                and px > _low * 1.002):
+            _sig = ("20일선 눌림반등", f"큰추세 상승 · 저가 {int(_low):,}(20일선 터치) → 현재 20일선 회복 · 반등 확인")
+        if not _sig:
+            continue
+        _ng, _nbad = _news_grade(cd)                 # 악재 제외
+        if _nbad:
+            continue
+        # ── [V25.32] 수급 게이트(강의 핵심) ──────────────────────────────
+        #   수급단타왕: "외국인·기관 수급주 위주로만 눌림. 무수급 재료·테마주 눌림은 떨어지는 칼."
+        #   당일 외인+기관 추정 순매수 유입 OR 일별 연속매수 中 하나는 반드시 있어야 발송.
+        #   (수급 fetch 1회로 게이트·연속성·평단·정예태그 전부 처리 — _elite_tag 중복호출 제거)
+        _fe, _oe = _investor_est(token, key, secret, cd)          # 당일 추정 순매수(수량)
+        _idaily = _investor_daily(token, key, secret, cd, days=5)  # 일별 순매수(연속성·평단)
+        _stag, _strong = _supply_daily_tag_from(_idaily)
+        _today_in = ((_fe or 0) + (_oe or 0)) > 0
+        if not (_today_in or _stag):                 # 당일 유입도, 일별 연속도 없음 → 무수급 → 눌림 금지
+            continue
+        # ── [V25.32] 주포 매도→매수 전환 확인 ────────────────────────────
+        #   강의: 프로그램(주포)이 매도 소진 후 매수 전환하는 자리가 눌림 급소. 당일 프로그램 순매수(+)면 강신호.
+        _prog = _program_net(token, key, secret, cd)              # 당일 프로그램 순매수 금액(원)
+        _prog_tag = ""
+        if _prog and _prog > 0:
+            _prog_tag = f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
+        # ── [V25.32] 외인/기관 평단 아래 = 추가매수 급소 ──────────────────
+        _avg = _supply_avgprice(_idaily)
+        _avg_tag = ""
+        if _avg and px <= _avg * 1.005:              # 현재가가 수급 평단 이하(±0.5%) → 강의 '평단 아래 매수' 자리
+            _avg_tag = f"\n💡 외인/기관 평단(~{_avg:,}) 이하 — 세력 원가 구간(강의 '평단 아래 매수')"
+        _pull = _pullback_levels(token, key, secret, cd, px, chg, ds) or ""
+        # [V25.30] 손절폭 -3% 상한 — '20일선 아래'가 멀면 -9%까지 가던 문제(삼성SDI 등). 20일선/−3% 中 높은쪽.
+        _stop = max(int(px * 0.97), int(_ma20 * 0.98))
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.03)
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        # 정예 태그 인라인(이미 가져온 수급으로 판정 — _elite_tag 재조회 안 함)
+        _elite = ""
+        if _ng in ("S", "A") and _today_in:
+            _elite = f" ⭐⭐정예(수급강){_stag}" if _strong else f" ⭐정예{_stag}"
+        elif _stag:                                  # 재료는 약해도 수급 연속이면 표시
+            _elite = _stag
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
+                         f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
+                         + (f" · {_mat}" if _mat else "") + _prog_tag + _avg_tag + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·지지이탈시 전량) · 익절 {_t1:,}(+3%){_pull}"
+                         + _onote + "\n"
+                         f"※ 수급주 눌림 · 10분할로 나눠 담고 다음날 갭하락 대비 총알 일부 남길 것"):
+            sent[cd] = int(now_kst.timestamp())
+            _log_signal(state, now_kst, "눌림타점", nm, cd, px)
+            print(f"[눌림타점] {nm} {px:,} — {_sig[0]}")
+    state["pullback_sent"] = sent
+
+
+def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.32] 과매도 낙주 반등(강의 ⑧, 조건부) — 지수 급락일 전용 별도 경로.
+    수급단타왕: "지수/미국 급락일에 대형주가 악재 아닌 이유로 -5~-9% 낙폭과대 → 수급 받쳐주고 반등하면 최고 기회
+    (8/5 서킷·모건스탠리 리포트式)." 평상시 눌림스캐너는 -2% 밑을 '떨어지는 칼'로 컷하므로 이 경로만 예외 허용.
+    엄격 게이트: ①지수 급락일 ②시총 대형(≥1조) ③낙폭과대(-4%↓) ④저가대비 반등확인 ⑤당일 수급유입 ⑥악재無.
+    09:05~14:30, 종목별 하루 1회. 손절 오늘 저가 이탈시 전량(타이트)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (14 * 60 + 30)):
+        return
+    # ① 지수 급락일 게이트 — 코스피 당일 등락률 -1.3% 이하일 때만 낙주 경로 활성(과매도 국면)
+    _kospi = _kospi_index_kis(token, key, secret)
+    if _kospi is None or _kospi > -1.3:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("oversold_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _onote, _ = _overnight_note(_us_fut_pct(state, now_kst))   # [V25.33] 미국선물 게이트 — 급락일 홀딩 위험판정
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd):
+            continue
+        # ③ 낙폭과대 — 오늘 -4%↓(과열/약보합 배제). -15%보다 더 빠지는 건 진짜 악재 가능 → 하한 -13%.
+        if not (-13.0 <= (chg or 0) <= -4.0):
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        # ② 시총 대형(≥1조=10000억) — 호가 탄탄한 대장주/주도주만(강의: 초대형주는 1억 사도 티도 안 남)
+        _cap = _market_cap(token, key, secret, cd)
+        if not _cap or _cap < 10000:
+            continue
+        # ④ 반등 확인 — 오늘 저가 대비 현재가 +1%↑ 회복(바닥에서 올라오는 중). 저가=현재면 아직 칼.
+        _pf = _price_full(token, key, secret, cd)
+        _low = _pf[4] if _pf else None
+        if not _low or px < _low * 1.01:
+            continue
+        # ⑥ 악재 컷 — 진짜 악재로 빠진 거면 배제(강의: 악재가 선반영/실질무영향일 때만). 등급 악재면 스킵.
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        # ⑤ 수급 유입 필수 — 급락 속에서도 외인/기관이 받는 종목만(8/5식 양매수). 이게 승부 필터.
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        if ((_fe or 0) + (_oe or 0)) <= 0:
+            continue
+        _prog = _program_net(token, key, secret, cd)          # 프로그램 받침(보너스)
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if (_prog and _prog > 0) else ""
+        _who = "외인+기관" if (_fe or 0) > 0 and (_oe or 0) > 0 else ("외인" if (_fe or 0) > 0 else "기관")
+        # 손절 = 오늘 저가 -1.5%(지지 이탈시 전량, 강의 만주式 타이트). 익절 +2.5%(반등 2%만 먹기).
+        _stop = int(_low * 0.985)
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.025)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🩸 [과매도 낙주·반등] {nm} — 지수급락({_kospi:+.1f}%)일 낙폭과대\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · 저가 {int(_low):,} 대비 반등 · 시총 {_cap/10000:,.1f}조\n"
+                         f"💧 급락 속 {_who} 수급 유입{_prog_tag}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈시 전량) · 익절 {_t1:,}(+2.5%)"
+                         + _onote + "\n"
+                         f"※ 악재性 급락 아닌지 반드시 확인 · 시가/저가 분할 · 미국선물 급락 지속시 당일 청산"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "과매도낙주", nm, cd, px)
+            print(f"[과매도낙주] {nm} {px:,} ({chg:+.1f}%) 지수{_kospi:+.1f}%")
+    state["oversold_sent"] = sent
+
+
+def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.33] 강한 재료주 일시 투매 반등(강의 유형4) — 당일청산 전용(오버나이트 금지).
+    수급단타왕/만주: 강한 재료(계약·실적)로 장중 크게 오른 주도주가 일시 투매로 눌렸지만
+    프로그램/수급·호가가 지지하면 짧은 되돌림(1~2%)만 먹고 빠르게 청산. 종배와 달리 밤 안 넘김.
+    09:10~14:40, 종목별 하루 1회, 리스크오프(sev2) 억제. 게이트: 강한재료(S/A)+당일고점 +5%↑+
+    고점대비 2~7% 눌림+저가대비 반등+프로그램/수급 지지+거래대금 큼."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 10) <= m <= (14 * 60 + 40)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("washout_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd):
+            continue
+        if not (2.0 <= (chg or 0) <= 9.0):           # 아직 강세 유지 중(눌렸어도 +) · 이미 죽은 종목 제외
+            continue
+        if turn < 5_000_000_000:                     # 거래대금 50억+ (주도주·유동성)
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        _ng, _nbad = _news_grade(cd)                 # 강한 재료 필수 — 재료 없는 급등락은 제외(강의: 재료 살아있을 때만)
+        if _nbad or _ng not in ("S", "A"):
+            continue
+        _pf = _price_full(token, key, secret, cd)     # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _high, _low = _pf[3], _pf[4]
+        _prev = px / (1 + (chg or 0) / 100) if chg else None
+        if not (_prev and _high and _low):
+            continue
+        _high_pct = (_high / _prev - 1) * 100          # 당일 고점 등락률
+        if _high_pct < 5.0:                            # 오늘 +5%↑ 강하게 올랐어야(강한 재료주)
+            continue
+        _pull = (_high - px) / _high * 100             # 고점 대비 현재 되돌림%
+        if not (2.0 <= _pull <= 7.0):                  # 2~7% 눌림 = '일시 투매'(너무 얕으면 그냥 강세, 깊으면 붕괴)
+            continue
+        if px < _low * 1.005:                          # 저가 대비 반등 확인(아직 흘러내리면 제외)
+            continue
+        _prog = _program_net(token, key, secret, cd)   # 프로그램 지지
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        _prog_ok = bool(_prog and _prog > 0)
+        if not (_prog_ok or ((_fe or 0) + (_oe or 0) > 0)):   # 프로그램 or 당일 수급 지지 필수
+            continue
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A"
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if _prog_ok else ""
+        _stop = int(_low * 0.99)                        # 저가 이탈시(타이트)
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.02)                            # +2% 짧게
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n⚡ [재료주 투매반등·당일청산] {nm} — 고점 {int(_high):,}(+{_high_pct:.0f}%) 대비 −{_pull:.1f}% 눌림\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · {_mat}{_prog_tag} · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·저가이탈) · 익절 {_t1:,}(+2%·짧게)\n"
+                         f"⚠️ 오버나이트 금지! 당일 되돌림 1~2%만 먹고 청산 · 재료 소멸/투매 재개시 즉시 정리"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "재료투매반등", nm, cd, px)
+            print(f"[재료투매반등] {nm} {px:,} 고점대비 −{_pull:.1f}%")
+    state["washout_sent"] = sent
+
+
+def check_afterhours(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.35] 시간외 단일가(강의 3강) — 17:00~18:30, 후반(17:30+)까지 '실제 체결'이 이어지는 대장주 알림.
+    강의 핵심: 시간외 등락률(허수)이 아니라 10분당 실제 체결대금이 지속·증가하는지가 관건.
+    → 누적거래대금(acml_tr_pbmn)은 항상 증가하므로, 시간간격 델타(≈10분)로 실체결 지속을 판정.
+    게이트: 정규장 거래대금 상위 + 강한재료(S/A) or 브리핑테마 + NXT 등락 강세(+1.5%↑) + 10분 델타 3억↑.
+    등급 A(재료S/A)·B(브리핑). 종목당 하루 1회. 리스크오프(sev2) 억제. 5분 스로틀로 API 절약."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((17 * 60) <= m <= (18 * 60 + 30)) or sev == 2:
+        return
+    _nowts = int(now_kst.timestamp())
+    _last = state.get("afterhours_scan_ts", 0)
+    if _nowts - _last < 300:                      # 5분 스로틀(스냅샷 간격 확보 + API 절약)
+        return
+    state["afterhours_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("afterhours_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    snap = state.get("afterhours_snap", {})
+    if snap.get("_day") != today:
+        snap = {"_day": today}
+    _late = m >= (17 * 60 + 30)                   # 후반(17:30+) — 강의가 선호하는 구간
+    _brief = _recent_brief_codes(now_kst)
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, turn0 = s["code"], s["name"], s["turnover"]
+        if not turn0 or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if turn0 < 30_000_000_000:                # 정규장 거래대금 300억 미달 = 유동성 부족 컷
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        npx, nchg, nturn = _price_and_turnover(token, key, secret, cd, mrkt="NX")   # NXT 실시간
+        if not npx or nchg is None:
+            continue
+        # ── 실체결 지속 판정: 8분↑ 간격 델타(≈10분당 체결) ──
+        _pv = snap.get(cd)
+        _delta = None
+        if isinstance(_pv, dict) and (_nowts - _pv.get("t", 0)) >= 480:
+            _delta = (nturn or 0) - _pv.get("v", 0)
+            snap[cd] = {"t": _nowts, "v": nturn or 0}     # 앵커 갱신(최근 10분 델타 유지)
+        elif not isinstance(_pv, dict):
+            snap[cd] = {"t": _nowts, "v": nturn or 0}     # 첫 관측 — 저장만
+        if sent.get(cd):
+            continue
+        if (nchg or 0) < 1.5:                     # 시간외 강세 아님
+            continue
+        if _delta is None:                        # 아직 델타 측정 전(다음 스캔서 판정)
+            continue
+        if _delta < 300_000_000:                  # 10분당 실체결 3억 미달 = 꺼지는 중(허수/일회성)
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):   # 재료·테마 없는 시간외 급등 배제(강의: 뉴스 없는 급등 위험)
+            continue
+        _grade = "A" if _ng in ("S", "A") else "B"    # A=강한재료 / B=브리핑테마성
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🎯브리핑테마"
+        _stop = int(npx * 0.98)
+        _t1 = int(npx * 1.03)
+        _late_tag = " · 후반매수(17:30+·강의선호)" if _late else " · 초반(허수 주의)"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🌆 [시간외 단일가·{_grade}등급] {nm} — 실체결 지속(10분 {_delta/1e8:,.1f}억)\n"
+                         f"NXT {npx:,}({(nchg or 0):+.1f}%) · 정규장 거래대금 {(turn0 or 0)/1e8:,.0f}억 · {_mat}{_late_tag}\n"
+                         f"진입 {npx:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%)\n"
+                         f"🚫 익일 무효화: 시초가 이탈 · 재료 무효화 → 즉시 정리\n"
+                         f"※ 예상체결(허수) 말고 마지막 실체결 확인 · 분할 · 갭하락 전제 소액 · NXT +3%↑면 갭엣지↓(일부 확정)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "시간외단일가", nm, cd, npx)
+            print(f"[시간외단일가] {nm} NXT {npx:,}({(nchg or 0):+.1f}%) 10분델타 {_delta/1e8:,.1f}억")
+    state["afterhours_sent"] = sent
+    state["afterhours_snap"] = snap
+
+
+def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.36] 시가배팅(강의 4강) — 09:00~09:10, 장초반 5~10분 변동성 단기 공략(당일).
+    강의: 갭 추격이 아니라 '밤사이 신규재료 + 시간외 강도 + 시초 프로그램 수급'이 재료를 확인해줄 때만 진입.
+    4유형 통합: ①장전 신규뉴스(재료S/A 갭상) ②해외발(미선물 강세 동조) ③시간외 강세 연장 ④갭하락 과매도(대형주+수급).
+    시초가 이탈 -1.5% 손절·물타기 금지·첫 슈팅 분할익절. 종목당 하루 1회, 리스크오프(sev2)는 갭하락 과매도만 허용."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60) <= m <= (9 * 60 + 10)):
+        return
+    _nowts = int(now_kst.timestamp())                # [V25.39] 90초 스로틀(API 부하·반복스캔 절감)
+    if _nowts - state.get("openbet_scan_ts", 0) < 90:
+        return
+    state["openbet_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("openbet_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _nq = _us_fut_pct(state, now_kst)                 # 미국 나스닥선물%(해외발 동조 판정)
+    _brief = _recent_brief_codes(now_kst)
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd) or turn < 3_000_000_000:      # 거래대금 30억 미달(초반이라 낮춤) 컷
+            continue
+        _is_gapdown = (-13.0 <= (chg or 0) <= -4.0)   # 유형④ 갭하락 과매도
+        _is_gapup = (1.0 <= (chg or 0) <= 8.0)        # ①②③ 갭상(과열 추격 배제: +8%↑ 제외)
+        if not (_is_gapup or _is_gapdown):
+            continue
+        if sev == 2 and not _is_gapdown:              # 리스크오프 땐 갭하락 과매도만
+            continue
+        _budget += 1
+        if _budget > 18:
+            break
+        _pf = _price_full(token, key, secret, cd)      # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _open, _low = _pf[2], _pf[4]
+        if not _open:
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _prog = _program_net(token, key, secret, cd)   # 시초 프로그램 순매수(매수전환 확인)
+        _prog_ok = bool(_prog and _prog > 0)
+        _isbrief = cd in _brief
+        _fe, _oe = _investor_est(token, key, secret, cd)
+        _supply_ok = ((_fe or 0) + (_oe or 0)) > 0
+        if _is_gapdown:
+            # 유형④ — 대형주 낙폭과대 + 수급/프로그램 반등 + 저가대비 회복
+            _cap = _market_cap(token, key, secret, cd)
+            if not _cap or _cap < 10000:               # 시총 1조↑ 대형주만
+                continue
+            if not (_supply_ok or _prog_ok):           # 급락 속 수급/프로그램 받침 필수
+                continue
+            if _low and px < _low * 1.005:             # 저가 대비 반등 확인
+                continue
+            _type = "갭하락 과매도"
+            _stop = int((_low or px) * 0.985); _t1 = int(px * 1.025)
+        else:
+            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) 中 하나 필수(무근거 갭 추격 배제)
+            _overseas = (_nq is not None and _nq >= 0.5)
+            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok)):
+                continue
+            if px < _open * 0.99:                       # 시초가 이미 이탈 중이면 진입 안 함
+                continue
+            _type = ("장전 신규뉴스" if _ng in ("S", "A") else
+                     "해외발 동조" if _overseas else "시간외/테마 연장")
+            _stop = int(_open * 0.985); _t1 = int(px * 1.02)
+        _stoppct = (_stop / px - 1) * 100
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ("🎯브리핑" if _isbrief else "⚪재료미확인")
+        _tags = _mat
+        if _prog_ok:
+            _tags += f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
+        if _supply_ok:
+            _tags += " · 💧수급유입"
+        if _nq is not None:
+            _tags += f" · 美선물 {_nq:+.1f}%"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🌅 [시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"{_tags}\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·시초가 이탈시) · 1차익절 {_t1:,}\n"
+                         f"⚠️ 첫 슈팅 분할익절 · 물타기 금지 · 시초가 이탈 후 회복 실패면 즉시 손절(스윙 전환 금지)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "시가배팅", nm, cd, px)
+            print(f"[시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%)")
+    state["openbet_sent"] = sent
+
+
+def _round_level(px):
+    """[V25.37] 라운드 피겨(심리적 매물대) — px 바로 아래 라운드 레벨과 스텝. (level, step)."""
+    if px < 10000:
+        step = 1000
+    elif px < 50000:
+        step = 5000
+    elif px < 100000:
+        step = 10000
+    elif px < 500000:
+        step = 50000
+    else:
+        step = 100000
+    return (int(px) // step) * step, step
+
+
+def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.37] 돌파매매(강의 5강) — 시장 전역. 09:10~15:00, 저갭/리스크오프 억제.
+    강의: '고점 추격'이 아니라 '저항 돌파가 확인된 뒤의 추세 참여'. 매도물량 흡수하며 전고점·라운드피겨·신고가 돌파.
+    게이트: 20MA위 + (전고점 hi20 돌파 or 라운드피겨 돌파) + 거래량 2배↑ + 프로그램 순매수(+) or 재료 + 악재無.
+    손절 돌파기준가 아래 -2%(돌파실패=근거훼손·스윙전환 금지). 종목당 하루 2회까지(3번째 돌파 회피). 종목당 쿨다운 없음(2회 상한)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 11) <= m <= (15 * 60)) or sev == 2:   # 09:11+ (시가배팅과 1분 겹침 제거)
+        return
+    _nowts = int(now_kst.timestamp())                # [V25.39] 180초 스로틀(6시간 매분 스캔 → API 폭주 방지)
+    if _nowts - state.get("breakout_scan_ts", 0) < 180:
+        return
+    state["breakout_scan_ts"] = _nowts
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # 저갭/박스장 돌파 억제
+        return
+    today = now_kst.strftime("%Y%m%d")
+    cnt = state.get("breakout_cnt", {})
+    if cnt.get("_day") != today:
+        cnt = {"_day": today}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cnt.get(cd, 0) >= 2:                        # 하루 2회 상한(강의: 3번째 돌파 회피)
+            continue
+        if not (1.0 <= (chg or 0) <= 12.0) or turn < 5_000_000_000:   # 오르는 중·과추격 제외·거래대금 50억+
+            continue
+        _budget += 1
+        if _budget > 22:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        if px <= ds["ma20"] or (ds.get("disp") or 0) >= 12:   # 20MA위(추세) + 과열 상한
+            continue
+        _pf = _price_full(token, key, secret, cd)      # (현재가,등락,시가,고가,저가)
+        if not _pf:
+            continue
+        _open = _pf[2]
+        _hi20 = ds.get("hi20") or 0
+        _lvl, _step = _round_level(px)
+        # 돌파 판정 — ①전고점(hi20) 돌파/신고가 ②라운드피겨(시가 아래→현재 위 관통)
+        _bpx, _btype = None, None
+        if _hi20 and px >= _hi20:
+            _bpx, _btype = _hi20, "전고점/신고가"
+        elif _lvl and _open and _open < _lvl <= px and (px - _lvl) / _lvl <= 0.02:
+            _bpx, _btype = _lvl, f"라운드피겨({_lvl:,})"
+        if not _bpx:
+            continue
+        _vr = _vol_ratio_5d(token, key, secret, cd)
+        _mult = _vr[2] if _vr else 0
+        if _mult < 2.0:                                # 거래량 2배 미달 = 가짜돌파 위험
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _prog = _program_net(token, key, secret, cd)
+        _prog_ok = bool(_prog and _prog > 0)
+        if not (_prog_ok or _ng in ("S", "A")):        # 프로그램 순매수(방향일치) or 재료 필수
+            continue
+        _stop = int(_bpx * 0.98)                        # 돌파기준가 아래 -2%
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.03)
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if _prog_ok else ""
+        _nth = cnt.get(cd, 0) + 1
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🚀 [돌파매매·{_btype}] {nm} {px:,}({(chg or 0):+.1f}%) · {_nth}차 돌파\n"
+                         f"돌파기준 {_bpx:,} 상향 · 거래량 {_mult:.1f}배 동반"
+                         + (f" · {_mat}" if _mat else "") + _prog_tag + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·돌파기준 아래) · 익절 {_t1:,}(+3%)\n"
+                         f"⚠️ 돌파 안착 확인 후 분할(불타기)·거래량 빠지면 속임수 · 돌파 실패시 즉시 손절(스윙 전환 금지)"):
+            cnt[cd] = _nth
+            _log_signal(state, now_kst, "돌파초입", nm, cd, px)
+            print(f"[돌파매매] {nm} {px:,} {_btype} {_nth}차(거래량 {_mult:.1f}배)")
+    state["breakout_cnt"] = cnt
+
+
+_SUPPLY_RISK_KW = ("유상증자", "전환사채", "신주인수권", "교환사채", "추가상장", "최대주주",
+                   "지분매각", "블록딜", "블록 딜", "감자", "CB", "BW", "보호예수 해제", "오버행")
+
+
+def _supply_risk_news(code):
+    """[V25.38] 공급 악재(잠재 매물) 뉴스 감지 — 유증·CB·추가상장·대주주매도 등. 스윙 배제용. 감지 시 키워드."""
+    try:
+        for _t in (_stock_news_titles(code, 8) or []):
+            for _k in _SUPPLY_RISK_KW:
+                if _k in str(_t):
+                    return _k
+    except Exception:
+        pass
+    return None
+
+
+def check_swing_scan(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.38] 단기스윙(강의 9강) — 15:00~15:25 당일 1회. 며칠~수주 조건부 보유 후보.
+    강의: 저가 장기보유가 아니라 '외인/기관 연속 매수 + 살아있는 재료'를 확인해 분할 진입, 수급 약화·공급악재 시 청산.
+    게이트(추세형): 정배열 + 일별 수급 연속(2일↑) + 재료(S/A or 브리핑) + 지수 대비 상대강세 + 공급악재(유증·CB) 無.
+    ※ 바닥권 매집형은 거래대금 랭킹 밖이라 이 스캔이 못 잡음(한계). 하루 최대 3종. 종배자금과 분리 안내."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60) <= m <= (15 * 60 + 25)) or sev == 2:
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("swing_scan_day") == today:
+        return
+    _kospi = _kospi_index_kis(token, key, secret)      # 상대강도 기준(지수 등락)
+    _kchg = _kospi if _kospi is not None else 0.0
+    _brief = _recent_brief_codes(now_kst)
+    _picks, _budget = [], 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if turn < 30_000_000_000:                      # 거래대금 300억+ (유동성)
+            continue
+        if (chg or 0) <= _kchg:                         # 지수 대비 상대강세 필수(강의: 상대강도)
+            continue
+        _budget += 1
+        if _budget > 24:
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        _ma5, _ma20 = ds.get("ma5"), ds.get("ma20")
+        if not (_ma5 and _ma20 and _ma5 > _ma20 and px > _ma20):   # 정배열·20MA 위(추세)
+            continue
+        _stag, _strong = _supply_daily_tag(token, key, secret, cd)   # 일별 수급 연속(핵심)
+        if not _stag:                                  # 연속 수급 없음 → 스윙 부적합
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):        # 살아있는 재료 필수
+            continue
+        _risk = _supply_risk_news(cd)                  # 공급악재(유증·CB·추가상장) 배제
+        if _risk:
+            print(f"[단기스윙] {nm} 제외 — 공급악재 뉴스({_risk})")
+            continue
+        _score = (12 if _strong else 6) + (10 if _ng == "S" else 6 if _ng == "A" else 0) + (8 if _isbrief else 0)
+        _picks.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn,
+                       "stag": _stag, "strong": _strong, "ng": _ng, "brief": _isbrief, "score": _score,
+                       "ma20": _ma20})
+    state["swing_scan_day"] = today
+    if not _picks:
+        print("[단기스윙] 후보 0종")
+        return
+    _picks.sort(key=lambda x: x["score"], reverse=True)
+    for p in _picks[:3]:                                # 하루 최대 3종
+        _stop = int(p["ma20"] * 0.98)                   # 무효화: 20일선 이탈
+        _t1 = int(p["px"] * 1.10); _t2 = int(p["px"] * 1.18)
+        _mat = "🔥재료S" if p["ng"] == "S" else "🟢재료A" if p["ng"] == "A" else "🎯브리핑"
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n📈 [단기스윙 후보] {p['name']} {p['px']:,}({(p['chg'] or 0):+.1f}%) · 지수대비 강세\n"
+                         f"{_mat} · 수급{p['stag']} · 거래대금 {(p['turn'] or 0)/1e8:,.0f}억\n"
+                         f"분할진입(며칠~수주 보유) · 1차익절 {_t1:,}(+10%·절반) · 2차 {_t2:,}(+18%)\n"
+                         f"🚫 무효화(즉시청산): 20일선 {int(p['ma20']):,} 이탈 · 수급 대량매도 전환 · 재료 훼손\n"
+                         f"※ 종배자금과 분리 · 물타기 금지(불타기만) · 공급악재(유증·CB) 공시 시 청산"):
+            _log_signal(state, now_kst, "단기스윙", p["name"], p["code"], p["px"])
+            print(f"[단기스윙] {p['name']} {p['px']:,} 수급{p['stag']}")
+
+
+def check_limitup_follow(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.40] 상따 관찰용(강의 8강) — ⚠️매수신호 아님, 관찰·극소액 실습용 경보.
+    실시간 상한가 잔량·풀림·VI·허수는 KIS 실시간 웹소켓 없이는 못 봐서, '첫테마·대장·거래대금'만 근사한다.
+    상한가 근접(+25%↑) + 강한재료/브리핑 + 거래대금 충분 종목을 관찰 대상으로 알림. 09:30~15:20, 하루 1회, 리스크오프 억제.
+    강의 경고: 2번 이상 풀리면 포기 · -1~2% 빠른손절 · 극소액 · 직장인/모바일 부적합."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 30) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    _nowts = int(now_kst.timestamp())
+    if _nowts - state.get("limitup_scan_ts", 0) < 180:      # 3분 스로틀
+        return
+    state["limitup_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("limitup_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _brief = _recent_brief_codes(now_kst)
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or any(k in str(nm) for k in _EARLY_ETF_KW) or sent.get(cd):
+            continue
+        if (chg or 0) < 25.0 or (turn or 0) < 10_000_000_000:   # 상한가 근접(+25%↑) + 거래대금 100억+
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            continue
+        _isbrief = cd in _brief
+        if not (_ng in ("S", "A") or _isbrief):     # 첫테마/강한재료 근사(뉴스 없는 상한가 배제)
+            continue
+        _sec = _sector_name(token, key, secret, cd) or ""
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🎯브리핑"
+        _stop = int(px * 0.98)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🔺 [상따 관찰·매수아님] {nm} +{(chg or 0):.1f}% 상한가 근접"
+                         + (f" · {_sec}" if _sec else "") + "\n"
+                         f"{_mat} · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"⚠️ 관찰용 — 실시간 상한가 잔량·풀림·VI·허수 확인 불가(API 한계). HTS에서 직접 확인 필수\n"
+                         f"강의: 2회↑ 풀리면 포기 · 극소액 · 손절 −1~2% · 익일 갭 대응 · 직장인/모바일 부적합\n"
+                         f"참고 손절선 {_stop:,}(−2%)"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "상따관찰", nm, cd, px)
+            print(f"[상따관찰] {nm} +{(chg or 0):.1f}% 상한가 근접")
+    state["limitup_sent"] = sent
+
+
+def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.40] 짝꿍 관찰용(강의 7강) — ⚠️매수신호 아님, 관찰·극소액 실습용 경보.
+    실시간 상한가 잔량·VI 해제시각·호가 흡수는 API로 못 봐서, '강한 섹터 대장 급등 → 같은 섹터 2등주'만 근사한다.
+    섹터 내 대장(거래대금 1위+급등 +15%↑) 형성 시 2등주(2위)를 관찰 대상으로 알림. 09:30~15:00, 하루 1회, 저갭/리스크오프 억제.
+    강의: 후속주 5분 이내 청산 · 대장 꺾이면 즉시 매도 · 3등↓ 금지 · 초보 난도 높음."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 30) <= m <= (15 * 60)) or sev == 2:
+        return
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # 테마장세 아니면 짝꿍 무의미
+        return
+    _nowts = int(now_kst.timestamp())
+    if _nowts - state.get("pair_scan_ts", 0) < 300:         # 5분 스로틀(섹터조회 비용)
+        return
+    state["pair_scan_ts"] = _nowts
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("pair_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    # 급등 무버(+5%↑)만 섹터 그룹핑(대장·2등 판정) — API 절약 위해 무버로 한정
+    _movers, _budget = [], 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if (chg or 0) < 5.0 or (turn or 0) < 5_000_000_000:
+            continue
+        _budget += 1
+        if _budget > 16:
+            break
+        _sec = _sector_name(token, key, secret, cd)
+        if _sec:
+            _movers.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn, "sec": _sec})
+    _by_sec = {}
+    for mv in _movers:
+        _by_sec.setdefault(mv["sec"], []).append(mv)
+    for _sec, mem in _by_sec.items():
+        if len(mem) < 2:
+            continue
+        mem.sort(key=lambda x: x["turn"], reverse=True)     # 거래대금 순 = 대장/2등
+        _lead, _second = mem[0], mem[1]
+        if (_lead["chg"] or 0) < 15.0:                       # 대장이 강하게(+15%↑) 움직여야 짝꿍 성립
+            continue
+        if sent.get(_second["code"]):
+            continue
+        _ng2, _nbad2 = _news_grade(_second["code"])
+        if _nbad2:
+            continue
+        _stop = int(_second["px"] * 0.98)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🔗 [짝꿍 관찰·매수아님] {_sec} 테마\n"
+                         f"대장 {_lead['name']} +{(_lead['chg'] or 0):.1f}% → 2등주 {_second['name']} +{(_second['chg'] or 0):.1f}% 관찰\n"
+                         f"⚠️ 관찰용 — 실시간 상한가 잔량·VI 확인 불가(API 한계). 대장 상한가 유지/풀림은 HTS로 직접\n"
+                         f"강의: 후속주 5분 내 청산 · 대장 꺾이면 즉시 매도 · 극소액 · 3등↓ 금지\n"
+                         f"참고 손절선 {_stop:,}(−2%)"):
+            sent[_second["code"]] = True
+            _log_signal(state, now_kst, "짝꿍관찰", _second["name"], _second["code"], _second["px"])
+            print(f"[짝꿍관찰] {_sec} 대장 {_lead['name']}+{(_lead['chg'] or 0):.1f}% → 2등 {_second['name']}")
+    state["pair_sent"] = sent
+
+
+def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
+    """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
+    ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 3) <= m <= (9 * 60 + 12)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("gap_analysis_day") == today:
+        return
+    _gaps = [s for s in _volume_rank(token, key, secret, top=40)
+             if (s.get("chg") or 0) >= 3.0 and not any(k in str(s["name"]) for k in _EARLY_ETF_KW)]
+    _gaps = sorted(_gaps, key=lambda x: x.get("chg", 0), reverse=True)[:8]
+    if not _gaps:
+        state["gap_analysis_day"] = today
+        print("[갭분석] 갭상승 3%+ 종목 없음")
+        return
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
+    _pred = set()
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            _sc = json.load(f)
+        _pred = {r["code"] for r in _sc if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽")}
+    except Exception:
+        pass
+    _lines, _hit_n = [], 0
+    for s in _gaps:
+        _hit = s["code"] in _pred
+        _hit_n += 1 if _hit else 0
+        # [V25.49 A] 개미 심리 지표 — 개인 근사 순매수(=−(외인+기관))로 '개미가 몰렸나' 표시(뉴스→심리 연결)
+        _psy = ""
+        try:
+            _fe, _oe = _investor_est(token, key, secret, s["code"])
+            _px0 = s.get("px") or 0
+            _retail = -((_fe or 0) + (_oe or 0)) * _px0 / 1e8      # 개인 근사(억원)
+            if _px0 and abs(_retail) >= 5:
+                _psy = f" · {'🔥개미 몰림' if _retail > 0 else '개미 이탈'} {_retail:+.0f}억"
+        except Exception:
+            pass
+        _lines.append(f"• {s['name']} +{s['chg']:.1f}% {'🎯예측적중' if _hit else '❓미예측(놓침)'}{_psy}")
+    _msg = (f"{SIG_WATCH}\n🌅 오늘 갭상승 원인 역분석\n"
+            f"📊 갭상승(+3%↑) {len(_gaps)}종 · 어제 브리핑/종배 적중 {_hit_n}/{len(_gaps)}종\n"
+            + "\n".join(_lines))
+    if gemini_key:
+        # [V25.15 B] 놓친 종목(미예측) 재료 분석 강화 — 왜 놓쳤나·감지 가능했나·다음에 잡을 카테고리.
+        _missed = [s for s in _gaps if s["code"] not in _pred][:6]
+        _batch = []
+        for s in (_missed or _gaps[:6]):
+            _tt = _stock_news_titles(s["code"], 3)
+            _batch.append(f"{s['name']}(+{s['chg']:.1f}%): " + (" / ".join(_tt[:3]) if _tt else "뉴스없음"))
+        _prompt = ("아래는 오늘 갭상승했는데 우리 예측이 '놓친' 종목들과 최근 뉴스야. 각 종목마다:\n"
+                   "① 갭 원인 재료를 분류: [신약/임상] [정책/정부] [수주/계약] [실적] [테마순환] [미국연동] [수급/세력] [불명] 중 하나\n"
+                   "② 그 재료가 '전날 미리 감지 가능'했나(전날 공시·거래대금 조짐 존재) vs '당일 사후성'인가\n"
+                   "③ 맨 끝에 '다음에 잡으려면 강화할 감지 1가지' 제안(예: DART 임상공시 감시, 정책수혜 키워드 등).\n"
+                   "종목당 1줄, 총 6줄 이내. 학습용이니 간결히.\n\n" + "\n".join(_batch))
+        _v = _gemini_generate(gemini_key, _prompt)
+        if _v:
+            _msg += f"\n\n🧠 놓친 종목 원인·감지개선:\n{_v.strip()}"
+    if send_telegram(token_tg, chat_id, _msg):
+        state["gap_analysis_day"] = today
+        print(f"[갭분석] {len(_gaps)}종 · 예측적중 {_hit_n}")
 
 
 def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V18.7] 조기 포착(기준선 초입)·급증진입 — 거래대금 랭킹 상시 스캔. 09:00~15:20, 리스크오프 억제."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 아침단타 억제
         return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("early_sent", {})
@@ -1018,9 +4013,8 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
         if not ds or ds["turnavg"] <= 0:
             continue
         mult = turn / ds["turnavg"]; disp = ds["disp"]; above5 = ds["above5"]
-        if mult >= 2.0 and above5 and disp < 7 and chg < 12:
-            _kind, _label, _kt = "급증진입", "🟢 [진입 신호·거래대금]", ""
-        elif (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
+        # [V24.7] 급증진입 OFF — 누적성적 0%·평균 -6.2%(실행 중단). 조기포착만 유지.
+        if (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
             _kind, _label = "조기포착", "🟢 [조기 포착·기준선]"
             _kt = " · 일목 " + ("기준선 돌파✅" if ds["kij_cross"] else "기준선 걸침(±2%)")
         else:
@@ -1040,6 +4034,740 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
     state["early_sent"] = sent
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# [V20.0] 종가베팅 픽을 watcher로 이관 — 대시보드 없이 장 마감 직전 자동 선정·발송.
+#   거래대금 상위 → 20MA↑·비과열·악재無 → 원톱 + 분산 2·3위. pick_history.json 공유
+#   (대시보드 backfill_pick_outcomes/명중률이 그대로 익일 갭 대조·집계).
+# ══════════════════════════════════════════════════════════════════════════
+PICK_FILE = os.path.join(BASE, "pick_history.json")
+
+
+def _pick_read():
+    try:
+        with open(PICK_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _pick_write(rows):
+    _atomic_write_json(PICK_FILE, rows[-1500:])
+
+
+def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
+    """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유)."""
+    if not code or not score:
+        return
+    today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
+    rows = _pick_read()
+    if any(r.get("date") == today and r.get("code") == str(code) for r in rows):
+        return
+    rows.append({"date": today, "code": str(code), "name": name or "",
+                 "score": round(float(score), 1), "px": int(px or 0),
+                 "regime": "", "signal": signal,
+                 "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
+                 "open_next": None, "gap": None})
+    _pick_write(rows)
+
+
+def _elite_tag(token, key, secret, code):
+    """[V25.31] ⭐정예 판정 — 재료 A/S급 + 당일 수급 유입 필수. 여기에 '일별 수급 연속성'을 얹어
+    ⭐정예(기본) / ⭐⭐정예(수급 3일연속·전일比급증) 2단계. 신호에 붙여 확신 강도 표시. 미달 시 ''."""
+    _ng, _nbad = _news_grade(code)
+    if _nbad or _ng not in ("S", "A"):
+        return ""
+    try:
+        # [실전투자 점검] distinguish_fail=True — 독스트링·주석이 "당일 수급 미확인 → 정예 아님"이라고
+        # 명시했는데 distinguish_fail 없이는 실패도 (0,0)이라 이 None 체크가 죽은 코드였음(조회
+        # 실패 시에도 (0+0)<0이 False라 정예 태그가 그대로 붙어버림 — 문서화된 의도와 정반대 동작).
+        _f, _o = _investor_est(token, key, secret, code, distinguish_fail=True)
+        if _f is None or _o is None or (_f + _o) < 0:   # 당일 수급 미확인 or 이탈 → 정예 아님
+            return ""
+    except Exception:
+        return ""
+    _stag, _strong = _supply_daily_tag(token, key, secret, code)   # 일별 연속성·강도
+    if _strong:
+        return f" ⭐⭐정예(수급강){_stag}"                          # 재료A + 수급 연속/급증 = 최상위
+    return f" ⭐정예{_stag}"                                        # 재료A + 당일 유입(+2일연속 있으면 태그)
+
+
+def _regime_today(token, key, secret, now_kst, state):
+    """[V25.26] 당일 장세 상태 캐시 — _regime_detect를 하루 1회만 계산(API 절약), 이후 재사용.
+    반환: 'gap'/'neutral'/'lowgap'/'unknown'. 아침 단타 억제 게이트용."""
+    today = now_kst.strftime("%Y%m%d")
+    _rc = state.get("regime_cache") or {}
+    if _rc.get("day") == today and _rc.get("state"):
+        return _rc["state"]
+    try:
+        _r = _regime_detect(token, key, secret, now_kst)
+        _st = _r.get("state", "unknown")
+    except Exception:
+        _st = "unknown"
+    state["regime_cache"] = {"day": today, "state": _st}
+    return _st
+
+
+def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6):
+    """[V25.10] 장세 판독기 — 최근 종배(픽+그림자)의 '익일 시가 갭'(종배 실제 청산가) 중앙값으로
+    지금이 종배 통하는 장인지 판정. 갭 잘 뜨는 장(+)=종배 유효 / 저갭·불리 장(−)=종배 억제·대형주 눌림.
+    ★익일 종가가 아닌 익일 시가로 측정(종배=종가매수→익일 시가청산). 이상치엔 중앙값으로 강건.★
+    반환 {state,avg,n,text,tag}. 데이터 부족 시 state='unknown'."""
+    from datetime import timedelta
+    _cut = (now_kst - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    gaps, _cache = [], {}
+    for p in _pick_read():
+        if p.get("signal") not in ("dolpanty", "dolpanty_shadow", "dolpanty_div"):
+            continue
+        if str(p.get("date", "")) < _cut:
+            continue
+        cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
+        if not px:
+            continue
+        opens = _cache.get(cd)
+        if opens is None:
+            opens = _daily_opens(token, key, secret, cd); _cache[cd] = opens
+        _pdate = str(p.get("date", "")).replace("-", "")
+        _nxt = next((d for d in sorted(opens.keys()) if d > _pdate), None)
+        if _nxt and opens.get(_nxt):
+            gaps.append((opens[_nxt] / px - 1) * 100)     # 익일 시가 갭 = 종배 실제 수익
+    n = len(gaps)
+    if n < min_n:
+        return {"state": "unknown", "avg": None, "n": n,
+                "text": f"🌫️ 장세판독 데이터 부족(종배 표본 {n}<{min_n}) — 며칠 더 축적", "tag": ""}
+    gaps.sort()
+    avg = gaps[n // 2] if n % 2 else (gaps[n // 2 - 1] + gaps[n // 2]) / 2   # 중앙값(이상치 강건)
+    if avg >= 0.5:
+        return {"state": "gap", "avg": avg, "n": n,
+                "text": f"🟢 갭 장세(종배 유효) — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n})", "tag": "🟢종배유효장세"}
+    if avg <= -0.5:
+        return {"state": "lowgap", "avg": avg, "n": n,
+                "text": f"🔵 저갭 장세(종배 불리) — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n}) · 대형주 눌림·인버스 권장",
+                "tag": "🔵저갭장세(종배 억제)"}
+    return {"state": "neutral", "avg": avg, "n": n,
+            "text": f"🟡 중립 장세 — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n})", "tag": "🟡중립장세"}
+
+
+def _recent_brief_codes(now_kst, days=2):
+    """[V24.7] 최근 브리핑(선행 테마) 종목 — 종배 재설계용 우선 유니버스.
+    데이터상 브리핑(55%·+1.1%)이 종배픽(36%·-3.3%)보다 압도적. 종배도 이 종목풀에서 뽑는다.
+    최근 days일 내 kind=='브리핑' 종목의 {code:name} 반환(중복 제거)."""
+    out = {}
+    try:
+        from datetime import timedelta
+        _cut = (now_kst - timedelta(days=days)).strftime("%Y-%m-%d")
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows if isinstance(rows, list) else []:
+            if r.get("kind") == "브리핑" and str(r.get("date", "")) >= _cut:
+                cd = str(r.get("code", "")).zfill(6)
+                if cd and cd != "000000":
+                    out[cd] = r.get("name", "")
+    except Exception:
+        pass
+    return out
+
+
+def _pick_supply_score(token, key, secret, code):
+    """[V25.34] 종배 수급 가점(강의 1강 ②·④ 핵심) — 당일 외인/기관 유입 + 일별 연속성 + 프로그램 매수전환.
+    무수급이면 감점(강의: 수급 없는 종목 종배 부적합). 반환 (점수델타, 태그문자열)."""
+    delta = 0.0
+    _fe, _oe = _investor_est(token, key, secret, code)             # 당일 추정 순매수(수량)
+    _today_in = ((_fe or 0) + (_oe or 0)) > 0
+    _stag, _strong = _supply_daily_tag(token, key, secret, code)   # 일별 연속성·강도
+    _prog = _program_net(token, key, secret, code)                 # 프로그램 순매수(금액)
+    if _today_in:
+        delta += 8
+    if _strong:                                                   # 3일연속·급증
+        delta += 12
+    elif _stag:                                                   # 2일연속·급증
+        delta += 6
+    if _prog and _prog > 0:
+        delta += 6
+    if not (_today_in or _stag):                                  # 당일도 일별도 수급 없음 → 종배 부적합
+        delta -= 10
+    tag = (_stag or "").strip()
+    if _prog and _prog > 0:
+        tag = (tag + " 🟩프로그램+").strip()
+    if not (_today_in or _stag):
+        tag = "⚠️무수급"
+    return delta, tag
+
+
+def _valuation(token, key, secret, code):
+    """[V25.34] 기본 체력 — inquire-price에서 시총(억)·EPS. 적자주 판정용(강의 1강 ⑥ 재무 안전장치).
+    반환 (mcap억|None, eps|None). EPS<0 = 적자. 실패 시 (None,None)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            return _to_int(o.get("hts_avls")), _to_int(o.get("eps"))
+    except Exception:
+        pass
+    return None, None
+
+
+def _pick_extra_score(token, key, secret, code, px, turn, ds):
+    """[V25.34] 종배 추가 가점 통합(강의 1강) — 수급 연속성 + 재무(적자 감점) + 거래대금 상대증가 + 전고점.
+    반환 (점수델타, 태그문자열). ds=_daily_setup 결과(turnavg·hi20 재사용)."""
+    delta, tag = _pick_supply_score(token, key, secret, code)      # ② 수급
+    # [V25.41] 블록딜성 '가짜 수급' 차단(동주 일지 9/4) — 기관 대량매수처럼 보여도 블록딜·유증·CB·추가상장이면
+    #   진짜 매집이 아니라 이미 정해진 물량. 수급 가점을 상쇄하고 감점. (강의: "수급만 보면 기관대량매수=블록딜")
+    _srisk = _supply_risk_news(code)
+    if _srisk:
+        delta = min(delta, 0.0) - 12                              # 수급 가점 무효화 + 공급악재 감점
+        tag = (tag + f" ⚠️{_srisk}(가짜수급)").strip()
+    _mc, _eps = _valuation(token, key, secret, code)               # ⑥ 재무 체력
+    if _eps is not None and _eps < 0:                             # 적자주 → 강의: 적자 테마주보다 이익주 우선
+        delta -= 12
+        tag = (tag + " ⚠️적자").strip()
+    if ds and ds.get("turnavg") and turn >= ds["turnavg"] * 2:    # ① 평소比 거래대금 2배↑(자금 신규 유입)
+        delta += 6
+        tag = (tag + " 💵대금급증").strip()
+    _hi20 = ds.get("hi20") if ds else 0
+    if _hi20 and px >= _hi20 * 0.99:                              # ④ 전고점 근접/돌파(신고가 흐름)
+        delta += 6
+        tag = (tag + " 📈전고돌파").strip()
+    return delta, tag
+
+
+def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
+                        gemini_key=None, data_state="ok"):
+    """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
+    창을 15:05~19:50로 확대(정규장 마감~NXT 야간). 종목 선정은 정규장 거래대금 랭킹 기준이나,
+    NXT 시간대(18:00~19:50)엔 각 후보의 현재가를 NX(넥스트레이드)로 실시간 갱신 — 종가 아닌 실시간가로 판정.
+    force=True: 시간창·당일락 무시(수동 강제). 리스크오프(sev2)면 관망.
+    data_state: compute_macro()의 4번째 반환값("ok"/"partial"/"outage") — sev=2가 진짜 리스크오프인지
+    야후파이낸스 등 지표 조회 자체가 실패한 'outage'인지 구분해 메시지를 다르게 보내기 위함
+    (실사용 로그에서 NQ=F·^SOX·NVDA 등 전종목이 동시에 "possibly delisted"로 실패해 sev=2가 됐는데
+    텔레그램엔 "리스크오프"라고 나가서 실제 시황과 무관한 메시지로 오인될 수 있음이 확인됨)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    # 정규장 마감권(15:05~15:30) 또는 NXT 야간(18:00~19:50). 그 사이 휴장 갭(15:30~18:00)은 스킵.
+    if not force and not (((15 * 60 + 5) <= m <= (15 * 60 + 30)) or ((18 * 60) <= m <= (19 * 60 + 50))):
+        return
+    _in_nxt = (18 * 60) <= m <= (19 * 60 + 50)       # NXT 야간창이면 실시간 NX가로 갱신
+    today = now_kst.strftime("%Y%m%d")
+    if not force and state.get("dolpanty_pick_day") == today:      # 당일 1회(flip-flop 방지)
+        return
+    # [V20.9] 리스크오프(sev2)여도 그림자 로깅은 계속 — "관망이 옳았나(상위주가 익일 빠졌나)" 검증 데이터.
+    #   발송은 관망 그대로, 아래 스캔 후 그림자만 기록하고 리턴.
+    cands = []
+    raw = []                                          # [검증] 필터 통과 여부 무관 거래대금 상위(그림자 로깅용)
+    _budget = 0
+    _brief = _recent_brief_codes(now_kst)             # [V24.7] 최근 브리핑 테마(선행) — 종배 우선 유니버스
+    _seen = set()                                     # 이미 스코어링한 종목(브리핑 보강 루프 중복 방지)
+    # [V25.44] 아침 팩트체크 강등/제외 종목 회피 — 선반영·억지테마·D등급으로 걸러진 종목은 종배 후보 배제
+    _fc_avoid = set()
+    try:
+        _fa = state.get("factcheck_avoid") or {}
+        if _fa.get("codes") and (int(now_kst.timestamp()) - int(_fa.get("ts", 0))) < 4 * 24 * 3600:
+            _fc_avoid = {str(c).zfill(6) for c in _fa["codes"]}
+    except Exception:
+        pass
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn:
+            continue
+        if any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _fc_avoid:                          # [V25.44] 팩트체크 강등(선반영·억지테마·D) → 종배 배제
+            continue
+        if turn < 50_000_000_000:                    # 거래대금 500억 미달 컷
+            continue
+        if _in_nxt:                                  # NXT 야간 — 종가 대신 넥스트레이드 실시간가로 갱신
+            _npx, _nchg, _nturn = _price_and_turnover(token, key, secret, cd, mrkt="NX")
+            if _npx:
+                px, chg = _npx, _nchg                # 현재가·등락은 NXT 실시간(거래대금은 정규장 랭킹 유지)
+        raw.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn})
+        if sev == 2:                                 # 리스크오프 — raw(그림자용)만 모으고 스코어링 스킵
+            continue
+        if chg >= 7.0:                               # 이미 과열 — 추격 금지
+            continue
+        if chg < -2.0:                               # 하락 과대(떨어지는 칼) — 종배 제외
+            continue
+        _budget += 1
+        if _budget > 24:                             # API 절약(루프당 일봉조회 상한)
+            break
+        ds = _daily_setup(token, key, secret, cd, px)
+        if not ds or not ds.get("ma20"):
+            continue
+        disp = ds["disp"]
+        if px <= ds["ma20"]:                          # 20MA↑ 필수(종배 정석)
+            continue
+        if disp >= 7.0:                               # 20MA 이격 과열
+            continue
+        ng, nbad = _news_grade(cd)                    # 악재 종목 제외
+        if nbad:
+            continue
+        score = 40.0                                  # 거래대금 관문 통과 기본
+        if ds.get("above5"):
+            score += 8
+        if ds.get("kij_cross"):
+            score += 12
+        elif ds.get("kij_near"):
+            score += 6
+        # [V24.3] 재료(뉴스·테마) 가점 대폭↑ — 데이터상 브리핑(재료·선행)이 종배픽(거래대금·후행)보다 승률 3배.
+        #   종배도 재료 있는 종목을 우선하도록 S/A 가점을 2배로.
+        if ng == "S":
+            score += 20
+        elif ng == "A":
+            score += 12
+        if 0 <= disp <= 3:                            # 20일선 눌림 근처(과열 아닌 초입) 가점
+            score += 5
+        # [V24.3] 초대형주 페널티 — 거래대금 초상위 대형주(삼성/하이닉스급)는 지수종속·갭 작아 종배 부적합.
+        if turn >= 300_000_000_000:                   # 3천억↑ = 초대형(지수 대장주)
+            score -= 12
+        # [V24.7→V25.55 가중치↑] 브리핑 테마 가점 — 종배 재설계 핵심. 검증된 선행 신호와 겹치면 강한 우선순위.
+        #   (사용자 요청: 저녁뉴스 품질 개선 후 브리핑 우선순위를 더 세게 반영 — 25→35)
+        _isbrief = cd in _brief
+        if _isbrief:
+            score += 35
+        # [V25.34] 강의 1강 반영 — 수급 연속성·재무(적자감점)·거래대금 상대증가·전고점 가감점
+        _ex, _extag = _pick_extra_score(token, key, secret, cd, px, turn, ds)
+        score += _ex
+        if ng not in ("S", "A"):                       # [V25.42] 재료 미확인 점수 상한 49(<발송임계 50) —
+            score = min(score, 49.0)                   #   브리핑겹침·수급만으로 99점 원톱 되던 것 차단(흥구석유式).
+            #   → 확정픽/분산 자격 없음, 그림자로만 검증. 강의 2강: 종배 핵심=재료 지속성
+        _seen.add(cd)
+        cands.append({"code": cd, "name": nm, "px": px, "chg": chg, "turn": turn, "disp": disp,
+                      "score": score, "ng": ng, "brief": _isbrief, "xtag": _extag})
+    # [V24.7] 브리핑 테마 보강 — 거래대금 top40에 아직 안 든 선행 테마주도 종배 후보로.
+    #   종배픽이 진 이유=후행 대형주만 담아서. 선행 테마주는 거래대금 낮아도(500억 floor 면제) 넣는다.
+    if sev != 2:
+        for _bc, _bn in _brief.items():
+            if _bc in _seen or _budget > 30:
+                continue
+            if _bc in _fc_avoid:                        # [V25.44] 팩트체크 강등 종목은 브리핑 유니버스여도 배제
+                continue
+            _bpx, _bchg, _bturn = _price_and_turnover(token, key, secret, _bc,
+                                                       mrkt=("NX" if _in_nxt else "J"))
+            if not _bpx or _bchg is None:              # [V24.9] 등락 미확인이면 컷(과거: chg=0.0으로 위장돼 급락 우회)
+                continue
+            if _bchg >= 7.0 or _bchg < -2.0:           # 과열·급락 컷(본 루프와 동일)
+                continue
+            _budget += 1
+            _bds = _daily_setup(token, key, secret, _bc, _bpx)
+            if not _bds or not _bds.get("ma20") or _bpx <= _bds["ma20"]:  # 20MA↑ 필수
+                continue
+            _bdisp = _bds["disp"]
+            if _bdisp >= 7.0:
+                continue
+            _bng, _bnbad = _news_grade(_bc)
+            if _bnbad:
+                continue
+            _bscore = 40.0 + 35                        # 기본 + 브리핑(선행) 가점(V25.55 가중치↑, 위 본루프와 동일)
+            if _bds.get("above5"):
+                _bscore += 8
+            if _bds.get("kij_cross"):
+                _bscore += 12
+            elif _bds.get("kij_near"):
+                _bscore += 6
+            if _bng == "S":
+                _bscore += 20
+            elif _bng == "A":
+                _bscore += 12
+            if 0 <= _bdisp <= 3:
+                _bscore += 5
+            _bex, _bextag = _pick_extra_score(token, key, secret, _bc, _bpx, _bturn or 0, _bds)
+            _bscore += _bex
+            if _bng not in ("S", "A"):                  # [V25.42] 재료 미확인 점수 상한 49(<발송임계)
+                _bscore = min(_bscore, 49.0)
+            _seen.add(_bc)
+            cands.append({"code": _bc, "name": _bn or "", "px": _bpx, "chg": _bchg or 0.0,
+                          "turn": _bturn or 0, "disp": _bdisp, "score": _bscore,
+                          "ng": _bng, "brief": True, "xtag": _bextag})
+
+    def _log_shadow(exclude=()):
+        # [검증] 그림자 픽 — "우리가 뽑을 뻔한 후보"를 텔레그램 없이 로깅. 대시보드 백필이 익일 갭 대조.
+        #   [V22.9] 점수 있는 후보(cands) 우선 — 매일 삼성/하이닉스 거래대금 top만 찍히던 문제 해결.
+        #   cands 있으면 점수 상위(실제픽 제외)를, 없으면(리스크오프/미형성) 거래대금 상위로 폴백.
+        if cands:
+            _pool = sorted(cands, key=lambda c: c["score"], reverse=True)
+        else:
+            # [V25.11] 폴백도 초대형주(3천억↑ 지수 대장주) 제외 — 만년 삼성/하이닉스만 찍히던 노이즈 차단.
+            #   종배로 뽑을 일 없는 종목을 그림자에 남기면 검증 데이터가 오염됨. 없으면 로깅 스킵.
+            _pool = sorted([x for x in raw if x["turn"] < 300_000_000_000],
+                           key=lambda x: x["turn"], reverse=True)
+        _sh = [c for c in _pool if c["code"] not in exclude][:3]
+        for c in _sh:
+            _log_pick(now_kst, c["code"], c["name"], 30.0, c["px"], nq, "dolpanty_shadow")
+        if _sh:
+            print(f"[종배픽] 그림자 로깅 {len(_sh)}종({'NXT실시간' if _in_nxt else '종가'}): "
+                  + ", ".join(f"{c['name']} {c['px']:,}({c['chg']:+.1f}%)" for c in _sh))
+
+    if sev == 2:                                     # [V20.9] 리스크오프 — 관망 발송 + 그림자만 로깅(검증 유지)
+        _log_shadow()
+        if data_state == "outage":
+            # [실사용 발견] 야후파이낸스 지표(나스닥·SOX·유가 등) 전체 조회 실패로 sev=2가 된 경우.
+            # 실제 리스크오프인지 알 수 없는 상태라 '리스크오프'라고 단정하면 오해를 일으킴 — 구분 발송.
+            _msg = ("🌒[종배] 매크로 지표(야후파이낸스) 조회 실패로 판단 보류 — "
+                    "실제 리스크오프 여부 불명, 데이터 소스 장애로 종가베팅 스킵(현금 방어).")
+        else:
+            _msg = ("🌒[종배] 오늘은 리스크오프 — 종가베팅 관망(현금 방어). "
+                    "매크로 🟢 전환·낙폭 진정 후 재산출.")
+        if send_telegram(token_tg, chat_id, _msg):
+            state["dolpanty_pick_day"] = today
+        print(f"[종배픽] {'데이터 장애' if data_state == 'outage' else '리스크오프'} 관망 — 그림자만 로깅")
+        return
+    if not cands:
+        _log_shadow()                                # 관망 날에도 검증 데이터 축적
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 후보 미형성 — 거래대금 500억↑·20MA↑·비과열 통과 종목 없음(관망)."):
+            state["dolpanty_pick_day"] = today
+        print("[종배픽] 후보 0종 — 관망")
+        return
+    # [V25.35] 테마(섹터) 대장/2등 순위(강의 1·2강) — 같은 테마에 후보 2개↑ 몰릴 때(=테마 형성)만
+    #   거래대금 순위로 대장 +10 / 2등 +5 / 3등↓ 후발주 -8. 단독 섹터는 중립(테마 아님).
+    _by_sec = {}
+    for _c in cands:
+        _c["sector"] = _sector_name(token, key, secret, _c["code"])   # 이후 분산선정에서도 재사용
+        if _c["sector"]:
+            _by_sec.setdefault(_c["sector"], []).append(_c)
+    for _sec, _members in _by_sec.items():
+        if len(_members) < 2:
+            continue                                                 # 단독 = 테마 아님 → 중립
+        _members.sort(key=lambda c: c["turn"], reverse=True)
+        for _rk, _c in enumerate(_members, 1):
+            if _rk == 1:
+                _c["score"] += 10; _c["theme_rank"] = "🥇대장"
+            elif _rk == 2:
+                _c["score"] += 5;  _c["theme_rank"] = "🥈2등"
+            else:
+                _c["score"] -= 8;  _c["theme_rank"] = "🔻후발"
+            _c["xtag"] = (_c.get("xtag", "") + " " + _c["theme_rank"]).strip()
+    cands.sort(key=lambda c: c["score"], reverse=True)
+    # [V20.7] 금요일 종배 억제 — 금요일 픽은 주말(3일 밤) 홀딩이라 주말 이벤트 리스크 폭증
+    #   (예: 삼성생명 금 +10%→월 -11%). 확정픽 발송 금지, 그림자만 로깅(검증 데이터 유지).
+    if now_kst.weekday() == 4:                    # 월0~금4 · 금요일
+        _log_shadow()
+        if send_telegram(token_tg, chat_id,
+                         "🌒[종배] 금요일 — 종가베팅 억제(주말 3일 홀딩=이벤트 리스크). "
+                         "월요일 장 재개 후 재산출 권장."):
+            state["dolpanty_pick_day"] = today
+        print("[종배픽] 금요일 억제 — 주말 리스크 회피(그림자만 로깅)")
+        return
+    # [V25.6] 장세 판독 — 저갭 장세(종배 불리)면 임계 상향(50→60): 강한 픽만 발송, 나머지 관망.
+    #   (모카 교훈: 갭 안 뜨는 장에선 종배 자체를 쉬어라. 데이터로 장세 감지해 자동 억제.)
+    _regime = _regime_detect(token, key, secret, now_kst)
+    _thr = 60 if _regime["state"] == "lowgap" else 50
+    if cands[0]["score"] < _thr:
+        _log_shadow()
+        _rmsg = (f" · {_regime['tag']}" if _regime.get("tag") else "")
+        if send_telegram(token_tg, chat_id,
+                         f"🌒[종배] 확정픽 없음 — 최상위({cands[0]['name']} {cands[0]['score']:.0f}점) "
+                         f"기준({_thr}점) 미달{_rmsg}. 강한 셋업 아님(관망).\n{_regime['text']}"):
+            state["dolpanty_pick_day"] = today
+        print(f"[종배픽] 확정픽 없음 — 최고 {cands[0]['name']}({cands[0]['score']:.0f}) < {_thr} · {_regime['state']} · 관망")
+        return
+    pick = cands[0]
+    # [V23.2] 분산 후보는 '다른 섹터'로 — 같은 섹터면 동반 갭다운이라 분산 효과 없음(사용자 룰).
+    _pick_sec = pick.get("sector") or _sector_name(token, key, secret, pick["code"])
+    pick["sector"] = _pick_sec
+    _used_sec = {_pick_sec} if _pick_sec else set()
+    div = []
+    for c in cands[1:]:
+        if c["score"] < _thr:                        # [V25.10] 분산 후보도 장세 임계(_thr) 적용 — 저갭엔 약한 분산 금지
+            continue
+        _csec = c.get("sector") or _sector_name(token, key, secret, c["code"])
+        if _csec and _csec in _used_sec:            # 이미 담은 섹터(원톱 포함) → 스킵
+            continue
+        c["sector"] = _csec
+        div.append(c)
+        if _csec:
+            _used_sec.add(_csec)
+        if len(div) >= 2:
+            break
+    _mat = {"S": "🔥재료 강함(S급)", "A": "🟢재료 있음(A급)"}.get(pick["ng"], "⚠️재료 미확인")
+    # [V25.34] 익일 무효화 조건(강의 2강 필수 출력항목 ④) — 전일 저점 기준 + 시초가 이탈 + 재료 훼손.
+    #   손절도 고정 -2% 대신 '전일 저점 이탈'을 무효화 가격으로(변동성 반영), −3% 상한으로 캡.
+    _pds = _daily_setup(token, key, secret, pick["code"], pick["px"])
+    _plow = (_pds or {}).get("prevlow") or 0
+    if _plow and _plow < pick["px"]:
+        _stop = max(int(_plow), int(pick["px"] * 0.97))   # 전일저점/−3% 中 높은쪽(무효화 가격)
+    else:
+        _stop = int(pick["px"] * 0.98)
+    _stoppct = (_stop / pick["px"] - 1) * 100
+    _t1 = int(pick["px"] * 1.03)
+    _invalidate = ("\n🚫 익일 무효화(즉시 청산): ①9시 시초가 이탈 "
+                   + (f"②전일 저점 {int(_plow):,} 이탈 " if _plow else "②전일 저점 이탈 ")
+                   + "③재료 뒤집는 공시/뉴스(논리 훼손)")
+    _pbasis = "NXT 실시간가" if _in_nxt else "종가"       # 가격 기준 표기
+    # [V21.7] 확정픽 AI 뉴스판정(Gemini) — 최종 1종만 뉴스 본문 읽어 오버나이트 적합성 첨부(비용 미미)
+    _ai_news = ""
+    try:
+        _ai_news = _gemini_stock_news_verdict(gemini_key, pick["code"], pick["name"])
+    except Exception:
+        pass
+    # [V22.6] 관심종목 10대 기준(사용자 매매원칙) 자동 체크 첨부
+    _wl = ""
+    try:
+        _wlp = _watchlist_check(token, key, secret, pick["code"], pick["px"], pick["chg"],
+                                pick["turn"], pick["ng"])
+        if _wlp:
+            _wl = f"\n📋 관심기준 {len(_wlp)}개 충족: {'·'.join(_wlp)}"
+    except Exception:
+        pass
+    # [V23.4 종배룰 #3] 외인·기관 수급 방향
+    _sup = ""; _supply_neg = False
+    try:
+        # [실전투자 점검] distinguish_fail=True로 조회실패(None)와 실제 0 순매수를 구분 —
+        # 예전엔 _investor_est가 실패해도 (0,0)을 반환해 이 None 체크가 죽은 코드였음.
+        _f, _o = _investor_est(token, key, secret, pick["code"], distinguish_fail=True)
+        if _f is None or _o is None:
+            raise ValueError("수급 데이터 없음")
+        _fa, _oa = _f * pick["px"] / 1e8, _o * pick["px"] / 1e8
+        _supply_neg = (_f + _o) < 0
+        _sup = f"\n💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억" + (" ✅유입" if not _supply_neg else " ⚠️이탈")
+    except Exception:
+        # [V24.9] 수급 조회 실패를 조용히 '이상무'로 넘기지 말고 명시(사람이 소액·확인 판단)
+        _sup = "\n💰 수급: ⚠️미확인(조회 실패 — 개장 후 외인/기관 직접 확인·소액 대응)"
+    # [V23.6] 자기모순 방지 — AI뉴스가 '부적합/악재'거나 수급 이탈이면 확정픽(매수) 강등 → 관망.
+    #   (SK스퀘어 실패 케이스: AI '부적합'인데 확정픽 발송 → 다음날 하락. 데이터로 검증된 강등 규칙.)
+    _ai_bad = ("부적합" in _ai_news) or ("악재" in _ai_news)
+    # [V25.12 B] 저갭 장세에선 '재료 없는 종배' 금지 — 이 장에서 갭 나는 건 강한 개별 재료(공시·실적·브리핑)뿐.
+    #   무재료(ng 없음 + 브리핑 아님) 픽은 저갭 장세에 오버나이트 근거 없음 → 강등(관망).
+    _regime_block = (_regime["state"] == "lowgap"
+                     and pick.get("ng") not in ("S", "A") and not pick.get("brief"))
+    # [V25.42] 재료 미확인 원톱 강등 — 브리핑 겹침만으로 재료 없이 원톱 확정되던 문제(흥구석유式).
+    #   강의 2강: 종배 핵심=재료 지속성. 재료 미확인(ng none)은 원톱 자격 없음 → 관망(분산 후보로는 잔존).
+    _nograde_block = pick.get("ng") not in ("S", "A")
+    if _ai_bad or _supply_neg or _regime_block or _nograde_block:
+        _why = []
+        if _ai_bad:
+            _why.append("AI 부적합/악재")
+        if _supply_neg:
+            _why.append("수급 이탈")
+        if _regime_block:
+            _why.append("저갭 장세+무재료(갭 근거 없음)")
+        if _nograde_block:
+            _why.append("재료 미확인(오버나이트 근거 약함)")
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
+                      f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
+                      f"※ 기술적 셋업은 있으나 뉴스/수급이 반대 — 종배는 쉬는 게 정답")
+        _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 강등돼도 검증 데이터는 남김
+        _log_pick(now_kst, pick["code"], pick["name"], 30.0, pick["px"], nq, "dolpanty_shadow")  # 강등=그림자
+        state["dolpanty_pick_day"] = today
+        print(f"[종배픽] 확정픽 강등(관망) — {pick['name']}: {'·'.join(_why)}")
+        return
+    # [V25.17] NXT 거래 여부 판별 → 태그·청산 가이드. 로깅 시 NXT/미거래 분리(--analyze 비교용).
+    def _nxt_label(_st):
+        if _st is True:
+            return ("🟢NXT거래", "청산: NXT(16~20시·8시)서 +3% 뜨면 즉시(밤 재료 NXT 흡수)·안 뜨면 9시 시가")
+        if _st is False:
+            return ("🔴NXT미거래", "⚠️밤새 탈출 불가(풀노출)·9시 시가만 청산 — 소액·손절 철저 / 단 9시 갭엣지는 살아있음")
+        return ("⚪NXT미확인", "청산: NXT 조회되면 +3%서, 아니면 9시 시가")
+    _pick_nxt = _nxt_tradable(token, key, secret, pick["code"])
+    _pick_sig = "dolpanty_nonxt" if _pick_nxt is False else "dolpanty"    # 미확인/거래=dolpanty
+    # 통과 — 확정픽 로깅(NXT 여부별 분리 저장)
+    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, _pick_sig)
+    for c in div:
+        _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
+    _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})
+    # [V23.4 종배룰 #5] 시황 선반영 판정 — 美선물 상승분을 한국이 이미 따라왔나(대형주 종배 여지)
+    _mkt = ""
+    try:
+        _nqp = _pct("NQ=F")
+        _ksp = _kospi_index_kis(token, key, secret)      # [V24.9] KIS 우선(yfinance 지연 회피)
+        if _ksp is None:
+            _ksp = _hist_pct("^KS11")
+            if _ksp is not None and abs(_ksp) > 4.0:
+                _ksp = None
+        if _nqp is not None and abs(_nqp) < 0.05:        # [V25.45] 美선물 0 = 미국 휴장/데이터없음 → '지지없음' 오해 방지
+            _mkt = "\n📊 시황: 🌙미국 휴장/데이터없음 — 익일 갭은 국내 수급·시초가로만 판단(美 방향 참고 불가)"
+        elif _nqp is not None and _ksp is not None:
+            _mhead = f"\n📊 시황: 美선물 {_nqp:+.1f}% vs 코스피 {_ksp:+.1f}%"
+            if _nqp > 0.3 and _ksp >= _nqp * 0.8:
+                _mkt = _mhead + " → ⚠️선반영(지수 이미 따라옴·대형주 종배 여지↓)"
+            elif _nqp > 0.5 and _ksp <= 0.1:
+                _mkt = _mhead + " → 🔴갭하락 위험(美↑ 한국 보합)"
+            elif _nqp <= 0.1 and _ksp >= 0.5:            # 미국 지지 없이 한국만 올랐다 = 갭 여지 적음
+                _mkt = _mhead + " → ⚠️한국 단독 상승(美 지지 없음·다음날 갭 여지↓)"
+            elif _nqp > 0 and _ksp < _nqp * 0.5:
+                _mkt = _mhead + " → 🟢여지 있음(한국 덜 따라옴·내일 갭업 여지)"
+            else:
+                _mkt = _mhead
+    except Exception:
+        pass
+    _psec_txt = f"[{_pick_sec}] " if _pick_sec else ""
+    _brief_tag = " 🎯브리핑테마(선행)" if pick.get("brief") else ""   # [V24.7] 재설계: 브리핑 겹침 표시
+    _elite_j = " ⭐정예" if ((pick.get("ng") in ("S", "A") or pick.get("brief")) and not _supply_neg) else ""
+    _ntag, _nguide = _nxt_label(_pick_nxt)
+    _divtxt = ("\n🌒 분산(다른 섹터): "
+               + " · ".join(f"{c['name']}[{c.get('sector','')}]{(' '+c['theme_rank']) if c.get('theme_rank') else ''} "
+                            f"{c['px']:,}({c['chg']:+.1f}%)"
+                            for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
+    _prank = f" {pick['theme_rank']}" if pick.get("theme_rank") else ""   # 원톱 테마 순위
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
+                     f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
+                     f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}"
+                     + (f" · {pick['xtag']}" if pick.get("xtag") else "")
+                     + f"{_ai_news}{_wl}{_sup}{_mkt}\n"
+                     f"🧭 {_regime['text']}\n"
+                     f"진입 {pick['px']:,} · 손절 {_stop:,}({_stoppct:+.1f}%·전일저점/−3%) · 익절 {_t1:,}(+3%)"
+                     f"{_invalidate}"
+                     f"{_divtxt}\n"
+                     f"⚠️ 종가 굳는 것 확인 후 매수 · 극소액 분산(몰빵 금지)"
+                     + (" · 🔵저갭장세라 소액·신중" if _regime['state'] == 'lowgap' else "") + "\n"
+                     f"★{_nguide}★"):
+        state["dolpanty_pick_day"] = today
+        _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
+        state["dolpanty_pick_info"] = {"day": today, "code": pick["code"], "name": pick["name"],
+                                       "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False,
+                                       "ng": pick.get("ng"), "brief": bool(pick.get("brief"))}  # [V25.19] 홀딩판정용
+    # [V25.17] 비교 종배픽 — 원톱과 '반대 NXT 유형' 최고 후보 1종 추가(둘 다 선정·검증 비교용).
+    #   NXT거래 vs 미거래 어느 쪽 종배가 이기나 --analyze로 대조. 소액 실험.
+    _used = {pick["code"], *[c["code"] for c in div]}
+    _cmp = None
+    for c in cands:
+        if c["code"] in _used or c["score"] < _thr:
+            continue
+        _cst = _nxt_tradable(token, key, secret, c["code"])
+        if _cst is not None and _cst != bool(_pick_nxt):     # 원톱과 반대 유형
+            c["nxt"] = _cst
+            _cmp = c
+            break
+    if _cmp:
+        _ct2, _cg2 = _nxt_label(_cmp["nxt"])
+        _cstop = int(_cmp["px"] * 0.98); _ct1 = int(_cmp["px"] * 1.03)
+        _csig = "dolpanty_nonxt" if _cmp["nxt"] is False else "dolpanty"
+        _log_pick(now_kst, _cmp["code"], _cmp["name"], _cmp["score"], _cmp["px"], nq, _csig)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🌒[종배·비교픽({_ct2})] {_cmp['name']} {_cmp['px']:,}({_cmp['chg']:+.1f}%) · 점수 {_cmp['score']:.0f}\n"
+                      f"원톱({_ntag})과 반대 유형 — 어느 종배가 이기나 검증용 소액\n"
+                      f"진입 {_cmp['px']:,} · 손절 {_cstop:,}(−2%) · 익절 {_ct1:,}(+3%)\n★{_cg2}★")
+        print(f"[종배픽] 비교픽 {_cmp['name']} ({_ct2})")
+    print(f"[종배픽] 후보 {len(cands)}종 · 원톱 {pick['name']}({pick['score']:.0f}·{_ntag}) · 분산 {len(div)}종")
+
+
+def check_dolpanty_entry(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V23.1] 종배 진입 타이밍 상시 감시 — 종가(15:23~15:30)+NXT(18:00~19:50) 동안 오늘 확정픽을
+    실시간 조회해 '진입 좋은 자리'면 알림. 20분 쿨다운(스팸 방지). 8시 NXT 마감까지 커버.
+    판정: 진입가 이하·안정=적정 / 이미 오름=추격주의 / 급락=갭다운주의."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _close = (15 * 60 + 23) <= m <= (15 * 60 + 30)       # 종가 동시호가
+    _nxt = (18 * 60) <= m <= (19 * 60 + 50)              # NXT 야간
+    if not (_close or _nxt):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    _info = state.get("dolpanty_pick_info") or {}
+    if _info.get("day") != today:
+        return
+    # 20분 쿨다운
+    _last = _info.get("entry_ts", 0)
+    if (int(now_kst.timestamp()) - int(_last)) < 20 * 60:
+        return
+    _base = _info["px"]                                   # 종가 확정픽 진입가 기준
+    _mrkt = "NX" if _nxt else "J"
+    try:
+        _cur, _chg, _turn = _price_and_turnover(token, key, secret, _info["code"], mrkt=_mrkt)
+    except Exception:
+        _cur = None
+    if not _cur:
+        return
+    _gap = (_cur / _base - 1) * 100                       # 종가픽 대비 현재가 괴리
+    _stop = int(_cur * 0.98); _t1 = int(_cur * 1.03)
+    _when = "종가 동시호가" if _close else "NXT 야간"
+    if _gap <= -2.0:
+        _vd = ("🔴 NXT 약세 — 갭다운 주의", f"진입가 대비 {_gap:+.1f}% 하락. 지금 잡으면 싸지만 약세 신호 — 재고 권장.")
+    elif _gap <= 0.5:
+        _vd = ("🟢 진입 적정 자리", f"진입가 근처({_gap:+.1f}%) — 안 비싸게 잡을 자리. 극소액·-2% 손절.")
+    elif _gap <= 2.0:
+        _vd = ("🟡 소폭 상승", f"진입가 대비 {_gap:+.1f}% — 살짝 올랐지만 아직 추격은 아님. 눌림 보며.")
+    else:
+        _vd = ("⚠️ 추격 주의", f"진입가 대비 {_gap:+.1f}% 급등 — 지금 추격 금물, 눌림 대기.")
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_WATCH}\n🌒⏰ 종배 진입타이밍({_when}) — {_info['name']}\n"
+                     f"{_vd[0]} · 현재 {_cur:,}({_chg:+.1f}%)\n{_vd[1]}\n"
+                     f"진입 {_cur:,} · 손절 {_stop:,}(−2%) · 익절 {_t1:,}(+3%) · 청산 내일 9시 시가"):
+        _info["entry_ts"] = int(now_kst.timestamp())
+        state["dolpanty_pick_info"] = _info
+        print(f"[종배픽] 진입타이밍 알림({_when}) — {_info['name']} {_gap:+.1f}%")
+
+
+def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[V25.12 A] 종배 NXT 청산 알림 — 종배 근본문제(NXT가 오버나이트 갭을 9시 전에 흡수) 대응.
+    NXT 애프터(16:00~20:00, 픽 당일)·프리마켓(08:00~08:50, 익일)에서 종배픽이 목표(+3%) 도달하면
+    '9시 기다리지 말고 지금 NXT 청산'(갭은 NXT서 이미 남), 손절선 이탈이면 'NXT 손절' 알림. 픽당 1회."""
+    m = now_kst.hour * 60 + now_kst.minute
+    _after = (16 * 60) <= m <= (20 * 60)                  # 당일 NXT 애프터
+    _pre = (8 * 60) <= m <= (8 * 60 + 50)                 # 익일 NXT 프리마켓
+    if not (_after or _pre):
+        return
+    _info = state.get("dolpanty_pick_info") or {}
+    if not _info.get("code") or _info.get("exit_done"):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if _after and _info.get("day") != today:             # 애프터는 픽 당일만
+        return
+    if _pre and _info.get("day") == today:               # 프리마켓은 픽 익일(당일 픽이면 아직 애프터)
+        return
+    _base = _info["px"]
+    _t1 = _info.get("t1") or int(_base * 1.03)
+    _stop = _info.get("stop") or int(_base * 0.98)
+    try:
+        _cur, _chg, _ = _price_and_turnover(token, key, secret, _info["code"], mrkt="NX")
+    except Exception:
+        _cur = None
+    if not _cur:
+        return
+    _g = (_cur / _base - 1) * 100
+    _when = "NXT 애프터(16~20시)" if _after else "NXT 프리마켓(8시)"
+    _sig = None
+    if _cur >= _t1:
+        _sig = ("🎯 NXT 청산 타이밍!", f"목표 +{_g:.1f}% 도달({_cur:,}) — 갭은 NXT서 이미 남. 9시 시가 기다리다 사라지기 전에 지금 익절 검토")
+    elif _cur <= _stop:
+        _sig = ("🔴 NXT 손절", f"진입가 대비 {_g:+.1f}%({_cur:,}) 손절선 이탈 — NXT서 손절해 밤/갭다운 리스크 차단")
+    # [V25.19] 8시 프리마켓 '매도 vs 홀딩' 자동판정 — 목표(+3%)·손절 사이 애매 구간(사용자 핵심 고민).
+    #   4요인: 재료질(A급) · 수급(순매수) · 선반영(+3%↑) · NXT 미거래. 픽당 1회.
+    if _pre and not _sig and not _info.get("hold_judged"):
+        _ng = _info.get("ng"); _isbrief = _info.get("brief")
+        _strong_mat = (_ng in ("S", "A")) or _isbrief
+        _sup_pos = None
+        try:
+            # [실전투자 점검] distinguish_fail=True — 위 _holding_judge와 동일한 죽은 코드 버그
+            # (조회실패가 "수급 확인·유입"으로 잘못 표시되던 문제).
+            _f, _o = _investor_est(token, key, secret, _info["code"], distinguish_fail=True)
+            if _f is not None and _o is not None:
+                _sup_pos = (_f + _o) >= 0
+        except Exception:
+            pass
+        _reflected = _g >= 3.0
+        _why = []
+        _hold = True
+        if _reflected:
+            _hold = False; _why.append(f"이미 +{_g:.1f}%(선반영)")
+        if not _strong_mat:
+            _hold = False; _why.append("재료 약함(A급/브리핑 아님)")
+        if _sup_pos is False:
+            _hold = False; _why.append("수급 이탈")
+        _verdict = ("🟢 9시까지 보유 (A급재료+수급+선반영無 → 9시 갭·장중 추가 여력)" if _hold
+                    else "🔴 8시 NXT 매도 (" + "·".join(_why) + " → 홀딩 근거 약함)")
+        _supmark = "✅유입" if _sup_pos else ("⚠️이탈" if _sup_pos is False else "미확인")
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_WATCH}\n🌅 종배 홀딩 판정(8시 프리마켓) — {_info['name']}\n"
+                         f"현재 {_cur:,}({(_chg or 0):+.1f}%) · 진입대비 {_g:+.1f}%\n"
+                         f"재료:{_ng or '없음'}{'·브리핑' if _isbrief else ''} · 수급:{_supmark} · 선반영:{'예' if _reflected else '아니오'}\n"
+                         f"→ {_verdict}\n"
+                         f"※ 8시 NXT 하락은 유동성 얇아 가짜일 수 있음 — 애매하면 9시 첫10분 저점 확인 후 판단(NXT 미거래 종목은 승률 낮으니 특히 소액)"):
+            _info["hold_judged"] = True
+            state["dolpanty_pick_info"] = _info
+            print(f"[종배홀딩판정] {_info['name']} {_g:+.1f}% — {'보유' if _hold else '매도'}")
+        return
+    if not _sig:
+        return
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_WATCH}\n🌙💰 종배 청산 알림({_when}) — {_info['name']}\n"
+                     f"{_sig[0]} · 현재 {_cur:,}({(_chg or 0):+.1f}%)\n{_sig[1]}"):
+        _info["exit_done"] = True
+        state["dolpanty_pick_info"] = _info
+        print(f"[종배청산] {_info['name']} {_g:+.1f}% — {_sig[0]}")
+
+
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
     반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단.
@@ -1053,6 +4781,15 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
         sent = {"_day": today}
     out = []
     if not in_window:
+        state["sniper_sent"] = sent
+        return out
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 시가저격 억제
+        # 하루 1회 안내(왜 아침 신호가 없는지)
+        if not sent.get("_lowgap_note"):
+            send_telegram(token_tg, chat_id,
+                          "🔵[박스장] 저갭 장세 — 아침 당일단타(시가저격·진입·조기포착) 억제.\n"
+                          "박스장은 아침 추격 승률 낮음(오늘 23%) → 저녁 브리핑 테마·눌림 위주로.")
+            sent["_lowgap_note"] = True
         state["sniper_sent"] = sent
         return out
     for code, name in lineup:
@@ -1090,10 +4827,13 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                                  f"🔻 돌파 후 하락 매도: {int(_res*0.99):,}원 (뚫었다 다시 밑이면 매도)")
                 else:
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
+                _bt = _big_trend_tag(token, key, secret, code, px)
+                _sdisp = _ma20_disparity(token, key, secret, code, px)   # [V24.5] 과열이면 눌림 목표
+                _pull = _pullback_levels(token, key, secret, code, px, chg) if (_sdisp is not None and _sdisp >= 7) else ""
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
-                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}\n"
-                              f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
+                              f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}{_bt}\n"
+                              f"• 현재가 {px:,}원 ({chg:+.2f}%) · {now_kst.strftime('%H:%M')} KST{_pull}\n"
                               f"─── 가격표 ───\n"
                               f"🎯 매수가(현재): {px:,}원\n"
                               f"✂️ 손절가: {_stop:,}원 (−2%)\n"
@@ -1106,8 +4846,93 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     return out
 
 
-def _investor_est(token, key, secret, code):
-    """종목 장중 외국인/기관 추정 순매수 '수량' — investor-trend-estimate. (frn_qty, org_qty)."""
+def _investor_daily(token, key, secret, code, days=5):
+    """[V25.32] 종목 일별 외국인/기관 순매수 최근 N일 — inquire-investor(FHKST01010900).
+    최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 []."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010900"},
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=6)
+        out = []
+        for x in (r.json().get("output") or [])[:days]:
+            if isinstance(x, dict):
+                out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty")),
+                            "frgn_amt": _to_int(x.get("frgn_ntby_tr_pbmn")),
+                            "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn"))})
+        return out
+    except Exception:
+        return []
+
+
+def _supply_avgprice(rows):
+    """[V25.32] 외인/기관 '평단' 근사 — 최근 연속 순매수 구간의 Σ순매수금액/Σ순매수수량(원).
+    강의(수급단타왕) '평단 아래서 추가매수' 규칙용. 금액필드 없거나 계산불가 시 None."""
+    if not rows:
+        return None
+    best = None
+    for k, amt_k in (("frgn", "frgn_amt"), ("orgn", "orgn_amt")):
+        tot_qty = tot_amt = 0
+        for row in rows:                              # 최신→과거, 순매수(+)인 날만 누적(매도전환 만나면 중단)
+            q, a = row.get(k, 0), row.get(amt_k, 0)
+            if q > 0 and a:
+                tot_qty += q
+                tot_amt += abs(a)
+            else:
+                break
+        if tot_qty > 0 and tot_amt > 0:
+            avg = tot_amt / tot_qty
+            best = avg if best is None else min(best, avg)   # 더 낮은(보수적) 평단 채택
+    return int(best) if best else None
+
+
+def _supply_daily_tag(token, key, secret, code):
+    """[V25.31] 수급 연속성·강도 태그 — 외인/기관 연속 순매수 일수 + 최근 급증. 반환 (tag, strong)."""
+    return _supply_daily_tag_from(_investor_daily(token, key, secret, code, days=5))
+
+
+def _supply_daily_tag_from(d):
+    """[V25.32] 위와 동일하나 이미 조회한 일별수급(rows)으로 판정 — 중복 API 호출 방지."""
+    if not d:
+        return "", False
+
+    def _consec(k):
+        n = 0
+        for row in d:
+            if row.get(k, 0) > 0:
+                n += 1
+            else:
+                break
+        return n
+    _fc, _oc = _consec("frgn"), _consec("orgn")
+    _best = max(_fc, _oc)
+    _who = "외인" if _fc >= _oc else "기관"
+    # 전일대비 급증: 최신일 순매수 > 직전 3일 평균 절대값 × 2 (외인 or 기관)
+    _surge = False
+    try:
+        for _k in ("frgn", "orgn"):
+            _today = d[0].get(_k, 0)
+            _prev = [abs(r.get(_k, 0)) for r in d[1:4]]
+            _avg = sum(_prev) / len(_prev) if _prev else 0
+            if _today > 0 and _avg > 0 and _today >= _avg * 2:
+                _surge = True
+    except Exception:
+        pass
+    if _best >= 3:
+        return f" 🔥{_who}{_best}일연속매수" + ("·전일比급증" if _surge else ""), True
+    if _best == 2 or _surge:
+        return f" 🟢{_who}{'2일연속' if _best >= 2 else '수급급증'}", False
+    return "", False
+
+
+def _investor_est(token, key, secret, code, distinguish_fail=False):
+    """종목 장중 외국인/기관 추정 순매수 '수량' — investor-trend-estimate. (frn_qty, org_qty).
+    [실전투자 점검 발견] 기본값(distinguish_fail=False)은 기존 그대로 실패 시 (0,0) 반환 —
+    이 함수를 쓰는 기존 18개 호출부 대부분은 '조회 실패=0'을 점수 보너스 미부여 정도로만 써서
+    안전하지만, check_dolpanty_pick처럼 "수급 조회 실패"를 "확인된 0" 대신 명시적으로 경고해야
+    하는 호출부는 distinguish_fail=True로 넘겨 실패 시 (None, None)을 받아야 함
+    (기존엔 항상 (0,0)이라 '조회 실패 시 명시' 로직이 죽은 코드였음 — 진짜 실패를 실제 0 순매수와
+    구분 못 하고 있었음)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trend-estimate",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -1120,7 +4945,7 @@ def _investor_est(token, key, secret, code):
                     return _to_int(row.get("frgn_fake_ntby_qty")), _to_int(row.get("orgn_fake_ntby_qty"))
     except Exception:
         pass
-    return 0, 0
+    return (None, None) if distinguish_fail else (0, 0)
 
 
 # [V17.2] 종목별 프로그램매매 순매수 금액(원) — 진단(diag_program_trade)으로 실전 검증한 엔드포인트.
@@ -1204,11 +5029,7 @@ def log_program_history(now_kst, token, key, secret, lineup):
         if not ser or (m - ser[-1][0]) >= 3:          # 최소 3분 간격 적립(중복 방지)
             ser.append([m, int(_a or 0), int(_q or 0)])
             codes[code] = ser[-200:]                   # 하루 상한
-    try:
-        with open(PROG_HIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(PROG_HIST_FILE, hist)
 
 
 # [V13.2 오신호 차단] 수급 전환 격발 임계 —
@@ -1432,6 +5253,87 @@ def check_sector_leaders(token, key, secret, now_kst, state, token_tg, chat_id, 
     return observe
 
 
+# ── [V21.3] 장전 예열 스캔(08:00~08:55) — NXT 프리마켓/예상체결가로 09시 갭 미리 포착 ──
+_PREMKT_START, _PREMKT_END = 8 * 60, 8 * 60 + 55
+_PREMKT_GAP_UP, _PREMKT_GAP_DN = 2.0, -2.0
+
+
+def _expected_price(token, key, secret, code):
+    """장전 동시호가 예상체결가·예상등락% — inquire-price(antc_cnpr/antc_cntg_prdy_ctrt).
+    필드 없으면 (None,None) → 호출부가 NXT로 대체. KIS 제공 여부 실전 검증용."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        o = r.json().get("output", {})
+        if isinstance(o, dict):
+            ap = _to_int(o.get("antc_cnpr"))                  # 예상체결가
+            ac = o.get("antc_cntg_prdy_ctrt")                 # 예상체결 전일대비율
+            if ap:
+                return ap, float(str(ac or 0).replace(",", "") or 0)
+    except Exception:
+        pass
+    return None, None
+
+
+def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
+    """[V21.3] 장전 예열 스캔(08:00~08:55) — 라인업을 NXT 프리마켓/예상체결가로 조회.
+    갭업(+2%↑)=09시 시가저격 주목 예고 / 갭다운(-2%↓)=보유 대응 경고. 종목별 당일 1회.
+    ※ 매수 신호 아님(관망/경계 등급) — 개장 후 거래대금·수급 확인이 원칙."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_PREMKT_START <= m <= _PREMKT_END):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("premkt_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    # [V24.1] 1차 조기감지 유니버스 = 라인업 + 어제 브리핑/종배 예측 + 내 관심종목(예측이 8시 NXT에 벌써 반응하나)
+    _univ, _seen = [], set()
+    for _c, _n in lineup:
+        if _c not in _seen:
+            _univ.append((_c, _n, "라인업")); _seen.add(_c)
+    yday = _prev_trading_day_str(now_kst)  # [실전투자 점검] 주말 제외 직전 거래일
+    try:
+        with open(SCORECARD_FILE, encoding="utf-8") as f:
+            _sc = json.load(f)
+        for r in _sc:
+            if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽") and r.get("code") not in _seen:
+                _univ.append((r["code"], r.get("name", r["code"]), "어제예측")); _seen.add(r["code"])
+    except Exception:
+        pass
+    for s in _read_my_watch():
+        _c = str(s.get("code", "")).zfill(6)
+        if _c.isdigit() and len(_c) == 6 and _c not in _seen:
+            _univ.append((_c, s.get("name", _c), "내관심")); _seen.add(_c)
+    for code, name, _origin in _univ:
+        if sent.get(code):
+            continue
+        # 1) NXT 프리마켓 실가(08:00~08:50) 우선
+        px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt="NX")
+        _src = "NXT"
+        if not (px and chg is not None):
+            _ap, _ac = _expected_price(token, key, secret, code)   # 2) NXT 미거래 → 예상체결가
+            if _ap and _ac is not None:
+                px, chg, _src = _ap, _ac, "예상체결"
+        if not (px and chg is not None):
+            continue
+        if chg >= _PREMKT_GAP_UP:
+            _ot = "🎯어제예측 조기반응" if _origin == "어제예측" else ("👁️내 관심종목" if _origin == "내관심" else "라인업")
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n🌅 [장전 조기감지·8시NXT] {name} 갭업 {chg:+.1f}% ({_src}) · {_ot}\n"
+                          f"현재 {px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                          f"👀 9시 갭업 예고 — 개장(2차) 거래대금·수급 확인 후 대응(추격 금지)")
+            sent[code] = True
+        elif chg <= _PREMKT_GAP_DN:
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_CAUTION}\n🌅 [장전 예열] {name} 갭다운 {chg:+.1f}% ({_src})\n"
+                          f"현재 {px:,} · {now_kst.strftime('%H:%M')} KST\n"
+                          f"⚠️ 보유 시 09시 대응 준비 — 갭다운 출발 가능")
+            sent[code] = True
+    state["premkt_sent"] = sent
+
+
 # ── [V6.1-B] 14:30 V자 턴어라운드 (watcher 이관) ──
 TA_UNIVERSE = [("005930", "삼성전자"), ("000660", "SK하이닉스"), ("042700", "한미반도체"),
                ("196170", "알테오젠"), ("068270", "셀트리온"), ("207940", "삼성바이오로직스"),
@@ -1440,13 +5342,26 @@ TA_UNIVERSE = [("005930", "삼성전자"), ("000660", "SK하이닉스"), ("04270
 
 
 def _price_full(token, key, secret, code):
-    """현재가·등락률·시가·고가·저가 — inquire-price. 실패 시 (None,...)."""
+    """현재가·등락률·시가·고가·저가 — inquire-price. 실패 시 (None,...).
+    [실전투자 점검 — 성적표 이상현상 추적] rt_cd 검증 없이 'output이 비어있지 않으면 성공'으로만
+    판정했었음 — 이 코드베이스 전체에서 rt_cd를 확인하는 곳이 단 한 곳도 없었음(레이트리밋 등으로
+    rt_cd!=0인데 output에 정상처럼 보이는(그러나 실은 stale/기본값) 데이터가 들어있는 응답을 그대로
+    신뢰했을 가능성). 실제 성적표에서 5종목이 '현재가==추천가(원단위 일치)인데 고/저는 실제로 다름'
+    이라는, 우연으론 설명 안 되는 모순이 재현 확인됨 — rt_cd 검증을 추가해 실제 원인인지 확인."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010100"},
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
-        o = r.json().get("output", {})
+        _j = r.json()
+        _rt = str(_j.get("rt_cd", "")).strip()
+        o = _j.get("output", {})
+        if _rt not in ("0", ""):
+            _osnap = ({k: o.get(k) for k in ("stck_prpr", "stck_hgpr", "stck_lwpr")}
+                      if isinstance(o, dict) else o)
+            print(f"[시세조회 진단] {code} rt_cd={_rt!r} msg={_j.get('msg1', '')!r} "
+                  f"— 정상 아닌데 output={_osnap}")
+            return None, None, None, None, None
         if isinstance(o, dict) and o:
             return (_to_int(o.get("stck_prpr")),
                     float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0),
@@ -1454,6 +5369,35 @@ def _price_full(token, key, secret, code):
     except Exception:
         pass
     return None, None, None, None, None
+
+
+def _pullback_levels(token, key, secret, code, px, chg, ds=None):
+    """[V24.4] 과열 종목 눌림 매수 목표 — 현재가 아래 지지선(5일선·20일선·오늘시가·전일종가) 텍스트.
+    '눌림 기다려'만 하지 말고 구체적 재진입 자리를 제시. 지지선 없으면 ''."""
+    _lv = []
+    if ds is None:
+        ds = _daily_setup(token, key, secret, code, px)
+    if ds:
+        if ds.get("ma5"):
+            _lv.append(("5일선", int(ds["ma5"])))
+        if ds.get("ma20"):
+            _lv.append(("20일선", int(ds["ma20"])))
+    try:
+        _p, _c, _o, _h, _l = _price_full(token, key, secret, code)
+        if _o:
+            _lv.append(("오늘시가", _o))
+        if chg is not None and px:
+            _lv.append(("전일종가", int(px / (1 + (chg or 0) / 100.0))))
+    except Exception:
+        pass
+    _below = sorted({(_n, _v) for _n, _v in _lv if _v and _v < px}, key=lambda x: -x[1])  # 현재가 아래·가까운 순
+    if not _below:
+        return ""
+    _txt = "\n🎯 눌림 매수 목표(추격 대신 여기서 재진입):"
+    for _n, _v in _below[:4]:
+        _txt += f"\n  • {_n} {_v:,} ({(_v / px - 1) * 100:+.1f}%)"
+    _txt += "\n  → 이 지지선 근처로 눌리면 진입 검토 · 못 지키면 손절"
+    return _txt
 
 
 def _tail_ok(o, h, l, c, ratio=0.33):
@@ -1574,7 +5518,10 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     if not ((9 * 60 + 15) <= m <= (15 * 60 + 20)):
         return []
     today = now_kst.strftime("%Y%m%d")
-    _bidx = m // 15                                  # 현재 15분 버킷 인덱스
+    # [V21.2] 시간대 적응형 봉 — 수급 몰리는 창(09:15~10:00·14:00~15:00)은 5분봉(빠른 포착),
+    #   그 외(지루한 midday)는 15분봉(노이즈↓). 봉 크기·임계는 시간대 따라 자동 전환.
+    _bsize = 5 if (((9 * 60 + 15) <= m <= (10 * 60)) or ((14 * 60) <= m <= (15 * 60))) else 15
+    _bidx = m // _bsize                              # 현재 봉 버킷 인덱스(5 or 15분)
     _nq = _pct("NQ=F")                               # 나스닥100 선물 — 김팀장式 '선물 동조' 확인
     _nq_pv = state.get("bar15_nq_prev")              # 직전 루프 NQ (상승 기울기 판정용)
     _nq_rising = (_nq_pv is None) or (_nq is None) or (_nq >= _nq_pv)   # 선물이 오르는 중(기울기 ≥ 0)
@@ -1585,6 +5532,7 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     if mark.get("_day") != today: mark = {"_day": today}
     if sent.get("_day") != today: sent = {"_day": today}
     out = []
+    _vrank_b15 = None                                # [V21.1] 주도주 교차검증용 거래대금 랭킹(지연조회)
     for code, name in lineup:
         px, chg, turn = _price_and_turnover(token, key, secret, code)
         if not px:
@@ -1621,20 +5569,34 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                                  f"🔻 돌파 후 하락 매도: {_resell:,}원 (뚫었다 다시 이 밑이면 매도)")
                 else:
                     _res_line = "🚀 저항 위 = 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
-                if sev != 2:          # [V17.1] 리스크오프면 15분봉 매수 억제(스냅샷엔 유지)
+                # [V21.1 주도주 교차검증] 당일 거래대금 랭킹(top40) 밖 = 비주도주 → 15분봉 매수 억제(손절 확률↑)
+                if _vrank_b15 is None:
+                    _vrank_b15 = {s["code"] for s in _volume_rank(token, key, secret, top=40)}
+                _is_leader = code in _vrank_b15
+                if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
+                    _bt = _big_trend_tag(token, key, secret, code, px)
+                    # [V25.43] 이격 과열(+7%↑)이면 매수검토→관찰로 강등(고점 추격 방지). 눌림 목표만 제시.
+                    _hot = _disp is not None and _disp >= 7
+                    _pull = _pullback_levels(token, key, secret, code, px, chg) if _hot else ""
+                    _prefix = SIG_WATCH if _hot else SIG_BUY
+                    _htag = "관찰(과열·추격금지)" if _hot else "매수검토"
+                    _foot = ("👉 지금은 추격 금지 — 위 눌림 목표까지 빠지면 그때 소량·타이트 손절"
+                             if _hot else "👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
                     send_telegram(token_tg, chat_id,
-                                  f"{SIG_BUY}\n🌅[장중단타·당일청산] 📊 15분봉 강한 양봉 — {name}\n"
-                                  f"방금 막 끝난 15분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
-                                  f"{_nqtxt}\n"
+                                  f"{_prefix}\n🌅[장중단타·당일청산] 📊 {_bsize}분봉 강한 양봉 — {name} [{_htag}]\n"
+                                  f"방금 막 끝난 {_bsize}분봉이 +{_move:.1f}% 강하게 올랐고 거래대금도 늘었어요.\n"
+                                  f"{_nqtxt} · 🔥주도주(거래대금 랭킹 內){_bt}\n"
                                   f"• 현재가 {px:,}원 ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
-                                  f"{_warn}\n"
+                                  f"{_warn}{_pull}\n"
                                   f"─── 가격표 ───\n"
                                   f"🎯 매수가(현재): {_buy:,}원\n"
                                   f"✂️ 손절가: {_stop:,}원 (−2%)\n"
                                   f"{_res_line}\n"
                                   f"─────────\n"
-                                  f"👉 HTS 열어 ①기관 붙었나 ②이격 과열 아닌가 확인 후 타격")
+                                  f"{_foot}")
                     sent[_key] = True
+                elif sev != 2 and not _is_leader:
+                    sent[_key] = True             # 비주도주 — 발송 억제(중복 방지 위해 마킹만)
                     _log_signal(state, now_kst, "15분봉", name, code, px)
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
@@ -1650,6 +5612,8 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     [V16.9 다이어트] sev==2(리스크오프) 또는 낙폭과대 급락주(이격≤-10%+하락)면 발송 억제(스냅샷엔 남김)."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60) <= m <= (10 * 60)):            # 만쥬 제로아워 밖 → 감시 안 함
+        return []
+    if _regime_today(token, key, secret, now_kst, state) == "lowgap":   # [V25.26] 저갭/박스장 진입 억제
         return []
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("entry_sent", {})
@@ -1701,9 +5665,10 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                 continue                          # 악재 감지 → 진입 보류
             _emat = ("🔥재료 강함(S급)" if _eng == "S" else "🟢재료 있음(A급)" if _eng == "A"
                      else "⚠️재료 미확인(순수 수급)")
+            _bt = _big_trend_tag(token, key, secret, code, px)
             send_telegram(token_tg, chat_id,
                           f"{SIG_BUY_STRONG}\n🌅[아침단타·당일청산] 🟢 진입 시그널 — {name}\n"
-                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt} · {_emat}\n"
+                          f"거래대금 {turn/1e8:,.0f}억(임계 {need/1e8:,.0f}↑) · {_org_txt} · 순매수 합 (+){_disp_txt} · {_emat}{_bt}\n"
                           f"외인 {frn_amt/1e8:+,.0f}억 · 기관 {org_amt/1e8:+,.0f}억 · 현재가 {px:,} ({(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                           f"🔌 HTS 동기화 후 원클릭 타격 · -1R 손절 세팅")
             sent[code] = True
@@ -1835,6 +5800,10 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
     nq = _pct("NQ=F")
     if sox is None:
         return None
+    # [V25.1] 미국 현물 개장(약 22:30 KST) 전 20:00~22:30은 SOX가 전일 종가(stale) → 알림 억제.
+    #   (개장 전 어제 SOX로 '미장 반도체 강/약세' 헛알림 방지. 나스닥선물 실시간은 check_nq_cross가 담당.)
+    if (20 * 60) <= m < (22 * 60 + 30):
+        return sox
     _now_ts = int(now_kst.timestamp())
     # [V16.9 다이어트] '밤당 1회(방향별)' — 같은 SOX 약세/강세를 새벽 내내 반복 발송하던 스팸 제거.
     #   밤 id: 새벽(08시 이전)은 전날 저녁 세션 소속 → 전일 날짜로 묶음.
@@ -1864,6 +5833,36 @@ def check_us_overnight(now_kst, state, token_tg, chat_id):
                       f"{now_kst.strftime('%m/%d %H:%M')} KST · 내일 아침 갭하락 주의·종배 비중 축소")
         state["us_ovn_dn_night"] = _night
     return sox
+
+
+def check_morning_riskoff(now_kst, state, token_tg, chat_id):
+    """[V25.5] 아침 비상 점검 넛지 — 밤사이 미국 급락 시 08:00~08:15 보유 점검 알림(당일 1회).
+    나스닥선물 -1.5%↓(또는 SOX -3%↓)면 발송. ★강제 손절 아님 — '점검·약한 종목 우선 정리 검토·
+    손절선 확인'을 유도해 감정적 경직(존버) 방지. NXT 프리마켓(08:00~08:50)에 대응 가능.★"""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((8 * 60) <= m <= (8 * 60 + 15)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("morning_riskoff_day") == today:
+        return
+    nq = _pct("NQ=F"); sox = _pct("^SOX")
+    _crash = (nq is not None and nq <= -1.5) or (sox is not None and sox <= -3.0)
+    if not _crash:
+        return
+    _us = []
+    if nq is not None:
+        _us.append(f"나스닥선물 {nq:+.1f}%")
+    if sox is not None:
+        _us.append(f"SOX {sox:+.1f}%")
+    if send_telegram(token_tg, chat_id,
+                     f"{SIG_CAUTION}\n🚨 아침 비상 점검 — 밤사이 미국 급락\n"
+                     f"{' · '.join(_us)}\n"
+                     f"① 보유 종목 손절선(−2%) 재확인 ② 비주도주·약한 종목 우선 정리 검토 "
+                     f"③ NXT 프리마켓(08:00~08:50)에서 미리 대응 가능\n"
+                     f"⚠️ 강제 매도 아님 — 8시 선물은 9시 개장가와 다를 수 있음. "
+                     f"감정적 경직 말고 '계획대로' 대응 · 물타기 금지\n{now_kst.strftime('%m/%d %H:%M')} KST"):
+        state["morning_riskoff_day"] = today
+        print(f"[아침비상] 미국 급락 점검 알림 발송 — {' · '.join(_us)}")
 
 
 def _pick_mode(now_kst):
@@ -1957,7 +5956,10 @@ def send_interval_brief(now_kst, state, token_tg, chat_id, snap):
     _topn = f"{_top.get('name')}(+{_top.get('amt_eok'):,.0f}억)" if _top else "—"
     # [V16.9 다이어트] 상태가 바뀔 때만 발송 — sev·자금흐름·A급수·진입수·원톱이 직전과 같으면 침묵.
     #   → 하루 11개 '리스크오프·0종' 복붙 스팸 제거. (첫 브리핑은 항상 1회 발송)
-    _sig = f"{sev}|{_flow}|{_ace_n}|{_entry_n}|{_topn}|{1 if macro.get('overheat') else 0}"
+    # [V25.30] 시그니처엔 '변하는 금액' 빼고 구조(섹터·종목명·개수)만 — 금액 미세변동으로 30분마다
+    #   재발송되던 스팸 해결. 원톱 종목명·수급 방향 섹터·개수 바뀔 때만 발송.
+    _flow_sig = (f"{_outf['sector']}>{_inf['sector']}" if (_inf and _outf) else "none")
+    _sig = f"{sev}|{_flow_sig}|{_ace_n}|{_entry_n}|{_top.get('name', '—')}|{1 if macro.get('overheat') else 0}"
     if state.get("interval_brief_sig") == _sig:
         state["interval_brief_ts"] = int(now_kst.timestamp())   # 침묵해도 타이머는 갱신(다음 판정 30분 뒤)
         return
@@ -1981,9 +5983,10 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
     today = now_kst.strftime("%Y%m%d")
     if state.get("brief_day") == today:
         return
-    sev, mtext, mdetail = compute_macro()
+    _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+    sev, mtext, mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
     cg = _cash_guide(sev)
-    lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d(%a)')} 장전 브리핑",
+    lines = [f"📅 오늘의 판 — {now_kst.strftime('%m/%d')}({_WKD_KO[now_kst.weekday()]}) 장전 브리핑",
              f"",
              f"① 국면: {mtext}",
              f"   {mdetail}",
@@ -2012,8 +6015,12 @@ def send_morning_brief(now_kst, state, token_tg, chat_id, kis_key, kis_secret, k
         state["brief_day"] = today
 
 
-def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on):
-    """15:35~15:50 마감 복기 리포트 1회 — 오늘 뜬 신호 총정리 + 라인업 성적 + 코칭."""
+MARKET_REVIEW_FILE = os.path.join(BASE, "market_review.md")
+
+
+def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key=None):
+    """15:35~15:50 마감 복기 리포트 1회 — 오늘 뜬 신호 총정리 + 라인업 성적 + 코칭.
+    [V25.51 C] + 시장 복기 학습: 지수 궤적(오전강세→오후반전)·화제 테마·급등주로 'Gemini 왜 이렇게 움직였나' 분석·누적저장."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
         return
@@ -2022,7 +6029,7 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
         return
     j = state.get("journal") or {}
     _SEVN = {0: "🟢 양호", 1: "🟡 중립/경고", 2: "🔴 리스크오프"}
-    lines = [f"📓 오늘의 복기 — {now_kst.strftime('%m/%d(%a)')} 마감 리포트",
+    lines = [f"📓 오늘의 복기 — {now_kst.strftime('%m/%d')}({_WKD_KO[now_kst.weekday()]}) 마감 리포트",
              f"",
              f"■ 매크로 국면: 최선 {_SEVN.get(j.get('sev_lo',1))} ~ 최악 {_SEVN.get(j.get('sev_hi',1))}",
              f"   마감: {j.get('macro_last','—')}"]
@@ -2053,8 +6060,137 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
     lines += ["", _verdict,
               "🧭 복기 체크(초보): ①신호 종목 실제로 올랐나? ②감으로 산 것 없나? ③손절 지켰나?",
               "   신호+원칙만 반복하면 실력 늡니다. 오늘도 수고했어요 👏"]
+    # [V25.51 C] 시장 복기 학습 — 지수 궤적+화제테마+급등주 → Gemini '왜 이렇게 움직였나' 분석·누적 저장(market_review.md)
+    if gemini_key and kis_on:
+        try:
+            _tk = kis_token(kis_key, kis_secret)
+            _ks = _index_snapshot(_tk, kis_key, kis_secret, "0001")
+            _kq = _index_snapshot(_tk, kis_key, kis_secret, "1001")
+            _mv = _volume_rank(_tk, kis_key, kis_secret, top=30) or []
+            _up = sorted([x for x in _mv if (x.get("chg") or 0) > 0], key=lambda x: x["chg"], reverse=True)[:6]
+            _dn = sorted([x for x in _mv if (x.get("chg") or 0) < 0], key=lambda x: x["chg"])[:4]
+            _arts = [a.split(" :: ")[0].split("] ")[-1] for a in
+                     [f"[x] {it.get('title','')}" for it in _rss_news(30, 12)]][:40]
+            _buzz2 = _topic_buzz(_arts)
+
+            def _ixtxt(nm, s):
+                if not s or s.get("chg") is None:
+                    return f"{nm} —"
+                _fd = ""
+                if s.get("fade") is not None:
+                    _fd = f"·고점대비 {s['fade']:+.1f}%({'오후반전' if s['fade'] <= -1 else '강세유지'})"
+                return f"{nm} {s['chg']:+.2f}%{_fd}"
+            _uptxt = ", ".join(f"{x['name']}+{x['chg']:.0f}%" for x in _up) or "—"
+            _dntxt = ", ".join(f"{x['name']}{x['chg']:.0f}%" for x in _dn) or "—"
+            _idxtxt = f"{_ixtxt('코스피', _ks)} / {_ixtxt('코스닥', _kq)}"
+            _pr = ("오늘 한국증시 마감 복기. 아래 수치는 실제 확인된 사실이다: "
+                   f"지수: {_idxtxt}. 화제 테마(반복언급): {_buzz2 or '—'}. "
+                   f"급등: {_uptxt}. 급락: {_dntxt}. "
+                   "→ ① 오늘 시장이 왜 이렇게 움직였나(특히 오전 강세→오후 반전이면 그 원인) — "
+                   "단일 원인으로 단정하지 말고 '~가 기여했을 가능성' 같은 가능성 언어로 서술 "
+                   "② 어떤 뉴스/이슈에 개미가 반응했나(출처 불명확하면 '추정' 명시) "
+                   "③ 내일 참고할 교훈 1가지(가능하면 IF~THEN 행동 규칙 형태로). "
+                   "각 1~2줄·간결·이모지. 근거 없으면 '불명'.")
+            _wv = _gemini_generate(gemini_key, _pr)
+            if _wv:
+                lines.append(f"\n🧠 시장 복기(왜 이렇게 움직였나):\n{_wv.strip()}")
+                try:
+                    # [실사용 리뷰 반영] 파일 끝 append 대신 날짜순 재작성 — backfill/주간메타복기와
+                    # 실행 순서가 섞여도 market_review.md는 항상 날짜 오름차순 유지.
+                    _ds = now_kst.strftime("%Y-%m-%d")
+                    _dstr = _ds + f"({_WKD_KO[now_kst.weekday()]})"
+                    _body = (f"{_dstr}\n- 지수: {_idxtxt}\n- 화제: {_buzz2 or '—'}\n"
+                             f"- 급등: {_uptxt}\n- 급락: {_dntxt}\n{_wv.strip()}")
+                    _daily, _other = _mr_read_all()
+                    _daily[_ds] = _body
+                    if _mr_write_all(_daily, _other):
+                        print("[복기] market_review.md 누적 저장(날짜순)")
+                except OSError:
+                    pass
+        except Exception as _rve:
+            print("시장복기 오류:", _rve)
     if send_telegram(token_tg, chat_id, "\n".join(lines)):
         state["review_day"] = today
+
+
+_WEEKLY_META_TAG = "📊 주간 메타복기"
+
+
+def _load_review_blocks(days_back=7):
+    """market_review.md에서 최근 days_back일 이내 '## YYYY-MM-DD...' 일일 블록만 추출.
+    직전 주간 메타복기 블록(_WEEKLY_META_TAG)은 재료로 재사용하지 않도록 제외."""
+    import re as _re
+    if not os.path.exists(MARKET_REVIEW_FILE):
+        return []
+    try:
+        with open(MARKET_REVIEW_FILE, encoding="utf-8") as _f:
+            _txt = _f.read()
+    except OSError:
+        return []
+    _cutoff = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date() - datetime.timedelta(days=days_back)
+    _out = []
+    for _blk in _txt.split("\n## "):
+        _m = _re.match(r"(\d{4}-\d{2}-\d{2})", _blk.strip())
+        if not _m or _WEEKLY_META_TAG in _blk[:40]:
+            continue
+        try:
+            _bd = datetime.datetime.strptime(_m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if _bd >= _cutoff:
+            _out.append((_bd, _blk.strip()))
+    _out.sort(key=lambda x: x[0])
+    return _out
+
+
+def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=False):
+    """[다음 작업 1호] 주1회(금요일 마감복기 시점) market_review.md 최근 누적분을 Gemini로 재분석해
+    '최근 장세 패턴 요약'(메타 복기) 생성 — 반복 패턴·잘 먹힌 신호·다음주 포커스·규칙원장 반영 후보 제시."""
+    if not force:
+        m = now_kst.hour * 60 + now_kst.minute
+        if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
+            return
+        if now_kst.weekday() != 4:                        # 금요일(마지막 거래일 가정)만
+            return
+        _wk = now_kst.strftime("%G-W%V")
+        if state.get("weekly_review_week") == _wk:
+            return
+    if not gemini_key:
+        print("[주간메타복기] Gemini 키 없음 — 스킵"); return
+    _blocks = _load_review_blocks(days_back=7)
+    if len(_blocks) < 3:
+        print(f"[주간메타복기] 누적 데이터 부족({len(_blocks)}일치, 최소 3일 필요) — 스킵")
+        return
+    _start, _end = _blocks[0][0], _blocks[-1][0]
+    _body = "\n\n".join(b for _, b in _blocks)[:6000]     # 프롬프트 과다 방지
+    _pr = (f"아래는 한국 증시 최근 {_start}~{_end} 일별 마감 복기 기록입니다. 이걸 종합해서 "
+           "① 이번 주 반복된 시장 패턴·테마(있다면) ② 어떤 신호·조건이 실제로 잘 먹혔나(반복 검증된 것) "
+           "③ 다음 주 참고할 포커스 1~2가지 ④ 규칙원장(rules_ledger) 반영을 검토할만한 신규 규칙 후보(없으면 '없음') "
+           "각 항목 1~3줄·간결·이모지. 단일 사례로 일반화하지 말고(최소 2~3회 반복 확인된 것만 '패턴'), "
+           "원인은 '~가 기여했을 가능성' 같은 가능성 언어로. 근거 부족하면 '불명' 명시.\n\n" + _body)
+    _wv = _gemini_generate(gemini_key, _pr)
+    if not _wv:
+        print("[주간메타복기] Gemini 생성 실패 — 스킵"); return
+    _hdr = f"{_WEEKLY_META_TAG} ({_start}~{_end}, {len(_blocks)}일치)"
+    _msg = f"{_hdr}\n\n{_wv.strip()}"
+    if send_telegram(token_tg, chat_id, _msg):
+        # [피드백 반영] 예전엔 append만 해서, 같은 주(_start~_end)에 버튼을 여러 번 누르거나
+        # 수동 테스트+자동실행이 겹치면 market_review.md에 똑같은 주간요약이 중복 저장됐음
+        # (실사용에서 확인됨). 같은 날짜범위의 기존 블록을 지우고 교체 — 재실행해도 1개만 유지.
+        # [실사용 리뷰 반영] 일별 블록과 같은 날짜순 재작성 방식(_mr_read_all/_mr_write_all)으로 통일 —
+        # 주간메타복기는 '기타' 섹션(파일 하단)에 모여서 일별 원장과 뒤섞이지 않음.
+        _new_block = f"{_hdr}\n{_wv.strip()}"
+        _range_tag = f"({_start}~{_end}"
+        try:
+            _daily, _other = _mr_read_all()
+            _other = [p for p in _other
+                      if not (p.startswith(_WEEKLY_META_TAG) and _range_tag in p[:60])]
+            _other.append(_new_block)
+            if _mr_write_all(_daily, _other):
+                print("[주간메타복기] market_review.md 누적 저장(중복 제거)")
+        except OSError as _e:
+            print("[주간메타복기] 저장 실패:", _e)
+        state["weekly_review_week"] = now_kst.strftime("%G-W%V")
 
 
 def main():
@@ -2062,6 +6198,33 @@ def main():
     ap.add_argument("--interval", type=int, default=180, help="체크 주기(초), 기본 180=3분")
     ap.add_argument("--notify-worse", action="store_true", help="[구] 악화 알림 플래그(이제 기본 ON)")
     ap.add_argument("--no-worse", action="store_true", help="매크로 악화 알림 끄기(개선만)")
+    ap.add_argument("--force-pick", action="store_true",
+                    help="종가베팅 픽을 시간창 무시하고 지금 즉시 1회 발송 후 종료(수동 강제)")
+    ap.add_argument("--test-news", action="store_true",
+                    help="저녁 뉴스 시황 스캐너를 시간창 무시하고 지금 즉시 1회 실행 후 종료(키 테스트)")
+    ap.add_argument("--report", action="store_true",
+                    help="추천 종목 성적표(아침 당일단타/어제 저녁 종배·브리핑) 현재가 대조 후 텔레그램 발송·종료")
+    ap.add_argument("--analyze", action="store_true",
+                    help="과거 누적 신호 종합 분석 — 신호종류별 승률·평균수익(익일 종가 대비) 텔레그램·종료")
+    ap.add_argument("--stock", nargs="?", const="__WATCH__", default=None,
+                    help="특정종목 종합 해석(차트+수급+뉴스+타점). --stock 005930=그 종목 / --stock=my_watch 전체")
+    ap.add_argument("--volatility", action="store_true",
+                    help="주간 변동성 상위 스캐너(래리 윌리엄스式 물색) — 재료·선반영·눌림 태그 첨부 텔레그램·종료")
+    ap.add_argument("--regime", action="store_true",
+                    help="장세 판독기 — 최근 종배 익일 수익으로 종배 유효/저갭 장세 판정 텔레그램·종료")
+    ap.add_argument("--range", dest="range_scan", action="store_true",
+                    help="레인지(박스) 매매 강제 스캔 — 시간창 무시하고 박스 하단 반등 종목 텔레그램·종료")
+    ap.add_argument("--holdings", action="store_true",
+                    help="보유종목 현황·홀딩판정(my_holdings.json) 텔레그램·종료")
+    ap.add_argument("--exit-analysis", dest="exit_analysis", action="store_true",
+                    help="종배 청산 타이밍 분석 — 익일 시가청산 vs 종가청산, NXT거래/미거래 분리(쌓인 데이터)")
+    ap.add_argument("--backfill-review", dest="backfill_review", type=int, metavar="N", nargs="?",
+                    const=10, default=None,
+                    help="과거 N거래일 시장 복기 미리학습(KIS 지수 실측+Gemini 웹검색 해석) → market_review.md 누적(기본 10)")
+    ap.add_argument("--test-buyback", dest="test_buyback", action="store_true",
+                    help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
+    ap.add_argument("--weekly-review", dest="weekly_review", action="store_true",
+                    help="주간 메타복기 강제 실행 — market_review.md 최근 7일 재분석(패턴·먹힌신호·규칙후보) 텔레그램·종료")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -2069,14 +6232,168 @@ def main():
         print("환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 설정 필요"); sys.exit(1)
     kis_key, kis_secret = read_kis_keys()
     kis_on = bool(kis_key and kis_secret)
+
+    if args.test_buyback:                         # [V25.54] 자사주 반전 신호 테스트
+        _bnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        test_buyback_scan(_bnow, token_tg, chat_id, read_dart_key(), kis_key, kis_secret)
+        sys.exit(0)
+
+    if args.weekly_review:                        # 주간 메타복기 강제 실행
+        _gk = read_gemini_key()
+        _wnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _wst = load_state()
+        weekly_meta_review(_wnow, _wst, token_tg, chat_id, _gk, force=True)
+        # [피드백 반영] state를 저장 안 해서 "이번 주는 이미 만듦" 표시가 디스크에 안 남았고,
+        # 버튼을 여러 번 누르면 market_review.md에 같은 주 요약이 계속 중복 저장됐음(실사용에서 확인됨).
+        save_state(_wst)
+        sys.exit(0)
+
+    if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
+        _gk = read_gemini_key()
+        if not _gk:
+            print("⚠️ Gemini 키 없음 — 웹검색 복기 불가"); sys.exit(1)
+        backfill_market_review(_gk, args.backfill_review, kis_key, kis_secret)
+        sys.exit(0)
+
+    if args.report:                               # [V23.3] 추천 성적표 수동 발송
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 성적표 현재가 대조 불가"); sys.exit(1)
+        _rt = kis_token(kis_key, kis_secret)
+        _rnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _scorecard_report(_rt, kis_key, kis_secret, _rnow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.analyze:                              # [V24.2] 과거 누적 신호 종합 분석(신호종류별 승률)
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 신호 분석 일봉대조 불가"); sys.exit(1)
+        _at = kis_token(kis_key, kis_secret)
+        _anow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _analyze_history(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
+        # [GUI 정리] 종배 청산분석 버튼을 따로 안 두고 신호분석에 합침 — 버튼 한 번으로 둘 다 확인.
+        _analyze_exit_timing(_at, kis_key, kis_secret, _anow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.exit_analysis:                        # [V25.18] 종배 청산 타이밍 분석(시가 vs 종가·NXT별)
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 청산분석 일봉대조 불가"); sys.exit(1)
+        _et = kis_token(kis_key, kis_secret)
+        _enow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _analyze_exit_timing(_et, kis_key, kis_secret, _enow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.stock is not None:                    # [V24.6] 특정종목 종합 해석
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 종목 해석 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _gk = read_gemini_key()
+        if args.stock == "__WATCH__":             # 인자 없으면 my_watch 전체
+            print(f"[진단] my_watch 경로: {MY_WATCH_FILE}")
+            print(f"[진단] 파일 존재: {os.path.exists(MY_WATCH_FILE)}")
+            try:
+                with open(MY_WATCH_FILE, encoding="utf-8-sig") as _f:
+                    _raw = json.load(_f)
+                print(f"[진단] on={_raw.get('on')!r}, stocks={len(_raw.get('stocks') or [])}개")
+            except Exception as _e:
+                print(f"[진단] 읽기 실패: {type(_e).__name__}: {_e}")
+            _targets = [(str(s.get("code", "")).zfill(6), s.get("name", "")) for s in _read_my_watch()]
+            if not _targets:
+                print("⚠️ my_watch.json 비어있음 — 위 진단 확인 / 종목코드 지정: --stock 005930"); sys.exit(1)
+        else:
+            _targets = [(str(args.stock).zfill(6), "")]
+        for _cd, _nm in _targets:
+            _rep = _deep_stock(_st, kis_key, kis_secret, _cd, _nm, _gk)
+            send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
+            print(f"[종목해석] {_nm or _cd} 발송")
+        sys.exit(0)
+
+    if args.volatility:                           # [V25.0] 주간 변동성 상위 스캐너
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 변동성 스캔 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        print("[변동성] 주간 변동성 상위 스캔 중... (거래대금 상위 일봉 조회)")
+        _rep = _volatility_scan(_st, kis_key, kis_secret, read_gemini_key())
+        send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n{_rep}")
+        print("[변동성] 발송 완료")
+        sys.exit(0)
+
+    if args.range_scan:                           # [V25.29] 레인지(박스) 매매 강제 스캔
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 레인지 스캔 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _rnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        print("[레인지] 박스권 하단 반등 강제 스캔 중...")
+        _cnt0 = len(load_state().get("range_sent", {}))
+        _stt = load_state()
+        check_range_trade(_st, kis_key, kis_secret, _rnow, _stt, token_tg, chat_id, sev=1, force=True)
+        _found = len([k for k in _stt.get("range_sent", {}) if k != "_day"])
+        if _found == 0:
+            send_telegram(token_tg, chat_id, "📦 레인지 매매 — 조건 통과 종목 없음(횡보+하단반등+상단여력 3%↑ 통과 없음).")
+        print(f"[레인지] 강제 스캔 완료 — {_found}종")
+        sys.exit(0)
+
+    if args.holdings:                             # [V25.21] 보유종목 현황·홀딩판정
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 보유 조회 불가"); sys.exit(1)
+        _ht = kis_token(kis_key, kis_secret)
+        _hnow = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _holdings_report(_ht, kis_key, kis_secret, _hnow, token_tg, chat_id)
+        sys.exit(0)
+
+    if args.regime:                               # [V25.6] 장세 판독기
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 장세 판독 불가"); sys.exit(1)
+        _st = kis_token(kis_key, kis_secret)
+        _rg = _regime_detect(_st, kis_key, kis_secret, datetime.datetime.utcnow() + datetime.timedelta(hours=9))
+        send_telegram(token_tg, chat_id, f"{SIG_WATCH}\n🧭 장세 판독\n{_rg['text']}\n"
+                      + ("→ 종배 임계 상향(강한 픽만)·대형주 눌림 위주 권장" if _rg['state'] == 'lowgap'
+                         else "→ 종배 정상 운용" if _rg['state'] == 'gap' else "→ 선별 운용"))
+        print(f"[장세판독] {_rg['state']} · {_rg['text']}")
+        sys.exit(0)
+
+    if args.test_news:                            # [V21.4] 저녁 뉴스 강제 테스트 — 시간창·당일락 무시
+        _nid, _nsec = read_naver_keys()
+        _gk = read_gemini_key()
+        print(f"[테스트] 저녁뉴스 — 네이버 {'OK' if (_nid and _nsec) else '키없음(RSS폴백)'} · "
+              f"Gemini {'OK' if _gk else '키없음(헤드라인만)'}")
+        _st = load_state(); _st.pop("evening_news_day", None)
+        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        _now = _now.replace(hour=18, minute=0)    # 저녁 창(17~22) 안으로 강제
+        check_evening_news(_now, _st, token_tg, chat_id, _nid, _nsec, _gk, kis_key, kis_secret)
+        save_state(_st)
+        sys.exit(0)
+
+    if args.force_pick:                           # [V20.0] 수동 강제 — 시간창·당일락 무시하고 즉시 종배픽
+        if not kis_on:
+            print("⚠️ KIS 키 없음 — 종배픽 강제 실행 불가"); sys.exit(1)
+        _now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)   # 실제 현재시각 사용
+        _m = _now.hour * 60 + _now.minute
+        # NXT 야간창(18:00~19:50)이면 실제 시각 그대로 → NX 실시간가 판정. 그 외엔 종가 기준(15:15로 표기).
+        _nxt_now = (18 * 60) <= _m <= (19 * 60 + 50)
+        if not _nxt_now:
+            _now = _now.replace(hour=15, minute=15)   # 정규장 종가 기준 판정
+        st = load_state()
+        st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
+        _tok = kis_token(kis_key, kis_secret)
+        _sev, _, _, _dstate_fp = compute_macro(_tok, kis_key, kis_secret)
+        _gk_fp = read_gemini_key()                # AI 뉴스판정용
+        print(f"[강제] 종배픽 실행 — sev={_sev}({_dstate_fp}) · {_now.strftime('%H:%M')} 기준"
+              + (" · NXT 실시간가" if _nxt_now else " · 종가"))
+        check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
+                            gemini_key=_gk_fp, data_state=_dstate_fp)
+        save_state(st)
+        sys.exit(0)
     if not kis_on:
         if not os.path.exists(SECRETS_FILE):
             print(f"⚠️ secrets.toml 없음: {SECRETS_FILE}")
         else:
             print(f"⚠️ secrets.toml 있으나 KIS 키(KIS_APP_KEY/KIS_APP_SECRET 등) 못 찾음")
     dart_key = read_dart_key()                    # [V18.4] DART 공시 감시 키(없으면 자동 OFF)
+    naver_id, naver_secret = read_naver_keys()    # [V21.4] 네이버 뉴스 검색(없으면 저녁 뉴스 OFF)
+    gemini_key = read_gemini_key()                # [V21.4] Gemini 판정(없으면 헤드라인만)
     print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급 {'ON' if kis_on else 'OFF'} · "
-          f"DART공시 {'ON' if dart_key else 'OFF(키없음)'}")
+          f"DART공시 {'ON' if dart_key else 'OFF(키없음)'} · "
+          f"저녁뉴스 {'ON' if (naver_id and naver_secret) else 'OFF(네이버키없음)'}"
+          f"{'·AI' if gemini_key else '·헤드라인만'}")
     send_telegram(token_tg, chat_id,
                   f"📡 감시 시작 — 국면 개선·전조·A급 알림 대기중\n수급 감시 {'ON' if kis_on else 'OFF(KIS키 없음)'}")
 
@@ -2093,9 +6410,33 @@ def main():
                 time.sleep(max(60, args.interval))
                 continue
 
-            # 1) 매크로
-            sev, mtext, mdetail = compute_macro()
+            # [V25.1] 공휴일 감지 — 평일 장중(09:10~15:20)인데 KIS 거래대금 랭킹이 0건이면 휴장 추정.
+            #   하드코딩 공휴일 리스트(매년 갱신·오류 위험) 대신 실데이터 자기교정. 정규장 신호만 스킵
+            #   (저녁 브리핑·야간 미장은 그대로 — 다음 거래일 대비). 일시적 조회 실패면 다음 사이클 자동 복구.
+            _mm0 = now.hour * 60 + now.minute
+            if kis_on and (9 * 60 + 10) <= _mm0 <= (15 * 60 + 20):
+                try:
+                    _htok = kis_token(kis_key, kis_secret)
+                    if _htok and len(_volume_rank(_htok, kis_key, kis_secret, top=5)) == 0:
+                        print(f"[{stamp}] 휴장 추정(거래대금 랭킹 0건) — 정규장 신호 스킵")
+                        time.sleep(max(60, args.interval))
+                        continue
+                except Exception as _hce:
+                    print(f"[{stamp}] 휴장 감지 조회 오류(무시): {_hce}")
+
+            # 1) 매크로 (코스피는 KIS 지수 우선 — yfinance 지연 버그 회피)
+            _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+            sev, mtext, mdetail, _dstate = compute_macro(_ct, kis_key, kis_secret)
             prev_sev = st.get("sev")
+            # [V25.1] 부분 outage(지표 일부 None)면 sev가 튈 수 있어 → 직전 sev 유지·알림 억제.
+            #   (예: WTI만 None → riskoff 풀려 가짜 '개선' 알림.) full outage("outage")는 sev=2 유지(방어).
+            if _dstate == "partial":
+                if prev_sev is not None:
+                    print(f"[{stamp}] ⚠️ 지표 일부 조회 실패 — sev 판정 보류(직전 {prev_sev} 유지)")
+                    sev = prev_sev
+                elif sev < 1:                          # [V25.10] 콜드스타트+부분결측이면 초록(진입허용) 금지(보수)
+                    print(f"[{stamp}] ⚠️ 첫 사이클 지표 일부 결측 — 보수적으로 sev {sev}→1")
+                    sev = 1
             # [스팸 차단] 매크로 알림은 (a)장 관련 시간(08:00~20:00)에만 (b)60분 쿨다운.
             #   나스닥선물이 차단기준(-0.2%) 근처서 출렁이면 sev가 🔴↔🟡 오락가락 → 야간 알림 폭주 방지.
             _mm = now.hour * 60 + now.minute
@@ -2108,7 +6449,10 @@ def main():
                 if sev < prev_sev or _worse_on:
                     icon = "📈 매크로 개선!" if sev < prev_sev else "📉 매크로 악화 — 리스크↑"
                     _mbadge = SIG_WATCH if sev < prev_sev else SIG_CAUTION
-                    if send_telegram(token_tg, chat_id, f"{_mbadge}\n{icon}\n{mtext}\n{mdetail}\n{stamp} KST"):
+                    # [V21.0] 리스크오프로 '전환'되면 보유 종목 손절라인 점검 경고 추가(오늘 -3% 크래시 교훈)
+                    _hold = ("\n🚨 보유 종목 점검 — 리스크오프 전환! 손절 라인(−2%) 확인·비주도주 우선 정리 검토"
+                             if sev >= 2 and prev_sev < 2 else "")
+                    if send_telegram(token_tg, chat_id, f"{_mbadge}\n{icon}\n{mtext}\n{mdetail}{_hold}\n{stamp} KST"):
                         st["macro_alert_ts"] = int(now.timestamp())
             st["sev"] = sev
             # 🌙 나스닥100 선물 야간 변동 추적(20:00 기준 → 07:00 아침) — 브리핑에서 송출
@@ -2136,12 +6480,25 @@ def main():
                 check_us_overnight(now, st, token_tg, chat_id)
             except Exception as _uoe:
                 print("야간 미장 알림 오류:", _uoe)
+            # 🚨 [V25.5] 아침 비상 점검(08:00~08:15) — 밤사이 미국 급락 시 보유 점검 넛지
+            try:
+                check_morning_riskoff(now, st, token_tg, chat_id)
+            except Exception as _mre:
+                print("아침 비상 점검 오류:", _mre)
             # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
             try:
-                check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret)
+                check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
             except Exception as _dqe:
                 print("DART 공시 감시 오류:", _dqe)
-            print(f"[{stamp}] 매크로 sev={sev} {mtext} | {mdetail}")
+            # 🌙 [V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 내일 주목 테마·대장주 브리핑
+            try:
+                check_evening_news(now, st, token_tg, chat_id, naver_id, naver_secret, gemini_key,
+                                   kis_key, kis_secret)
+            except Exception as _ene:
+                print("저녁 뉴스 스캐너 오류:", _ene)
+            print(f"[{stamp}] 매크로 sev={sev} {mtext}")
+            for _dl in mdetail.split("\n"):           # 미국/한국 그룹을 들여쓰기해 한눈에 구분
+                print(f"           {_dl}")
 
             # [1단계] 웹 속보판용 스냅샷 — 매크로는 항상, 수급/A급은 KIS ON일 때 채운다.
             snap = {
@@ -2219,8 +6576,8 @@ def main():
                         _tour = st.get("tour_sent") or {}
                         if _tour.get("_day") != _today3:
                             _tour = {"_day": _today3}
-                        _last = int(_tour.get(key, 0))
-                        if _mkt_hours and (int(now.timestamp()) - _last) >= 3600:   # 섹터별 60분
+                        # [V25.30] 섹터별 60분 → '같은 유입섹터 하루 1회'(매시간 반복 스팸 해결)
+                        if _mkt_hours and not _tour.get(key):
                             send_telegram(token_tg, chat_id,
                                           f"{SIG_BUY}\n🚀 전조 시그널!\n자금 {outflow[0]} 이탈 → {inflow[0]} 유입\n"
                                           f"유입 {inflow[1]['net']/1e8:,.0f}억 · {stamp} KST\n폭등 前 선취 후보 — 대시보드 확인")
@@ -2299,6 +6656,16 @@ def main():
                     # 라인업 핫리로드(manju_watchlist.json) — 파일만 고치면 재시작 없이 반영
                     _lineup = load_lineup()
                     snap["lineup"] = [[c, n] for c, n in _lineup]   # 대시보드 동기화용(GitHub 스냅샷에 실림)
+                    # [V21.3] 장전 예열 스캔(08:00~08:55) — NXT 프리마켓/예상체결가로 09시 갭 미리 포착
+                    try:
+                        check_premarket(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
+                    except Exception as _pme:
+                        print("장전 예열 오류:", _pme)
+                    # [V25.36] 시가배팅(강의 4강) — 09:00~09:10 장초반 갭·재료·시초수급 단기 공략
+                    try:
+                        check_opening_bet(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _obe2:
+                        print("시가배팅 오류:", _obe2)
                     # 09:10 시가저격 — 라인업 거래대금 임계 돌파 시 종목별 1회 텔레그램
                     try:
                         snap["snipers"] = check_snipers(tok, kis_key, kis_secret, now, st,
@@ -2316,6 +6683,86 @@ def main():
                         check_early_catch(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _ece:
                         print("조기 포착 오류:", _ece)
+                    # [V25.37] 돌파매매(강의 5강) — 시장전역 전고점·라운드피겨·신고가 돌파(거래량2배+프로그램)
+                    try:
+                        check_breakout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _bke:
+                        print("돌파매매 오류:", _bke)
+                    # [V25.40] 짝꿍·상따 관찰용(강의 7·8강) — 실시간 상한가/VI 못봐 관찰 경보만(매수신호 아님)
+                    try:
+                        check_limitup_follow(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _lue:
+                        print("상따관찰 오류:", _lue)
+                    try:
+                        check_pair_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _pte:
+                        print("짝꿍관찰 오류:", _pte)
+                    # [V22.7] 거래량 급증 서치(마감권) — 오늘 거래량>5일평균 2배 + 거래대금 상위 종목 알림
+                    try:
+                        check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _vse:
+                        print("거래량 급증 오류:", _vse)
+                    # [V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목 실시간 감시
+                    try:
+                        check_my_watch(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _mwe:
+                        print("내관심타점 오류:", _mwe)
+                    # [V25.7] 눌림 타점 스캐너(시장 전역) — 저갭 장세 주력 무기(정배열 지지선 눌림)
+                    try:
+                        check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _pbe:
+                        print("눌림타점 스캐너 오류:", _pbe)
+                    # [V25.32] 과매도 낙주 반등 — 지수 급락일 전용(대형주 낙폭과대+수급유입+반등)
+                    try:
+                        check_oversold_bounce(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _obe:
+                        print("과매도 낙주 오류:", _obe)
+                    # [V25.33] 재료주 일시 투매 반등 — 당일청산(강한 재료주 급등 후 눌림 되돌림)
+                    try:
+                        check_material_washout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _mwe2:
+                        print("재료투매반등 오류:", _mwe2)
+                    # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
+                    try:
+                        check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _rte:
+                        print("레인지매매 오류:", _rte)
+                    # [V25.20] 보유종목 관리 — my_holdings.json 매수평균 대비 손절/익절 알림
+                    try:
+                        check_holdings(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _hde:
+                        print("보유관리 오류:", _hde)
+                    # [V24.0] 아침 갭상승 원인 역분석(09:03~09:12) — 브리핑 적중률 검증 + 원인 학습
+                    try:
+                        check_gap_analysis(tok, kis_key, kis_secret, now, st, token_tg, chat_id, gemini_key)
+                    except Exception as _gae:
+                        print("갭분석 오류:", _gae)
+                    # [V25.38] 단기스윙 후보(강의 9강) — 15:00~15:25 수급연속+재료+상대강세+공급악재無
+                    try:
+                        check_swing_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _swe:
+                        print("단기스윙 오류:", _swe)
+                    # [V20.0] 종가베팅 픽 — 장 마감 직전(15:05~15:22) 자동 선정·발송(대시보드 없이)
+                    try:
+                        check_dolpanty_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
+                                            gemini_key=gemini_key, data_state=_dstate)
+                    except Exception as _dpe:
+                        print("종배픽 오류:", _dpe)
+                    # [V23.0] 종배 진입 타이밍 리마인더(15:23~15:29 종가 동시호가)
+                    try:
+                        check_dolpanty_entry(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _dee:
+                        print("종배 진입알림 오류:", _dee)
+                    # [V25.12 A] 종배 NXT 청산 알림 — 갭이 NXT서 나므로 목표 도달 시 9시 전 청산
+                    try:
+                        check_dolpanty_exit(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _dxe:
+                        print("종배 청산알림 오류:", _dxe)
+                    # [V25.35] 시간외 단일가(강의 3강) — 17~18:30 실체결 지속 대장주(10분 델타 기반)
+                    try:
+                        check_afterhours(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _ahe:
+                        print("시간외 단일가 오류:", _ahe)
                     # [V17.3] 프로그램 누적 시간대 적립 — 대시보드가 오전/오후 추세로 종배 판독
                     try:
                         log_program_history(now, tok, kis_key, kis_secret, _lineup)
@@ -2390,7 +6837,8 @@ def main():
             journal_accumulate(st, snap)
             try:
                 send_morning_brief(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
-                send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
+                send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key)
+                weekly_meta_review(now, st, token_tg, chat_id, gemini_key)
             except Exception as _je:
                 print("일지/복기 발송 오류:", _je)
 
@@ -2404,7 +6852,7 @@ def main():
         _kn = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _km = _kn.hour * 60 + _kn.minute
         # 15분봉 경계·시가저격·턴어라운드 정확도 위해 정규장(09:00~15:22)은 60초, 마감복기 60초
-        _tight = (((8 * 60 + 40) <= _km <= (15 * 60 + 22))
+        _tight = (((8 * 60) <= _km <= (15 * 60 + 22))          # [V21.3] 장전 예열(08:00~) 위해 08시부터 60초
                   or ((15 * 60 + 30) <= _km <= (15 * 60 + 50))
                   or ((16 * 60) <= _km <= (19 * 60 + 50)))   # 넥장 급등 타점 정확도 위해 야간도 60초
         _iv = 60 if _tight else args.interval

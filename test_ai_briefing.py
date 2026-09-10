@@ -18,14 +18,28 @@ SRC_FILE = "quant_dashboard.py"
 TARGET_FN = "generate_ai_briefing"
 
 
+def _is_simple_literal(value: ast.expr) -> bool:
+    """상수 리터럴(숫자·문자열·불리언, 단항 마이너스 포함)만 True — 임의 코드 실행 방지."""
+    if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.USub):
+        value = value.operand
+    return isinstance(value, ast.Constant)
+
+
 def _load_function(src_path: str, fn_name: str):
-    """대시보드 소스에서 지정 함수의 소스만 추출해 독립 실행 가능한 객체로 반환."""
+    """대시보드 소스에서 지정 함수의 소스만 추출해 독립 실행 가능한 객체로 반환.
+    함수가 참조하는 모듈 최상위 상수(FX_DANGER 등 단순 리터럴)도 같이 주입해
+    무거운 의존성(streamlit 등) import 없이 NameError 없게 만든다."""
     with open(src_path, "r", encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=src_path)
+        full_src = f.read()
+    tree = ast.parse(full_src, filename=src_path)
+    ns: dict = {}
+    for node in tree.body:                      # 단순 상수 대입만 선반영(임의 실행 위험 없음)
+        if isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets) \
+                and _is_simple_literal(node.value):
+            exec(compile(ast.Module(body=[node], type_ignores=[]), src_path, "exec"), ns)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == fn_name:
-            fn_src = ast.get_source_segment(open(src_path, encoding="utf-8").read(), node)
-            ns: dict = {}
+            fn_src = ast.get_source_segment(full_src, node)
             exec(textwrap.dedent(fn_src), ns)
             return ns[fn_name]
     raise RuntimeError(f"{fn_name} 함수를 {src_path}에서 찾지 못했습니다.")

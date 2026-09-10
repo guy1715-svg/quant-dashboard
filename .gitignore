@@ -1,0 +1,22 @@
+# ── 보안: API 키·토큰 절대 커밋 금지 ──
+start_watcher.bat
+force_pick.bat
+*.bat
+secrets.toml
+.streamlit/secrets.toml
+.env
+*.key
+kospi_fut.json
+
+# ── 런타임 데이터(개인 매매기록·상태) ──
+pick_history.json
+signal_scorecard.json
+program_history.json
+macro_watcher_state.json
+macro_snapshot.json
+
+# ── 파이썬 ──
+__pycache__/
+*.pyc
+.venv/
+venv/
