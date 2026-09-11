@@ -6672,7 +6672,7 @@ def main():
                             send_telegram(token_tg, chat_id,
                                           "🔄 오늘의 감시 라인업 자동 편입\n"
                                           + " · ".join(f"{n}" for _c, n in _auto)
-                                          + f"\n(자금유입 상위 6종 · {now.strftime('%m/%d %H:%M')} KST)")
+                                          + f"\n(자금유입 상위 {len(_auto)}종 · {now.strftime('%m/%d %H:%M')} KST)")
                     # 라인업 핫리로드(manju_watchlist.json) — 파일만 고치면 재시작 없이 반영
                     _lineup = load_lineup()
                     snap["lineup"] = [[c, n] for c, n in _lineup]   # 대시보드 동기화용(GitHub 스냅샷에 실림)
