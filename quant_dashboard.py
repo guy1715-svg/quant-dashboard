@@ -14,12 +14,14 @@
 import os
 import sys
 import json
+import base64
 import warnings
 warnings.filterwarnings("ignore")
 from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
+import requests
 
 st.set_page_config(page_title="퀀트 관제탑", page_icon="📊", layout="wide",
                     initial_sidebar_state="auto")
@@ -643,6 +645,48 @@ def render_dolpanty():
 
 
 # ══════════════════════════════════════════
+# ☁️ 관심종목 GitHub 자동반영 — 클라우드(대시보드)에서 쓴 파일이 재배포 시 사라지고
+# 로컬 macro_watcher.py에도 전달 안 되는 문제 해결(tools_gui.py 보유종목 자동push와 대칭 조치).
+# GitHub Contents API 사용(git 설치 불필요) — macro_watcher.py의 push_snapshot_github와 동일 패턴,
+# 다만 그건 "data" 브랜치의 snapshot.json용이고 이건 "main" 브랜치의 my_watch.json용이라 별도 구현.
+# ══════════════════════════════════════════
+_GH_REPO = "guy1715-svg/quant-dashboard"
+
+
+def _gh_token():
+    try:
+        return st.secrets.get("github", {}).get("token", "") or os.environ.get("GITHUB_TOKEN", "")
+    except Exception:
+        return os.environ.get("GITHUB_TOKEN", "")
+
+
+def _git_sync_watchlist(raw):
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 변경은 이 배포판에만 남고, 재배포되면 사라질 수 있습니다"
+                   "(secrets.toml에 [github] token 설정 시 자동 반영).")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/my_watch.json"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(raw, ensure_ascii=False, indent=2)
+        body = {"message": f"관심종목 갱신(대시보드 자동커밋) {datetime.now().strftime('%m/%d %H:%M')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code in (200, 201):
+            st.toast("☁️ GitHub main에 반영 완료 — 로컬은 git pull로 받아가면 동기화됩니다")
+        else:
+            st.warning(f"⚠️ GitHub 반영 실패({p.status_code}) — 로컬 macro_watcher엔 전달 안 됨: "
+                       f"{p.json().get('message', '')[:100]}")
+    except Exception as _e:
+        st.warning(f"⚠️ GitHub 반영 실패: {type(_e).__name__}")
+
+
+# ══════════════════════════════════════════
 # 탭 6 — 🔍 관심종목 (my_watch.json 직접 CRUD — macro_watcher와 동일 파일)
 # ══════════════════════════════════════════
 
@@ -662,6 +706,7 @@ def render_watchlist():
             stocks.append({"code": code, "name": name.strip() or code})
             raw["stocks"] = stocks
             mw._atomic_write_json(mw.MY_WATCH_FILE, raw)
+            _git_sync_watchlist(raw)
             st.success(f"{name or code} 추가됨")
             st.rerun()
 
@@ -687,6 +732,7 @@ def render_watchlist():
     if to_remove:
         raw["stocks"] = [s for s in stocks if str(s.get("code")) not in to_remove]
         mw._atomic_write_json(mw.MY_WATCH_FILE, raw)
+        _git_sync_watchlist(raw)
         st.rerun()
 
 

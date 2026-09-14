@@ -165,6 +165,35 @@
     이런 미스를 스스로 찾아내는 기능이 이미 있으므로, 그 누적 로그를 나중에 --analyze류로 정리하면
     "왜 놓쳤는지" 패턴을 더 볼 수 있을 것.
 
+### 7.26 관심종목 대시보드→GitHub 자동반영 (보유종목과 대칭 조치)
+
+**배경**: 사용자가 "라온텍이 왜 관심종목 알림에 계속 뜨냐"고 물어서 답하는 과정에 저장소의
+`my_watch.json`에 라온텍·삼성전기가 아예 없는 걸 발견 — 대시보드(클라우드)의 🔍관심종목 탭에서
+추가한 종목이 GitHub엔 반영 안 된 상태였음(7.22에서 "후속 조치 필요"로 남겨뒀던 바로 그 문제).
+
+**원인**: 보유종목(7.22)은 "로컬(tools_gui.py)에서 쓴 파일을 어떻게 클라우드로 올리나"였는데,
+관심종목은 정반대 방향 — **클라우드(대시보드)에서 쓴 파일을 어떻게 GitHub main에 올리나**였음.
+클라우드 컨테이너엔 git 자체가 없거나 push 권한이 없어서 `tools_gui.py`처럼 `git push`
+subprocess를 그대로 못 씀.
+
+**수정**: macro_watcher.py에 이미 있던 `push_snapshot_github`(GitHub Contents API로 git 설치
+없이 파일 업로드하는 패턴, `data` 브랜치의 snapshot.json용)를 참고해 quant_dashboard.py에
+`_git_sync_watchlist()`를 신규 작성 — 다만 대상이 `main` 브랜치의 `my_watch.json`이라 별도
+구현(기존 함수 재사용 아님, 패턴만 차용). `st.secrets["github"]["token"]`(GitHub PAT, repo
+쓰기 권한)이 설정돼 있으면 관심종목 추가/삭제 직후 GitHub Contents API로 자동 커밋. 토큰이
+없으면 크래시 없이 "이 배포판에만 남고 재배포시 사라질 수 있음" 캡션만 표시하고 기존처럼 계속
+동작(회귀 없음).
+
+**검증**: `py_compile` 통과, AppTest로 실제 관심종목 추가 폼 제출까지 실행 — 토큰 없는 이
+sandbox 환경에서도 예외 0건 확인. (AppTest가 실제 my_watch.json에 테스트 종목을 써버려서
+`git checkout`으로 원복함 — 실제 파일에 영향받는 통합테스트라 다음에도 주의.)
+
+**사용자 액션 필요**: Streamlit Cloud 앱 설정 → Secrets에 아래 추가해야 실제로 작동:
+```toml
+[github]
+token = "ghp_..."   # repo 쓰기 권한 있는 Personal Access Token
+```
+
 ### 7.25 9/11 하루치 텔레그램 로그 실사용 검토 — 라벨 오표기 수정 + 재발 이슈 확인 필요
 
 **사용자가 9/11 하루 전체 텔레그램 로그를 붙여넣고 "면밀히 검토해서 수정해야되는게 있는지" 요청.**
