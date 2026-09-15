@@ -1,0 +1,20 @@
+@echo off
+REM ============================================================
+REM run_gui.bat 만드는 법(최초 1회만):
+REM   1. 이 파일을 복사해서 이름을 "run_gui.bat"로 바꾸세요 (확장자 .bat는
+REM      .gitignore에 있어서 git이 절대 건드리지 않습니다 — pull/checkout해도 안전).
+REM   2. 아래 set 값들을 실제 키로 채우세요.
+REM   3. 앞으로는 tools_gui.py를 직접 열지 말고 이 run_gui.bat를 실행하세요.
+REM ============================================================
+set TELEGRAM_BOT_TOKEN=여기에_실제_텔레그램_봇_토큰
+set TELEGRAM_CHAT_ID=여기에_실제_챗아이디
+set KIS_APP_KEY=여기에_실제_KIS_앱키
+set KIS_APP_SECRET=여기에_실제_KIS_시크릿
+set DART_API_KEY=여기에_실제_DART_키
+set GEMINI_API_KEY=여기에_실제_제미나이_키
+set NAVER_CLIENT_ID=여기에_실제_네이버_ID
+set NAVER_CLIENT_SECRET=여기에_실제_네이버_시크릿
+set GITHUB_TOKEN=여기에_실제_깃허브_토큰
+
+python tools_gui.py
+pause
