@@ -2339,11 +2339,42 @@ def _contract_detail(dart_key, rcept_no):
     return out
 
 
+def _dart_material_grade(dart_key, rcp, nm, stock, tok, key, secret):
+    """[V25.57] 공시 재료등급 — 가격조건(과열·리스크오프·하락중 등)과 무관하게 '재료 자체가 좋은지'를
+    항상 같은 기준으로 라벨링(🔥강한재료/🟢보통재료/🌱약한재료). 사용자 피드백 — "모든 공시가 다 관망이라
+    어떤 게 좋은 공시인지 안 보인다" 반영: 아래로 갈 관망 분기 전부에 이 라벨을 붙여서, 강매수가 안 뜨는
+    이유(타이밍 문제)와 재료 자체 품질(약함)을 구분해서 한눈에 보이게 함.
+    공급계약/단일판매/수주=매출대비%로 정량 판정(기존 임팩트 로직 그대로 재사용), 그 외(기술이전·특허권취득·
+    품목허가·임상시험결과 등 금액 파싱 불가한 유형)=뉴스등급(_news_grade)으로 보조판정.
+    반환 (label, impact_txt)."""
+    if any(k in nm for k in ("공급계약", "단일판매", "수주")):
+        _cd = _contract_detail(dart_key, rcp)
+        _ratio, _yrs, _amt = _cd.get("sales_ratio"), _cd.get("years"), _cd.get("amount")
+        if _ratio is not None:
+            _eff = _ratio / max(_yrs or 1.0, 1.0)             # 연환산 매출대비%
+            _txt = f" · 매출대비 {_ratio:.0f}%" + (f"·{_yrs:.0f}년→연 {_eff:.1f}%" if _yrs else "")
+            return ("🔥강한재료" if _eff >= 5.0 else "🌱약한재료"), _txt
+        if _amt is not None and _amt >= 3000:                 # 계약금액 3천억+ = 절대규모 큼(대형주라도 강신호)
+            _txt = f" · 계약 {_amt/10000:.2f}조(대형)" if _amt >= 10000 else f" · 계약 {_amt:,.0f}억(대형)"
+            return "🔥강한재료", _txt
+        _mc = _market_cap(tok, key, secret, stock) if tok else None
+        if _mc and _mc >= 50_000:                             # 시총 5조+ 대형주 = 수주 임팩트 작음
+            return "🌱약한재료", f" · 시총 {_mc/10000:.0f}조(대형주·임팩트작음)"
+        return "🟢보통재료", (f" · 시총 {_mc/10000:.1f}조" if _mc else "")
+    _ng, _ = _news_grade(stock)
+    if _ng == "S":
+        return "🔥강한재료", " · 뉴스등급S"
+    if _ng == "A":
+        return "🟢보통재료", " · 뉴스등급A"
+    return "🟢보통재료", ""
+
+
 def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=None, kis_secret=None, sev=1):
     """DART 당일 신규 공시 폴링 → 호재 공시는 우리 엔진(거래대금·이격)으로 교차검증해 '진입후보 선정'.
     악재=경고 / 실적=내용확인 / 호재=거래대금·비과열이면 🎯진입후보, 아니면 관망·선점. 예외 전파 없음.
     [V20.5] 승률 개선: 계약 해지/철회=악재 재분류 · 거래대금 0/미미=선점만 · 리스크오프(sev2)=강매수 억제 ·
-            하락과대(-3%↓)·낙폭과대(이격-15%↓)=강매수 금지(관망)."""
+            하락과대(-3%↓)·낙폭과대(이격-15%↓)=강매수 금지(관망).
+    [V25.57] 모든 관망 분기에 재료등급(_dart_material_grade) 라벨 부착 — 재료 품질과 타이밍 보류 사유를 분리해서 표시."""
     if not dart_key:
         return
     m = now_kst.hour * 60 + now_kst.minute
@@ -2408,6 +2439,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         if _perf and not (_pos or _neg):
             continue                            # [V18.8] 실적 공시 발송 OFF — 내용판단 불가·노이즈 폭주 방지
         # ── 호재 공시 → 우리 엔진으로 교차검증 후 '종목 선정' ──
+        _mat_label, _mat_impact = _dart_material_grade(dart_key, _rcp, _nm, _stock, _tok, kis_key, kis_secret)
         _px = _chg = _turn = None
         if _tok:
             try:
@@ -2416,8 +2448,8 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                 pass
         if not _px:                             # 장외/거래 전 → 선점 후보(재료만)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
-                          f"공시: {_nm} (호재 재료)\n"
+                          f"{SIG_WATCH}\n👀 [{_mat_label}·공시 관찰·선점] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact}\n"
                           f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 · 아직 매수 아님\n{_url}")
             continue
         _disp = None
@@ -2440,7 +2472,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             _big = " · 대형주(반전 탄력↑)" if (_mc and _mc >= 10000) else ""
             _bstop = int(_px * 0.97)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n🔄 [자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
+                          f"{SIG_WATCH}\n🔄 [{_mat_label}·자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
                           f"{_st}{_dtxt}{_big}\n"
                           f"📚 복기: 급락 대형주 자사주 매입은 기타법인 수급으로 V자 반전 동력(8/25·9/3 사례)\n"
                           f"※ 저가 분할 관찰 · 손절 {_bstop:,}(−3%) · 지수/미선물 추가급락 지속시 보류 · 확인 후 진입\n{_url}")
@@ -2449,56 +2481,35 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '관찰'로만(장전 0억 강매수 오발 차단)
         if (not _turn) or _turn < 5_000_000_000:
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n👀 [공시 관찰·선점] {_corp}({_stock})\n"
-                          f"공시: {_nm} (호재 재료)\n"
+                          f"{SIG_WATCH}\n👀 [{_mat_label}·공시 관찰·선점] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact}\n"
                           f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
                           f"🔥 거래 붙는지 확인 후 — 아직 매수 아님\n{_url}")
             continue
         _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
         if _overheat:                            # 이미 급등 → 추격 금지
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [공시·과열] {_corp}({_stock})\n"
-                          f"공시: {_nm}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·공시 과열] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
             continue
         # [V20.5 버그3] 리스크오프(sev2) = 강매수 억제(모순 방지) — 관망 정보만
         if sev == 2:
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [공시·리스크오프 관망] {_corp}({_stock})\n"
-                          f"공시: {_nm}\n{_st}{_dtxt} — 매크로 리스크오프라 강매수 보류(재료만 참고)\n{_url}")
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·리스크오프 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 매크로 리스크오프라 강매수 보류(재료만 참고)\n{_url}")
             continue
         # [V20.5 버그4] 하락과대(-3%↓)·낙폭과대(이격 -15%↓) = 떨어지는 칼 → 강매수 금지, 관망
         if ((_chg or 0) <= -3.0) or (_disp is not None and _disp <= -15.0):
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [공시·하락중 관망] {_corp}({_stock})\n"
-                          f"공시: {_nm}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·하락중 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
             continue
-        # [V20.8] 수주/공급계약 임팩트 판정(멘토 피드백) — 금액 크기만 X, 매출대비·계약기간·시총으로.
-        #   Phase2: DART 상세문서에서 '매출액 대비%'·계약기간→연환산 임팩트. 연 5% 미만=미미.
-        #   Phase1(폴백): 매출대비 파싱 실패 시 시총으로 — 시총 5조+ 대형주는 수주 임팩트 작음.
-        _impact_txt = ""
-        if any(k in _nm for k in ("공급계약", "단일판매", "수주")):
-            _cd = _contract_detail(dart_key, _rcp)
-            _ratio, _yrs, _amt = _cd.get("sales_ratio"), _cd.get("years"), _cd.get("amount")
-            _weak = False; _why = ""
-            if _ratio is not None:
-                _eff = _ratio / max(_yrs or 1.0, 1.0)     # 연환산 매출대비%
-                _impact_txt = (f" · 매출대비 {_ratio:.0f}%"
-                               + (f"·{_yrs:.0f}년→연 {_eff:.1f}%" if _yrs else ""))
-                if _eff < 5.0:                            # 연매출 대비 5% 미만 = 실적 영향 미미
-                    _weak = True; _why = f"매출대비 임팩트 미미(연 {_eff:.1f}%)"
-            elif _amt is not None and _amt >= 3000:       # [V25.16] 계약금액 3천억+ = 절대 규모 큼 → 대형주라도 강신호
-                _impact_txt = f" · 계약 {_amt/10000:.2f}조(대형 수주)" if _amt >= 10000 else f" · 계약 {_amt:,.0f}억(대형 수주)"
-            else:
-                _mc = _market_cap(_tok, kis_key, kis_secret, _stock)   # Phase1 폴백
-                if _mc and _mc >= 50_000:                 # 시총 5조+ 대형주 = 수주 임팩트 작음
-                    _weak = True; _why = f"시총 {_mc/10000:.0f}조 대형주(수주 임팩트 작음)"
-                elif _mc:
-                    _impact_txt = f" · 시총 {_mc/10000:.1f}조"
-            if _weak:
-                send_telegram(token_tg, chat_id,
-                              f"{SIG_WATCH}\n📢 [공시·임팩트 약함 관망] {_corp}({_stock})\n"
-                              f"공시: {_nm}\n{_st}{_dtxt} — {_why} → 강신호 아님(참고만)\n{_url}")
-                continue
+        # [V25.57] 재료등급이 '약함'(연매출임팩트<5% 또는 대형주라 임팩트작음)인 계약공시는 강신호 아님 — 관망
+        if _mat_label == "🌱약한재료" and any(k in _nm for k in ("공급계약", "단일판매", "수주")):
+            send_telegram(token_tg, chat_id,
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·임팩트 약함 관망] {_corp}({_stock})\n"
+                          f"공시: {_nm}{_mat_impact} — 강신호 아님(참고만)\n{_st}{_dtxt}\n{_url}")
+            continue
         # [V23.5] 거래대금 랭킹은 '태그'로만 — 공시는 선행 재료라 아직 거래대금 안 붙은 게 정상.
         #   랭킹 강등(V21.0)은 공시 선행성과 모순 → 매수(강)은 유지하고 주도/비주도만 표시.
         if _vrank_codes is None:
@@ -2508,9 +2519,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= 7) else ""
         send_telegram(token_tg, chat_id,
-                      f"{SIG_BUY_STRONG}\n🎯 [공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
+                      f"{SIG_BUY_STRONG}\n🎯 [{_mat_label}·공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
-                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_impact_txt} · {_lead_tag} · 비과열 ✅\n"
+                      f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_mat_impact} · {_lead_tag} · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%){_pull}\n"
                       f"⚠️ 소액·칼손절 · 공시=선행이라 빠름 · {_url}")
         _log_signal(state, now_kst, "공시발굴", _corp, _stock, _px)
