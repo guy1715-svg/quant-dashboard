@@ -3290,6 +3290,7 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V25.43] my_watch 종목은 check_my_watch(내관심타점)가 담당 → 중복 발송 방지 위해 여기서 제외
     _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
     _budget = 0
+    _sent_n = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
@@ -3373,9 +3374,14 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
                          + _onote + "\n"
                          f"※ 수급주 눌림 · 10분할로 나눠 담고 다음날 갭하락 대비 총알 일부 남길 것"):
             sent[cd] = int(now_kst.timestamp())
+            _sent_n += 1
             _log_signal(state, now_kst, "눌림타점", nm, cd, px)
             print(f"[눌림타점] {nm} {px:,} — {_sig[0]}")
     state["pullback_sent"] = sent
+    if _sent_n == 0:
+        # [진단] "감시가 안 돌았다" vs "돌았는데 조건 맞는 종목이 없었다"를 로그로 구분(시가배팅과 동일 패턴).
+        print(f"[눌림타점] {now_kst.strftime('%H:%M')} 스캔 완료 — 등락 -2~4%대 후보 {_budget}종 중 발송 0건"
+              + ("(후보 자체가 없음)" if _budget == 0 else "(정배열·반등확인·수급·악재필터 등 후속 게이트 미충족)"))
 
 
 def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -3843,6 +3849,7 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
     if cnt.get("_day") != today:
         cnt = {"_day": today}
     _budget = 0
+    _sent_n = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
@@ -3897,9 +3904,13 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
                          f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·돌파기준 아래) · 익절 {_t1:,}(+3%)\n"
                          f"⚠️ 돌파 안착 확인 후 분할(불타기)·거래량 빠지면 속임수 · 돌파 실패시 즉시 손절(스윙 전환 금지)"):
             cnt[cd] = _nth
+            _sent_n += 1
             _log_signal(state, now_kst, "돌파초입", nm, cd, px)
             print(f"[돌파매매] {nm} {px:,} {_btype} {_nth}차(거래량 {_mult:.1f}배)")
     state["breakout_cnt"] = cnt
+    if _sent_n == 0:
+        print(f"[돌파매매] {now_kst.strftime('%H:%M')} 스캔 완료 — 상승 1~12%대 후보 {_budget}종 중 발송 0건"
+              + ("(후보 자체가 없음)" if _budget == 0 else "(20MA/전고돌파/거래량2배/프로그램·재료 등 후속 게이트 미충족)"))
 
 
 _SUPPLY_RISK_KW = ("유상증자", "전환사채", "신주인수권", "교환사채", "추가상장", "최대주주",
@@ -4003,12 +4014,15 @@ def check_limitup_follow(token, key, secret, now_kst, state, token_tg, chat_id, 
     if sent.get("_day") != today:
         sent = {"_day": today}
     _brief = _recent_brief_codes(now_kst)
+    _cand = 0
+    _sent_n = 0
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or any(k in str(nm) for k in _EARLY_ETF_KW) or sent.get(cd):
             continue
         if (chg or 0) < 25.0 or (turn or 0) < 10_000_000_000:   # 상한가 근접(+25%↑) + 거래대금 100억+
             continue
+        _cand += 1
         _ng, _nbad = _news_grade(cd)
         if _nbad:
             continue
@@ -4026,9 +4040,13 @@ def check_limitup_follow(token, key, secret, now_kst, state, token_tg, chat_id, 
                          f"강의: 2회↑ 풀리면 포기 · 극소액 · 손절 −1~2% · 익일 갭 대응 · 직장인/모바일 부적합\n"
                          f"참고 손절선 {_stop:,}(−2%)"):
             sent[cd] = True
+            _sent_n += 1
             _log_signal(state, now_kst, "상따관찰", nm, cd, px)
             print(f"[상따관찰] {nm} +{(chg or 0):.1f}% 상한가 근접")
     state["limitup_sent"] = sent
+    if _sent_n == 0:
+        print(f"[상따관찰] {now_kst.strftime('%H:%M')} 스캔 완료 — 상한가근접(+25%↑) 후보 {_cand}종 중 발송 0건"
+              + ("(그런 종목 자체가 없음 — 정상, +25%↑는 원래 드묾)" if _cand == 0 else "(재료·브리핑 필터 미충족)"))
 
 
 def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -4066,6 +4084,7 @@ def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=
     _by_sec = {}
     for mv in _movers:
         _by_sec.setdefault(mv["sec"], []).append(mv)
+    _sent_n = 0
     for _sec, mem in _by_sec.items():
         if len(mem) < 2:
             continue
@@ -4086,9 +4105,15 @@ def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=
                          f"강의: 후속주 5분 내 청산 · 대장 꺾이면 즉시 매도 · 극소액 · 3등↓ 금지\n"
                          f"참고 손절선 {_stop:,}(−2%)"):
             sent[_second["code"]] = True
+            _sent_n += 1
             _log_signal(state, now_kst, "짝꿍관찰", _second["name"], _second["code"], _second["px"])
             print(f"[짝꿍관찰] {_sec} 대장 {_lead['name']}+{(_lead['chg'] or 0):.1f}% → 2등 {_second['name']}")
     state["pair_sent"] = sent
+    if _sent_n == 0:
+        _sec_n = sum(1 for mem in _by_sec.values() if len(mem) >= 2)
+        print(f"[짝꿍관찰] {now_kst.strftime('%H:%M')} 스캔 완료 — 급등무버(+5%↑) {_budget}종·2종+겹친 섹터 "
+              f"{_sec_n}개 중 발송 0건"
+              + ("(무버 자체가 없음)" if _budget == 0 else "(대장 +15%↑ 조건 등 미충족 — 원래 자주 안 뜸)"))
 
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
