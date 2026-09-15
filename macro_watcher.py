@@ -3435,6 +3435,130 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
     state["oversold_sent"] = sent
 
 
+def _daily_ohlcv(token, key, secret, code):
+    """[V25.56] 일봉 시계열(과거→최근순) — inquire-daily-price(_daily_setup과 동일 TR, 최신순 응답을 뒤집음).
+    RSI/MACD/CMF 등 지표 계산용. 최소 40거래일 미만이면 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010400"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
+                                 "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
+        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)]
+        if len(rows) < 40:
+            return None
+        rows = rows[::-1]                       # 최신순 → 과거→최근순(지표 계산은 시간순 필요)
+        clpr = [_to_int(x.get("stck_clpr")) for x in rows]
+        hgpr = [_to_int(x.get("stck_hgpr")) for x in rows]
+        lwpr = [_to_int(x.get("stck_lwpr")) for x in rows]
+        vol = [_to_int(x.get("acml_vol")) for x in rows]
+        if not (all(clpr) and all(hgpr) and all(lwpr)):
+            return None
+        return {"close": clpr, "high": hgpr, "low": lwpr, "volume": vol}
+    except Exception:
+        return None
+
+
+def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.56] RSI·CMF·MACD 3중 확인 반등 검색기(사용자 요청 — 순차 확인형).
+    ①RSI(Wilder14) 최근 과매도(≤30) 이후 반등 전환 ②CMF20(OBV 대체 — indicators.py에서 이미
+    'OBV 폐기→CMF 교체' 확정) 3일 연속 상승(매집 전환) ③MACD가 저점(≤-10)을 찍은 뒤
+    -5 구간을 통과해 0 부근까지 순차 회복(우상향 유지) — 3가지 전부 동시 충족해야 발송(AND, 확인됨).
+    거래대금 상위(유니버스) + 거래량 회복(최근 5일평균 대비) 게이트 동반 — '거래대금·거래량도 중요'.
+    09:05~15:20, 종목별 하루 1회, 리스크오프(sev2) 억제. 일봉 기반 신호라 시간쿨다운 대신 당일 1회 게이트.
+    ※ indicators.py 재사용(신규 재구현 금지 원칙) — RSI/MACD/CMF 계산은 이 모듈에 위임."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    try:
+        import pandas as pd
+        from indicators import calc_rsi_wilder, calc_macd, calc_cmf
+    except Exception as _ie:
+        print(f"[RSI·CMF·MACD검색] indicators 모듈 로드 실패 — 스킵: {_ie}")
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("rsi_cmf_macd_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
+    _budget = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _mywatch or sent.get(cd):            # 내관심타점 중복방지 + 하루 1회
+            continue
+        if not (-8.0 <= (chg or 0) <= 5.0):           # 극단적 급락/급등 제외(반등 신호 취지에 안 맞음)
+            continue
+        if (turn or 0) < 30 * 1e8:                    # 거래대금 30억↓ 제외 — '거래대금도 중요' 게이트
+            continue
+        _budget += 1
+        if _budget > 30:
+            break
+        _vr = _vol_ratio_5d(token, key, secret, cd)   # (오늘거래량, 5일평균, 배수)
+        if not _vr or _vr[2] < 1.0:                   # 거래량이 최근 5일평균보다 못하면 반등 힘 부족
+            continue
+        oh = _daily_ohlcv(token, key, secret, cd)
+        if not oh:
+            continue
+        try:
+            close = pd.Series(oh["close"], dtype=float)
+            high = pd.Series(oh["high"], dtype=float)
+            low = pd.Series(oh["low"], dtype=float)
+            vol = pd.Series(oh["volume"], dtype=float)
+            rsi = calc_rsi_wilder(close)
+            macd, _sig, _hist = calc_macd(close)
+            cmf = calc_cmf(high, low, close, vol, period=20)
+        except Exception:
+            continue
+        if len(rsi) < 6 or rsi.iloc[-6:].isna().any():
+            continue
+        # ① RSI: 최근 5거래일(오늘 제외) 중 과매도(≤30) 진입 이력 + 오늘 반등 전환(전일대비 상승) + 과열 전 구간
+        _rsi_recent_min = float(rsi.iloc[-6:-1].min())
+        _rsi_now, _rsi_prev = float(rsi.iloc[-1]), float(rsi.iloc[-2])
+        if _rsi_recent_min > 30 or not (_rsi_now > _rsi_prev) or _rsi_now > 50:
+            continue
+        # ② CMF20: 최근 3일 연속 상승 = 수급(매집) 전환 확인(OBV 대체)
+        if len(cmf) < 4 or cmf.iloc[-4:].isna().any():
+            continue
+        _c1, _c2, _c3 = float(cmf.iloc[-1]), float(cmf.iloc[-2]), float(cmf.iloc[-3])
+        if not (_c1 > _c2 > _c3):
+            continue
+        # ③ MACD: 최근 저점 -10 이하 → 이후 -5 통과 → 현재 0 부근(우상향 유지) 순차 회복
+        if len(macd) < 11 or macd.iloc[-11:].isna().any():
+            continue
+        _window = macd.iloc[-11:-1].tolist()          # 오늘 제외 직전 10거래일
+        _trough_i = min(range(len(_window)), key=lambda i: _window[i])
+        _trough = _window[_trough_i]
+        if _trough > -10:                              # 저점이 -10을 못 찍었으면 '순차 회복' 아님
+            continue
+        _post = _window[_trough_i + 1:] + [float(macd.iloc[-1])]
+        if not any(v >= -5 for v in _post):            # -5 구간 통과 이력 없음
+            continue
+        _macd_now, _macd_prev = float(macd.iloc[-1]), float(macd.iloc[-2])
+        if not (-2.0 <= _macd_now <= 5.0 and _macd_now > _macd_prev):   # 0 부근 도달 + 아직 우상향
+            continue
+        _ng, _nbad = _news_grade(cd)                    # 악재 종목 제외(품질 게이트)
+        if _nbad:
+            continue
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        _stop = int(px * 0.96)
+        _t1 = int(px * 1.05)
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n📐 [RSI·CMF·MACD 3중 반등] {nm} — 순차 확인 완료\n"
+                         f"RSI {_rsi_recent_min:.0f}→{_rsi_now:.0f}(과매도 반등) · "
+                         f"CMF20 {_c3:+.2f}→{_c2:+.2f}→{_c1:+.2f}(매집 전환) · "
+                         f"MACD {_trough:+.0f}→-5권→{_macd_now:+.0f}(0 회복 중)\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억 · "
+                         f"거래량 5일평균 {_vr[2]:.1f}배" + (f" · {_mat}" if _mat else "") + "\n"
+                         f"진입 {px:,} · 손절 {_stop:,}(-4%) · 익절 {_t1:,}(+5%)\n"
+                         f"※ 지표 3중 확인일 뿐 매수확정 아님 — 분할매수 · 손절 엄수"):
+            sent[cd] = True
+            _log_signal(state, now_kst, "RSI·CMF·MACD반등", nm, cd, px)
+            print(f"[RSI·CMF·MACD검색] {nm} {px:,} — RSI{_rsi_now:.0f} CMF{_c1:+.2f} MACD{_macd_now:+.0f}")
+    state["rsi_cmf_macd_sent"] = sent
+
+
 def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V25.33] 강한 재료주 일시 투매 반등(강의 유형4) — 당일청산 전용(오버나이트 금지).
     수급단타왕/만주: 강한 재료(계약·실적)로 장중 크게 오른 주도주가 일시 투매로 눌렸지만
@@ -6754,6 +6878,11 @@ def main():
                         check_material_washout(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _mwe2:
                         print("재료투매반등 오류:", _mwe2)
+                    # [V25.56] RSI·CMF·MACD 3중 확인 반등 검색기(사용자 요청 — 순차 확인형)
+                    try:
+                        check_rsi_cmf_macd_recovery(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _rcme:
+                        print("RSI·CMF·MACD검색 오류:", _rcme)
                     # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
                     try:
                         check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
