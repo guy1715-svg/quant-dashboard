@@ -16,18 +16,25 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
 # ────────────────────────────────────────────────────────────
-# 🔑 키 설정 — 아래 값을 본인 것으로 채우세요(tools.bat에 있던 값 복붙)
+# 🔑 키 설정 — 환경변수가 있으면 그걸 쓰고, 없으면 아래 placeholder로 폴백.
+#   [권장] 이 파일에 직접 키를 채우지 마세요 — git pull/checkout 때마다 지워집니다.
+#   대신 run_gui.bat.example을 run_gui.bat로 복사(*.bat는 .gitignore라 절대 git이 안 건드림)해서
+#   거기에 set KIS_APP_KEY=실제값 식으로 채운 뒤, 앞으로는 run_gui.bat를 실행하세요.
 # ────────────────────────────────────────────────────────────
+def _key(name, placeholder):
+    return os.environ.get(name) or placeholder
+
+
 KEYS = {
-    "TELEGRAM_BOT_TOKEN": "PUT_YOUR_TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID":   "PUT_YOUR_CHAT_ID",
-    "KIS_APP_KEY":        "PUT_YOUR_KIS_APP_KEY",
-    "KIS_APP_SECRET":     "PUT_YOUR_KIS_APP_SECRET",
-    "DART_API_KEY":       "PUT_YOUR_DART_KEY",
-    "GEMINI_API_KEY":     "PUT_YOUR_GEMINI_KEY",
-    "NAVER_CLIENT_ID":    "PUT_YOUR_NAVER_ID",
-    "NAVER_CLIENT_SECRET": "PUT_YOUR_NAVER_SECRET",
-    "GITHUB_TOKEN":       "PUT_YOUR_GITHUB_TOKEN",
+    "TELEGRAM_BOT_TOKEN": _key("TELEGRAM_BOT_TOKEN", "PUT_YOUR_TELEGRAM_BOT_TOKEN"),
+    "TELEGRAM_CHAT_ID":   _key("TELEGRAM_CHAT_ID", "PUT_YOUR_CHAT_ID"),
+    "KIS_APP_KEY":        _key("KIS_APP_KEY", "PUT_YOUR_KIS_APP_KEY"),
+    "KIS_APP_SECRET":     _key("KIS_APP_SECRET", "PUT_YOUR_KIS_APP_SECRET"),
+    "DART_API_KEY":       _key("DART_API_KEY", "PUT_YOUR_DART_KEY"),
+    "GEMINI_API_KEY":     _key("GEMINI_API_KEY", "PUT_YOUR_GEMINI_KEY"),
+    "NAVER_CLIENT_ID":    _key("NAVER_CLIENT_ID", "PUT_YOUR_NAVER_ID"),
+    "NAVER_CLIENT_SECRET": _key("NAVER_CLIENT_SECRET", "PUT_YOUR_NAVER_SECRET"),
+    "GITHUB_TOKEN":       _key("GITHUB_TOKEN", "PUT_YOUR_GITHUB_TOKEN"),
     # OpenBLAS 메모리 크래시 방지
     "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
     # 한글/특수문자(—) print 크래시 방지 — 자식 파이썬 stdout을 UTF-8로

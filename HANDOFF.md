@@ -165,6 +165,29 @@
     이런 미스를 스스로 찾아내는 기능이 이미 있으므로, 그 누적 로그를 나중에 --analyze류로 정리하면
     "왜 놓쳤는지" 패턴을 더 볼 수 있을 것.
 
+### 7.29 tools_gui.py 실제 키가 git pull마다 지워지던 문제 — 환경변수 우선 방식으로 수정
+
+**배경**: git 미연결 상태였던 걸 7.x 앞부분에서 연결한 이후, 사용자가 tools_gui.py를 받을
+때마다(git pull/checkout) 파일에 직접 써넣었던 실제 API 키가 GitHub의 placeholder
+("PUT_YOUR_...")로 계속 덮어써져서 매번 다시 입력해야 하는 문제를 겪음. 홈/회사 모두
+구글드라이브로 동일 폴더를 공유해 쓰고 있어 한 곳만 고치면 됨.
+
+**원인**: `KEYS` 딕셔너리에 실제 키를 하드코딩하는 구조라, git이 관리하는 파일 자체에
+비밀값이 들어있었음 — 파일이 갱신되는 한 구조적으로 계속 사라질 수밖에 없었음.
+
+**수정**: `KEYS`의 각 값을 `os.environ.get(name) or placeholder`로 변경(`_key()` 헬퍼) —
+**환경변수가 있으면 그걸 쓰고, 없으면 기존 placeholder로 폴백**. 실제 키는 이제 tools_gui.py
+안에 두지 않고, 새로 만든 `run_gui.bat.example`(git 추적, placeholder만 있어 안전)을
+`run_gui.bat`로 복사해서 `set KIS_APP_KEY=실제값` 식으로 채우게 함 — `*.bat`는 이미
+.gitignore에 있어서 git이 앞으로 절대 이 파일을 건드리지 않음. 사용자는 이제 `tools_gui.py`
+대신 `run_gui.bat`를 실행하면 됨(내부에서 set 후 `python tools_gui.py` 호출).
+
+**검증**: `py_compile` 통과. `_key()` 함수를 직접 실행해 환경변수 있을 때/없을 때 각각
+올바른 값(실제값/placeholder)을 반환하는지 확인.
+
+**사용자 액션 필요**: `run_gui.bat.example`을 `run_gui.bat`로 복사 → 실제 키 9개 입력(기존에
+tools_gui.py에 직접 넣었던 값 그대로 옮기면 됨) → 앞으로는 `run_gui.bat` 실행.
+
 ### 7.28 tools_gui.py에 관심종목 관리 창 추가 (보유종목과 동일 UX)
 
 **배경**: 사용자가 "보유종목이랑 관심종목 같이 관리해도 되냐"고 물어서 — 신호 성격이 달라
