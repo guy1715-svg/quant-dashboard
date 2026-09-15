@@ -698,9 +698,9 @@ def auto_lineup_from_secs(secs, n=6):
     return _out
 
 
-def save_auto_lineup(pairs):
+def save_auto_lineup(pairs, desc="완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신)."):
     """자동 선정 라인업을 manju_watchlist.json에 기록(대시보드와 공유). auto 플래그 유지."""
-    _payload = {"auto": True, "_설명": "완전자동 — 매일 장중 자금유입 상위 6종 자동 편입(watcher가 갱신).",
+    _payload = {"auto": True, "_설명": desc,
                 "lineup": [[c, n] for c, n in pairs]}
     return _atomic_write_json(WATCHLIST_FILE, _payload, indent=2)
 
@@ -2193,6 +2193,7 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 _c2 = report.find("피할")
             _pick_region = report[(_c1 if _c1 >= 0 else 0):(_c2 if _c2 > 0 else len(report))]
             _seen_bc = set()
+            _lineup_pairs = []
             for _bn, _bc in _re2.findall(r"([가-힣A-Za-z0-9·&.\-]{2,20}?)\s*\((\d{6})\)", _pick_region):
                 if _bc in _seen_bc:
                     continue
@@ -2200,6 +2201,17 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
                 _bp, _, _ = _price_and_turnover(_vtok, kis_key, kis_secret, _bc) if _vtok else (None, None, None)
                 if _bp:
                     _scorecard_append(now_kst, "브리핑", _bc, _bn.strip(), _bp)
+                    _lineup_pairs.append((_bc, _bn.strip()))
+            # [사용자 요청 — 라인업 선정 기준 전면 교체] 미국장·뉴스·거래대금 기반 저녁 브리핑이
+            # "내일 감시 라인업"을 직접 결정하도록 함(기존 고정 15종목 자금유입 상위 방식은 이 선정이
+            # 실패할 때만 쓰는 폴백으로 강등). auto_day를 '내일' 날짜로 찍어 폴백이 이미 됐다고 보고
+            # 스킵하게 함 — 폴백은 gemini_key 미설정·뉴스 수집 실패 등으로 여기서 못 정했을 때만 작동.
+            if _lineup_pairs and save_auto_lineup(
+                    _lineup_pairs,
+                    desc=f"저녁뉴스 브리핑 기반 자동 편입({now_kst.strftime('%m/%d')} 저녁 선정 — "
+                         "미국장·뉴스·거래대금 근거, 최종수단 폴백=자금유입 상위)."):
+                state["auto_day"] = (now_kst + datetime.timedelta(days=1)).strftime("%Y%m%d")
+                print(f"[저녁뉴스] 내일 감시 라인업 갱신: {', '.join(n for _, n in _lineup_pairs)}")
         except Exception as _be:
             print("브리핑 성적표 기록 오류:", _be)
         # [V24.8] 팩트체크 레이어 — Gemini+구글검색(grounding)으로 1차 브리핑 교차검증·보정
