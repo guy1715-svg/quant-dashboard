@@ -6061,6 +6061,83 @@ def check_morning_riskoff(now_kst, state, token_tg, chat_id):
         print(f"[아침비상] 미국 급락 점검 알림 발송 — {' · '.join(_us)}")
 
 
+def check_morning_lineup_finalize(now_kst, state, token_tg, chat_id, gemini_key, kis_key=None, kis_secret=None):
+    """[V25.59] 아침 라인업 최종점검(사용자 요청) — 저녁 브리핑(17~22시)은 미국장이 열리기도 전
+    데이터(선물 지표일 뿐)로 내일 라인업을 고른다. 07:00~08:35(장전브리핑 08:40 이전)에 '실제로
+    마감된' 미국장 실측 + 간밤 신규뉴스로 그 선정을 한 번 더 검증해 최종 확정한다.
+    ★새 종목을 새로 추가하지 않음 — 저녁 라인업 안에서 '유지/제외'만 판단(간밤 악재·미국장 반대방향
+    확인 시 제외). Gemini 없으면 간밤 악재 뜬 종목만 기계적으로 제외(최소 안전장치).
+    당일 1회, 저녁브리핑이 성공적으로 오늘 라인업을 세팅했을 때만(auto_day==오늘) 동작·
+    사용자가 수동 지정한 라인업은 건드리지 않음."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((7 * 60) <= m <= (8 * 60 + 35)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("morning_lineup_day") == today:
+        return
+    if state.get("auto_day") != today or not watchlist_is_auto():
+        return                              # 저녁 라인업이 오늘 것으로 세팅 안 됐거나 수동 라인업 → 스킵
+    lineup = load_lineup()
+    if not lineup:
+        return
+    state["morning_lineup_day"] = today     # 실패해도 하루 1회만 시도(API 낭비 방지)
+    try:
+        _ct = kis_token(kis_key, kis_secret) if (kis_key and kis_secret) else None
+        _, _, _mdetail, _ = compute_macro(_ct, kis_key, kis_secret)
+    except Exception:
+        _mdetail = ""
+    _news = _rss_news(50, hours=14)         # 저녁브리핑 이후~오늘 아침(간밤 신규뉴스)
+    _news_batch = "\n".join(f"[{a.get('src', '')} {a.get('time', '')}] {a['title']}" for a in _news[:60])
+    _bad_codes = set()
+    _stock_lines = []
+    for cd, nm in lineup:
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            _bad_codes.add(cd)
+        _tt = _stock_news_titles(cd, 3)
+        _stock_lines.append(f"- {nm}({cd}): " + (" / ".join(_tt[:3]) if _tt else "(간밤 신규뉴스 없음)"))
+    _stock_block = "\n".join(_stock_lines)
+    _final = list(lineup)
+    _reason = ""
+    if gemini_key:
+        _prompt = ("너는 한국 주식 실전 트레이더야. 어젯밤(장 마감 후) 아래 종목들을 '오늘 감시 라인업'으로 "
+                   "선정해뒀는데, 지금은 개장 전 아침이고 미국장이 실제로 마감된 뒤야. 아래 [오늘 아침 "
+                   "실측 시장데이터](미국장 실제 마감 결과)와 [간밤 신규뉴스]를 반영해서 이 라인업을 "
+                   "최종 점검해줘. ★새 종목을 추가하지 말고, 기존 라인업 안에서만 유지/제외를 판단해★ "
+                   "(제외 사유: 간밤 악재·미국장 실측이 재료와 반대방향·재료 소멸/선반영).\n\n"
+                   f"[오늘 아침 실측 시장데이터(미국장 실제 마감)]\n{_mdetail}\n\n"
+                   f"[어제 저녁 선정 라인업]\n" + "\n".join(f"- {nm}({cd})" for cd, nm in lineup) + "\n\n"
+                   f"[각 종목 간밤 신규뉴스]\n{_stock_block}\n\n"
+                   f"[간밤 전체 뉴스 헤드라인]\n{_news_batch}\n\n"
+                   "[출력 — 라인업 종목만, 한 줄씩, 반드시 종목명(6자리코드) 포함]\n"
+                   "✅ 유지: 종목명(코드) — 한줄사유\n"
+                   "❌ 제외: 종목명(코드) — 한줄사유")
+        _resp = _gemini_generate(gemini_key, _prompt)
+        if _resp:
+            import re as _re3
+            _excluded = {_m.group(1) for _line in _resp.splitlines() if _line.strip().startswith("❌")
+                        for _m in [_re3.search(r"\((\d{6})\)", _line)] if _m}
+            if _excluded:
+                _final = [(cd, nm) for cd, nm in lineup if cd not in _excluded]
+                _reason = _resp
+    if not _reason and _bad_codes:          # Gemini 미가동/무변경 시 최소 안전장치 — 간밤 악재만 기계적 제외
+        _final = [(cd, nm) for cd, nm in lineup if cd not in _bad_codes]
+    if not _final:                          # 전부 제외됐으면 공백 방지 — 원래 라인업 유지
+        _final = list(lineup)
+    if _final != lineup:
+        save_auto_lineup(_final, desc=f"아침 최종화({now_kst.strftime('%m/%d')} — 미국장 마감 실측+간밤뉴스 "
+                                       "반영, 저녁브리핑 원안에서 일부 제외)")
+        _removed = [nm for cd, nm in lineup if cd not in {c for c, _ in _final}]
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_WATCH}\n🌅 [아침 라인업 최종점검] 간밤 미국장·뉴스 반영\n"
+                      f"❌ 제외: {', '.join(_removed)}\n"
+                      f"✅ 최종 라인업: {', '.join(nm for _, nm in _final) if _final else '(없음)'}"
+                      + (f"\n\n{_reason[:800]}" if _reason else ""))
+        print(f"[아침라인업최종화] 제외 {len(_removed)}종 — 최종 {len(_final)}종")
+    else:
+        print(f"[아침라인업최종화] 변경없음 — {len(lineup)}종 그대로 유지")
+
+
 def _pick_mode(now_kst):
     """현재 KST 시각 기준 오늘의 픽 성격. 만쥬=오전 초단타(09~10), 돌팬티=오후 종가베팅(13~15:30)."""
     m = now_kst.hour * 60 + now_kst.minute
@@ -6681,6 +6758,12 @@ def main():
                 check_morning_riskoff(now, st, token_tg, chat_id)
             except Exception as _mre:
                 print("아침 비상 점검 오류:", _mre)
+            # 🌅 [V25.59] 아침 라인업 최종점검(07:00~08:35, 장전브리핑 이전) — 저녁엔 미국장 열리기 전
+            # 데이터였으니, 실제 마감 실측+간밤뉴스로 오늘 라인업을 한 번 더 검증해 최종 확정
+            try:
+                check_morning_lineup_finalize(now, st, token_tg, chat_id, gemini_key, kis_key, kis_secret)
+            except Exception as _mlfe:
+                print("아침 라인업 최종화 오류:", _mlfe)
             # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
             try:
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
