@@ -40,6 +40,7 @@ WATCHER = os.path.join(BASE, "macro_watcher.py")
 _env = {**os.environ, **KEYS}
 _watch_proc = [None]   # 감시 프로세스 핸들(시작/중지용)
 HOLDINGS_FILE = os.path.join(BASE, "my_holdings.json")
+WATCH_FILE = os.path.join(BASE, "my_watch.json")
 REVIEW_FILE = os.path.join(BASE, "market_review.md")
 
 
@@ -80,20 +81,21 @@ def _load_holdings():
     return []
 
 
-def _git_sync_holdings():
-    """[대시보드 자동반영] my_holdings.json은 git으로 배포되는 클라우드 대시보드가 그대로 읽는
-    파일이라, 여기서 로컬 파일만 바꾸면 대시보드는 옛 내용을 계속 보여준다 — commit+push까지
-    해야 반영됨. 저장 직후 백그라운드로 자동 실행(느린 네트워크에도 GUI가 멈추지 않게)."""
+def _git_sync_file(filename, commit_msg):
+    """[대시보드 자동반영] filename은 git으로 배포되는 클라우드 대시보드가 그대로 읽는 파일이라,
+    여기서 로컬 파일만 바꾸면 대시보드는 옛 내용을 계속 보여준다 — commit+push까지 해야 반영됨.
+    저장 직후 백그라운드로 자동 실행(느린 네트워크에도 GUI가 멈추지 않게). 보유종목·관심종목
+    저장 함수가 공용으로 씀."""
     def _run_git():
         try:
-            subprocess.run(["git", "add", "my_holdings.json"], cwd=BASE, capture_output=True, timeout=15)
-            _commit = subprocess.run(["git", "commit", "-m", "보유종목 갱신(GUI 자동 커밋)"],
+            subprocess.run(["git", "add", filename], cwd=BASE, capture_output=True, timeout=15)
+            _commit = subprocess.run(["git", "commit", "-m", commit_msg],
                                       cwd=BASE, capture_output=True, text=True, timeout=15)
             if _commit.returncode != 0 and "nothing to commit" in (_commit.stdout + _commit.stderr):
                 return  # 이전과 내용 동일 — 반영할 변경 없음
             _push = subprocess.run(["git", "push"], cwd=BASE, capture_output=True, text=True, timeout=30)
             if _push.returncode == 0:
-                root.after(0, lambda: _log("☁️ 대시보드(GitHub)에 자동 반영 완료\n"))
+                root.after(0, lambda: _log(f"☁️ 대시보드(GitHub)에 자동 반영 완료 ({filename})\n"))
             else:
                 root.after(0, lambda: _log(
                     f"⚠️ GitHub 푸시 실패 — 대시보드는 아직 안 바뀝니다: {_push.stderr.strip()[:200]}\n"))
@@ -109,7 +111,25 @@ def _save_holdings(stocks):
          "stocks": stocks}
     with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
-    _git_sync_holdings()
+    _git_sync_file("my_holdings.json", "보유종목 갱신(GUI 자동 커밋)")
+
+
+def _load_watchlist():
+    try:
+        with open(WATCH_FILE, encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("stocks"), list):
+            return d["stocks"]
+    except Exception:
+        pass
+    return []
+
+
+def _save_watchlist(stocks):
+    d = {"on": True, "stocks": stocks}
+    with open(WATCH_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+    _git_sync_file("my_watch.json", "관심종목 갱신(GUI 자동 커밋)")
 
 
 def _resolve_stock(query):
@@ -257,6 +277,66 @@ def _open_holdings_manager():
              font=("맑은 고딕", 8)).pack()
 
 
+def _open_watchlist_manager():
+    """관심종목 추가/삭제 관리 창 — 보유종목 관리와 동일한 검색 방식, 평단·수량 없이 code/name만."""
+    win = tk.Toplevel(root)
+    win.title("🔍 관심종목 관리")
+    win.geometry("480x520")
+    _cands = {"list": []}
+
+    tk.Label(win, text="🔍 관심종목 관리", font=("맑은 고딕", 13, "bold")).pack(pady=6)
+
+    tk.Label(win, text="현재 관심종목 (선택 후 삭제):", font=("맑은 고딕", 9)).pack(anchor="w", padx=10)
+    _lb = tk.Listbox(win, width=60, height=10, font=("맑은 고딕", 10))
+    _lb.pack(padx=10, pady=4)
+
+    def _refresh():
+        _lb.delete(0, tk.END)
+        for s in _load_watchlist():
+            _lb.insert(tk.END, f"{s.get('name','')} ({s.get('code','')})")
+    _refresh()
+
+    def _delete():
+        i = _lb.curselection()
+        if not i:
+            messagebox.showinfo("삭제", "삭제할 종목을 선택하세요."); return
+        st = _load_watchlist()
+        del st[i[0]]
+        _save_watchlist(st); _refresh()
+    tk.Button(win, text="🗑 선택 삭제", command=_delete, font=("맑은 고딕", 10)).pack(pady=2)
+
+    tk.Label(win, text="─" * 60, fg="#999").pack()
+    tk.Label(win, text="➕ 종목 추가 — 이름 입력 후 검색", font=("맑은 고딕", 10, "bold")).pack(pady=2)
+    _sf = tk.Frame(win); _sf.pack(pady=2)
+    _q = tk.Entry(_sf, width=18, font=("맑은 고딕", 11)); _q.pack(side=tk.LEFT, padx=4)
+    _combo = ttk.Combobox(win, width=44, font=("맑은 고딕", 10), state="readonly")
+
+    def _search():
+        res = _resolve_stock(_q.get())
+        if not res:
+            messagebox.showinfo("검색", "결과 없음 — 이름 확인 or 6자리 코드 직접 입력"); return
+        _cands["list"] = res
+        _combo["values"] = [f"{n} ({c})" for c, n in res]
+        _combo.current(0)
+    tk.Button(_sf, text="🔍 검색", command=_search, font=("맑은 고딕", 10)).pack(side=tk.LEFT)
+    _combo.pack(pady=3)
+
+    def _add():
+        i = _combo.current()
+        if i < 0 or not _cands["list"]:
+            messagebox.showinfo("추가", "먼저 종목을 검색·선택하세요."); return
+        code, name = _cands["list"][i]
+        st = [s for s in _load_watchlist() if str(s.get("code")) != code]  # 중복 코드 제거(갱신)
+        st.append({"code": code, "name": name})
+        _save_watchlist(st); _refresh()
+        _q.delete(0, tk.END)
+        _combo.set("")
+    tk.Button(win, text="➕ 추가", command=_add, bg="#d4f8d4",
+              font=("맑은 고딕", 10, "bold")).pack(pady=4)
+    tk.Label(win, text="※ 매수 전 관찰용 — 실제 매수하면 여기서 빼고 보유종목에 추가하세요",
+             fg="#666", font=("맑은 고딕", 8)).pack()
+
+
 # ── GUI ──
 root = tk.Tk()
 root.title("퀀트 도구")
@@ -283,9 +363,11 @@ for i, (txt, fn) in enumerate(_specs):
     tk.Button(_btns, text=txt, width=22, height=2, command=fn,
               font=("맑은 고딕", 10)).grid(row=i // 2, column=i % 2, padx=5, pady=4)
 
-# 보유종목 관리 버튼
+# 보유종목·관심종목 관리 버튼
 tk.Button(root, text="💼 보유종목 추가/삭제 관리 (이름검색)", command=_open_holdings_manager,
           bg="#fff3cd", font=("맑은 고딕", 10, "bold")).pack(pady=3)
+tk.Button(root, text="🔍 관심종목 추가/삭제 관리 (이름검색)", command=_open_watchlist_manager,
+          bg="#d6e9ff", font=("맑은 고딕", 10, "bold")).pack(pady=3)
 
 # 종목해석(코드 입력)
 _sf = tk.Frame(root); _sf.pack(pady=4)
