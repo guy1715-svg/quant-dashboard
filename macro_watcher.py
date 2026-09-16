@@ -6697,6 +6697,33 @@ def _load_review_blocks(days_back=7):
     return _out
 
 
+def weekly_signal_report(now_kst, state, token_tg, chat_id, kis_key, kis_secret, kis_on):
+    """[V25.66] 사용자 요청("계속 지켜보기만 할거야? 한 달 데이터면 방향 잡았어야지") 반영 —
+    신호별 누적 승률(_analyze_history)·청산타이밍(_analyze_exit_timing)을 매주 금요일 마감복기
+    시점에 자동으로 텔레그램 발송. 예전엔 사용자가 tools_gui 버튼을 직접 눌러야만 봤는데,
+    그러면 '보는 걸 잊어버리면 데이터가 쌓여도 아무도 안 보는' 상태가 됨 — 이제 자동으로 매주
+    날아오니 승률 확인이 습관이 아니라 시스템의 일부가 됨. weekly_meta_review와 동일 주기."""
+    if not kis_on:
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
+        return
+    if now_kst.weekday() != 4:                        # 금요일만(주 1회)
+        return
+    _wk = now_kst.strftime("%G-W%V")
+    if state.get("weekly_signal_report_week") == _wk:
+        return
+    state["weekly_signal_report_week"] = _wk          # 실패해도 이번 주는 1회만 시도(API 낭비 방지)
+    try:
+        _tok = kis_token(kis_key, kis_secret)
+        send_telegram(token_tg, chat_id, "📊 [주간 자동] 이번 주 신호별 성적 확인 — 아래 두 리포트 참고")
+        _analyze_history(_tok, kis_key, kis_secret, now_kst, token_tg, chat_id)
+        _analyze_exit_timing(_tok, kis_key, kis_secret, now_kst, token_tg, chat_id)
+        print("[주간신호리포트] 자동 발송 완료")
+    except Exception as _wsre:
+        print("주간신호리포트 오류:", _wsre)
+
+
 def weekly_meta_review(now_kst, state, token_tg, chat_id, gemini_key, force=False):
     """[다음 작업 1호] 주1회(금요일 마감복기 시점) market_review.md 최근 누적분을 Gemini로 재분석해
     '최근 장세 패턴 요약'(메타 복기) 생성 — 반복 패턴·잘 먹힌 신호·다음주 포커스·규칙원장 반영 후보 제시."""
@@ -7409,6 +7436,7 @@ def main():
                 send_morning_brief(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
                 send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key)
                 weekly_meta_review(now, st, token_tg, chat_id, gemini_key)
+                weekly_signal_report(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
             except Exception as _je:
                 print("일지/복기 발송 오류:", _je)
 
