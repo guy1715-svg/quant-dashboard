@@ -3557,6 +3557,10 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
         sent = {"_day": today}
     _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
     _budget = 0
+    _sent_n = 0
+    # [V25.63] "왜 신호가 안 왔는지" 단계별 진단 카운터 — 3조건 중 어디서 대부분 걸러지는지 구분하기 위함
+    #   (RSI/CMF/MACD 3개 동시충족은 원래도 드문 조합이라, 0건 자체보다 '어느 단계까지 왔었는지'가 중요).
+    _cnt = {"budget": 0, "rsi_ok": 0, "cmf_ok": 0, "macd_ok": 0, "newsbad": 0}
     for s in _volume_rank(token, key, secret, top=40):
         cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
         if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
@@ -3568,6 +3572,7 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
         if (turn or 0) < 30 * 1e8:                    # 거래대금 30억↓ 제외 — '거래대금도 중요' 게이트
             continue
         _budget += 1
+        _cnt["budget"] += 1
         if _budget > 30:
             break
         _vr = _vol_ratio_5d(token, key, secret, cd)   # (오늘거래량, 5일평균, 배수)
@@ -3593,12 +3598,14 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
         _rsi_now, _rsi_prev = float(rsi.iloc[-1]), float(rsi.iloc[-2])
         if _rsi_recent_min > 30 or not (_rsi_now > _rsi_prev) or _rsi_now > 50:
             continue
+        _cnt["rsi_ok"] += 1
         # ② CMF20: 최근 3일 연속 상승 = 수급(매집) 전환 확인(OBV 대체)
         if len(cmf) < 4 or cmf.iloc[-4:].isna().any():
             continue
         _c1, _c2, _c3 = float(cmf.iloc[-1]), float(cmf.iloc[-2]), float(cmf.iloc[-3])
         if not (_c1 > _c2 > _c3):
             continue
+        _cnt["cmf_ok"] += 1
         # ③ MACD: 최근 저점 -10 이하 → 이후 -5 통과 → 현재 0 부근(우상향 유지) 순차 회복
         if len(macd) < 11 or macd.iloc[-11:].isna().any():
             continue
@@ -3613,8 +3620,10 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
         _macd_now, _macd_prev = float(macd.iloc[-1]), float(macd.iloc[-2])
         if not (-2.0 <= _macd_now <= 5.0 and _macd_now > _macd_prev):   # 0 부근 도달 + 아직 우상향
             continue
+        _cnt["macd_ok"] += 1
         _ng, _nbad = _news_grade(cd)                    # 악재 종목 제외(품질 게이트)
         if _nbad:
+            _cnt["newsbad"] += 1
             continue
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
         _stop = int(px * 0.96)
@@ -3629,9 +3638,15 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
                          f"진입 {px:,} · 손절 {_stop:,}(-4%) · 익절 {_t1:,}(+5%)\n"
                          f"※ 지표 3중 확인일 뿐 매수확정 아님 — 분할매수 · 손절 엄수"):
             sent[cd] = True
+            _sent_n += 1
             _log_signal(state, now_kst, "RSI·CMF·MACD반등", nm, cd, px)
             print(f"[RSI·CMF·MACD검색] {nm} {px:,} — RSI{_rsi_now:.0f} CMF{_c1:+.2f} MACD{_macd_now:+.0f}")
     state["rsi_cmf_macd_sent"] = sent
+    if _sent_n == 0:
+        print(f"[RSI·CMF·MACD검색] {now_kst.strftime('%H:%M')} 스캔 완료 — 1차후보 {_cnt['budget']}종 중 "
+              f"RSI조건통과 {_cnt['rsi_ok']}종 → CMF조건통과 {_cnt['cmf_ok']}종 → MACD조건통과 {_cnt['macd_ok']}종"
+              f"(그중 악재제외 {_cnt['newsbad']}종) → 발송 0건"
+              + ("(1차후보 자체가 없음 — 거래대금30억↑·변동폭조건 통과 종목 없음)" if _cnt["budget"] == 0 else ""))
 
 
 def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -5893,6 +5908,123 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     return out
 
 
+def _intraday_snapshot(token, key, secret, code):
+    """[V25.64] 장중 스냅샷 통합조회 — 현재가·등락률·시가·고가·저가·누적거래량·누적거래대금을
+    inquire-price 1회 호출로 전부 추출(중복 API호출 절감, _price_full/_price_and_turnover가
+    각자 따로 부르던 걸 한 번에). VWAP(=누적거래대금/누적거래량)도 함께 계산. 실패 시 None."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        _j = r.json()
+        if str(_j.get("rt_cd", "")).strip() not in ("0", ""):
+            return None
+        o = _j.get("output", {})
+        if not (isinstance(o, dict) and o):
+            return None
+        _vol = _to_int(o.get("acml_vol"))
+        _turn = _to_int(o.get("acml_tr_pbmn"))
+        return {"px": _to_int(o.get("stck_prpr")),
+                "chg": float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0),
+                "open": _to_int(o.get("stck_oprc")), "high": _to_int(o.get("stck_hgpr")),
+                "low": _to_int(o.get("stck_lwpr")), "vol": _vol, "turn": _turn,
+                "vwap": (_turn / _vol) if (_turn and _vol) else None}
+    except Exception:
+        return None
+
+
+def check_a_grade_pullback(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V25.64] A급 눌림 매매(사용자 요청 — 퍼플렉시티 상담 검토 반영) — 기존 눌림매매
+    (check_pullback_scan)는 일봉 5/20일선을 지지 기준으로 쓰는데, 이건 '오늘 당일' 형성된
+    지지존만 본다: 전일종가·당일시가·오늘 첫 상승파동의 50%되돌림(당일 고저 중간값 근사)·
+    VWAP 중 2개 이상이 겹치는 가격대에서 지지가 확인된 뒤, 직전 5분봉 고점을 거래량 재증가와
+    함께 돌파할 때만 알림 — 매수확정 아님, 관찰·알림용(자동매수 없음, 강의 원칙과 동일).
+    종목조건: 당일 +5~15%(15%초과=추격금지·관찰만 다른 스캐너가 담당) · 재료확인(S/A/T 중 하나,
+    무재료 제외) · 거래대금 100억+ 유지 · 코스피/코스닥 급락(-1%↓) 아님.
+    ※ 5분봉은 스냅샷 가격을 5분 버킷별로 누적한 근사(진짜 캔들 API 아님, check_bar15와 동일 기법).
+    1분봉 정밀 진입 확인은 사용자가 HTS로 직접(강의 원칙: 알림만).
+    09:15~15:00, 종목별 하루 1회, 리스크오프 억제."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 15) <= m <= (15 * 60)) or sev == 2:
+        return
+    _kospi = _kospi_index_kis(token, key, secret)
+    if _kospi is not None and _kospi <= -1.0:          # 코스피 급락일 신규 단타 보류(퍼플렉시티 조건)
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("a_pullback_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    track = state.get("a_pullback_track", {})
+    if track.get("_day") != today:
+        track = {"_day": today}
+    _bidx = m // 5
+    _budget = 0
+    _sent_n = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px0, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px0 or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if sent.get(cd):
+            continue
+        if not (5.0 <= (chg or 0) <= 15.0):             # +5~15%만(15%초과 추격금지 — 퍼플렉시티 조건)
+            continue
+        if turn < 10_000_000_000:                       # 거래대금 100억+ 유지(급등주 기준)
+            continue
+        _budget += 1
+        if _budget > 20:
+            break
+        _ng, _nbad = _news_grade(cd)
+        if _nbad or _ng not in ("S", "A", "T"):         # 직접재료·테마재료 확인 필수(무재료 추격 금지)
+            continue
+        snap = _intraday_snapshot(token, key, secret, cd)
+        if not snap or not snap.get("px"):
+            continue
+        px = snap["px"]
+        _t = track.get(cd)
+        if not _t or _t.get("bidx") != _bidx:
+            _hist = list(_t.get("hist", [])) if _t else []
+            if _t and _t.get("bidx") is not None:       # 직전 버킷 완성 — 기록에 추가
+                _hist.append({"high": _t["cur_high"],
+                              "vd": max(0, (snap.get("vol") or 0) - (_t.get("vol0") or 0))})
+                _hist = _hist[-6:]
+            track[cd] = {"bidx": _bidx, "cur_high": px, "vol0": snap.get("vol") or 0, "hist": _hist}
+            if len(_hist) >= 2:
+                _last, _prev = _hist[-1], _hist[-2]
+                _avgvd = sum(h["vd"] for h in _hist[:-1]) / max(1, len(_hist) - 1)
+                _breakout = (_last["high"] > _prev["high"]) and (_last["vd"] > _avgvd)
+                if _breakout:
+                    _prevclose = px / (1 + (chg or 0) / 100) if (chg or 0) != -100 else None
+                    _wave_mid = (((snap.get("high") or px) + (snap.get("low") or px)) / 2)
+                    _zones = [z for z in (_prevclose, snap.get("open"), _wave_mid, snap.get("vwap")) if z]
+                    _near = sum(1 for z in _zones if abs(px / z - 1) <= 0.015)
+                    if _near >= 2:                       # 지지존 2개↑ 겹침 확인
+                        _stop = int(px * 0.98); _t1 = int(px * 1.03)
+                        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🔵재료T(테마)"
+                        if send_telegram(token_tg, chat_id,
+                                         f"{SIG_BUY}\n📐 [A급 눌림·5분봉 재돌파] {nm} {px:,}({(chg or 0):+.1f}%)\n"
+                                         f"지지존 {_near}개 겹침(전일종가·시가·파동50%·VWAP 中) · "
+                                         f"직전 5분봉 고점 {_prev['high']:,} 거래량 재증가와 돌파\n"
+                                         f"거래대금 {(turn or 0)/1e8:,.0f}억 · {_mat}\n"
+                                         f"진입 {px:,} · 손절 {_stop:,}(-2%) · 1차익절 {_t1:,}(+3%·절반)\n"
+                                         f"⚠️ 1분봉에서 눌림·재돌파 재확인 후 지정가 진입(자동매수 아님) · "
+                                         f"+3% 도달 후 잔여분 손절선 진입가로 상향 · 직전 5분봉 저점 이탈시 잔여 정리 · "
+                                         f"하루 1회 손절 시 같은 유형 재진입 금지"):
+                            sent[cd] = True
+                            _sent_n += 1
+                            _log_signal(state, now_kst, "A급눌림", nm, cd, px)
+                            print(f"[A급눌림] {nm} {px:,} — 지지존{_near}개·5분봉재돌파(거래량{_last['vd']:,.0f} "
+                                  f"> 평균{_avgvd:,.0f})")
+        else:
+            _t["cur_high"] = max(_t["cur_high"], px)
+    state["a_pullback_sent"] = sent
+    state["a_pullback_track"] = track
+    if _sent_n == 0:
+        print(f"[A급눌림] {now_kst.strftime('%H:%M')} 스캔 완료 — 1차후보(재료확인+거래대금 통과) {_budget}종 "
+              f"중 발송 0건"
+              + ("(후보 자체가 없음)" if _budget == 0 else "(지지존·5분봉재돌파 조건 미충족 — 버킷 데이터 축적 중일 수도)"))
+
+
 def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """진입(초록) 3-조건 상시 감시 — 라인업, 제로아워(09:00~10:00) 창.
     조건: 거래대금 ≥ 임계(대형300/중소150억) AND 프로그램·외인·기관 추정금액 모두 (+).
@@ -7083,6 +7215,11 @@ def main():
                         check_pullback_scan(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _pbe:
                         print("눌림타점 스캐너 오류:", _pbe)
+                    # [V25.64] A급 눌림 매매(사용자 요청·퍼플렉시티 상담 반영) — 당일 지지존+5분봉 재돌파
+                    try:
+                        check_a_grade_pullback(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _agpe:
+                        print("A급눌림 오류:", _agpe)
                     # [V25.32] 과매도 낙주 반등 — 지수 급락일 전용(대형주 낙폭과대+수급유입+반등)
                     try:
                         check_oversold_bounce(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
