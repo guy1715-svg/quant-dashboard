@@ -63,6 +63,13 @@ KIS_BASE = "https://openapi.koreainvestment.com:9443"
 
 NQ_BLOCK, NQ_GO, WTI_RISK = -0.2, 0.5, 2.0
 
+# [V25.65] 20일선 이격(과열도) 공용 기준 — 감사 결과, 같은 '과열' 개념을 함수마다 7/10/12%로
+# 제각각 판정해서 이격 +8~11% 종목에 한 함수는 "추격금지"·다른 함수는 "지금 매수"를 동시에
+# 보내던 모순이 있었음. `_deep_stock`(종목해석)이 이미 쓰던 라벨 기준(과열=7%·심한과열=12%)에
+# 나머지 함수들을 맞춤 — 새 숫자를 만들지 않고 기존에 이미 있던 기준으로 통일.
+DISP_WARN = 7.0     # 이격 +7%↑ = "과열 주의"(소량·타이트 손절 권고 등급)
+DISP_BLOCK = 12.0   # 이격 +12%↑ = "심한 과열"(신규 추격 완전 차단 등급)
+
 # 코스피200 선물 근월물 단축코드(KIS 국내선물옵션 inquire-price용) — 분기 만기(3·6·9·12월 두번째 목요일)마다 롤오버.
 # 만기 지나면 KIS 공식 예시 코드 갱신(예: 101W09→차월물)하거나 kospi_fut.json로 덮어쓰기. 잘못되면 데이터 None(가짜 안 씀).
 KOSPI200_FUT_CODE = "101W09"
@@ -1109,6 +1116,26 @@ def _deep_stock(token, key, secret, code, name="", gemini_key=None):
     return "\n".join(_lines)
 
 
+def _claim_daily_signal(state, category, code, now_kst):
+    """[V25.65] 중복알림 방지 락 — 감사 결과, '눌림 반등'을 5개 함수(check_pullback_scan·
+    check_rsi_cmf_macd_recovery·check_a_grade_pullback·check_material_washout·check_my_watch)가
+    각자 다른 수학(일봉MA/RSI·CMF·MACD/5분봉VWAP/고점대비눌림)으로 따로 검사하고 있어서, 조건
+    맞는 종목 하나에 서로 다른 이름의 알림이 동시에 3~4건 나갈 수 있었음(같은 문제가 '돌파' 계열
+    4개 함수에도 있음). 각 함수의 판정 로직 자체는 안 건드리고, 그날 그 카테고리에서 이 종목을
+    먼저 잡은 함수만 발송하게 막는 공용 락. category 예: "pullback"(눌림 계열), "breakout"(돌파 계열).
+    반환 True=이번이 처음(발송 가능), False=오늘 이미 다른 함수가 같은 종목·카테고리로 보냄(스킵)."""
+    today = now_kst.strftime("%Y%m%d")
+    _claims = state.get("_signal_claims", {})
+    if _claims.get("_day") != today:
+        _claims = {"_day": today}
+    _key = f"{category}:{code}"
+    if _claims.get(_key):
+        return False
+    _claims[_key] = True
+    state["_signal_claims"] = _claims
+    return True
+
+
 def _log_signal(state, now_kst, kind, name, code, px):
     """[V13.2] 매수 알림을 시각·가격과 함께 당일 기록 — '알림 성적'(진입했다면?) 추적용. 날짜 바뀌면 초기화."""
     today = now_kst.strftime("%Y%m%d")
@@ -2021,8 +2048,8 @@ def _verify_news_picks(token, key, secret, report):
             _disp = _ma20_disparity(token, key, secret, _cd, _px)
             _dt = f"이격 {_disp:+.0f}%" if _disp is not None else "이격 –"
             _tk = f"거래대금 {(_turn or 0)/1e8:,.0f}억"
-            # 판정: 이미 급등(등락≥5 or 이격≥10) = sell-the-news / 저조 거래 = 관심밖 / 그 외 = 주목
-            if (_chg or 0) >= 5.0 or (_disp is not None and _disp >= 10.0):
+            # 판정: 이미 급등(등락≥5 or 이격 심한과열) = sell-the-news / 저조 거래 = 관심밖 / 그 외 = 주목
+            if (_chg or 0) >= 5.0 or (_disp is not None and _disp >= DISP_BLOCK):
                 _vd = "⚠️이미 급등(선반영·추격주의)"
             elif (_turn or 0) < 10_000_000_000:
                 _vd = "💤거래 저조(관심 유입 확인 필요)"
@@ -2531,7 +2558,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                           f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
                           f"🔥 거래 붙는지 확인 후 — 아직 매수 아님\n{_url}")
             continue
-        _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= 12.0)
+        _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= DISP_BLOCK)
         if _overheat:                            # 이미 급등 → 추격 금지
             send_telegram(token_tg, chat_id,
                           f"{SIG_WATCH}\n📢 [{_mat_label}·공시 과열] {_corp}({_stock})\n"
@@ -2562,7 +2589,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _lead_tag = "🔥주도주(거래대금 랭킹 內)" if _stock in _vrank_codes else "🌱비주도(선행 재료·거래 확인 필요)"
         # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
-        _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= 7) else ""
+        _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= DISP_WARN) else ""
         send_telegram(token_tg, chat_id,
                       f"{SIG_BUY_STRONG}\n🎯 [{_mat_label}·공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
@@ -2901,7 +2928,7 @@ def _volatility_scan(token, key, secret, gemini_key=None, top_n=8):
                 _sup = f" · 수급 {_net:+.0f}억" + ("✅" if _net >= 0 else "⚠️")
         except Exception:
             pass
-        if c["ret5"] >= 15 or (disp is not None and disp >= 12):
+        if c["ret5"] >= 15 or (disp is not None and disp >= DISP_BLOCK):
             _pre = " ⚠️선반영(이미급등·추격주의)"
         elif disp is not None and 0 <= disp <= 4:
             _pre = " 🟢눌림권(진입 여지)"
@@ -2965,8 +2992,10 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
         #   ※ 진짜 돌파 조건: 전고 위 + 거래량 동반. 장중 잠깐 찍는 속임수 걸러내려 배수 게이트.
         _bk = code + "_brk"
         _rhigh = _recent_high(token, key, secret, code, days=20, exclude_today=True)  # 직전 20일 전고(오늘 제외)
+        # [V25.65] 돌파 계열 4개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
         if (_rhigh and px >= _rhigh and _mult >= 2.0
-                and (int(now_kst.timestamp()) - int(mw.get(_bk, 0))) >= 60 * 60):
+                and (int(now_kst.timestamp()) - int(mw.get(_bk, 0))) >= 60 * 60
+                and _claim_daily_signal(state, "breakout", code, now_kst)):
             _bstop = int(_rhigh * 0.98); _bt1 = int(px * 1.05)
             _sess_b = "NXT 야간 실시간" if _nxt else "정규장"
             if send_telegram(token_tg, chat_id,
@@ -2990,7 +3019,8 @@ def check_my_watch(token, key, secret, now_kst, state, token_tg, chat_id):
         elif (_ma5 and _low and _low <= _ma5 * 1.005 and px >= _ma5 * 0.998
                 and px > _low * 1.002 and (chg or 0) >= -1.0):
             _sig = ("🎯 눌림 반등", f"큰추세 상승 · 저가 {int(_low):,}(5일선 터치) → 현재 5일선 회복 · 반등 확인")
-        if _sig:
+        # [V25.65] 눌림·반등 계열 5개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+        if _sig and _claim_daily_signal(state, "pullback", code, now_kst):
             _stop = int(px * 0.98); _t1 = int(px * 1.03)
             _sess = "NXT 야간 실시간" if _nxt else "정규장"
             if send_telegram(token_tg, chat_id,
@@ -3369,7 +3399,7 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
         if not (_ma5 and _ma20 and _ma5 > _ma20):    # 정배열(큰추세 상승) 필수 — 하락추세 눌림 금지
             continue
         _disp = ds.get("disp", 0)
-        if _disp >= 10.0:                            # 과열은 '눌림' 아님
+        if _disp >= DISP_BLOCK:                      # 과열은 '눌림' 아님(공용 심한과열 기준)
             continue
         _d5 = (px / _ma5 - 1) * 100                  # 5일선 이격
         _d20 = (px / _ma20 - 1) * 100                # 20일선 이격
@@ -3424,6 +3454,9 @@ def check_pullback_scan(token, key, secret, now_kst, state, token_tg, chat_id, s
             _elite = f" ⭐⭐정예(수급강){_stag}" if _strong else f" ⭐정예{_stag}"
         elif _stag:                                  # 재료는 약해도 수급 연속이면 표시
             _elite = _stag
+        # [V25.65] 눌림·반등 계열 5개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+        if not _claim_daily_signal(state, "pullback", cd, now_kst):
+            continue
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n🎯 [눌림 타점·정배열]{_elite} {nm} — {_sig[0]}\n"
                          f"{_sig[1]}\n현재 {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억"
@@ -3628,6 +3661,9 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
         _stop = int(px * 0.96)
         _t1 = int(px * 1.05)
+        # [V25.65] 눌림·반등 계열 5개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+        if not _claim_daily_signal(state, "pullback", cd, now_kst):
+            continue
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n📐 [RSI·CMF·MACD 3중 반등] {nm} — 순차 확인 완료\n"
                          f"RSI {_rsi_recent_min:.0f}→{_rsi_now:.0f}(과매도 반등) · "
@@ -3704,6 +3740,9 @@ def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id
         _stop = int(_low * 0.99)                        # 저가 이탈시(타이트)
         _stoppct = (_stop / px - 1) * 100
         _t1 = int(px * 1.02)                            # +2% 짧게
+        # [V25.65] 눌림·반등 계열 5개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+        if not _claim_daily_signal(state, "pullback", cd, now_kst):
+            continue
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n⚡ [재료주 투매반등·당일청산] {nm} — 고점 {int(_high):,}(+{_high_pct:.0f}%) 대비 −{_pull:.1f}% 눌림\n"
                          f"현재 {px:,}({(chg or 0):+.1f}%) · {_mat}{_prog_tag} · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
@@ -3942,7 +3981,7 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
         ds = _daily_setup(token, key, secret, cd, px)
         if not ds or not ds.get("ma20"):
             continue
-        if px <= ds["ma20"] or (ds.get("disp") or 0) >= 12:   # 20MA위(추세) + 과열 상한
+        if px <= ds["ma20"] or (ds.get("disp") or 0) >= DISP_BLOCK:   # 20MA위(추세) + 과열 상한
             continue
         _pf = _price_full(token, key, secret, cd)      # (현재가,등락,시가,고가,저가)
         if not _pf:
@@ -3975,6 +4014,10 @@ def check_breakout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1)
         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
         _prog_tag = f" · 🟩프로그램 +{_prog/1e8:,.0f}억" if _prog_ok else ""
         _nth = cnt.get(cd, 0) + 1
+        # [V25.65] 돌파 계열 4개 함수 중복알림 방지 — 이 종목 오늘 '첫' 돌파일 때만 다른 함수 선점 여부 확인
+        #   (check_breakout 자체의 '하루 2회까지' 재돌파는 이미 자기 것이므로 재확인 없이 통과)
+        if _nth == 1 and not _claim_daily_signal(state, "breakout", cd, now_kst):
+            continue
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n🚀 [돌파매매·{_btype}] {nm} {px:,}({(chg or 0):+.1f}%) · {_nth}차 돌파\n"
                          f"돌파기준 {_bpx:,} 상향 · 거래량 {_mult:.1f}배 동반"
@@ -4284,7 +4327,7 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
             continue
         mult = turn / ds["turnavg"]; disp = ds["disp"]; above5 = ds["above5"]
         # [V24.7] 급증진입 OFF — 누적성적 0%·평균 -6.2%(실행 중단). 조기포착만 유지.
-        if (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < 7 and -1.0 <= chg <= 8.0:
+        if (ds["kij_cross"] or ds["kij_near"]) and mult >= 1.2 and disp < DISP_WARN and -1.0 <= chg <= 8.0:
             _kind, _label = "조기포착", "🟢 [조기 포착·기준선]"
             _kt = " · 일목 " + ("기준선 돌파✅" if ds["kij_cross"] else "기준선 걸침(±2%)")
         else:
@@ -4294,6 +4337,9 @@ def check_early_catch(token, key, secret, now_kst, state, token_tg, chat_id, sev
             continue
         _mat = "🔥재료 강함(S급)" if _ng == "S" else "🟢재료 있음(A급)" if _ng == "A" else "⚠️재료 미확인"
         _stop = int(px * 0.98); _t1 = int(px * 1.03)
+        # [V25.65] 돌파 계열 4개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+        if not _claim_daily_signal(state, "breakout", cd, now_kst):
+            continue
         if send_telegram(token_tg, chat_id,
                          f"{SIG_BUY}\n🌅[장중단타·당일청산] {_label} {nm} {px:,}({chg:+.1f}%) · 거래대금 {mult:.1f}배{_kt}\n"
                          f"{_mat} · 20MA 이격 {disp:+.0f}%\n"
@@ -4593,7 +4639,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         disp = ds["disp"]
         if px <= ds["ma20"]:                          # 20MA↑ 필수(종배 정석)
             continue
-        if disp >= 7.0:                               # 20MA 이격 과열
+        if disp >= DISP_WARN:                               # 20MA 이격 과열
             continue
         ng, nbad = _news_grade(cd)                    # 악재 종목 제외
         if nbad:
@@ -4649,7 +4695,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             if not _bds or not _bds.get("ma20") or _bpx <= _bds["ma20"]:  # 20MA↑ 필수
                 continue
             _bdisp = _bds["disp"]
-            if _bdisp >= 7.0:
+            if _bdisp >= DISP_WARN:
                 continue
             _bng, _bnbad = _news_grade(_bc)
             if _bnbad:
@@ -5132,7 +5178,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
                     _res_line = "🚀 신고가권(뚜렷한 저항 없음) — 고점 갱신 실패 시 매도"
                 _bt = _big_trend_tag(token, key, secret, code, px)
                 _sdisp = _ma20_disparity(token, key, secret, code, px)   # [V24.5] 과열이면 눌림 목표
-                _pull = _pullback_levels(token, key, secret, code, px, chg) if (_sdisp is not None and _sdisp >= 7) else ""
+                _pull = _pullback_levels(token, key, secret, code, px, chg) if (_sdisp is not None and _sdisp >= DISP_WARN) else ""
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌅[아침단타·당일청산] 🎯 시가저격 (마의구간 09:00~09:15) — {name}\n"
                               f"거래대금 {turn/1e8:,.0f}억 (임계 {need/1e8:,.0f}억·{cap}) 돌파 · {_bk} · {_mattxt}{_bt}\n"
@@ -5858,9 +5904,9 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                 _stop = int(px * 0.98)                             # 손절 −2%
                 if _disp is None:
                     _warn = "• 이격: 확인불가 (HTS에서 20일선 위치 확인)"
-                elif _disp >= 12:
+                elif _disp >= DISP_BLOCK:
                     _warn = f"• ⚠️ 20일선 이격 +{_disp:.1f}% = 심한 과열! 지금은 추격 자리 — 눌림 기다리기 권장"
-                elif _disp >= 7:
+                elif _disp >= DISP_WARN:
                     _warn = f"• ⚠️ 20일선 이격 +{_disp:.1f}% = 과열 주의 — 소량·타이트 손절만"
                 else:
                     _warn = f"• 20일선 이격 +{_disp:.1f}% = 아직 여유 있음(추격 아님)"
@@ -5876,10 +5922,13 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                 if _vrank_b15 is None:
                     _vrank_b15 = {s["code"] for s in _volume_rank(token, key, secret, top=40)}
                 _is_leader = code in _vrank_b15
-                if sev != 2 and _is_leader:   # [V17.1] 리스크오프 억제 + [V21.1] 주도주만 발송
+                # [V25.65] 돌파 계열 4개 함수 중복알림 방지 — 같은 종목을 오늘 다른 함수가 먼저 잡았으면 스킵
+                #   (claim은 실제 발송 분기에서만 호출 — 발송 안 하는 분기에서 미리 점유하면 안 됨)
+                if (sev != 2 and _is_leader
+                        and _claim_daily_signal(state, "breakout", code, now_kst)):   # [V17.1][V21.1] 리스크오프 억제·주도주만
                     _bt = _big_trend_tag(token, key, secret, code, px)
                     # [V25.43] 이격 과열(+7%↑)이면 매수검토→관찰로 강등(고점 추격 방지). 눌림 목표만 제시.
-                    _hot = _disp is not None and _disp >= 7
+                    _hot = _disp is not None and _disp >= DISP_WARN
                     _pull = _pullback_levels(token, key, secret, code, px, chg) if _hot else ""
                     _prefix = SIG_WATCH if _hot else SIG_BUY
                     _htag = "관찰(과열·추격금지)" if _hot else "매수검토"
@@ -5898,9 +5947,11 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
                                   f"─────────\n"
                                   f"{_foot}")
                     sent[_key] = True
-                elif sev != 2 and not _is_leader:
-                    sent[_key] = True             # 비주도주 — 발송 억제(중복 방지 위해 마킹만)
+                    # [V25.65 버그수정] 실제 발송(주도주) 분기에 _log_signal이 없고 발송 억제(비주도주)
+                    #   분기에만 있어서, 성적표가 "실제로 안 보낸 신호"만 기록하는 정반대 상태였음(감사로 발견).
                     _log_signal(state, now_kst, "15분봉", name, code, px)
+                elif sev != 2 and not _is_leader:
+                    sent[_key] = True             # 비주도주 — 발송 억제(중복 방지 위해 마킹만, 기록 안 함)
         # 새 버킷이면 기준점(봉 시작가·거래대금) 갱신
         if not _mk or _mk.get("bidx") != _bidx:
             mark[code] = {"bidx": _bidx, "px": px, "turn": turn or 0}
@@ -5949,7 +6000,12 @@ def check_a_grade_pullback(token, key, secret, now_kst, state, token_tg, chat_id
     if not ((9 * 60 + 15) <= m <= (15 * 60)) or sev == 2:
         return
     _kospi = _kospi_index_kis(token, key, secret)
-    if _kospi is not None and _kospi <= -1.0:          # 코스피 급락일 신규 단타 보류(퍼플렉시티 조건)
+    # [V25.65] 감사 결과 — check_oversold_bounce는 코스피 ≤-1.3%부터 '이때가 기회'로 활성화되는데,
+    # 이 함수는 -1.0%부터 '신규 단타 금지'로 멈춰서, -1.0~-1.3% 구간과 그 이하에서 두 함수가
+    # 동시에 정반대 메시지를 보낼 수 있었음. 같은 코스피 급락 기준선(-1.3%)으로 맞춤(퍼플렉시티
+    # 조건의 취지는 유지 — 급락 이후엔 '무작정 단타 신규진입'만 멈추고, 그 이하 구간은
+    # oversold_bounce의 엄격 게이트(대형주·수급확인 등) 통과분만 예외로 허용).
+    if _kospi is not None and _kospi <= -1.3:          # 코스피 급락일 신규 단타 보류(퍼플렉시티 조건)
         return
     today = now_kst.strftime("%Y%m%d")
     sent = state.get("a_pullback_sent", {})
@@ -5998,7 +6054,8 @@ def check_a_grade_pullback(token, key, secret, now_kst, state, token_tg, chat_id
                     _wave_mid = (((snap.get("high") or px) + (snap.get("low") or px)) / 2)
                     _zones = [z for z in (_prevclose, snap.get("open"), _wave_mid, snap.get("vwap")) if z]
                     _near = sum(1 for z in _zones if abs(px / z - 1) <= 0.015)
-                    if _near >= 2:                       # 지지존 2개↑ 겹침 확인
+                    # [V25.65] 눌림·반등 계열 5개 함수 중복알림 방지 — 오늘 다른 함수가 이 종목을 먼저 잡았으면 스킵
+                    if _near >= 2 and _claim_daily_signal(state, "pullback", cd, now_kst):
                         _stop = int(px * 0.98); _t1 = int(px * 1.03)
                         _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🔵재료T(테마)"
                         if send_telegram(token_tg, chat_id,
@@ -6060,7 +6117,7 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
             _disp = _ma20_disparity(token, key, secret, code, px)
         except Exception:
             pass
-        _overheat = ((chg is not None and chg >= 5.0) or (_disp is not None and _disp >= 7.0))
+        _overheat = ((chg is not None and chg >= 5.0) or (_disp is not None and _disp >= DISP_WARN))
         # [V16.9] 낙폭과대 급락주(떨어지는 칼) — 이격 -10%↓ + 당일 하락. 수급(+)이어도 추격 금지.
         _falling = (_disp is not None and _disp <= -10.0 and (chg or 0) < -1.0)
         _disp_txt = f" · 20MA 이격 {_disp:+.1f}%" if _disp is not None else ""
