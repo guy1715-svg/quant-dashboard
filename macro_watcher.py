@@ -4489,6 +4489,32 @@ def _pick_extra_score(token, key, secret, code, px, turn, ds):
     return delta, tag
 
 
+def _overnight_event_risk(gemini_key, now_kst):
+    """[V25.62] 사용자 요청(뉴스 소스 가이드 #6 이벤트 차단) — 밤사이(오늘 종가~익일 개장 09시)
+    미국 핵심 이벤트(FOMC·CPI·PPI·고용보고서·연준 고위인사 연설·초대형 기업 실적) 예정 여부를
+    구글검색 grounding으로 실제 확인. 종배(오버나이트) 확정픽 발송 전 게이트 — 있으면 확정픽 대신
+    관찰목록(그림자 로깅)으로 전환해 오버나이트 리스크를 피한다. 반환 (has_event, detail).
+    키 없음/검색 실패/미래착각 응답이면 보수적으로 (False, '') — 과도한 발송 억제 방지."""
+    if not gemini_key:
+        return False, ""
+    _today = now_kst.strftime("%Y-%m-%d(%a)")
+    _prompt = (f"오늘은 {_today}, 한국시간(KST) 기준이다. 지금부터 내일 한국 증시 개장 시각(오전 9시)까지 "
+               "사이에 아래 중 확정적으로 예정된 미국발 핵심 이벤트가 있는지 구글 검색으로 실제 확인해줘:\n"
+               "- FOMC 정례회의 결과·점도표 발표\n- 미국 CPI·PPI 발표\n- 미국 고용보고서(비농업고용지표)\n"
+               "- 파월 연준 의장 등 연준 고위인사의 예정된 공개 연설\n- 엔비디아 등 시가총액 최상위권 기업의 실적 발표\n\n"
+               "출력은 정확히 아래 한 줄 형식만(그 외 설명 금지):\n"
+               "이벤트: (있으면 '이벤트명 · HH:MM(한국시간)' 형식으로, 여러 개면 세미콜론으로 구분 / 확정된 게 없으면 '없음')")
+    _resp = _gemini_grounded(gemini_key, _prompt, diag=False)
+    if not _resp or _is_future_confused(_resp):
+        return False, ""
+    import re as _re5
+    _m = _re5.search(r"이벤트\s*[:：]\s*(.+)", _resp)
+    _txt = (_m.group(1) if _m else _resp.splitlines()[0]).strip()
+    if not _txt or _txt[:2] == "없음" or _txt in ("-", "無"):
+        return False, ""
+    return True, _txt[:120]
+
+
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
                         gemini_key=None, data_state="ok"):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
@@ -4789,7 +4815,10 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V25.42] 재료 미확인 원톱 강등 — 브리핑 겹침만으로 재료 없이 원톱 확정되던 문제(흥구석유式).
     #   강의 2강: 종배 핵심=재료 지속성. 재료 미확인(ng none)은 원톱 자격 없음 → 관망(분산 후보로는 잔존).
     _nograde_block = pick.get("ng") not in ("S", "A")
-    if _ai_bad or _supply_neg or _regime_block or _nograde_block:
+    # [V25.62] 사용자 요청 — 밤사이 FOMC·CPI 등 핵심 이벤트 예정이면 오버나이트 확정픽 자체를 만들지 않는다
+    # (재료가 아무리 좋아도 밤사이 방향이 이벤트에 뒤집힐 수 있음 → 확정픽 대신 관찰목록/그림자로만 전환).
+    _event_risk, _event_detail = _overnight_event_risk(gemini_key, now_kst)
+    if _ai_bad or _supply_neg or _regime_block or _nograde_block or _event_risk:
         _why = []
         if _ai_bad:
             _why.append("AI 부적합/악재")
@@ -4799,10 +4828,14 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
             _why.append("저갭 장세+무재료(갭 근거 없음)")
         if _nograde_block:
             _why.append("재료 미확인(오버나이트 근거 약함)")
+        if _event_risk:
+            _why.append(f"밤사이 핵심이벤트({_event_detail})")
         send_telegram(token_tg, chat_id,
                       f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
                       f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
-                      f"※ 기술적 셋업은 있으나 뉴스/수급이 반대 — 종배는 쉬는 게 정답")
+                      + (f"⚠️ 밤사이 이벤트 리스크 — 후보로만 저장, 익일 개장 후 재확인 권장\n" if _event_risk else "")
+                      + f"※ 기술적 셋업은 있으나 " + ("이벤트 리스크" if _event_risk and not (_ai_bad or _supply_neg) else "뉴스/수급이 반대")
+                      + " — 종배는 쉬는 게 정답")
         _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 강등돼도 검증 데이터는 남김
         _log_pick(now_kst, pick["code"], pick["name"], 30.0, pick["px"], nq, "dolpanty_shadow")  # 강등=그림자
         state["dolpanty_pick_day"] = today
