@@ -2626,6 +2626,12 @@ def test_buyback_scan(now_kst, token_tg, chat_id, dart_key, kis_key=None, kis_se
 _NEWS_S_KW = ("수주", "계약 체결", "공급 계약", "납품", "수출 계약", "어닝 서프라이즈",
               "예상 상회", "컨센 상회", "목표주가 상향", "목표가 상향", "투자의견 상향", "기술수출", "FDA 승인")
 _NEWS_A_KW = ("실적", "영업이익", "순이익", "흑자전환", "역대 최대", "호실적", "신약", "임상")
+# [V25.61] 근본원인 분석(9/16 갭상승 역분석) — 그날 갭상승 6종 중 다수(금호전기·한국첨단소재·가온전선 등)가
+#   '테마 재부각·정책 수혜' 류였는데, S/A는 '직접 계약/실적'만 인식해 시가배팅(09:00~09:10 라이브 스캔)의
+#   재료 게이트에서 전부 걸러지고 있었음(거래대금 상위엔 잡혔어도 재료 미확인으로 진입후보 탈락).
+#   S/A(확정 재료)와 분리된 별도 등급 'T'(테마·정책)로 신설 — 기존 S/A 로직·다른 소비처는 전혀 안 건드림.
+_NEWS_T_KW = ("테마", "수혜주", "클러스터", "정책 수혜", "정부 지원", "국책과제", "사업목적", "신규사업",
+              "사명변경", "상호변경", "업종변경", "밸류업", "예산 반영")
 _NEWS_NEG_KW = ("무산", "해지", "철회", "횡령", "배임", "상장폐지", "감자", "유상증자", "적자전환",
                 "소송", "불성실공시", "분식", "거래정지", "관리종목", "리콜")
 
@@ -2635,7 +2641,8 @@ _NEWS_GRADE_CACHE = {}   # [V25.23] {code_YYYYMMDD: (grade, is_bad)} — 일당 
 
 def _news_grade(code):
     """종목 뉴스 재료 등급 — 네이버 모바일 뉴스 제목 키워드. 반환 (grade, is_bad).
-    grade: 'S'/'A'/'none'. is_bad: 악재. [V25.23] 일당 캐시 — 조회 실패/빈응답이면 그날 성공한
+    grade: 'S'/'A'/'T'/'none'(S/A=직접 계약·실적 확정 재료, T=테마·정책 재부각 — 확정 재료보단 약하지만
+    실전에서 갭상승 다수를 차지). is_bad: 악재. [V25.23] 일당 캐시 — 조회 실패/빈응답이면 그날 성공한
     등급을 재사용(같은 날 판정이 A→none 뒤집히던 버그 방지). 성공 결과만 캐시."""
     _key = code + (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
     titles = []
@@ -2670,13 +2677,15 @@ def _news_grade(code):
             _res = ("S", False)
         elif any(k in blob for k in _NEWS_A_KW):
             _res = ("A", False)
+        elif any(k in blob for k in _NEWS_T_KW):
+            _res = ("T", False)
     # [V25.47] 등급 안정화 — 뉴스 피드가 하루 종일 갱신돼 등급이 S/A→none으로 튀던 문제(삼성전자 none→A→S 널뛰기).
     #   그날 이미 잡힌 등급은 '강등' 안 함(재료는 사라지지 않음). 업그레이드(none→A→S)만 허용. 악재는 sticky(하루 유지).
     _prev = _NEWS_GRADE_CACHE.get(_key)
     if (_prev and _prev[1]) or _res[1]:                       # 이전 or 이번이 악재 → 악재 유지
         _res = ("none", True)
     elif _prev:
-        _rank = {"S": 2, "A": 1, "none": 0}
+        _rank = {"S": 3, "A": 2, "T": 1, "none": 0}
         if _rank.get(_prev[0], 0) > _rank.get(_res[0], 0):    # 캐시가 더 강하면 강등 방지
             _res = _prev
     _NEWS_GRADE_CACHE[_key] = _res                            # 최강 등급 유지(강등 차단·업그레이드 허용)
@@ -3828,17 +3837,22 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
             _type = "갭하락 과매도"
             _stop = int((_low or px) * 0.985); _t1 = int(px * 1.025)
         else:
-            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) 中 하나 필수(무근거 갭 추격 배제)
+            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) or (테마·정책+수급/프로그램) 中 하나 필수
             _overseas = (_nq is not None and _nq >= 0.5)
-            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok)):
+            # [V25.61] T(테마·정책)등급은 S/A(직접계약·실적)보다 근거가 약해 단독으론 못 믿고
+            #   수급/프로그램 뒷받침이 있을 때만 진입후보로 인정(무근거 테마 추격 방지).
+            _is_theme = (_ng == "T") and (_prog_ok or _supply_ok)
+            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok) or _is_theme):
                 continue
             if px < _open * 0.99:                       # 시초가 이미 이탈 중이면 진입 안 함
                 continue
             _type = ("장전 신규뉴스" if _ng in ("S", "A") else
+                     "테마·정책 재부각" if _is_theme else
                      "해외발 동조" if _overseas else "시간외/테마 연장")
             _stop = int(_open * 0.985); _t1 = int(px * 1.02)
         _stoppct = (_stop / px - 1) * 100
-        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ("🎯브리핑" if _isbrief else "⚪재료미확인")
+        _mat = ("🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🔵재료T(테마)" if _ng == "T"
+                else ("🎯브리핑" if _isbrief else "⚪재료미확인"))
         _tags = _mat
         if _prog_ok:
             _tags += f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
