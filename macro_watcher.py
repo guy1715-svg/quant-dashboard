@@ -2260,6 +2260,12 @@ _DART_SKIP = ("증권발행실적", "발행실적보고", "증권신고서", "�
               "사업보고서", "분기보고서", "반기보고서", "주주총회", "주식명의개서", "권리행사")
 # 실적 공시(내용 판단 불가 → V18.8부터 발송 OFF, 노이즈 폭주 방지)
 _DART_PERF = ("영업(잠정)실적", "잠정실적", "매출액또는손익구조")
+# [V25.60] 임시주총(비정기)만 — 정기주총(매년 결산·이사선임 등 형식적)은 _DART_SKIP의 "주주총회"로
+# 계속 걸러짐. 실전 갭상승 역분석(9/16)에서 빛과전자 +8.0%가 "임시주총 안건(사명변경 등)으로
+# 전날 감지 가능했다"고 나왔는데, 기존엔 "주주총회"가 통째로 스킵 키워드라 이런 안건까지 다 놓치고 있었음.
+_DART_AGM_KW = ("임시주주총회소집",)
+_AGM_INTEREST_KW = ("사명변경", "상호변경", "사업목적", "액면분할", "무상증자", "유상증자",
+                    "인적분할", "물적분할", "최대주주변경", "경영권", "자기주식")
 
 
 def _sector_name(token, key, secret, code):
@@ -2339,6 +2345,32 @@ def _contract_detail(dart_key, rcept_no):
     return out
 
 
+def _agm_agenda_check(dart_key, rcept_no):
+    """[V25.60] 임시주총 소집공고 상세문서에서 '재료성 있는 안건'(사명변경·신규사업목적 추가·
+    액면분할·무상증자 등)이 포함돼 있는지 확인 — 그냥 감사위원 선임 같은 형식적 안건뿐이면 노이즈라
+    None 반환(스팸 방지). 발견 시 매칭된 안건 키워드들을 콤마로 이어붙여 반환."""
+    try:
+        import io as _io, zipfile as _zip, re as _re
+        r = requests.get("https://opendart.fss.or.kr/api/document.xml",
+                         params={"crtfc_key": dart_key, "rcept_no": rcept_no}, timeout=8)
+        if r.status_code != 200 or not r.content:
+            return None
+        try:
+            _zf = _zip.ZipFile(_io.BytesIO(r.content))
+            _raw = b"".join(_zf.read(n) for n in _zf.namelist())
+        except Exception:
+            _raw = r.content
+        try:
+            txt = _raw.decode("utf-8", "ignore")
+        except Exception:
+            txt = _raw.decode("cp949", "ignore")
+        txt = _re.sub(r"<[^>]+>", " ", txt)
+        _hits = [kw for kw in _AGM_INTEREST_KW if kw in txt]
+        return ", ".join(_hits) if _hits else None
+    except Exception:
+        return None
+
+
 def _dart_material_grade(dart_key, rcp, nm, stock, tok, key, secret):
     """[V25.57] 공시 재료등급 — 가격조건(과열·리스크오프·하락중 등)과 무관하게 '재료 자체가 좋은지'를
     항상 같은 기준으로 라벨링(🔥강한재료/🟢보통재료/🌱약한재료). 사용자 피드백 — "모든 공시가 다 관망이라
@@ -2413,9 +2445,13 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         _neg = any(k in _nm for k in _DART_NEG)
         _pos = any(k in _nm for k in _DART_POS)
         _perf = any(k in _nm for k in _DART_PERF)  # [V18.6] 진짜 잠정실적만(증권발행실적 오탐 제거)
-        # [V25.16] SKIP은 '호재·악재 키워드 없을 때만' 적용 — "단일판매ㆍ공급계약체결(자율공시)"가
+        # [V25.60] 임시주총(비정기)만 별도 처리 — "주주총회"가 _DART_SKIP에 있어 그동안 정기든 임시든
+        #   전부 무시됐는데, 실제 갭상승 역분석에서 임시주총 안건(사명변경 등)이 전날 감지 가능한
+        #   선행지표였던 사례 확인(9/16 빛과전자 +8.0%). 정기주총(결산·이사선임 등)은 계속 노이즈로 스킵.
+        _is_agm = any(k in _nm for k in _DART_AGM_KW)
+        # [V25.16] SKIP은 '호재·악재·임시주총 키워드 없을 때만' 적용 — "단일판매ㆍ공급계약체결(자율공시)"가
         #   '자율공시)'에 걸려 스킵되던 버그(삼성전기 1조722억 놓침). 진짜 재료면 자율공시여도 처리.
-        if any(k in _nm for k in _DART_SKIP) and not (_pos or _neg):
+        if any(k in _nm for k in _DART_SKIP) and not (_pos or _neg or _is_agm):
             sent[_rcp] = True
             continue
         # [V20.5 버그수정] 호재 키워드라도 '해지·철회·취소·무산·불발·중단' 붙으면 계약 무산 = 악재로 재분류
@@ -2426,7 +2462,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         # [V20.5] '매매거래정지해제'=거래재개(악재 아님) → 악재 오탐 제거
         if _neg and ("매매거래정지" in _nm) and ("해제" in _nm):
             _neg = False
-        if not (_neg or _pos or _perf):
+        if not (_neg or _pos or _perf or _is_agm):
             continue
         sent[_rcp] = True
         _url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={_rcp}"
@@ -2438,6 +2474,15 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             continue
         if _perf and not (_pos or _neg):
             continue                            # [V18.8] 실적 공시 발송 OFF — 내용판단 불가·노이즈 폭주 방지
+        if _is_agm and not (_pos or _neg):
+            _agenda = _agm_agenda_check(dart_key, _rcp)
+            if _agenda:                         # 사명변경·신규사업목적 등 재료성 안건만(형식적 안건은 조용히 무시)
+                send_telegram(token_tg, chat_id,
+                              f"{SIG_WATCH}\n📋 [임시주총 안건 감지] {_corp}({_stock})\n"
+                              f"안건: {_agenda}\n"
+                              f"※ 안건 통과 시 테마 재부각 가능 — 개회일 전후 거래대금·뉴스 확인\n{_url}")
+                print(f"[임시주총감지] {_corp}({_stock}) — {_agenda}")
+            continue
         # ── 호재 공시 → 우리 엔진으로 교차검증 후 '종목 선정' ──
         _mat_label, _mat_impact = _dart_material_grade(dart_key, _rcp, _nm, _stock, _tok, kis_key, kis_secret)
         _px = _chg = _turn = None
