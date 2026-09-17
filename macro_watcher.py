@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import time
+import atexit
 import argparse
 import datetime
 import tempfile
@@ -52,6 +53,42 @@ except ImportError:
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "macro_watcher_state.json")
+LOCK_FILE = os.path.join(BASE, "macro_watcher.lock")
+_LOCK_STALE_SEC = 600   # [V26.2] 사용자 제보 — 감시가 중복 실행돼 텔레그램이 두 번씩 오는 문제.
+                        # 윈도우 TerminateProcess(tools_gui "감시 중지")는 정상종료 훅을 안 태우므로
+                        # atexit을 믿을 수 없음 — '파일 존재'가 아니라 'mtime이 최근인가(하트비트)'로
+                        # 판정해야 강제종료 후에도 다음 실행이 스스로 회복됨(루프 최대주기 180초·
+                        # 촘촘구간 60초보다 충분히 넉넉하게 600초).
+
+
+def _acquire_watch_lock():
+    """감시 루프 진입 직전 1회 호출. 최근(600초 내) 갱신된 락이 있으면 이미 다른 감시가
+    켜져 있다고 보고 False. 락 파일을 못 쓰는 환경(권한 등)이면 중복차단보다 정상동작을 우선해 True."""
+    try:
+        if os.path.exists(LOCK_FILE) and (time.time() - os.path.getmtime(LOCK_FILE)) < _LOCK_STALE_SEC:
+            return False
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except OSError:
+        return True
+
+
+def _touch_watch_lock():
+    """루프 반복마다 호출 — 락 파일 mtime을 갱신해 '아직 살아있음'을 기록(하트비트)."""
+    try:
+        os.utime(LOCK_FILE, None)
+    except OSError:
+        pass
+
+
+def _release_watch_lock():
+    """정상 종료 시(atexit) 락 해제 — 강제종료(윈도우 TerminateProcess 등) 때는 호출 안 될 수 있으나
+    그 경우도 _LOCK_STALE_SEC 지나면 자동 회복되므로 안전."""
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
 # secrets.toml 탐색 후보: 프로젝트 .streamlit → 홈 .streamlit
 SECRETS_CANDIDATES = [
     os.path.join(BASE, ".streamlit", "secrets.toml"),
@@ -3176,6 +3213,12 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
     _nxt_seen = state.get("holdings_nxt_seen", {})
     if _nxt_seen.get("_day") != today:
         _nxt_seen = {"_day": today}
+    # [V26.2] 사용자 재제보 — "서산·머큐리 시세 조회 3회 연속 실패"가 16:04(NXT 애프터 시작 직후)에
+    # 다시 발생. 원인: _nxt_seen이 하루 통틀어 1개 키(code)만 썼는데, NXT 프리(8시)와 애프터(16~20시)는
+    # 서로 다른 세션이라 각자 개장 직후 호가가 비는 구간이 있음 — 아침에 프리에서 유효가를 한번
+    # 봤다는 이유로 저녁 애프터 개장 직후의 '아직 이 세션에서는 못 봄' 상태까지 유예 없이 바로
+    # 실패로 세고 있었음(세션 구분 없이 '오늘 한번이라도'로 뭉뚱그린 게 문제). code_세션 키로 분리.
+    _sesskey = "pre" if _pre else "aft"
     for s in hold:
         code = str(s.get("code", "")).zfill(6); name = s.get("name", code)
         avg = s.get("avg") or 0
@@ -3188,12 +3231,12 @@ def check_holdings(token, key, secret, now_kst, state, token_tg, chat_id):
         except Exception:
             px = None
         if px and _mrkt == "NX":
-            _nxt_seen[code] = True
-        # [실전투자 안전장치] 애프터/프리마켓(NX)에서 오늘 단 한번도 유효 시세를 못 봤다면
-        # NXT 비거래 종목(또는 거래량이 너무 없어 호가가 안 잡히는 경우)일 가능성이 높다 — 이건
-        # API 장애가 아니라 정상 상태이므로 실패로 카운트하지 않는다. 반대로 '오늘 이미 한번
-        # 이상 봤는데 갑자기 안 나옴'은 진짜 조회 장애일 확률이 높아 그대로 카운트한다.
-        if not px and _mrkt == "NX" and not _nxt_seen.get(code):
+            _nxt_seen[f"{code}_{_sesskey}"] = True
+        # [실전투자 안전장치] 이번 NXT 세션(프리 또는 애프터, 서로 별개)에서 단 한번도 유효 시세를
+        # 못 봤다면 NXT 비거래 종목이거나 세션 개장 직후라 호가가 아직 안 잡히는 경우일 가능성이
+        # 높다 — 이건 API 장애가 아니라 정상 상태이므로 실패로 카운트하지 않는다. 반대로 '이번
+        # 세션에서 이미 한번 이상 봤는데 갑자기 안 나옴'은 진짜 조회 장애일 확률이 높아 그대로 카운트.
+        if not px and _mrkt == "NX" and not _nxt_seen.get(f"{code}_{_sesskey}"):
             continue
         if not px:
             _fe = _hf.get(code, {"n": 0, "warned_ts": 0})
@@ -7067,10 +7110,21 @@ def main():
           f"DART공시 {'ON' if dart_key else 'OFF(키없음)'} · "
           f"저녁뉴스 {'ON' if (naver_id and naver_secret) else 'OFF(네이버키없음)'}"
           f"{'·AI' if gemini_key else '·헤드라인만'}")
+    # [V26.2] 감시 중복 실행 방지 — 사용자 제보("메시지가 두 번씩 온다") 반영. GUI에서 이미 켜진 걸
+    # 모르고 또 켜거나, 콘솔 직접 실행 + GUI 둘 다 켜진 경우를 차단(같은 알림을 두 프로세스가 각자 보냄).
+    if not _acquire_watch_lock():
+        _dup_msg = (f"⚠️ 감시 중복 실행 감지 — 이미 다른 감시 프로세스가 켜져 있어 이번 실행은 시작하지 않습니다.\n"
+                    f"실제로는 하나도 안 켜져 있는데 계속 이 메시지가 뜨면 {os.path.basename(LOCK_FILE)} 파일을 지우고 다시 시작하세요.")
+        print(_dup_msg)
+        send_telegram(token_tg, chat_id, _dup_msg)
+        sys.exit(1)
+    atexit.register(_release_watch_lock)
+
     send_telegram(token_tg, chat_id,
                   f"📡 감시 시작 — 국면 개선·전조·A급 알림 대기중\n수급 감시 {'ON' if kis_on else 'OFF(KIS키 없음)'}")
 
     while True:
+        _touch_watch_lock()
         try:
             st = load_state()
             now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
