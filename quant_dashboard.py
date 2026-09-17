@@ -518,6 +518,33 @@ def _git_sync_journal(raw):
         st.warning(f"⚠️ GitHub 반영 실패: {type(_e).__name__}")
 
 
+def _ai_journal_draft(pf):
+    """[사용자 요청] "아직 그정도가 아니야 — AI가 넣게 해줘" 반영 — 선택한 오늘 신호에 대해
+    Gemini(구글검색 grounding, macro_watcher._gemini_grounded 재사용)로 분석저널 초안
+    (사건/전이경로/산업영향/기업연결/반대근거)을 생성. 검증 안 된 AI 추정이므로 호출부에서
+    항상 경고 문구를 같이 표시하고, 일반 텍스트박스에 채워 넣어 저장 전 수정 가능하게 한다.
+    반환 (draft_dict 또는 None, 에러메시지 또는 None)."""
+    gemini_key = mw.read_gemini_key()
+    if not gemini_key:
+        return None, "Gemini 키 없음 — AI 초안 생성 불가(secrets에 gemini_api_key 설정 필요)"
+    prompt = (
+        f"{pf.get('name', '')}({pf.get('code', '')}) 종목에 대해 '{pf.get('kind', '')}' 신호가 오늘 "
+        f"{pf.get('t', '')}에 {int(pf.get('px') or 0):,}원에서 발생했다. 구글 검색으로 이 종목의 최근 "
+        "실제 뉴스·공시·이슈를 확인한 뒤, 아래 5개 항목을 정확히 이 형식으로만 작성해줘(각 항목 "
+        "1~2문장, 줄바꿈 없이 한 줄로, 검색으로 확인 안 되면 '확인 안 됨'이라고 써 — 지어내지 마):\n"
+        "사건: \n전이경로: \n산업영향: \n기업연결: \n반대근거: ")
+    resp = mw._gemini_grounded(gemini_key, prompt, diag=False)
+    if not resp:
+        return None, "AI 응답 실패 — 잠시 후 다시 시도하거나 직접 입력하세요"
+    import re as _re
+    out = {}
+    for _k, _label in (("event", "사건"), ("transmission", "전이경로"), ("industry", "산업영향"),
+                        ("company", "기업연결"), ("counter", "반대근거")):
+        _m = _re.search(rf"{_label}\s*[:：]\s*(.+)", resp)
+        out[_k] = _m.group(1).strip() if _m else ""
+    return out, None
+
+
 def render_journal():
     st.caption("종목+판정만 고르고 바로 저장하셔도 됩니다 — 나머지 칸은 전부 선택사항입니다. "
                "자세히 적고 싶을 때는 사건 → 전이경로 → 산업 → 기업 → 반대근거 → 가격 순서로 채우면 "
@@ -540,20 +567,39 @@ def render_journal():
     _stock_default = f"{_pf['name']}({_pf['code']})" if _pf else ""
     _price_default = (f"{_pf['kind']} 신호 · {_pf['t']} · 진입가 {_pf['px']:,}" if _pf else "")
 
+    # [사용자 요청] "나는 아직 그정도가 아니야 — AI가 넣게 해줘" — 사건/전이경로/산업/기업/반대근거를
+    # Gemini(구글검색 grounding)로 초안 생성. 검증 안 된 추정이라 항상 경고 문구를 같이 보여주고,
+    # 일반 텍스트박스에 채워 넣어 저장 전 사용자가 직접 수정할 수 있게 한다(그대로 저장 강제 안 함).
+    _ai_key = f"ai_draft_{_picked}"
+    if _pf:
+        c_ai1, c_ai2 = st.columns([1, 3])
+        if c_ai1.button("🤖 AI로 초안 채우기", key=f"ai_btn_{_picked}", use_container_width=True):
+            with st.spinner("Gemini가 초안 작성 중... (구글 검색으로 사실 확인 중)"):
+                _draft, _err = _ai_journal_draft(_pf)
+            if _draft:
+                st.session_state[_ai_key] = _draft
+            elif _err:
+                st.session_state.pop(_ai_key, None)
+                c_ai2.error(_err)
+        if _ai_key in st.session_state:
+            c_ai2.caption("⚠️ AI가 생성한 초안입니다 — 검증되지 않았으니 저장 전에 꼭 확인·수정하세요.")
+    _ai_draft = st.session_state.get(_ai_key, {})
+
     with st.form("journal_add", clear_on_submit=True):
         c1, c2 = st.columns(2)
         stock = c1.text_input("종목(코드/이름)", value=_stock_default, key=f"j_stock_{_picked}")
         source = c2.selectbox("출처", ["내 시스템 신호", "외부 글/리딩방/뉴스레터", "직접 발굴"],
                                key=f"j_source_{_picked}")
-        event = st.text_area("사건 — 무슨 일이 실제로 발생했나(공시/공식발표/기사/추정 구분)", height=60,
-                              key=f"j_event_{_picked}")
-        transmission = st.text_area("전이경로 — 사건이 금리/환율/유가/수요/투자 중 무엇을 바꾸나", height=60,
-                                     key=f"j_trans_{_picked}")
-        industry = st.text_area("산업 영향 — 어떤 산업의 주문·판매량·원가·마진·투자가 바뀌나", height=60,
-                                 key=f"j_ind_{_picked}")
-        company = st.text_area("기업 연결 — 왜 이 회사가 수혜/피해인가(제품·고객·매출비중)", height=60,
-                                key=f"j_comp_{_picked}")
-        counter = st.text_area("반대 근거 — 이 논리가 틀릴 수 있는 이유", height=60, key=f"j_counter_{_picked}")
+        event = st.text_area("사건 — 무슨 일이 실제로 발생했나(공시/공식발표/기사/추정 구분)",
+                              value=_ai_draft.get("event", ""), height=60, key=f"j_event_{_picked}")
+        transmission = st.text_area("전이경로 — 사건이 금리/환율/유가/수요/투자 중 무엇을 바꾸나",
+                                     value=_ai_draft.get("transmission", ""), height=60, key=f"j_trans_{_picked}")
+        industry = st.text_area("산업 영향 — 어떤 산업의 주문·판매량·원가·마진·투자가 바뀌나",
+                                 value=_ai_draft.get("industry", ""), height=60, key=f"j_ind_{_picked}")
+        company = st.text_area("기업 연결 — 왜 이 회사가 수혜/피해인가(제품·고객·매출비중)",
+                                value=_ai_draft.get("company", ""), height=60, key=f"j_comp_{_picked}")
+        counter = st.text_area("반대 근거 — 이 논리가 틀릴 수 있는 이유",
+                                value=_ai_draft.get("counter", ""), height=60, key=f"j_counter_{_picked}")
         price_note = st.text_area("주가 반응 — 당일 상승률·이격도·지지선·수급·지금 가격에서 손익비",
                                    value=_price_default, height=60, key=f"j_price_{_picked}")
         c3, c4 = st.columns([1, 2])
