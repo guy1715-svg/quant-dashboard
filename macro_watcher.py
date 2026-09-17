@@ -2512,6 +2512,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             continue
         # ── 호재 공시 → 우리 엔진으로 교차검증 후 '종목 선정' ──
         _mat_label, _mat_impact = _dart_material_grade(dart_key, _rcp, _nm, _stock, _tok, kis_key, kis_secret)
+        _lvl = {"🔥강한재료": "S", "🟢보통재료": "A", "🌱약한재료": "T"}.get(_mat_label, "A")
         _px = _chg = _turn = None
         if _tok:
             try:
@@ -2520,7 +2521,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
                 pass
         if not _px:                             # 장외/거래 전 → 선점 후보(재료만)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n👀 [{_mat_label}·공시 관찰·선점] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n👀 [{_mat_label}·판정C·공시 관찰·선점] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact}\n"
                           f"🔥 장외/거래 전 — 개장 후 거래대금 붙는지 확인 · 아직 매수 아님\n{_url}")
             continue
@@ -2544,7 +2545,7 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
             _big = " · 대형주(반전 탄력↑)" if (_mc and _mc >= 10000) else ""
             _bstop = int(_px * 0.97)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n🔄 [{_mat_label}·자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
+                          f"{SIG_WATCH}\n🔄 [{_mat_label}·판정B·자사주 반전 주목] {_corp}({_stock}) — 급락 중 자기주식취득 공시\n"
                           f"{_st}{_dtxt}{_big}\n"
                           f"📚 복기: 급락 대형주 자사주 매입은 기타법인 수급으로 V자 반전 동력(8/25·9/3 사례)\n"
                           f"※ 저가 분할 관찰 · 손절 {_bstop:,}(−3%) · 지수/미선물 추가급락 지속시 보류 · 확인 후 진입\n{_url}")
@@ -2553,33 +2554,37 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         # [V20.5 버그2] 거래대금 0/미미(50억↓) = 거래 안 붙음 → 강매수 금지, '관찰'로만(장전 0억 강매수 오발 차단)
         if (not _turn) or _turn < 5_000_000_000:
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n👀 [{_mat_label}·공시 관찰·선점] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n👀 [{_mat_label}·판정C·공시 관찰·선점] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact}\n"
                           f"{_st}{_dtxt} · 거래대금 {((_turn or 0)/1e8):,.0f}억(미형성/미미)\n"
                           f"🔥 거래 붙는지 확인 후 — 아직 매수 아님\n{_url}")
             continue
         _overheat = ((_chg or 0) >= 10.0) or (_disp is not None and _disp >= DISP_BLOCK)
         if _overheat:                            # 이미 급등 → 추격 금지
+            _v = _verdict_tag(_lvl, price_bad=True)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [{_mat_label}·공시 과열] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·판정{_v}·공시 과열] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 이미 급등, 추격 금지·눌림 대기\n{_url}")
             continue
         # [V20.5 버그3] 리스크오프(sev2) = 강매수 억제(모순 방지) — 관망 정보만
         if sev == 2:
+            _v = _verdict_tag(_lvl, price_bad=True)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [{_mat_label}·리스크오프 관망] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·판정{_v}·리스크오프 관망] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 매크로 리스크오프라 강매수 보류(재료만 참고)\n{_url}")
             continue
         # [V20.5 버그4] 하락과대(-3%↓)·낙폭과대(이격 -15%↓) = 떨어지는 칼 → 강매수 금지, 관망
         if ((_chg or 0) <= -3.0) or (_disp is not None and _disp <= -15.0):
+            _v = _verdict_tag(_lvl, price_bad=True)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [{_mat_label}·하락중 관망] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·판정{_v}·하락중 관망] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact}\n{_st}{_dtxt} — 호재나 하락/낙폭과대 중, 추격 금지·반등 확인 후\n{_url}")
             continue
         # [V25.57] 재료등급이 '약함'(연매출임팩트<5% 또는 대형주라 임팩트작음)인 계약공시는 강신호 아님 — 관망
         if _mat_label == "🌱약한재료" and any(k in _nm for k in ("공급계약", "단일판매", "수주")):
+            _v = _verdict_tag(_lvl, price_bad=False)
             send_telegram(token_tg, chat_id,
-                          f"{SIG_WATCH}\n📢 [{_mat_label}·임팩트 약함 관망] {_corp}({_stock})\n"
+                          f"{SIG_WATCH}\n📢 [{_mat_label}·판정{_v}·임팩트 약함 관망] {_corp}({_stock})\n"
                           f"공시: {_nm}{_mat_impact} — 강신호 아님(참고만)\n{_st}{_dtxt}\n{_url}")
             continue
         # [V23.5] 거래대금 랭킹은 '태그'로만 — 공시는 선행 재료라 아직 거래대금 안 붙은 게 정상.
@@ -2590,8 +2595,9 @@ def check_dart_disclosures(now_kst, state, token_tg, chat_id, dart_key, kis_key=
         # 🎯 진입후보 선정 — 호재 + 거래대금 50억↑ + 비과열 + 비하락 + 매크로 양호 + 임팩트 유효
         _stop = int(_px * 0.98); _t1 = int(_px * 1.03)
         _pull = _pullback_levels(_tok, kis_key, kis_secret, _stock, _px, _chg) if (_disp is not None and _disp >= DISP_WARN) else ""
+        _v = _verdict_tag(_lvl, price_bad=False)
         send_telegram(token_tg, chat_id,
-                      f"{SIG_BUY_STRONG}\n🎯 [{_mat_label}·공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
+                      f"{SIG_BUY_STRONG}\n🎯 [{_mat_label}·판정{_v}·공시 발굴 진입후보]{_elite_tag(_tok, kis_key, kis_secret, _stock)} {_corp}({_stock})\n"
                       f"공시: {_nm} (호재·선행 재료)\n"
                       f"{_st}{_dtxt} · 거래대금 {_turn/1e8:,.0f}억{_mat_impact} · {_lead_tag} · 비과열 ✅\n"
                       f"진입 {_px:,} · 손절 {_stop:,}(−2%) · 1차익절 {_t1:,}(+3%){_pull}\n"
@@ -2717,6 +2723,23 @@ def _news_grade(code):
             _res = _prev
     _NEWS_GRADE_CACHE[_key] = _res                            # 최강 등급 유지(강등 차단·업그레이드 허용)
     return _res
+
+
+def _verdict_tag(level, price_bad=False, is_bad=False, quant_basis=False):
+    """[V26.1] 사용자 학습 프레임(사건→전이경로→기업→가격, 재료 직접성 + 가격 자리로 A~D 판정) 반영 —
+    텔레그램 신호 메시지에 한 글자 판정을 붙여 대시보드 분석저널의 '판정' 필드와 바로 대조 가능하게 함.
+    level: 재료 직접성 — _news_grade와 동일 체계(S/A=직접 계약·실적, T=테마·정책, none=재료 미확인).
+    price_bad: 가격 자리 미충족(과열 추격·낙폭과대 등 진입 타이밍 문제).
+    quant_basis: 뉴스 재료는 없지만 수급·선물동조 등 정량적 근거는 있는 경우(level=none일 때만 의미).
+    A: 직접재료(S/A) + 가격자리 양호   B: 직접재료(S/A)+가격자리 미충족, 또는 테마(T)+가격자리 양호
+    C: 테마(T)+가격자리 미충족, 또는 재료 미확인이나 정량 근거는 있음   D: 악재 또는 근거 없음."""
+    if is_bad:
+        return "D"
+    if level in ("S", "A"):
+        return "B" if price_bad else "A"
+    if level == "T":
+        return "C" if price_bad else "B"
+    return "C" if quant_basis else "D"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3914,8 +3937,12 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
             _tags += " · 💧수급유입"
         if _nq is not None:
             _tags += f" · 美선물 {_nq:+.1f}%"
+        # [V26.1] 판정 태그 — ng S/A는 직접재료, T(테마)는 수급/프로그램 뒷받침 확인된 경우만 여기 도달,
+        # 브리핑은 이미 팩트체크 거친 픽이라 직접재료급, 나머지(해외발 동조)는 뉴스 없이 정량 근거만 있는 경우.
+        _vlvl = "S" if _ng == "S" else "A" if (_ng == "A" or _isbrief) else "T" if _ng == "T" else "none"
+        _v = _verdict_tag(_vlvl, quant_basis=(_vlvl == "none"))
         if send_telegram(token_tg, chat_id,
-                         f"{SIG_BUY}\n🌅 [시가배팅·{_type}] {nm} {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
+                         f"{SIG_BUY}\n🌅 [시가배팅·판정{_v}·{_type}] {nm} {px:,}({(chg or 0):+.1f}%) · 거래대금 {(turn or 0)/1e8:,.0f}억\n"
                          f"{_tags}\n"
                          f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·시초가 이탈시) · 1차익절 {_t1:,}\n"
                          f"⚠️ 첫 슈팅 분할익절 · 물타기 금지 · 시초가 이탈 후 회복 실패면 즉시 손절(스윙 전환 금지)"):
@@ -4576,6 +4603,68 @@ def _overnight_event_risk(gemini_key, now_kst):
     return True, _txt[:120]
 
 
+def check_macro_event_brief(now_kst, state, token_tg, chat_id, gemini_key, kis_key=None, kis_secret=None, kis_on=True):
+    """[V26.1] 사용자 요청 — FOMC/CPI 등 예정 이벤트를 '동결=매수·인상=매도' 식 이분법으로 보지 말고
+    결과×가이던스 조합의 조건부 대응으로 준비하라는 학습 프레임 반영. 새로 스캔하지 않고 기존
+    _overnight_event_risk(오버나이트 종배 게이트용으로 이미 만든 이벤트 감지)를 그대로 재사용해,
+    감지되면 마감복기 시점(15:35~15:50)에 하루 1회 대응 체크리스트를 미리 발송. 예측이 아니라
+    '무엇을 확인해야 하는지'만 안내 — check_dolpanty_pick은 이 이벤트를 이미 오버나이트 확정픽
+    차단 사유로 쓰고 있으므로(중복 로직 아님, 같은 감지를 사용자 안내용으로 한 번 더 소비).
+    [V26.2] 사용자 요청("분석→종목선정까지 물 흐르듯") — 다만 거시 서사만으로 새 종목을 찍어내는
+    예측 로직은 추가하지 않는다(구조적으로 불가능하다고 이미 여러 번 확인됨). 대신 기존에 검증된
+    거래대금랭킹(_volume_rank)+재료등급(_news_grade)+비과열(_ma20_disparity)을 그대로 재사용해
+    '오늘 이미 조건을 충족한 종목' 스냅샷만 붙인다 — 최종 매수 확정은 여전히 종배픽/시가배팅의
+    별도 게이트를 통과해야 한다(이 스냅샷은 참고용 관찰 목록일 뿐 확정픽이 아님)."""
+    if not gemini_key:
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((15 * 60 + 35) <= m <= (15 * 60 + 50)):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("macro_event_brief_day") == today:
+        return
+    state["macro_event_brief_day"] = today          # 이벤트 없어도 오늘은 1회 확인 완료(중복조회 방지)
+    has_event, detail = _overnight_event_risk(gemini_key, now_kst)
+    if not has_event:
+        return
+    _cand_txt = ""
+    if kis_on and kis_key and kis_secret:
+        try:
+            _tok = kis_token(kis_key, kis_secret)
+            _cands = []
+            for s in _volume_rank(_tok, kis_key, kis_secret, top=25):
+                _ng, _nbad = _news_grade(s["code"])
+                if _nbad or _ng not in ("S", "A", "T"):
+                    continue
+                _disp = _ma20_disparity(_tok, kis_key, kis_secret, s["code"], s["px"])
+                if _disp is not None and _disp >= DISP_WARN:
+                    continue
+                _cands.append((s, _ng))
+                if len(_cands) >= 3:
+                    break
+            if _cands:
+                _lines = "\n".join(
+                    f"  · {s['name']}({s['code']}) {s['px']:,}({s['chg']:+.1f}%) · 재료{ng} · "
+                    f"거래대금 {s['turnover']/1e8:,.0f}억"
+                    for s, ng in _cands)
+                _cand_txt = (f"\n\n📋 오늘 조건 충족(거래대금 상위+재료+비과열) 후보:\n{_lines}\n"
+                             "※ 확정픽 아님(예측 아님) — 사건→산업→기업까지 연결한 참고 스냅샷일 뿐, "
+                             "최종 매수는 종배픽/시가배팅의 별도 확정 게이트를 통과해야 함")
+        except Exception:
+            pass
+    _msg = (f"🗓️ [이벤트 브리핑] 밤사이 핵심 일정 감지: {detail}\n\n"
+            "결과 하나로 방향을 단정하지 말고 아래 4가지를 같이 확인하세요(동결=매수·인상=매도 이분법 금지):\n"
+            "① 정책결정: 동결/25bp/50bp — 시장 예상과 일치했나?\n"
+            "② 성명서: 물가·고용·위험 요인 표현이 강화됐나 완화됐나?\n"
+            "③ 점도표·전망(있으면): 향후 경로가 예상보다 매파적/비둘기적인가?\n"
+            "④ 시장 반응: 10년물 금리·달러·나스닥이 같은 방향으로 안정되는지\n\n"
+            "※ 제목보다 ④가 실제 대응 신호 — 종배 오버나이트 확정픽은 이 이벤트 때문에 이미 관망/그림자로 "
+            "전환된 상태이니, 익일 개장 후 방향 확인하고 대응하세요."
+            + _cand_txt)
+    if send_telegram(token_tg, chat_id, _msg):
+        print(f"[이벤트브리핑] 발송 완료 — {detail}")
+
+
 def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, nq=None, force=False,
                         gemini_key=None, data_state="ok"):
     """[V20.4] 종가베팅 픽 — 거래대금 상위 중 20MA↑·비과열(등락<7·이격<7)·악재無 자동 선정.
@@ -4950,8 +5039,11 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
                             f"{c['px']:,}({c['chg']:+.1f}%)"
                             for c in div)) if div else "\n🌒 분산: 다른 섹터 후보 없음(원톱만)"
     _prank = f" {pick['theme_rank']}" if pick.get("theme_rank") else ""   # 원톱 테마 순위
+    # [V26.1] 판정 태그 — 여기 도달했다는 건 이미 _nograde_block(ng not in S/A)에서 걸러진 뒤라 ng는 항상 S/A,
+    # 후보 스코어링 자체가 '비과열(이격<7)'을 요구하므로 price_bad=False.
+    _v = _verdict_tag(pick.get("ng"), price_bad=False)
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트·판정{_v}] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}"
                      + (f" · {pick['xtag']}" if pick.get("xtag") else "")
@@ -7437,6 +7529,7 @@ def main():
                 send_daily_review(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on, gemini_key)
                 weekly_meta_review(now, st, token_tg, chat_id, gemini_key)
                 weekly_signal_report(now, st, token_tg, chat_id, kis_key, kis_secret, kis_on)
+                check_macro_event_brief(now, st, token_tg, chat_id, gemini_key)
             except Exception as _je:
                 print("일지/복기 발송 오류:", _je)
 
