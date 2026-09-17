@@ -479,6 +479,103 @@ def render_home():
 
 
 # ══════════════════════════════════════════
+# 탭 — 📝 분석 저널 (사용자 학습 프레임 반영 — 사건→전이경로→기업→가격→판정 기록소)
+# macro_watcher.py의 판정(A/B/C/D) 태그와 동일 체계 — 여기 기록은 신호 계산에 전혀 관여하지 않는
+# 순수 CRUD(재구현 아님). GitHub 자동반영은 관심종목(_git_sync_watchlist)과 동일 패턴.
+# ══════════════════════════════════════════
+JOURNAL_FILE = os.path.join(BASE, "analysis_journal.json")
+_VERDICT_HELP = {
+    "A": "직접재료(공시·계약·실적) + 가격자리 양호",
+    "B": "논리는 타당하나 직접성·시점·가격 중 하나 부족",
+    "C": "산업뉴스·테마 기대 수준(아직 확인 전)",
+    "D": "기사 재탕·수혜 추정·과열 추격",
+}
+
+
+def _load_journal():
+    raw = _read_json_safe(JOURNAL_FILE, {"entries": []})
+    entries = raw.get("entries") or []
+    return raw, entries
+
+
+def _git_sync_journal(raw):
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 기록은 이 배포판에만 남습니다.")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/analysis_journal.json"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(raw, ensure_ascii=False, indent=2)
+        body = {"message": f"분석저널 갱신(대시보드 자동커밋) {datetime.now().strftime('%m/%d %H:%M')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code not in (200, 201):
+            st.warning(f"⚠️ GitHub 반영 실패({p.status_code})")
+    except Exception as _e:
+        st.warning(f"⚠️ GitHub 반영 실패: {type(_e).__name__}")
+
+
+def render_journal():
+    st.caption("사건 → 전이경로 → 산업 → 기업 → 반대근거 → 가격 순서로 채우면, 마지막에만 '판정'을 "
+               "정하게 됩니다 — 결론부터 정하고 근거를 끼워맞추는 습관을 막기 위한 순서입니다.")
+    raw, entries = _load_journal()
+
+    with st.form("journal_add", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        stock = c1.text_input("종목(코드/이름)")
+        source = c2.selectbox("출처", ["내 시스템 신호", "외부 글/리딩방/뉴스레터", "직접 발굴"])
+        event = st.text_area("사건 — 무슨 일이 실제로 발생했나(공시/공식발표/기사/추정 구분)", height=60)
+        transmission = st.text_area("전이경로 — 사건이 금리/환율/유가/수요/투자 중 무엇을 바꾸나", height=60)
+        industry = st.text_area("산업 영향 — 어떤 산업의 주문·판매량·원가·마진·투자가 바뀌나", height=60)
+        company = st.text_area("기업 연결 — 왜 이 회사가 수혜/피해인가(제품·고객·매출비중)", height=60)
+        counter = st.text_area("반대 근거 — 이 논리가 틀릴 수 있는 이유", height=60)
+        price_note = st.text_area("주가 반응 — 당일 상승률·이격도·지지선·수급·지금 가격에서 손익비", height=60)
+        c3, c4 = st.columns([1, 2])
+        verdict = c3.selectbox("판정", ["A", "B", "C", "D"])
+        c4.caption(_VERDICT_HELP[verdict])
+        follow_up = st.text_input("다음 확인 사항(언제·무엇을 다시 볼지)")
+        submitted = st.form_submit_button("💾 저장", use_container_width=True)
+        if submitted and stock.strip():
+            entries.append({
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "user": _current_username(),
+                "stock": stock.strip(), "source": source, "event": event.strip(),
+                "transmission": transmission.strip(), "industry": industry.strip(),
+                "company": company.strip(), "counter": counter.strip(),
+                "price_note": price_note.strip(), "verdict": verdict, "follow_up": follow_up.strip(),
+            })
+            raw["entries"] = entries
+            mw._atomic_write_json(JOURNAL_FILE, raw)
+            _git_sync_journal(raw)
+            st.success(f"{stock} 기록 저장됨")
+            st.rerun()
+
+    if not entries:
+        st.info("아직 기록된 분석이 없습니다.")
+        return
+
+    st.subheader(f"📚 기록 ({len(entries)}건, 최신순)")
+    _vfilter = st.multiselect("판정 필터", ["A", "B", "C", "D"], default=["A", "B", "C", "D"])
+    _shown = [e for e in reversed(entries) if e.get("verdict") in _vfilter]
+    for i, e in enumerate(_shown):
+        _badge = {"A": "🟢A", "B": "🔵B", "C": "🟠C", "D": "⚪D"}.get(e.get("verdict"), "?")
+        with st.expander(f"{_badge} {e.get('stock','')} · {e.get('ts','')} · {e.get('source','')}"):
+            st.markdown(f"**사건**: {e.get('event') or '—'}")
+            st.markdown(f"**전이경로**: {e.get('transmission') or '—'}")
+            st.markdown(f"**산업 영향**: {e.get('industry') or '—'}")
+            st.markdown(f"**기업 연결**: {e.get('company') or '—'}")
+            st.markdown(f"**반대 근거**: {e.get('counter') or '—'}")
+            st.markdown(f"**주가 반응**: {e.get('price_note') or '—'}")
+            if e.get("follow_up"):
+                st.markdown(f"**다음 확인**: {e['follow_up']}")
+
+
+# ══════════════════════════════════════════
 # 탭 2 — 📊 성과 분석  (_analyze_history / _analyze_exit_timing과 동일 로직을 화면용으로 재현)
 # ══════════════════════════════════════════
 
@@ -833,7 +930,7 @@ def render_settings():
 # ══════════════════════════════════════════
 tabs = st.tabs(["🏠 오늘 현황", "📊 성과 분석", "🌙 시장 복기", "💼 보유종목",
                 "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너",
-                "🔬 종목 분석기", "⚙️ 설정·진단"])
+                "🔬 종목 분석기", "📝 분석 저널", "⚙️ 설정·진단"])
 
 with tabs[0]:
     render_home()
@@ -852,6 +949,8 @@ with tabs[6]:
 with tabs[7]:
     render_stock_analyzer()
 with tabs[8]:
+    render_journal()
+with tabs[9]:
     render_settings()
 
 st.divider()
