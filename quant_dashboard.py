@@ -414,10 +414,9 @@ _BRIEFING_STYLE = {
 
 
 def render_home():
-    today = datetime.now().strftime("%Y-%m-%d")
-    scorecard = _read_json_safe(mw.SCORECARD_FILE, [])
-    if not isinstance(scorecard, list):
-        scorecard = []
+    # [클라우드 배포 확인 후 수정] 로컬 signal_scorecard.json 대신 GitHub data 브랜치 snapshot.json의
+    # signal_log(오늘치, 이미 KST 기준) 사용 — 클라우드 대시보드는 로컬 파일에 접근 불가.
+    today_rows = _today_signal_log()
 
     # ── 최상단: AI 브리핑 신호등을 눈에 띄는 카드로 — 오늘의 결론부터 ──
     import time as _t
@@ -436,7 +435,6 @@ def render_home():
                    "'데이터 확인 필요'로 표시됩니다 — 환율·외국인수급 2줄만 실데이터입니다.")
 
     c1, c2, c3 = st.columns(3)
-    today_rows = [r for r in scorecard if r.get("date") == today]
     c1.metric("오늘 발생 신호", f"{len(today_rows)}건")
     holdings = mw._read_holdings()
     c2.metric("보유종목", f"{len(holdings)}종")
@@ -527,18 +525,17 @@ def render_journal():
     raw, entries = _load_journal()
 
     # [사용자 피드백 반영] "이걸 내가 다 넣으라고?" — 오늘 이미 발생한 신호를 골라서 종목·가격 정보를
-    # 자동으로 채워주면 타이핑 부담이 크게 줄어든다. signal_scorecard.json은 모든 신호 함수가
-    # 공통으로 쌓는 파일이라 새로 만들 것 없이 그대로 재사용.
-    _today_str = datetime.now().strftime("%Y-%m-%d")
-    _scorecard = _read_json_safe(mw.SCORECARD_FILE, [])
-    if not isinstance(_scorecard, list):
-        _scorecard = []
-    _today_signals = sorted((r for r in _scorecard if r.get("date") == _today_str),
-                             key=lambda r: r.get("t", ""), reverse=True)
+    # 자동으로 채워주면 타이핑 부담이 크게 줄어든다. [클라우드 배포 확인 후 수정] 이 대시보드는
+    # 주소로 접속하는 클라우드 배포판이라 로컬 signal_scorecard.json에 직접 접근 불가 — 감시가 이미
+    # GitHub data 브랜치에 올리는 snapshot.json의 signal_log를 대신 읽는다(_today_signal_log).
+    _today_signals = sorted(_today_signal_log(), key=lambda r: r.get("t", ""), reverse=True)
     _opt_labels = ["✍️ 직접 입력"] + [
         f"{r.get('t', '')} · {r.get('name', '')}({r.get('code', '')}) · {r.get('kind', '')}"
         for r in _today_signals]
     _picked = st.selectbox("오늘 신호에서 자동 채우기(선택)", _opt_labels)
+    if len(_opt_labels) == 1:
+        st.caption("ℹ️ 오늘 신호가 아직 없거나, GitHub 연동(data 브랜치 snapshot.json) 설정이 안 되어 "
+                   "목록이 비어있을 수 있습니다 — 없어도 종목명은 직접 입력해서 저장 가능합니다.")
     _pf = _today_signals[_opt_labels.index(_picked) - 1] if _picked != "✍️ 직접 입력" else None
     _stock_default = f"{_pf['name']}({_pf['code']})" if _pf else ""
     _price_default = (f"{_pf['kind']} 신호 · {_pf['t']} · 진입가 {_pf['px']:,}" if _pf else "")
@@ -781,6 +778,42 @@ def _gh_token():
         return os.environ.get("GITHUB_TOKEN", "")
 
 
+# ══════════════════════════════════════════
+# ☁️ 감시 스냅샷 읽기 — 클라우드 배포판은 로컬 macro_watcher.py가 쓰는
+# signal_scorecard.json/macro_watcher_state.json에 직접 접근할 수 없다(서버가 서로 다름).
+# macro_watcher.py가 이미 매 루프 GitHub 'data' 브랜치에 올리고 있는 snapshot.json(push_snapshot_github,
+# 오늘자 signal_log·감시 갱신시각 포함)을 그대로 읽어온다 — 새 업로드 로직 추가 없이 기존 것 재사용.
+# ══════════════════════════════════════════
+_GH_DATA_BRANCH = "data"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_snapshot(_bust):
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/snapshot.json",
+                          headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
+        if r.status_code != 200:
+            return None
+        return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _today_signal_log():
+    """오늘 발생한 신호 목록 [{t,kind,name,code,px}] — snapshot.json의 signal_log(감시가 이미
+    KST 기준으로 당일치만 유지) 그대로 사용. 스냅샷을 못 가져오면 빈 리스트(조용히 폴백)."""
+    import time as _t
+    snap = _fetch_snapshot(_t.time() // 60)
+    if not snap:
+        return []
+    log = snap.get("signal_log") or []
+    return log if isinstance(log, list) else []
+
+
 def _git_sync_watchlist(raw):
     token = _gh_token()
     if not token:
@@ -927,16 +960,30 @@ def render_settings():
         c.metric(label, "🟢 연결됨" if ok else "🔴 없음")
 
     st.subheader("🩺 감시 프로세스 상태")
-    mtime = _mtime(mw.STATE_FILE)
-    if mtime:
-        dt = datetime.fromtimestamp(mtime)
+    # [클라우드 배포 확인 후 수정] 이 대시보드가 로컬 실행이면 macro_watcher_state.json을 직접 보고,
+    # 클라우드 배포(주소 접속)면 로컬 파일이 없으니 GitHub data 브랜치의 snapshot.json(감시가
+    # 매 루프 올리는 updated_ts)을 대신 본다 — 새 업로드 로직 추가 없이 기존 것 재사용.
+    import time as _t
+    _snap = _fetch_snapshot(_t.time() // 60)
+    if _snap and _snap.get("updated_ts"):
+        dt = datetime.fromtimestamp(_snap["updated_ts"])
         age_min = (datetime.now() - dt).total_seconds() / 60
-        st.markdown(f"macro_watcher_state.json 최근 갱신: **{dt.strftime('%Y-%m-%d %H:%M:%S')}** "
-                    f"({age_min:.0f}분 전)")
+        st.markdown(f"감시 최근 갱신(GitHub 스냅샷): **{dt.strftime('%Y-%m-%d %H:%M:%S')}** ({age_min:.0f}분 전)")
         if age_min > 30:
             st.warning("30분 이상 갱신이 없습니다 — 감시가 꺼져 있거나 멈춘 상태일 수 있습니다.")
     else:
-        st.info("상태 파일 없음 — 감시를 한 번도 안 돌렸을 수 있습니다.")
+        mtime = _mtime(mw.STATE_FILE)
+        if mtime:
+            dt = datetime.fromtimestamp(mtime)
+            age_min = (datetime.now() - dt).total_seconds() / 60
+            st.markdown(f"macro_watcher_state.json 최근 갱신(로컬): **{dt.strftime('%Y-%m-%d %H:%M:%S')}** "
+                        f"({age_min:.0f}분 전)")
+            if age_min > 30:
+                st.warning("30분 이상 갱신이 없습니다 — 감시가 꺼져 있거나 멈춘 상태일 수 있습니다.")
+        else:
+            st.info("상태 파일도 GitHub 스냅샷도 확인 못 했습니다 — 감시가 꺼져 있거나, "
+                    "GITHUB_TOKEN(로컬 run_gui.bat)·[github] token(클라우드 secrets) 설정이 안 되어 "
+                    "있을 수 있습니다.")
 
     st.subheader("👤 계정")
     st.markdown(f"로그인: **{_current_username()}**")
