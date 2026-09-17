@@ -521,24 +521,48 @@ def _git_sync_journal(raw):
 
 
 def render_journal():
-    st.caption("사건 → 전이경로 → 산업 → 기업 → 반대근거 → 가격 순서로 채우면, 마지막에만 '판정'을 "
-               "정하게 됩니다 — 결론부터 정하고 근거를 끼워맞추는 습관을 막기 위한 순서입니다.")
+    st.caption("종목+판정만 고르고 바로 저장하셔도 됩니다 — 나머지 칸은 전부 선택사항입니다. "
+               "자세히 적고 싶을 때는 사건 → 전이경로 → 산업 → 기업 → 반대근거 → 가격 순서로 채우면 "
+               "마지막에만 '판정'을 정하게 됩니다(결론부터 정하고 근거를 끼워맞추는 습관 방지).")
     raw, entries = _load_journal()
+
+    # [사용자 피드백 반영] "이걸 내가 다 넣으라고?" — 오늘 이미 발생한 신호를 골라서 종목·가격 정보를
+    # 자동으로 채워주면 타이핑 부담이 크게 줄어든다. signal_scorecard.json은 모든 신호 함수가
+    # 공통으로 쌓는 파일이라 새로 만들 것 없이 그대로 재사용.
+    _today_str = datetime.now().strftime("%Y-%m-%d")
+    _scorecard = _read_json_safe(mw.SCORECARD_FILE, [])
+    if not isinstance(_scorecard, list):
+        _scorecard = []
+    _today_signals = sorted((r for r in _scorecard if r.get("date") == _today_str),
+                             key=lambda r: r.get("t", ""), reverse=True)
+    _opt_labels = ["✍️ 직접 입력"] + [
+        f"{r.get('t', '')} · {r.get('name', '')}({r.get('code', '')}) · {r.get('kind', '')}"
+        for r in _today_signals]
+    _picked = st.selectbox("오늘 신호에서 자동 채우기(선택)", _opt_labels)
+    _pf = _today_signals[_opt_labels.index(_picked) - 1] if _picked != "✍️ 직접 입력" else None
+    _stock_default = f"{_pf['name']}({_pf['code']})" if _pf else ""
+    _price_default = (f"{_pf['kind']} 신호 · {_pf['t']} · 진입가 {_pf['px']:,}" if _pf else "")
 
     with st.form("journal_add", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        stock = c1.text_input("종목(코드/이름)")
-        source = c2.selectbox("출처", ["내 시스템 신호", "외부 글/리딩방/뉴스레터", "직접 발굴"])
-        event = st.text_area("사건 — 무슨 일이 실제로 발생했나(공시/공식발표/기사/추정 구분)", height=60)
-        transmission = st.text_area("전이경로 — 사건이 금리/환율/유가/수요/투자 중 무엇을 바꾸나", height=60)
-        industry = st.text_area("산업 영향 — 어떤 산업의 주문·판매량·원가·마진·투자가 바뀌나", height=60)
-        company = st.text_area("기업 연결 — 왜 이 회사가 수혜/피해인가(제품·고객·매출비중)", height=60)
-        counter = st.text_area("반대 근거 — 이 논리가 틀릴 수 있는 이유", height=60)
-        price_note = st.text_area("주가 반응 — 당일 상승률·이격도·지지선·수급·지금 가격에서 손익비", height=60)
+        stock = c1.text_input("종목(코드/이름)", value=_stock_default, key=f"j_stock_{_picked}")
+        source = c2.selectbox("출처", ["내 시스템 신호", "외부 글/리딩방/뉴스레터", "직접 발굴"],
+                               key=f"j_source_{_picked}")
+        event = st.text_area("사건 — 무슨 일이 실제로 발생했나(공시/공식발표/기사/추정 구분)", height=60,
+                              key=f"j_event_{_picked}")
+        transmission = st.text_area("전이경로 — 사건이 금리/환율/유가/수요/투자 중 무엇을 바꾸나", height=60,
+                                     key=f"j_trans_{_picked}")
+        industry = st.text_area("산업 영향 — 어떤 산업의 주문·판매량·원가·마진·투자가 바뀌나", height=60,
+                                 key=f"j_ind_{_picked}")
+        company = st.text_area("기업 연결 — 왜 이 회사가 수혜/피해인가(제품·고객·매출비중)", height=60,
+                                key=f"j_comp_{_picked}")
+        counter = st.text_area("반대 근거 — 이 논리가 틀릴 수 있는 이유", height=60, key=f"j_counter_{_picked}")
+        price_note = st.text_area("주가 반응 — 당일 상승률·이격도·지지선·수급·지금 가격에서 손익비",
+                                   value=_price_default, height=60, key=f"j_price_{_picked}")
         c3, c4 = st.columns([1, 2])
-        verdict = c3.selectbox("판정", ["A", "B", "C", "D"])
+        verdict = c3.selectbox("판정", ["A", "B", "C", "D"], key=f"j_verdict_{_picked}")
         c4.caption(_VERDICT_HELP[verdict])
-        follow_up = st.text_input("다음 확인 사항(언제·무엇을 다시 볼지)")
+        follow_up = st.text_input("다음 확인 사항(언제·무엇을 다시 볼지)", key=f"j_follow_{_picked}")
         submitted = st.form_submit_button("💾 저장", use_container_width=True)
         if submitted and stock.strip():
             entries.append({
