@@ -14,6 +14,7 @@ signal_scorecard.json
 program_history.json
 macro_watcher_state.json
 macro_snapshot.json
+macro_watcher.lock
 
 # ── 파이썬 ──
 __pycache__/
