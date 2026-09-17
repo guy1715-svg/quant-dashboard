@@ -537,11 +537,19 @@ def _ai_journal_draft(pf):
     if not resp:
         return None, "AI 응답 실패 — 잠시 후 다시 시도하거나 직접 입력하세요"
     import re as _re
+    # [사용자 제보] 일부 항목만 채워지고 나머지가 빈 채로 남는 경우 확인 — Gemini가 마크다운
+    # 굵은 글씨(**사건**)나 줄머리 기호(- 사건:)를 붙여서 응답하면 라벨 매칭이 깨졌었음.
+    # 마크다운 기호 제거 + 줄 시작 기준(re.MULTILINE) 매칭으로 관대하게 파싱.
+    _clean = resp.replace("**", "").replace("*", "")
     out = {}
     for _k, _label in (("event", "사건"), ("transmission", "전이경로"), ("industry", "산업영향"),
                         ("company", "기업연결"), ("counter", "반대근거")):
-        _m = _re.search(rf"{_label}\s*[:：]\s*(.+)", resp)
+        _m = _re.search(rf"^\s*[-•·]?\s*{_label}\s*[:：]\s*(.+)$", _clean, _re.MULTILINE)
         out[_k] = _m.group(1).strip() if _m else ""
+    if not any(out.values()):
+        # 그래도 하나도 못 찾았으면(형식이 완전히 다름) 빈 화면보다는 원문이라도 보여준다 —
+        # 사용자가 직접 정리해서 각 칸에 옮기면 됨(완전 실패보다 나음).
+        out["event"] = f"[AI 응답 형식 인식 실패 — 원문 그대로]\n{_clean.strip()[:600]}"
     return out, None
 
 
