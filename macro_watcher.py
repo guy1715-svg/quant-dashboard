@@ -6579,7 +6579,8 @@ def journal_reset_if_needed(state, today):
     j = state.get("journal") or {}
     if j.get("_day") != today:
         j = {"_day": today, "snipers": [], "entries": [], "precursors": [],
-             "aces": [], "supply_turns": [], "sev_hi": 0, "sev_lo": 2, "macro_last": ""}
+             "aces": [], "supply_turns": [], "sev_hi": 0, "sev_lo": 2, "macro_last": "",
+             "outage_at_hi": False}
     state["journal"] = j
     return j
 
@@ -6601,11 +6602,18 @@ def journal_accumulate(state, snap):
         _addname("precursors", _pc)
     for a in (snap.get("ace") or []):
         _addname("aces", a.get("name"))
-    _sev = (snap.get("macro") or {}).get("sev")
+    _macro = snap.get("macro") or {}
+    _sev = _macro.get("sev")
     if isinstance(_sev, int):
+        # [V26.4] 사용자 제보 반영 — "데이터 outage"로 sev=2가 된 날인데 실제로는 신호가 다 뜨고
+        # 라인업 성적도 좋았는데(9/18 SK하이닉스 +6.42%), 마감복기 결론이 "무포지션이 정답"이라고
+        # 나와서 실제 결과와 반대되는 코칭을 하고 있었음. sev_hi를 갱신하는 그 순간의 원인이
+        # outage였는지를 같이 기록해, 결론 문구가 진짜 리스크오프와 데이터 장애를 구분하게 함.
+        if _sev > j.get("sev_hi", 0):
+            j["outage_at_hi"] = "outage" in (_macro.get("text") or "")
         j["sev_hi"] = max(j.get("sev_hi", 0), _sev)   # 오늘 최악 국면
         j["sev_lo"] = min(j.get("sev_lo", 2), _sev)   # 오늘 최선 국면
-    j["macro_last"] = (snap.get("macro") or {}).get("text", "")
+    j["macro_last"] = _macro.get("text", "")
     state["journal"] = j
 
 
@@ -6746,7 +6754,16 @@ def send_daily_review(now_kst, state, token_tg, chat_id, kis_key, kis_secret, ki
     # [V16.9 다이어트] 한 줄 결론 — "오늘 뭘 했어야 했나"를 국면·신호 기준으로 명확히.
     _sev_hi = j.get("sev_hi", 1)
     _real = bool(_snp or _ent or _ace)     # 실제 액션 가능 신호가 하나라도 떴나
-    if _sev_hi >= 2:
+    _outage = j.get("outage_at_hi", False)  # 오늘 최악 국면이 진짜 리스크오프가 아니라 데이터 장애였나
+    if _sev_hi >= 2 and _outage and _real:
+        # [V26.4] "데이터 outage"인데 신호는 정상 발송된 날 — 진짜 리스크오프처럼 "무포지션이 정답"이라
+        # 단정하면 실제 라인업 성적(위에 표시됨)과 반대되는 코칭이 됨. 장애로 신규매수만 보수적으로
+        # 막혔을 뿐 신호 자체는 살아있었다는 걸 구분해서 알려준다.
+        _verdict = ("🟠 오늘 결론: 지표 조회 장애로 신규매수만 보수적으로 막힌 날 — 진짜 리스크오프는 "
+                    "아니었을 수 있음. 위 라인업 성적으로 실제 결과 확인하고, 장애 아니었으면 어땠을지 복기하세요.")
+    elif _sev_hi >= 2 and _outage:
+        _verdict = "🟠 오늘 결론: 지표 조회 장애로 판단을 못 내린 날 — 무리한 진입은 피한 게 맞지만 진짜 리스크오프는 아니었을 수 있음."
+    elif _sev_hi >= 2:
         _verdict = "🔴 오늘 결론: 리스크오프 — 무포지션이 정답. 매수(강) 신호 떠도 규제 우선(관망)."
     elif _real:
         _verdict = "🟢 오늘 결론: 진입 신호 있던 날 — 신호 종목만, 눌림 진입·−2% 손절 지켰으면 성공."
