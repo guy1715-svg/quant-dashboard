@@ -7584,7 +7584,13 @@ def main():
                 print("요약 브리핑 오류:", _ibe)
 
             # 📍 [V13.2] 오늘 매수 알림 로그(시각·가격) — 대시보드 '알림 성적'용
-            snap["signal_log"] = (st.get("signal_log") or {}).get("items", [])
+            # [V26.5] 사용자 제보("대시보드에서 이거 오늘 꺼 맞아?") — signal_log는 _log_signal()이
+            # 새 신호를 기록할 때만 날짜가 바뀌어 초기화되는데, 오늘 아직 신호가 하나도 안 뜬 시점
+            # (예: 장 시작 전, 또는 신호가 아예 없는 조용한 날)엔 어제 signal_log가 그대로 남아있어
+            # 스냅샷에 '오늘 신호'로 잘못 실릴 수 있었음. alert_feed(바로 아래)와 같은 방식으로
+            # 스냅샷 만들 때마다 날짜를 직접 대조해 방어.
+            _sl = st.get("signal_log") or {}
+            snap["signal_log"] = _sl.get("items", []) if _sl.get("_day") == now.strftime("%Y%m%d") else []
 
             # 🗒️ [V13.2] 오늘 온 모든 알람 메시지 타임라인 — send_telegram 버퍼를 당일 누적
             _today_af = now.strftime("%Y%m%d")
