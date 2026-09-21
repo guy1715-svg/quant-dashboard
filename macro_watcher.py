@@ -3951,6 +3951,7 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
         _isbrief = cd in _brief
         _fe, _oe = _investor_est(token, key, secret, cd)
         _supply_ok = ((_fe or 0) + (_oe or 0)) > 0
+        _vol_mult = None    # 갭상승(①②③) 분기에서만 계산 — 갭하락(④) 분기는 그대로 None 유지
         if _is_gapdown:
             # 유형④ — 대형주 낙폭과대 + 수급/프로그램 반등 + 저가대비 회복
             _cap = _market_cap(token, key, secret, cd)
@@ -3963,23 +3964,35 @@ def check_opening_bet(token, key, secret, now_kst, state, token_tg, chat_id, sev
             _type = "갭하락 과매도"
             _stop = int((_low or px) * 0.985); _t1 = int(px * 1.025)
         else:
-            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) or (테마·정책+수급/프로그램) 中 하나 필수
+            # ①②③ 갭상 — 재료S/A or 브리핑 or (미선물 강세+프로그램) or (테마·정책+수급/프로그램)
+            #   or (거래량 급증+수급/프로그램) 中 하나 필수
             _overseas = (_nq is not None and _nq >= 0.5)
             # [V25.61] T(테마·정책)등급은 S/A(직접계약·실적)보다 근거가 약해 단독으론 못 믿고
             #   수급/프로그램 뒷받침이 있을 때만 진입후보로 인정(무근거 테마 추격 방지).
             _is_theme = (_ng == "T") and (_prog_ok or _supply_ok)
-            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok) or _is_theme):
+            # [V26.6] 사용자 요청("갭상승+거래량+시초가 위치로 타점") — 재료(뉴스) 없이 순수
+            # 거래량으로 붙는 갭상승도 잡되, 무근거 추격을 막기 위해 _is_theme와 동일한 원칙으로
+            # 수급/프로그램 뒷받침을 같이 요구. 배수 기준(2배)은 check_vol_surge가 이미 쓰는
+            # "오늘 거래량 > 5일평균 2배" 기준 그대로 재사용(새 숫자 발명 안 함).
+            _vr = _vol_ratio_5d(token, key, secret, cd)
+            if _vr:
+                _vol_mult = _vr[2]
+            _is_vol_surge = (_vol_mult is not None and _vol_mult >= 2.0) and (_prog_ok or _supply_ok)
+            if not (_ng in ("S", "A") or _isbrief or (_overseas and _prog_ok) or _is_theme or _is_vol_surge):
                 continue
             if px < _open * 0.99:                       # 시초가 이미 이탈 중이면 진입 안 함
                 continue
             _type = ("장전 신규뉴스" if _ng in ("S", "A") else
                      "테마·정책 재부각" if _is_theme else
+                     "거래량 급증" if _is_vol_surge else
                      "해외발 동조" if _overseas else "시간외/테마 연장")
             _stop = int(_open * 0.985); _t1 = int(px * 1.02)
         _stoppct = (_stop / px - 1) * 100
         _mat = ("🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else "🔵재료T(테마)" if _ng == "T"
                 else ("🎯브리핑" if _isbrief else "⚪재료미확인"))
         _tags = _mat
+        if _vol_mult is not None and _vol_mult >= 2.0:
+            _tags += f" · 📊거래량 {_vol_mult:.1f}배(5일평균)"
         if _prog_ok:
             _tags += f" · 🟩프로그램 매수전환 +{_prog/1e8:,.0f}억"
         if _supply_ok:
