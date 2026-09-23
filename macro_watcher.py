@@ -1026,7 +1026,13 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
     from collections import defaultdict
     _by_kind = defaultdict(list)
     _cache = {}
-    for r in rows[-200:]:                          # 최근 200건(일봉 30일 커버 범위)
+    # [V26.7] 사용자 제보("브리핑 건수가 계속 줄어든다") — 예전엔 '전체 통틀어 최근 200건'만 봐서,
+    # 시가배팅·종배그림자처럼 자주 뜨는 신호가 계속 쌓이면 브리핑·눌림타점처럼 드물게 뜨는 신호가
+    # 그 200건 창에서 밀려나 분석에서 빠지는 문제가 있었음(종류별이 아니라 전체 기준 슬라이스라
+    # 발생빈도 낮은 신호일수록 불리). 종목코드별로 _daily_closes를 캐싱해 재조회를 막고 있어서
+    # 전체를 다 봐도 API 비용은 '고유 종목 수'에 비례할 뿐 — SCORECARD_FILE 자체가 이미 2000건
+    # 상한이 있어 무한정 커지지 않으므로 별도 슬라이스 없이 그대로 처리.
+    for r in rows:
         code, date, px, kind = str(r.get("code", "")).zfill(6), r.get("date", ""), r.get("px"), r.get("kind")
         if not (code.isdigit() and px and kind and date):
             continue
