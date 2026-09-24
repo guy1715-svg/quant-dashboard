@@ -5976,9 +5976,12 @@ _NXT_MIN_TURN = 5_000_000_000  # NXT 야간 누적거래대금 바닥값 50억(�
 
 
 def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
-    """넥장(넥스트레이드 야간) 급등 타점 — 16:00~19:50, 라인업 종목을 'NX' 시장코드로 야간 조회.
+    """넥장(넥스트레이드 야간) 급등 타점 — 16:00~19:50, 라인업+당일 거래대금 상위 40종을 'NX' 시장코드로 야간 조회.
     야간 시작가 대비 +1.5%↑ AND 거래대금 50억↑·증가 시 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트.
-    ※ 수급 확인 불가(야간 미제공) — 가격/거래대금 기반 급등 신호."""
+    ※ 수급 확인 불가(야간 미제공) — 가격/거래대금 기반 급등 신호.
+    [V26.3] 사용자 제보(실사례: 에스투더블유) — 라인업(보통 6종 고정)만 보면 당일 거래대금
+    상위권에도 있던 종목의 NXT 급등을 그냥 놓친다. 다른 정규장 스캐너들이 이미 쓰는
+    _volume_rank(top=40) 유니버스를 라인업에 합쳐서 감시 범위를 넓힌다."""
     m = now_kst.hour * 60 + now_kst.minute
     if not (_NXT_START <= m <= _NXT_END):
         return []
@@ -5988,7 +5991,12 @@ def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineu
     if base.get("_day") != today: base = {"_day": today}
     if sent.get("_day") != today: sent = {"_day": today}
     out = []
-    for code, name in lineup:
+    _univ = dict(lineup)          # {code: name} — 라인업 먼저
+    _day_turn = {}                 # {code: 정규장 당일 누적거래대금(원)} — 상위40 출처만 채워짐
+    for s in _volume_rank(token, key, secret, top=40):
+        _univ.setdefault(s["code"], s.get("name", s["code"]))
+        _day_turn[s["code"]] = s.get("turnover") or 0
+    for code, name in _univ.items():
         px, chg, turn = _price_and_turnover(token, key, secret, code, mrkt="NX")
         if not px:
             continue
@@ -6004,9 +6012,12 @@ def check_nxt_after(token, key, secret, now_kst, state, token_tg, chat_id, lineu
             out.append({"name": name, "code": code, "px": px, "chg": chg or 0.0,
                         "night_move": round(_move, 2), "turnover_eok": round(turn / 1e8, 0)})
             if sev != 2:              # [V17.1] 리스크오프면 야간 매수 억제(스냅샷엔 유지)
+                _dturn = _day_turn.get(code, 0)
+                _over_tag = (f"\n🔥 NXT 거래대금이 정규장 당일거래대금({_dturn/1e8:,.0f}억)을 이미 초과"
+                             if _dturn and turn > _dturn else "")
                 send_telegram(token_tg, chat_id,
                               f"{SIG_BUY}\n🌙[야간·NXT소액] 넥장 급등 타점 — {name}\n"
-                              f"야간 시작가 대비 +{_move:.1f}% · NXT 거래대금 {turn/1e8:,.0f}억\n"
+                              f"야간 시작가 대비 +{_move:.1f}% · NXT 거래대금 {turn/1e8:,.0f}억{_over_tag}\n"
                               f"현재가 {px:,} (전일 {(chg or 0):+.2f}%) · {now_kst.strftime('%H:%M')} KST\n"
                               f"⚠️ 야간=수급확인 불가·유동성 얇음 → 소액·−2% 손절 필수 · 추격 금지")
                 sent[code] = True
