@@ -253,14 +253,17 @@ def _gh_ensure_branch(token):
         return False
 
 
-def push_snapshot_github(json_str):
+def push_snapshot_github(json_str, filename="snapshot.json"):
+    """[V26.9] filename 파라미터 추가 — snapshot.json 외에 pick_history.json도 같은 방식으로
+    'data' 브랜치에 올리기 위해 일반화(대시보드가 클라우드에서 로컬 pick_history.json에
+    접근 못 해 '종배픽·재료등급' 탭·장세판독이 항상 빈 상태였던 문제 대응)."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         if not _gh_warned["done"]:
             print("ℹ️ GITHUB_TOKEN 미설정 — 스냅샷 GitHub 업로드 건너뜀(로컬 파일만). 웹 속보판 쓰려면 토큰 설정.")
             _gh_warned["done"] = True
         return
-    base = f"https://api.github.com/repos/{_GH_REPO}/contents/snapshot.json"
+    base = f"https://api.github.com/repos/{_GH_REPO}/contents/{filename}"
     try:
         # 기존 파일 sha 조회(업데이트에 필요). 없으면(404) 신규 생성.
         g = requests.get(f"{base}?ref={_GH_BRANCH}", headers=_gh_headers(token), timeout=8)
@@ -268,7 +271,7 @@ def push_snapshot_github(json_str):
         if g.status_code == 404 and not _gh_ensure_branch(token):
             print("⚠️ data 브랜치 생성 실패 — 토큰 권한(repo) 확인 필요"); return
         payload = {
-            "message": f"data: snapshot {datetime.datetime.utcnow().strftime('%m/%d %H:%M')}Z",
+            "message": f"data: {filename} {datetime.datetime.utcnow().strftime('%m/%d %H:%M')}Z",
             "content": _b64.b64encode(json_str.encode("utf-8")).decode("ascii"),
             "branch": _GH_BRANCH,
         }
@@ -279,7 +282,7 @@ def push_snapshot_github(json_str):
             if not _gh_warned.get("ok"):
                 print(f"✅ 스냅샷 업로드 OK → {_GH_REPO} ({_GH_BRANCH} 브랜치)"); _gh_warned["ok"] = True
         else:
-            print(f"⚠️ 스냅샷 업로드 실패 {p.status_code}: {p.json().get('message','')[:80]} · {_gh_hint(p.status_code)}")
+            print(f"⚠️ 스냅샷({filename}) 업로드 실패 {p.status_code}: {p.json().get('message','')[:80]} · {_gh_hint(p.status_code)}")
     except Exception as e:
         print("스냅샷 업로드 오류:", e)
 
@@ -4556,15 +4559,17 @@ def _regime_today(token, key, secret, now_kst, state):
     return _st
 
 
-def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6):
+def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6, picks=None):
     """[V25.10] 장세 판독기 — 최근 종배(픽+그림자)의 '익일 시가 갭'(종배 실제 청산가) 중앙값으로
     지금이 종배 통하는 장인지 판정. 갭 잘 뜨는 장(+)=종배 유효 / 저갭·불리 장(−)=종배 억제·대형주 눌림.
     ★익일 종가가 아닌 익일 시가로 측정(종배=종가매수→익일 시가청산). 이상치엔 중앙값으로 강건.★
-    반환 {state,avg,n,text,tag}. 데이터 부족 시 state='unknown'."""
+    반환 {state,avg,n,text,tag}. 데이터 부족 시 state='unknown'.
+    [V26.9] picks 파라미터 추가 — 대시보드(클라우드 배포)가 GitHub에서 받아온 pick 목록을
+    그대로 넣어 판정할 수 있게 함(None이면 기존처럼 로컬 pick_history.json 직접 읽음)."""
     from datetime import timedelta
     _cut = (now_kst - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     gaps, _cache = [], {}
-    for p in _pick_read():
+    for p in (picks if picks is not None else _pick_read()):
         if p.get("signal") not in ("dolpanty", "dolpanty_shadow", "dolpanty_div"):
             continue
         if str(p.get("date", "")) < _cut:
@@ -7776,6 +7781,16 @@ def main():
             _snap_str = json.dumps(snap, ensure_ascii=False)
             save_snapshot(snap)
             push_snapshot_github(_snap_str)   # GitHub 'data' 브랜치 업로드(토큰 있을 때만)
+            # [V26.9] 사용자 제보 — 대시보드 "종배픽·재료등급" 탭이 클라우드에서 항상 "기록 없음"
+            # (장세판독도 "표본 0<6")으로 뜸. 원인: 그 탭이 mw._pick_read()로 pick_history.json을
+            # 로컬 파일로 직접 읽는데, 클라우드 배포엔 그 파일이 없음(7.45에서 signal_log는 이미
+            # 고쳤으나 이 탭은 놓침). 최근 300건만 같은 방식으로 GitHub에 같이 올려 대시보드가
+            # 읽어갈 수 있게 함(21일치 장세판독 lookback에 충분한 여유).
+            try:
+                push_snapshot_github(json.dumps(_pick_read()[-300:], ensure_ascii=False),
+                                     filename="pick_history.json")
+            except Exception as _pge:
+                print("종배픽 기록 업로드 오류:", _pge)
             save_state(st)
         except Exception as e:
             print("체크 오류:", e)

@@ -655,7 +655,8 @@ def render_journal():
 # ══════════════════════════════════════════
 
 _KMAP = {"dolpanty": "종배픽(NXT)", "dolpanty_nonxt": "종배픽(NXT미거래)",
-         "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
+         "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자",
+         "dolpanty_nxtprem": "대체종배(NXT거래량압도)"}
 
 
 @st.cache_data(ttl=1800, show_spinner="신호별 성적 계산 중...")
@@ -793,11 +794,21 @@ def render_holdings():
 # ══════════════════════════════════════════
 
 def render_dolpanty():
+    # [V26.9] 사용자 제보 — "대시보드에 종배픽 재료등급 안나오는데?" 클라우드 배포에서 이 탭이
+    # 항상 비어있었음. 원인: mw._pick_read()가 로컬 pick_history.json을 직접 읽는데 클라우드
+    # 컨테이너엔 그 파일이 없음(7.45에서 signal_log는 이미 고쳤으나 이 탭은 놓쳤던 부분).
+    # GitHub data 브랜치에 새로 올라가는 pick_history.json(최근 300건)을 먼저 시도하고,
+    # 실패하면(로컬 실행 등) 기존처럼 로컬 파일로 폴백.
+    import time as _t
+    all_picks = _fetch_pick_history(_t.time() // 60)
+    if all_picks is None:
+        all_picks = mw._pick_read()
+
     tok, key, sec = _kis()
     st.subheader("🧭 장세 판독")
     if tok:
         try:
-            r = mw._regime_detect(tok, key, sec, datetime.utcnow() + timedelta(hours=9))
+            r = mw._regime_detect(tok, key, sec, datetime.utcnow() + timedelta(hours=9), picks=all_picks)
             st.markdown(f"**{r['text']}**")
         except Exception as _e:
             st.error(f"조회 실패: {type(_e).__name__}")
@@ -805,8 +816,8 @@ def render_dolpanty():
         st.info("KIS 키 없음")
 
     st.subheader("🌒 최근 종배픽 기록")
-    picks = [p for p in mw._pick_read()
-             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow")]
+    picks = [p for p in all_picks
+             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow", "dolpanty_nxtprem")]
     if not picks:
         st.caption("종배 기록 없음 — 감시를 며칠 돌린 뒤 쌓입니다.")
         return
@@ -853,6 +864,26 @@ def _fetch_snapshot(_bust):
         if r.status_code != 200:
             return None
         return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_pick_history(_bust):
+    """[V26.9] pick_history.json(최근 300건, macro_watcher가 매 루프 GitHub 'data' 브랜치에 올림)을
+    받아옴 — 클라우드 배포는 로컬 mw.PICK_FILE에 접근 못 해 render_dolpanty()가 항상 빈 상태였던
+    문제 대응(_fetch_snapshot과 동일 패턴). 실패 시 None(호출부가 로컬 mw._pick_read()로 폴백)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/pick_history.json",
+                          headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, list) else None
     except Exception:
         return None
 
