@@ -1016,7 +1016,8 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
         rows = []
     # pick_history(종배/그림자)도 합침 — signal→kind 매핑
     _kmap = {"dolpanty": "종배픽(NXT)", "dolpanty_nonxt": "종배픽(NXT미거래)",
-             "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자"}
+             "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자",
+             "dolpanty_nxtprem": "대체종배(NXT괴리율)"}
     for p in _pick_read():
         rows.append({"date": p.get("date"), "code": p.get("code"), "name": p.get("name"),
                      "px": p.get("px"), "kind": _kmap.get(p.get("signal"), p.get("signal", "종배"))})
@@ -5291,6 +5292,89 @@ def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
         print(f"[종배청산] {_info['name']} {_g:+.1f}% — {_sig[0]}")
 
 
+# ── [대체종배] KRX/NXT 괴리율 + NXT 애프터마켓 거래대금 교집합 기반 NXT 전용 픽 ──
+#   [V26.5] 사용자 제보 — 증권사 MTS "순위검색 → KRX/NXT 괴리율 순위" · "당일거래 상위 → 애프터마켓
+#   → 거래대금" 두 화면을 겹쳐서 후보를 뽑고 싶다는 요청. KIS 공개API에 화면과 똑같은 이름의
+#   랭킹 엔드포인트가 확인되지 않아(증권사 자체 MTS 전용 화면일 가능성), 같은 종목의 KRX가·NXT가를
+#   각각 조회해 괴리율(=NXT가/KRX가-1)을 직접 계산하는 방식으로 구현 — 이미 검증된 _price_and_turnover
+#   (mrkt="NX")만 재사용하므로 미확인 엔드포인트에 의존하지 않음. 괴리율 방향은 사용자 선택대로
+#   양(+) — NXT가 KRX보다 비싼(애프터마켓 매수세 강한) 종목만.
+_NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프터마켓 랭킹이 쌓인 뒤)
+
+
+def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V26.5] 대체종배 — 당일 거래대금 상위 100종 중 괴리율 1%↑·NXT거래대금 50억↑(노이즈 컷) 조건을
+    만족하는 종목만 모아 ①KRX/NXT 괴리율(NXT가>KRX가) 상위 30 ∩ ②NXT 애프터마켓 거래대금 상위 30,
+    두 순위 교집합을 합산순위로 재정렬해 최대 15종까지 후보로 삼고(미달이면 그만큼만) 뉴스(재료)
+    확인 후 종목별 당일 1회 텔레그램. 반환: 스냅샷용 리스트."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_NXT_PREM_START <= m <= _NXT_PREM_END):
+        return []
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("nxt_prem_pick_day") == today:      # 당일 1회
+        return []
+    rows = []
+    for s in _volume_rank(token, key, secret, top=100):
+        krx_px = s.get("px")
+        if not krx_px:
+            continue
+        nxt_px, _nchg, nxt_turn = _price_and_turnover(token, key, secret, s["code"], mrkt="NX")
+        if not nxt_px or not nxt_turn:
+            continue                                  # NXT 미거래 종목 — 대상 아님
+        _prem = (nxt_px / krx_px - 1) * 100
+        # 최소 기준 — 이게 없으면 "괴리율·거래대금 둘 다 상위 30" 교집합이 진짜 후보가 6~7종뿐인
+        # 날에도 나머지를 0.3~0.5%대 호가노이즈로 채워 15종을 억지로 다 발송하게 됨(모의테스트로
+        # 발견). 사용자가 양(+)만 원한다고 한 것과 같은 취지로 "의미있는" 괴리율만 인정.
+        if _prem < 1.0 or nxt_turn < _NXT_MIN_TURN:   # 괴리율 1%↑ AND NXT거래대금 50억↑(check_nxt_after와 동일 기준)
+            continue
+        rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
+                     "premium": _prem, "nxt_turn": nxt_turn})
+    if not rows:
+        state["nxt_prem_pick_day"] = today
+        return []
+    _by_prem = sorted(rows, key=lambda r: r["premium"], reverse=True)[:30]
+    _by_turn = sorted(rows, key=lambda r: r["nxt_turn"], reverse=True)[:30]
+    _prem_rank = {r["code"]: i for i, r in enumerate(_by_prem, start=1)}
+    _turn_rank = {r["code"]: i for i, r in enumerate(_by_turn, start=1)}
+    _overlap_codes = set(_prem_rank) & set(_turn_rank)
+    if not _overlap_codes:
+        state["nxt_prem_pick_day"] = today
+        return []
+    _byc = {r["code"]: r for r in rows}
+    # 합산순위 오름차순 전체를 훑으면서 악재 제외 후 상위 15종을 채움(악재로 빠진 자리는 그 다음
+    # 순위 종목이 메꾸도록 — 뉴스 필터를 먼저 적용한 뒤 자르지 않으면 표시 순번에 구멍이 생김).
+    _combined = sorted(_overlap_codes, key=lambda c: _prem_rank[c] + _turn_rank[c])
+    out = []
+    for cd in _combined:
+        if len(out) >= 15:
+            break
+        r = _byc[cd]
+        ng, nbad = _news_grade(cd)                    # 사용자 요청: 이 후보군에 한해서만 뉴스 확인
+        if nbad:
+            continue
+        _score = 50 + max(0, 30 - (_prem_rank[cd] + _turn_rank[cd])) + (20 if ng == "S" else 12 if ng == "A" else 0)
+        out.append({"rank": len(out) + 1, "code": cd, "name": r["name"], "krx_px": r["krx_px"],
+                    "nxt_px": r["nxt_px"], "premium": round(r["premium"], 2),
+                    "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "news": ng, "score": _score})
+        _log_pick(now_kst, cd, r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
+        _log_signal(state, now_kst, "대체종배", r["name"], cd, r["nxt_px"])   # 대시보드 "오늘 신호" 타임라인 반영
+    state["nxt_prem_pick_day"] = today
+    if not out:
+        return []
+    if sev == 2:                                      # 리스크오프 — 후보 로깅은 하되 발송은 억제
+        return out
+    _lines = "\n".join(
+        f"{o['rank']}. {o['name']} · 괴리율 +{o['premium']:.1f}%({o['krx_px']:,}→{o['nxt_px']:,}) "
+        f"· NXT거래대금 {o['nxt_turn_eok']:,.0f}억 · {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}"
+        for o in out)
+    send_telegram(token_tg, chat_id,
+                  f"{SIG_INFO}\n🌙📊 대체종배 후보 — KRX/NXT 괴리율×애프터마켓 거래대금 교집합 (총 {len(out)}종)\n"
+                  f"{_lines}\n"
+                  f"※ 확정픽 아님 — 뉴스만 확인된 후보 목록. 진입은 개별 검토 후 결정 · 신규 신호(표본 적음)")
+    print(f"[대체종배] {len(out)}종 후보 발송")
+    return out
+
+
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
     """09:00~09:10 KST 창에서 라인업 거래대금이 임계 돌파 시 종목별 1회 텔레그램.
     반환: 스냅샷용 리스트 [{name,code,px,chg,turnover_eok,cap}]. state['sniper_sent']로 당일 중복 차단.
@@ -7326,6 +7410,7 @@ def main():
                 "sector_leaders": [],                 # 2-Tier 6대 섹터 대장주 수급 관측
                 "kospi_fut": None,                    # 코스피200 선물 실측(주간/야간 세션·KIS)
                 "nxt_after": [],                      # 넥장(넥스트레이드 야간 16~20시) 급등 타점
+                "nxt_premium_pick": [],                # 대체종배(KRX/NXT 괴리율×애프터마켓 거래대금 교집합)
             }
             # 시장 전체(코스피) 기관·외인 전환 알림 — 네이버 소스(KIS 무관, 정규장만)
             try:
@@ -7601,6 +7686,11 @@ def main():
                         snap["nxt_after"] = check_nxt_after(tok, kis_key, kis_secret, now, st, token_tg, chat_id, _lineup, sev)
                     except Exception as _nxe:
                         print("넥장 체크 오류:", _nxe)
+                    # 대체종배(KRX/NXT 괴리율×애프터마켓 거래대금 교집합) — 넥장 후반(18~19:50) 1회
+                    try:
+                        snap["nxt_premium_pick"] = check_nxt_premium_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _npe:
+                        print("대체종배 체크 오류:", _npe)
                     # 2-Tier 대장주 관측 + 시장·섹터 정렬 시에만 텔레그램(Confluence)
                     try:
                         snap["sector_leaders"] = check_sector_leaders(
