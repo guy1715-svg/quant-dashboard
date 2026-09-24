@@ -114,9 +114,38 @@
   위험이 커서, 이런 사례가 반복 확인될 때만 신중히 추가하기로 함.
 - ⏳후보: `📊 성과 분석` 탭(`_compute_signal_stats`)과 `🎯 종배픽·재료등급` 탭도 로컬
   `signal_scorecard.json` 전체 누적본을 직접 읽는 구조라, 클라우드 배포판에서는 다일치 승률
-  통계가 비어있을 수 있음(7.45 참고 — signal_log는 당일치만 스냅샷에 실림). 다일치 통계까지
-  클라우드에서 보려면 `signal_scorecard.json` 자체(또는 최근 N일 슬라이스)를 GitHub data
-  브랜치에 추가로 올리는 조치가 필요 — 아직 미착수.
+  통계가 비어있을 수 있음(7.45 참고 — signal_log는 당일치만 스냅샷에 실림). `🎯 종배픽·재료등급`
+  탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
+  `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
+
+### 7.61 종배픽·재료등급 탭 "기록 없음" 문제 해결 — pick_history.json도 GitHub data 브랜치에 업로드
+
+**배경**: 사용자가 "대시보드에 종배픽 재료등급 안나오는데? 아까 분명 자료 줬는데"라고 제보 —
+스크린샷에서 `🎯 종배픽·재료등급` 탭이 "종배 기록 없음"·"장세판독 데이터 부족(종배 표본 0<6)"을
+표시. 원인 확인: `render_dolpanty()`가 `mw._pick_read()`로 `pick_history.json`을 **로컬 파일**로
+직접 읽고, `mw._regime_detect()`도 내부에서 똑같이 로컬 파일을 읽음 — 클라우드 배포(Streamlit
+Cloud) 컨테이너엔 그 파일이 아예 없어서 로컬 PC에서 종배픽을 아무리 쌓아도 대시보드는 항상 0건.
+7.45에서 `signal_log`는 이미 이 방식(GitHub data 브랜치 스냅샷)으로 고쳤는데 이 탭은 놓쳤던 것 —
+HANDOFF 7절 "다음 작업" 목록에 이미 적혀있던 미착수 항목이기도 함. 부수적으로
+`check_nxt_premium_pick`의 새 신호 종류 `dolpanty_nxtprem`이 이 탭의 필터 튜플과
+`quant_dashboard.py`의 자체 `_KMAP`에 빠져있던 것도 같이 확인(코드베이스에 macro_watcher.py용
+`_kmap`과 quant_dashboard.py용 `_KMAP`이 별도로 존재).
+
+**수정**: `push_snapshot_github()`에 `filename` 파라미터 추가(기존 `snapshot.json` 하드코딩 →
+일반화, 기본값은 그대로라 기존 호출부 무변경). 메인루프에서 `pick_history.json` 최근 300건을
+같은 함수로 매 루프 `data` 브랜치에 업로드. `_regime_detect()`에 `picks=None` 파라미터 추가 —
+지정되면 로컬 파일 대신 그 목록으로 판정(watcher 자신의 호출부는 그대로 로컬 읽기 유지, 하위호환).
+`quant_dashboard.py`에 `_fetch_pick_history()` 신설(`_fetch_snapshot`과 동일 패턴, 실패 시 None →
+호출부가 로컬 `mw._pick_read()`로 폴백). `render_dolpanty()`가 이걸 우선 쓰도록 변경하고
+`_regime_detect(picks=...)`로 전달. `dolpanty_nxtprem`을 필터 튜플과 `_KMAP`(quant_dashboard.py)·
+`_kmap`(macro_watcher.py) 양쪽에 추가.
+
+**검증**: `py_compile` 통과(양쪽 파일). 모의 테스트 — `_pick_read`를 호출되면 곧바로 예외를 던지는
+함수로 바꿔치기한 뒤 `_regime_detect(picks=[...])`를 호출 → 예외 없이 넘어간 표본 목록 그대로
+판정(`n=2`)됨을 확인, 즉 `picks` 지정 시 로컬 파일을 전혀 건드리지 않음이 검증됨.
+`push_snapshot_github(..., filename="pick_history.json")` 호출도 `TypeError` 없이 정상 동작(토큰
+없는 샌드박스라 실제 업로드 자체는 스킵됨) 확인. 실제 클라우드 배포에서 탭이 채워지는지는 다음
+루프(감시 실행 중)가 한 번 돌고 `git pull` 후 재배포돼야 확인 가능 — 사용자 환경에서 최종 확인 필요.
 
 ### 7.60 대체종배 "0건 침묵" 진단 로그 추가 — 실제 GUI 로그로 발견
 
