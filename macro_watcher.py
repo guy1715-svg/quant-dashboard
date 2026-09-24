@@ -2830,6 +2830,20 @@ def _volume_rank(token, key, secret, top=40):
         return []
 
 
+def _lineup_plus_turnover(token, key, secret, lineup, top=40):
+    """[V26.4] 라인업(보통 6종 고정) + 당일 거래대금 상위 top종을 합친 감시 유니버스.
+    라인업만 보던 상시 스캐너들(시가저격/진입/15분봉/수급전환)이 그 밖의 '깜짝 주도주'를
+    놓치던 문제(check_nxt_after 사용자 제보로 발견한 것과 동일 유형) 대응. [(code,name),...]."""
+    _seen, _out = set(), []
+    for c, n in lineup:
+        if c not in _seen:
+            _seen.add(c); _out.append((c, n))
+    for s in _volume_rank(token, key, secret, top=top):
+        if s["code"] not in _seen:
+            _seen.add(s["code"]); _out.append((s["code"], s.get("name", s["code"])))
+    return _out
+
+
 def _vol_ratio_5d(token, key, secret, code):
     """[V22.7] 오늘 거래량 / 최근 5거래일(전일까지) 평균 거래량 배수. (오늘vol, 5일평균, 배수) or None."""
     try:
@@ -5301,7 +5315,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
             sent["_lowgap_note"] = True
         state["sniper_sent"] = sent
         return out
-    for code, name in lineup:
+    for code, name in _lineup_plus_turnover(token, key, secret, lineup):
         px, chg, turn = _price_and_turnover(token, key, secret, code)
         if not px or not turn:
             continue
@@ -5576,7 +5590,7 @@ def check_supply_turn(token, key, secret, now_kst, state, token_tg, chat_id, lin
         return "flat"
 
     flips, watch = [], []
-    for code, name in lineup:
+    for code, name in _lineup_plus_turnover(token, key, secret, lineup):
         px, chg, _turn = _price_and_turnover(token, key, secret, code)
         if not px:
             continue
@@ -6053,7 +6067,7 @@ def check_bar15(token, key, secret, now_kst, state, token_tg, chat_id, lineup, s
     if sent.get("_day") != today: sent = {"_day": today}
     out = []
     _vrank_b15 = None                                # [V21.1] 주도주 교차검증용 거래대금 랭킹(지연조회)
-    for code, name in lineup:
+    for code, name in _lineup_plus_turnover(token, key, secret, lineup):
         px, chg, turn = _price_and_turnover(token, key, secret, code)
         if not px:
             continue
@@ -6268,7 +6282,7 @@ def check_entries(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     if sent.get("_day") != today:
         sent = {"_day": today}
     out = []
-    for code, name in lineup:
+    for code, name in _lineup_plus_turnover(token, key, secret, lineup):
         px, chg, turn = _price_and_turnover(token, key, secret, code)
         if not px or not turn:
             continue
