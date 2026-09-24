@@ -355,7 +355,7 @@ tk.Label(root, textvariable=_status, font=("맑은 고딕", 10)).pack()
 
 _btns = tk.Frame(root); _btns.pack(pady=6)
 _specs = [
-    ("🌒 종배픽 강제", lambda: _run(["--force-pick"], "종배픽")),
+    ("🌒 종배픽 강제(+대체종배)", lambda: _run(["--force-pick"], "종배픽")),
     ("🌙 저녁뉴스 테스트", lambda: _run(["--test-news"], "저녁뉴스")),
     ("📋 성적표(Report)", lambda: _run(["--report"], "성적표")),
     ("📊 신호분석(+청산분석)", lambda: _run(["--analyze"], "신호분석")),

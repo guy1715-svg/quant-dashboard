@@ -5330,16 +5330,17 @@ _NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프�
 _NXT_PREM_MIN_RATIO = 1.0    # NXT거래량이 당일 정규장 거래량을 이미 넘어선(비율>1) 종목만
 
 
-def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False):
     """[V26.7] 대체종배 — 당일 거래대금 상위 100종 중 NXT거래대금 50억↑(노이즈 컷) AND
     (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이 당일 정규장 거래량을 이미 압도)인 종목을
     비율 내림차순 최대 15종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
-    기준이라 종목 크기·가격 등락률에 좌우되지 않음. 반환: 스냅샷용 리스트."""
+    기준이라 종목 크기·가격 등락률에 좌우되지 않음. force=True: 시간창·당일락 무시(수동 테스트,
+    --force-pick). 반환: 스냅샷용 리스트."""
     m = now_kst.hour * 60 + now_kst.minute
-    if not (_NXT_PREM_START <= m <= _NXT_PREM_END):
+    if not force and not (_NXT_PREM_START <= m <= _NXT_PREM_END):
         return []
     today = now_kst.strftime("%Y%m%d")
-    if state.get("nxt_prem_pick_day") == today:      # 당일 1회
+    if not force and state.get("nxt_prem_pick_day") == today:      # 당일 1회
         return []
     rows = []
     for s in _volume_rank(token, key, secret, top=100):
@@ -7256,6 +7257,7 @@ def main():
             _now = _now.replace(hour=15, minute=15)   # 정규장 종가 기준 판정
         st = load_state()
         st.pop("dolpanty_pick_day", None)         # 당일락 해제(강제 재발송)
+        st.pop("nxt_prem_pick_day", None)         # [V26.8] 대체종배도 같이 강제 재발송(당일락 해제)
         _tok = kis_token(kis_key, kis_secret)
         _sev, _, _, _dstate_fp = compute_macro(_tok, kis_key, kis_secret)
         _gk_fp = read_gemini_key()                # AI 뉴스판정용
@@ -7263,6 +7265,8 @@ def main():
               + (" · NXT 실시간가" if _nxt_now else " · 종가"))
         check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
                             gemini_key=_gk_fp, data_state=_dstate_fp)
+        print("[강제] 대체종배 실행 — NXT거래량/정규장거래량 비율 기준")
+        check_nxt_premium_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True)
         save_state(st)
         sys.exit(0)
     if not kis_on:
