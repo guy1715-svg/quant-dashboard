@@ -5357,6 +5357,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                      "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": _ratio})
     state["nxt_prem_pick_day"] = today
     if not rows:
+        print("[대체종배] 조건 충족 종목 없음(NXT거래대금 50억↑·거래량비율 1배↑ 동시충족 종목 없음)")
         return []
     rows.sort(key=lambda r: r["ratio"], reverse=True)
     out = []
@@ -5374,8 +5375,10 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
         _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
+        print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
         return []
     if sev == 2:                                      # 리스크오프 — 후보 로깅은 하되 발송은 억제
+        print(f"[대체종배] 리스크오프(sev=2) — 후보 {len(out)}종 확보했으나 발송 억제(로깅만)")
         return out
     _lines = "\n".join(
         f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
