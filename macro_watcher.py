@@ -5934,7 +5934,9 @@ def _tail_ok(o, h, l, c, ratio=0.33):
 def check_turnaround(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
     """[V6.1-B] 14:15~15:20 정렬 대기 + 15:20 동시호가 타격 2단계 폰 알림(대시보드 불필요).
     4대 정렬: ①패닉셀(당일저점≤-7%) ②나스닥선물≥-0.5% ③매도둔화(순매수 기울기0↑) ④아래꼬리 지지.
-    반환: 스냅샷용 리스트."""
+    반환: 스냅샷용 리스트.
+    [V26.4] 감시 유니버스 = TA_UNIVERSE(대형주 11종 고정) + 당일 거래대금 상위 40종 — 다른 상시
+    스캐너들과 같은 이유(고정 목록 밖 종목의 패닉셀 반등을 놓치던 문제)로 확장."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((14 * 60 + 15) <= m <= (15 * 60 + 22)):
         return []
@@ -5946,7 +5948,7 @@ def check_turnaround(token, key, secret, now_kst, state, token_tg, chat_id, sev=
     if prev.get("_day") != today: prev = {"_day": today}
     if sent.get("_day") != today: sent = {"_day": today}
     out = []
-    for code, name in TA_UNIVERSE:
+    for code, name in _lineup_plus_turnover(token, key, secret, TA_UNIVERSE):
         px, chg, o, h, l = _price_full(token, key, secret, code)
         if not px:
             continue
