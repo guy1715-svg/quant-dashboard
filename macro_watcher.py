@@ -26,6 +26,7 @@ import atexit
 import argparse
 import datetime
 import tempfile
+import traceback
 import warnings
 import logging
 warnings.filterwarnings("ignore")
@@ -7304,8 +7305,8 @@ def main():
 
     while True:
         _touch_watch_lock()
+        st = load_state()
         try:
-            st = load_state()
             now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
             stamp = now.strftime("%m/%d %H:%M")
             journal_reset_if_needed(st, now.strftime("%Y%m%d"))   # 날짜 바뀌면 일지 초기화
@@ -7791,9 +7792,24 @@ def main():
                                      filename="pick_history.json")
             except Exception as _pge:
                 print("종배픽 기록 업로드 오류:", _pge)
-            save_state(st)
         except Exception as e:
+            # [V26.10] 사용자 제보 — 같은 종목·같은 알림이 몇 분 간격으로 5~7번씩 중복 발송됨
+            # (재료주 투매반등·시가배팅·레인지매매 등). 원인: 기존엔 이 while 루프 한 사이클 전체가
+            # 하나의 try 블록이었고 save_state(st)가 그 블록 '맨 끝'에만 있어서, 사이클 중간 아무
+            # 함수에서든 예외가 나면 그 사이클에 각 check_* 함수가 이미 해놓은 "오늘 이 종목 보냄"
+            # 표시(washout_sent/_signal_claims 등, state는 in-memory에서 참조로 공유돼 이미 바뀐
+            # 상태였음)가 디스크에 저장되지 못하고 통째로 유실됐음. 다음 사이클이 load_state()로
+            # 다시 읽으면 "안 보낸 것"으로 되돌아가 있어, 같은 예외가 반복되는 동안(보통 특정 종목의
+            # 일시적 API 오류) 같은 알림이 사이클마다(장중 60초 간격) 계속 다시 나감.
+            # 아래 finally에서 예외 발생 여부와 무관하게 항상 저장하도록 옮겨 해결 — 이 사이클에서
+            # 예외 전까지 이미 완료된 함수들의 "발송 완료" 표시는 그대로 지켜짐.
             print("체크 오류:", e)
+            print(traceback.format_exc())
+        finally:
+            try:
+                save_state(st)
+            except Exception as _se:
+                print("state 저장 오류:", _se)
         # 주요 시간대(장전 08:40~·제로아워 09~10·마감 15:30~)엔 60초로 촘촘히, 그 외엔 지정 간격
         _kn = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
         _km = _kn.hour * 60 + _kn.minute
