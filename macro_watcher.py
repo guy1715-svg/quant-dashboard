@@ -4523,6 +4523,30 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     _pick_write(rows)
 
 
+NXT_SCAN_LOG_FILE = os.path.join(BASE, "nxt_scan_log.json")
+
+
+def _nxt_scan_log_read():
+    try:
+        with open(NXT_SCAN_LOG_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _nxt_scan_log_append(now_kst, full_rows):
+    """[V26.11] 사용자 요청 — 9/23 엑셀로 만들어드렸던 '괴리율·거래대금' 표(당시엔 사용자가 준
+    스크린샷/엑셀 원본 데이터를 수작업으로 정리)를, 이제 대체종배가 스캔 때마다 직접 계산하는
+    괴리율(NXT가/KRX가)·거래량비율·NXT거래대금 데이터로 날짜별 자동 기록 — 대시보드에서 날짜 골라
+    그날 스캔한 후보 전체(비율 1.0 미달 포함)를 훑어볼 수 있게 함. 같은 날 재스캔(강제실행 등) 시
+    그날 항목을 최신 결과로 덮어씀. 최근 30일치만 보관."""
+    today = now_kst.strftime("%Y-%m-%d")
+    log = [e for e in _nxt_scan_log_read() if e.get("date") != today]
+    log.append({"date": today, "time": now_kst.strftime("%H:%M"), "rows": full_rows})
+    _atomic_write_json(NXT_SCAN_LOG_FILE, log[-30:])
+
+
 def _elite_tag(token, key, secret, code):
     """[V25.31] ⭐정예 판정 — 재료 A/S급 + 당일 수급 유입 필수. 여기에 '일별 수급 연속성'을 얹어
     ⭐정예(기본) / ⭐⭐정예(수급 3일연속·전일比급증) 2단계. 신호에 붙여 확신 강도 표시. 미달 시 ''."""
@@ -5348,24 +5372,31 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
     today = now_kst.strftime("%Y%m%d")
     if not force and state.get("nxt_prem_pick_day") == today:      # 당일 1회
         return []
-    rows = []
+    full_rows = []
     for s in _volume_rank(token, key, secret, top=100):
-        _kpx, _kchg, _kturn, krx_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="J")
+        krx_px, _kchg, _kturn, krx_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="J")
         if not krx_vol:
             continue
         nxt_px, _nchg, nxt_turn, nxt_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="NX")
         if not nxt_px or not nxt_turn or not nxt_vol or nxt_turn < _NXT_MIN_TURN:  # 50억 미달은 노이즈로 컷
             continue
         _ratio = nxt_vol / krx_vol
-        if _ratio < _NXT_PREM_MIN_RATIO:              # NXT거래량이 당일 정규장 거래량을 못 넘었으면 제외
-            continue
-        rows.append({"code": s["code"], "name": s["name"], "nxt_px": nxt_px, "krx_vol": krx_vol,
-                     "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": _ratio})
+        _disp = round((nxt_px / krx_px - 1) * 100, 2) if krx_px else None
+        full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
+                          "disparity_pct": _disp, "krx_vol": krx_vol, "nxt_vol": nxt_vol,
+                          "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
+                          "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
+    full_rows.sort(key=lambda r: r["ratio"], reverse=True)
+    if full_rows:                                     # [V26.11] 비율 미달 포함 전체 스캔 결과를 날짜별로 남김
+        try:                                           # (대시보드 "날짜별 전체 스캔" 표 — 9/23 엑셀의 자동/매일 버전)
+            _nxt_scan_log_append(now_kst, full_rows[:50])
+        except Exception as _nle:
+            print("[대체종배] 스캔로그 저장 오류:", _nle)
+    rows = [r for r in full_rows if r["pass"]]
     if not rows:
         print("[대체종배] 조건 충족 종목 없음(NXT거래대금 50억↑·거래량비율 1배↑ 동시충족 종목 없음)")
         return []
-    rows.sort(key=lambda r: r["ratio"], reverse=True)
     out = []
     for r in rows:
         if len(out) >= 15:
@@ -7792,6 +7823,13 @@ def main():
                                      filename="pick_history.json")
             except Exception as _pge:
                 print("종배픽 기록 업로드 오류:", _pge)
+            # [V26.11] 사용자 요청 — 9/23 엑셀(괴리율·거래대금)처럼 대체종배 스캔 전체를 날짜별로
+            # 대시보드에서 보고 싶다는 요청 대응. nxt_scan_log.json(최근 30일치)도 같은 방식으로 업로드.
+            try:
+                push_snapshot_github(json.dumps(_nxt_scan_log_read(), ensure_ascii=False),
+                                     filename="nxt_scan_log.json")
+            except Exception as _nse:
+                print("대체종배 스캔로그 업로드 오류:", _nse)
         except Exception as e:
             # [V26.10] 사용자 제보 — 같은 종목·같은 알림이 몇 분 간격으로 5~7번씩 중복 발송됨
             # (재료주 투매반등·시가배팅·레인지매매 등). 원인: 기존엔 이 while 루프 한 사이클 전체가
