@@ -820,11 +820,42 @@ def render_dolpanty():
              if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow", "dolpanty_nxtprem")]
     if not picks:
         st.caption("종배 기록 없음 — 감시를 며칠 돌린 뒤 쌓입니다.")
+    else:
+        df = pd.DataFrame(picks[-60:][::-1])
+        df["신호"] = df["signal"].map(_KMAP).fillna(df["signal"])
+        st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
+        st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
+
+    # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
+    # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
+    # 후보 전체(비율 1.0 미달 포함, 최대 50종)로 날짜별 기록해두고 여기서 날짜 골라 보여줌.
+    st.subheader("📅 대체종배 날짜별 전체 스캔")
+    st.caption("그날 스캔한 거래대금 상위 후보 전체(대체종배 기준 미달 포함) — "
+               "예전에 드렸던 괴리율·거래대금 엑셀의 자동/매일 버전입니다.")
+    scan_log = _fetch_nxt_scan_log(_t.time() // 60)
+    if scan_log is None:
+        scan_log = mw._nxt_scan_log_read()
+    if not scan_log:
+        st.caption("스캔 기록 없음 — 대체종배는 18:00~19:50(NXT 애프터마켓 시간대) 또는 "
+                   "'종배픽 강제(+대체종배)' 버튼 실행 시 쌓입니다.")
         return
-    df = pd.DataFrame(picks[-60:][::-1])
-    df["신호"] = df["signal"].map(_KMAP).fillna(df["signal"])
-    st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
-    st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
+    _dates = sorted({e.get("date") for e in scan_log if e.get("date")}, reverse=True)
+    _sel = st.selectbox("날짜 선택", _dates, key="nxt_scan_date")
+    _entry = next((e for e in scan_log if e.get("date") == _sel), None)
+    if not _entry or not _entry.get("rows"):
+        st.caption("해당 날짜 데이터 없음")
+        return
+    _sdf = pd.DataFrame(_entry["rows"])
+    _sdf.insert(0, "순위", range(1, len(_sdf) + 1))
+    _sdf["nxt_turn"] = (_sdf["nxt_turn"] / 1e8).round(1)
+    _sdf["기준충족"] = _sdf["pass"].map({True: "✅", False: "—"})
+    _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
+              "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+              "nxt_turn": "NXT거래대금(억)", "ratio": "거래량비율", "기준충족": "기준충족"}
+    _sdf = _sdf[[c for c in _cols if c in _sdf.columns]].rename(columns=_cols)
+    st.dataframe(_sdf, use_container_width=True, hide_index=True)
+    st.caption(f"{_entry.get('time', '')} 기준 스캔 · 괴리율=(NXT가/KRX가-1)×100 · "
+               "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격")
 
 
 # ══════════════════════════════════════════
@@ -879,6 +910,26 @@ def _fetch_pick_history(_bust):
         headers["Authorization"] = f"Bearer {token}"
     try:
         r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/pick_history.json",
+                          headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, list) else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_nxt_scan_log(_bust):
+    """[V26.11] nxt_scan_log.json(대체종배 스캔 시 거래대금 상위 후보 전체를 날짜별로 기록,
+    macro_watcher가 매 루프 GitHub 'data' 브랜치에 올림) — _fetch_pick_history와 동일 패턴.
+    실패 시 None(호출부가 로컬 mw._nxt_scan_log_read()로 폴백)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/nxt_scan_log.json",
                           headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
         if r.status_code != 200:
             return None
