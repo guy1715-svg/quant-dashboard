@@ -823,7 +823,11 @@ SCORECARD_FILE = os.path.join(BASE, "signal_scorecard.json")
 
 
 def _scorecard_append(now_kst, kind, code, name, px):
-    """[V17.6] 신호별 자동 성적표(대시보드 공유 파일)에 적립 — 종류별 날짜당 1회. 예외 전파 없음."""
+    """[V17.6] 신호별 자동 성적표(대시보드 공유 파일)에 적립 — 종류별 날짜당 1회. 예외 전파 없음.
+    [V26.12] 기존엔 이미 (날짜,종류,종목)이 있으면 조용히 무시해서, 같은 종목이 같은 날 강제실행
+    등으로 다른 가격에 다시 확정픽 발송돼도 '오늘 등록' 성적표엔 옛날(첫) 가격이 그대로 남아
+    실제 텔레그램 진입가와 어긋났음(사용자 로그로 확인: 확정픽 발송가와 성적표 등록가 불일치).
+    이제 같은 (날짜,종류,종목)이면 최신 호출값(가격·시각)으로 덮어써 실제 마지막 발송과 일치시킴."""
     if not code or not kind or not px:
         return
     today = now_kst.strftime("%Y-%m-%d")
@@ -835,7 +839,12 @@ def _scorecard_append(now_kst, kind, code, name, px):
             rows = []
     except Exception:
         rows = []
-    if any(r.get("date") == today and r.get("kind") == kind and r.get("code") == cd for r in rows):
+    idx = next((i for i, r in enumerate(rows)
+                if r.get("date") == today and r.get("kind") == kind and r.get("code") == cd), None)
+    if idx is not None:
+        rows[idx] = {"date": today, "t": now_kst.strftime("%H:%M"), "kind": kind,
+                     "code": cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None}
+        _atomic_write_json(SCORECARD_FILE, rows[-2000:])
         return
     rows.append({"date": today, "t": now_kst.strftime("%H:%M"), "kind": kind,
                  "code": cd, "name": name or "", "px": int(px or 0), "r1": None, "r3": None})
@@ -4508,12 +4517,31 @@ def _pick_write(rows):
 
 
 def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
-    """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유)."""
+    """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유).
+    [V26.12] 사용자 제보 로그 검토 중 발견 — 기존엔 (날짜,종목코드)가 이미 있으면 무조건
+    조용히 무시했음. 문제: ①그림자(_shadow)로 먼저 찍힌 종목이 같은 날 나중에 진짜 확정픽이
+    돼도 영영 그림자로만 남음(실제 텔레그램 확정픽 발송됐는데 기록엔 안 잡힘) ②강제실행
+    (--force-pick 등)으로 같은 종목이 같은 날 다른 가격에 다시 확정픽 발송되면, 실제로 나간
+    텔레그램 진입가와 기록된 등록가가 서로 달라짐(성적표 대조가 옛날 가격 기준으로 틀어짐).
+    이제: 그림자→확정 승격은 항상 반영, 확정→그림자 강등은 막고(이미 나간 확정픽 기록 보존),
+    그 외(둘 다 그림자 또는 둘 다 확정)는 최신 호출값으로 덮어써 실제 마지막 발송과 기록을 일치."""
     if not code or not score:
         return
     today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
     rows = _pick_read()
-    if any(r.get("date") == today and r.get("code") == str(code) for r in rows):
+    idx = next((i for i, r in enumerate(rows)
+                if r.get("date") == today and r.get("code") == str(code)), None)
+    if idx is not None:
+        _old_shadow = str(rows[idx].get("signal", "")).endswith("_shadow")
+        _new_shadow = str(signal).endswith("_shadow")
+        if not _old_shadow and _new_shadow:            # 확정픽을 그림자로 강등 금지
+            return
+        rows[idx] = {"date": today, "code": str(code), "name": name or "",
+                     "score": round(float(score), 1), "px": int(px or 0),
+                     "regime": "", "signal": signal,
+                     "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
+                     "open_next": None, "gap": None}
+        _pick_write(rows)
         return
     rows.append({"date": today, "code": str(code), "name": name or "",
                  "score": round(float(score), 1), "px": int(px or 0),
