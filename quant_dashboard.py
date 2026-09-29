@@ -918,6 +918,36 @@ def render_dolpanty():
                     else:
                         st.caption("관심기준 충족 항목 없음")
 
+    # [V26.15] 사용자 요청 — 키움 "파워맵"(유료 실시간 수급분석) 없이, 거래대금 상위처럼 종목별로
+    # 쭉 나열된 수급(외국인/기관 순매수) 랭킹을 보고 싶다는 요청. 대체종배와 달리 NXT 참여 여부로
+    # 거르지 않은 순수 거래대금 상위 전체가 대상 — 표 헤더를 클릭하면 원하는 기준(외인/기관/합산)
+    # 으로 바로 재정렬되는 st.dataframe 자체 기능을 그대로 활용(별도 정렬 UI 불필요).
+    st.subheader("💰 수급 상위 (외국인·기관 순매수)")
+    st.caption("거래대금 상위 종목의 외국인·기관 순매수 랭킹 — 표 헤더를 눌러 원하는 기준으로 정렬하세요.")
+    flow_log = _fetch_investor_flow_log(_t.time() // 60)
+    if flow_log is None:
+        flow_log = mw._investor_flow_log_read()
+    if not flow_log:
+        st.caption("수급 기록 없음 — 18:00~19:50(NXT 애프터마켓 시간대) 또는 "
+                   "'종배픽 강제(+대체종배)' 버튼 실행 시 쌓입니다.")
+        return
+    _fdates = sorted({e.get("date") for e in flow_log if e.get("date")}, reverse=True)
+    _fsel = st.selectbox("날짜 선택", _fdates, key="investor_flow_date")
+    _fentry = next((e for e in flow_log if e.get("date") == _fsel), None)
+    if not _fentry or not _fentry.get("rows"):
+        st.caption("해당 날짜 데이터 없음")
+        return
+    _fdf = pd.DataFrame(_fentry["rows"])
+    _fdf.insert(0, "순위", range(1, len(_fdf) + 1))
+    _fdf["turnover"] = (_fdf["turnover"] / 1e8).round(0)
+    _fcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "px": "현재가", "chg": "등락률(%)",
+              "turnover": "거래대금(억)", "foreign_eok": "외인순매수(억)", "inst_eok": "기관순매수(억)",
+              "total_eok": "합산순매수(억)"}
+    _fdf = _fdf[[c for c in _fcols if c in _fdf.columns]].rename(columns=_fcols)
+    st.dataframe(_fdf, use_container_width=True, hide_index=True)
+    st.caption(f"{_fentry.get('time', '')} 기준 스캔 · 합산순매수=외인+기관 · 기본 정렬은 합산순매수 내림차순 "
+               "(표 헤더 클릭 시 재정렬)")
+
 
 # ══════════════════════════════════════════
 # ☁️ 관심종목 GitHub 자동반영 — 클라우드(대시보드)에서 쓴 파일이 재배포 시 사라지고
@@ -991,6 +1021,26 @@ def _fetch_nxt_scan_log(_bust):
         headers["Authorization"] = f"Bearer {token}"
     try:
         r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/nxt_scan_log.json",
+                          headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, list) else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_investor_flow_log(_bust):
+    """[V26.15] investor_flow_log.json(거래대금 상위 종목 외국인/기관 순매수 랭킹, macro_watcher가
+    매 루프 GitHub 'data' 브랜치에 올림) — _fetch_nxt_scan_log와 동일 패턴. 실패 시 None(호출부가
+    로컬 mw._investor_flow_log_read()로 폴백)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/investor_flow_log.json",
                           headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
         if r.status_code != 200:
             return None
