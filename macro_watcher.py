@@ -4613,11 +4613,16 @@ def check_investor_flow_rank(token, key, secret, now_kst, state, force=False, to
         return []
     rows = []
     for s in _volume_rank(token, key, secret, top=top):
+        # [V26.16] 사용자 제보 — 100종을 스캔했는데 10~11종만 나옴. 원인: distinguish_fail=True로
+        # 부르면 "이 종목 관련 행에서 외국인·기관 둘 다 0(눈에 띄는 수급 없음)"인 경우도 "조회 실패"로
+        # 취급돼(_investor_est 자체가 (None,None) 반환) continue로 통째로 빠졌음 — 회전율 상위권
+        # 밖(11위 이후)은 그 시각에 외국인/기관 둘 다 뚜렷한 순매수가 없는 경우가 흔해서 90종 가까이
+        # 누락됐던 것. 이 랭킹은 "교차용으로 상위 100종 전체가 다 나와야" 의미가 있으므로,
+        # distinguish_fail=False로 바꿔 "수급 뚜렷한 거 없음"은 0/0으로 정상 포함시키고, 진짜
+        # API 예외일 때만 스킵.
         try:
-            _f, _o = _investor_est(token, key, secret, s["code"], distinguish_fail=True)
+            _f, _o = _investor_est(token, key, secret, s["code"], distinguish_fail=False)
         except Exception:
-            _f = _o = None
-        if _f is None or _o is None:
             continue
         _fa = round(_f * s["px"] / 1e8, 1)     # 외국인 순매수(억원)
         _oa = round(_o * s["px"] / 1e8, 1)     # 기관 순매수(억원)
