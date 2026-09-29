@@ -5447,9 +5447,18 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
             continue
         _ratio = nxt_vol / krx_vol
         _disp = round((nxt_px / krx_px - 1) * 100, 2) if krx_px else None
+        # [V26.14] 사용자 제안 — "거래량비율만으로는 소형주가 유리하고, 삼성전기처럼 거래량비율은
+        # 낮아도 절대 거래대금이 큰 종목을 놓친다"는 지적 반영. NXT 애프터거래대금을 절대금액이
+        # 아니라 '그 종목 평소(최근 20일 평균) 정규장 거래대금 대비 몇 %인가'로도 같이 보여줘서,
+        # 소형주의 거래량비율 착시와 대형주의 절대금액 착시를 둘 다 보정. _daily_setup이 이미
+        # 20일평균거래대금(turnavg)을 계산하고 있어 재사용(신규 API 불필요, 함수만 추가 호출).
+        _ds = _daily_setup(token, key, secret, s["code"], krx_px)
+        _turnavg = (_ds or {}).get("turnavg") or 0
+        _avg_turn_ratio = round(nxt_turn / _turnavg, 3) if _turnavg else None
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
                           "disparity_pct": _disp, "krx_vol": krx_vol, "nxt_vol": nxt_vol,
                           "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
+                          "avg_turn_ratio": _avg_turn_ratio,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
     full_rows.sort(key=lambda r: r["ratio"], reverse=True)
@@ -5473,6 +5482,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
+                    "avg_turn_ratio": r.get("avg_turn_ratio"),
                     "news": ng, "score": _score})
         _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
         _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
@@ -5484,8 +5494,19 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         return out
     _line_parts = []
     for o in out:
+        _avr = o.get("avg_turn_ratio")                  # [V26.14] 평소(20일평균) 정규장 거래대금 대비 애프터거래대금 비율
+        if _avr is None:
+            _avr_tag = ""
+        elif _avr >= 0.5:
+            _avr_tag = f" · 평소대비 {_avr*100:.0f}%🔥"
+        elif _avr >= 0.3:
+            _avr_tag = f" · 평소대비 {_avr*100:.0f}%💪"
+        elif _avr >= 0.1:
+            _avr_tag = f" · 평소대비 {_avr*100:.0f}%"
+        else:
+            _avr_tag = f" · 평소대비 {_avr*100:.0f}%(약함)"
         _base = (f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
-                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억 "
+                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag} "
                  f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
         if o["rank"] <= _NXT_PREM_ENRICH_N:            # 상위 N종만 수급·AI뉴스·관심기준 풀체크(API 비용상 제한)
             _enrich = _nxt_prem_enrich_block(token, key, secret, gemini_key, o)

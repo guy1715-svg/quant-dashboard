@@ -849,13 +849,20 @@ def render_dolpanty():
     _sdf.insert(0, "순위", range(1, len(_sdf) + 1))
     _sdf["nxt_turn"] = (_sdf["nxt_turn"] / 1e8).round(1)
     _sdf["기준충족"] = _sdf["pass"].map({True: "✅", False: "—"})
+    # [V26.14] 사용자 제안 반영 — 거래량비율만 보면 소형주가 유리하고, 삼성전기처럼 절대 거래대금이
+    # 큰데 거래량비율은 낮은 종목이 묻힘. NXT거래대금이 그 종목 평소(20일평균) 정규장 거래대금 대비
+    # 몇 %인지 같이 보여줌(옛 스캔 기록엔 이 필드가 없을 수 있어 없으면 빈 칸으로 표시).
+    if "avg_turn_ratio" in _sdf.columns:
+        _sdf["avg_turn_ratio"] = (_sdf["avg_turn_ratio"] * 100).round(0)
     _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
               "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
-              "nxt_turn": "NXT거래대금(억)", "ratio": "거래량비율", "기준충족": "기준충족"}
+              "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
+              "ratio": "거래량비율", "기준충족": "기준충족"}
     _sdf = _sdf[[c for c in _cols if c in _sdf.columns]].rename(columns=_cols)
     st.dataframe(_sdf, use_container_width=True, hide_index=True)
     st.caption(f"{_entry.get('time', '')} 기준 스캔 · 괴리율=(NXT가/KRX가-1)×100 · "
-               "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격")
+               "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격 · "
+               "평소대비(%)=NXT거래대금÷최근20일평균 정규장거래대금(소형주 거래량비율 착시·대형주 절대금액 착시 보정용)")
 
     # [V26.13] 사용자 요청 — 수급(외인/기관/개인)·뉴스재료·시황 체크리스트를 이 표에서도 보고 싶다는
     # 요청. 후보 전체(최대 50종)에 미리 계산해두면 API 호출이 매 스캔마다 크게 늘어나므로, 사용자와
