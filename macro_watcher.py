@@ -4575,6 +4575,69 @@ def _nxt_scan_log_append(now_kst, full_rows):
     _atomic_write_json(NXT_SCAN_LOG_FILE, log[-30:])
 
 
+INVESTOR_FLOW_LOG_FILE = os.path.join(BASE, "investor_flow_log.json")
+_INVESTOR_FLOW_START, _INVESTOR_FLOW_END = 18 * 60, 19 * 60 + 50   # 대체종배와 같은 저녁 리뷰 시간대
+
+
+def _investor_flow_log_read():
+    try:
+        with open(INVESTOR_FLOW_LOG_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _investor_flow_log_append(now_kst, rows):
+    """[V26.15] 날짜별 전체 스캔(괴리율·거래대금)과 같은 패턴 — 키움 '파워맵'(유료) 없이도
+    거래대금 상위 종목의 외국인/기관 순매수를 매일 자동으로 랭킹 형태로 남겨 대시보드에서 확인
+    가능하게 함. 같은 날 재스캔 시 최신 결과로 덮어씀. 최근 30일치만 보관."""
+    today = now_kst.strftime("%Y-%m-%d")
+    log = [e for e in _investor_flow_log_read() if e.get("date") != today]
+    log.append({"date": today, "time": now_kst.strftime("%H:%M"), "rows": rows})
+    _atomic_write_json(INVESTOR_FLOW_LOG_FILE, log[-30:])
+
+
+def check_investor_flow_rank(token, key, secret, now_kst, state, force=False, top=100):
+    """[V26.15] 사용자 요청 — "거래대금 상위처럼 수급(외국인/기관 순매수)도 종목별로 쭉 순위로
+    보고 싶다"는 요청에 대응. 키움 HTS의 "파워맵" 같은 유료 실시간 수급분석 서비스를 쓰지 않고,
+    이미 봇이 갖고 있는 KIS API 접근(_volume_rank로 거래대금 상위 유니버스, _investor_est로 종목별
+    외국인/기관 순매수 추정치)만으로 같은 걸 무료로 자동 생성. 대체종배와 달리 NXT 참여 여부로
+    거르지 않음(순수 거래대금 상위 전체가 대상 — "거래대금 상위" 화면과 동일한 유니버스여야
+    사용자 의도에 맞음). force=True: 시간창·당일락 무시(수동 테스트). 반환: 스냅샷용 리스트."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not force and not (_INVESTOR_FLOW_START <= m <= _INVESTOR_FLOW_END):
+        return []
+    today = now_kst.strftime("%Y%m%d")
+    if not force and state.get("investor_flow_day") == today:      # 당일 1회
+        return []
+    rows = []
+    for s in _volume_rank(token, key, secret, top=top):
+        try:
+            _f, _o = _investor_est(token, key, secret, s["code"], distinguish_fail=True)
+        except Exception:
+            _f = _o = None
+        if _f is None or _o is None:
+            continue
+        _fa = round(_f * s["px"] / 1e8, 1)     # 외국인 순매수(억원)
+        _oa = round(_o * s["px"] / 1e8, 1)     # 기관 순매수(억원)
+        rows.append({"code": s["code"], "name": s["name"], "px": s["px"], "chg": s["chg"],
+                    "turnover": s["turnover"], "foreign_eok": _fa, "inst_eok": _oa,
+                    "total_eok": round(_fa + _oa, 1)})
+    state["investor_flow_day"] = today
+    if not rows:
+        print("[수급상위] 조회 실패 — 데이터 없음")
+        return []
+    rows.sort(key=lambda r: r["total_eok"], reverse=True)    # 기본 정렬(외국인+기관 합산 순매수 내림차순)
+    try:
+        _investor_flow_log_append(now_kst, rows)
+    except Exception as _ife:
+        print("[수급상위] 스캔로그 저장 오류:", _ife)
+    print(f"[수급상위] {len(rows)}종 스캔 완료 — 1위 {rows[0]['name']}(외인{rows[0]['foreign_eok']:+.0f}억"
+          f"·기관{rows[0]['inst_eok']:+.0f}억)")
+    return rows
+
+
 def _elite_tag(token, key, secret, code):
     """[V25.31] ⭐정예 판정 — 재료 A/S급 + 당일 수급 유입 필수. 여기에 '일별 수급 연속성'을 얹어
     ⭐정예(기본) / ⭐⭐정예(수급 3일연속·전일比급증) 2단계. 신호에 붙여 확신 강도 표시. 미달 시 ''."""
@@ -7400,6 +7463,8 @@ def main():
         print("[강제] 대체종배 실행 — NXT거래량/정규장거래량 비율 기준")
         check_nxt_premium_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
                                gemini_key=_gk_fp)
+        print("[강제] 수급상위 실행 — 거래대금 상위 종목 외국인/기관 순매수 랭킹")
+        check_investor_flow_rank(_tok, kis_key, kis_secret, _now, st, force=True)
         save_state(st)
         sys.exit(0)
     if not kis_on:
@@ -7843,6 +7908,11 @@ def main():
                                                                           gemini_key=gemini_key)
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
+                    # [V26.15] 수급상위 — 키움 파워맵(유료) 대체용, 거래대금 상위 종목 외국인/기관 순매수 랭킹
+                    try:
+                        snap["investor_flow_rank"] = check_investor_flow_rank(tok, kis_key, kis_secret, now, st)
+                    except Exception as _ife:
+                        print("수급상위 체크 오류:", _ife)
                     # 2-Tier 대장주 관측 + 시장·섹터 정렬 시에만 텔레그램(Confluence)
                     try:
                         snap["sector_leaders"] = check_sector_leaders(
@@ -7924,6 +7994,12 @@ def main():
                                      filename="nxt_scan_log.json")
             except Exception as _nse:
                 print("대체종배 스캔로그 업로드 오류:", _nse)
+            # [V26.15] 수급상위(investor_flow_log.json)도 같은 방식으로 업로드
+            try:
+                push_snapshot_github(json.dumps(_investor_flow_log_read(), ensure_ascii=False),
+                                     filename="investor_flow_log.json")
+            except Exception as _ifle:
+                print("수급상위 스캔로그 업로드 오류:", _ifle)
         except Exception as e:
             # [V26.10] 사용자 제보 — 같은 종목·같은 알림이 몇 분 간격으로 5~7번씩 중복 발송됨
             # (재료주 투매반등·시가배팅·레인지매매 등). 원인: 기존엔 이 while 루프 한 사이클 전체가
