@@ -5386,14 +5386,51 @@ def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
 #   [V26.7] 그래서 원화 금액 비율이 아니라 순수 거래량(주식수) 비율로 최종 재설계.
 _NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프터마켓 거래량이 쌓인 뒤)
 _NXT_PREM_MIN_RATIO = 1.0    # NXT거래량이 당일 정규장 거래량을 이미 넘어선(비율>1) 종목만
+_NXT_PREM_ENRICH_N = 3       # [V26.13] 수급·AI뉴스·관심기준 풀체크를 붙일 상위 종목 수(사용자 확정)
 
 
-def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False):
+def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
+    """[V26.13] 대체종배 상위 후보용 수급(외인/기관/개인추정)·AI뉴스·관심기준 — 확정픽
+    (check_dolpanty_pick)이 쓰는 함수를 그대로 재사용. 개인 순매수는 KIS가 별도로 안 주므로
+    외인+기관 합산의 반대부호로 근사(추정치임을 표기). 예외는 개별 항목만 조용히 생략."""
+    _lines = []
+    try:
+        _f, _o = _investor_est(token, key, secret, o["code"], distinguish_fail=True)
+        if _f is None or _o is None:
+            _lines.append("   💰 수급: ⚠️미확인(조회 실패)")
+        else:
+            _fa, _oa = _f * o["nxt_px"] / 1e8, _o * o["nxt_px"] / 1e8
+            _ind = -(_fa + _oa)
+            _lines.append(f"   💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억 · 개인(추정) {_ind:+.0f}억"
+                          + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
+    except Exception:
+        pass
+    try:
+        _ai = _gemini_stock_news_verdict(gemini_key, o["code"], o["name"])
+        if _ai:
+            _lines.append("   " + _ai.strip())
+    except Exception:
+        pass
+    try:
+        _wlp = _watchlist_check(token, key, secret, o["code"], o["nxt_px"], 0.0, o["nxt_turn"], o.get("news"))
+        if _wlp:
+            _lines.append(f"   📋 관심기준 {len(_wlp)}개 충족: {'·'.join(_wlp)}")
+    except Exception:
+        pass
+    return "\n".join(_lines)
+
+
+def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False,
+                           gemini_key=None):
     """[V26.7] 대체종배 — 당일 거래대금 상위 100종 중 NXT거래대금 50억↑(노이즈 컷) AND
     (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이 당일 정규장 거래량을 이미 압도)인 종목을
     비율 내림차순 최대 15종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
     기준이라 종목 크기·가격 등락률에 좌우되지 않음. force=True: 시간창·당일락 무시(수동 테스트,
-    --force-pick). 반환: 스냅샷용 리스트."""
+    --force-pick). 반환: 스냅샷용 리스트.
+    [V26.13] 사용자 요청 — 확정픽(check_dolpanty_pick)에만 있던 수급(외인/기관)·AI뉴스·관심기준
+    체크리스트를 대체종배 후보에도 보고 싶다는 요청. 종목당 API 호출이 여러 번 추가로 드는 항목이라
+    (수급조회·뉴스검색·Gemini 판정), 사용자와 상의해 상위 3종에만 붙이기로 확정(전체 15종에 다 붙이면
+    메시지도 과도히 길어지고 API 호출도 크게 늘어남)."""
     m = now_kst.hour * 60 + now_kst.minute
     if not force and not (_NXT_PREM_START <= m <= _NXT_PREM_END):
         return []
@@ -5434,7 +5471,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
             continue
         _score = 50 + min(30, round((r["ratio"] - 1) * 15)) + (20 if ng == "S" else 12 if ng == "A" else 0)
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
-                    "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"],
+                    "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
                     "news": ng, "score": _score})
         _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
@@ -5445,11 +5482,17 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
     if sev == 2:                                      # 리스크오프 — 후보 로깅은 하되 발송은 억제
         print(f"[대체종배] 리스크오프(sev=2) — 후보 {len(out)}종 확보했으나 발송 억제(로깅만)")
         return out
-    _lines = "\n".join(
-        f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
-        f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억 "
-        f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}"
-        for o in out)
+    _line_parts = []
+    for o in out:
+        _base = (f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
+                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억 "
+                 f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
+        if o["rank"] <= _NXT_PREM_ENRICH_N:            # 상위 N종만 수급·AI뉴스·관심기준 풀체크(API 비용상 제한)
+            _enrich = _nxt_prem_enrich_block(token, key, secret, gemini_key, o)
+            if _enrich:
+                _base += "\n" + _enrich
+        _line_parts.append(_base)
+    _lines = "\n".join(_line_parts)
     send_telegram(token_tg, chat_id,
                   f"{SIG_INFO}\n🌙📊 대체종배 후보 — NXT 거래량이 당일 정규장을 압도한 종목 (총 {len(out)}종)\n"
                   f"{_lines}\n"
@@ -7334,7 +7377,8 @@ def main():
         check_dolpanty_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
                             gemini_key=_gk_fp, data_state=_dstate_fp)
         print("[강제] 대체종배 실행 — NXT거래량/정규장거래량 비율 기준")
-        check_nxt_premium_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True)
+        check_nxt_premium_pick(_tok, kis_key, kis_secret, _now, st, token_tg, chat_id, _sev, force=True,
+                               gemini_key=_gk_fp)
         save_state(st)
         sys.exit(0)
     if not kis_on:
@@ -7774,7 +7818,8 @@ def main():
                         print("넥장 체크 오류:", _nxe)
                     # 대체종배(NXT거래량이 당일 정규장 거래량을 압도한 종목) — 넥장 후반(18~19:50) 1회
                     try:
-                        snap["nxt_premium_pick"] = check_nxt_premium_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                        snap["nxt_premium_pick"] = check_nxt_premium_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
+                                                                          gemini_key=gemini_key)
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
                     # 2-Tier 대장주 관측 + 시장·섹터 정렬 시에만 텔레그램(Confluence)

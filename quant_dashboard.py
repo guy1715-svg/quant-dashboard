@@ -857,6 +857,60 @@ def render_dolpanty():
     st.caption(f"{_entry.get('time', '')} 기준 스캔 · 괴리율=(NXT가/KRX가-1)×100 · "
                "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격")
 
+    # [V26.13] 사용자 요청 — 수급(외인/기관/개인)·뉴스재료·시황 체크리스트를 이 표에서도 보고 싶다는
+    # 요청. 후보 전체(최대 50종)에 미리 계산해두면 API 호출이 매 스캔마다 크게 늘어나므로, 사용자와
+    # 상의해 "종목을 고르면 그 순간 조회"하는 온디맨드 방식으로 확정 — 평소엔 API 부담 없음.
+    st.markdown("##### 🔍 종목별 수급·AI뉴스·관심기준 조회")
+    st.caption("아래에서 종목을 고르고 버튼을 누르면 그 순간 실시간으로 조회합니다(클릭 전엔 조회 안 함).")
+    _raw_rows = _entry["rows"]
+    _opt_labels = [f"{i + 1}. {r.get('name', '')}({r.get('code', '')})" for i, r in enumerate(_raw_rows)]
+    if _opt_labels:
+        _sel_label = st.selectbox("종목 선택", _opt_labels, key="nxt_scan_detail_sel")
+        if st.button("수급·AI뉴스·관심기준 조회", key="nxt_scan_detail_btn"):
+            _sel_row = _raw_rows[_opt_labels.index(_sel_label)]
+            if not tok:
+                st.warning("KIS 키 없음 — 조회 불가")
+            else:
+                with st.spinner(f"{_sel_row.get('name', '')} 조회 중..."):
+                    _px = _sel_row.get("nxt_px") or _sel_row.get("krx_px") or 0
+                    try:
+                        _f, _o = mw._investor_est(tok, key, sec, _sel_row.get("code"), distinguish_fail=True)
+                    except Exception:
+                        _f = _o = None
+                    if _f is None or _o is None:
+                        st.warning("💰 수급 조회 실패")
+                    else:
+                        _fa, _oa = _f * _px / 1e8, _o * _px / 1e8
+                        _ind = -(_fa + _oa)     # 개인 순매수는 KIS가 따로 안 줘서 외인+기관 반대부호로 근사(추정치)
+                        st.markdown(f"**💰 수급**: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억 · 개인(추정) {_ind:+.0f}억"
+                                   + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
+                    _gk = mw.read_gemini_key()
+                    if _gk:
+                        try:
+                            _ai = mw._gemini_stock_news_verdict(_gk, _sel_row.get("code"), _sel_row.get("name"))
+                        except Exception:
+                            _ai = ""
+                        st.markdown(f"**{_ai.strip()}**" if _ai else "🤖 AI뉴스: 관련 뉴스 없음")
+                    else:
+                        st.caption("Gemini 키 없음 — AI뉴스 판정 불가")
+                    try:
+                        _ng, _nbad = mw._news_grade(_sel_row.get("code"))
+                    except Exception:
+                        _ng, _nbad = None, False
+                    _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_ng, "⚪미확인")
+                    if _nbad:
+                        _mat += " · ⚠️악재감지"
+                    st.markdown(f"**재료등급**: {_mat}")
+                    try:
+                        _wlp = mw._watchlist_check(tok, key, sec, _sel_row.get("code"), _px, 0.0,
+                                                   _sel_row.get("nxt_turn", 0), _ng)
+                    except Exception:
+                        _wlp = []
+                    if _wlp:
+                        st.markdown(f"**📋 관심기준 {len(_wlp)}개 충족**: {'·'.join(_wlp)}")
+                    else:
+                        st.caption("관심기준 충족 항목 없음")
+
 
 # ══════════════════════════════════════════
 # ☁️ 관심종목 GitHub 자동반영 — 클라우드(대시보드)에서 쓴 파일이 재배포 시 사라지고
