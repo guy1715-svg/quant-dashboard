@@ -1049,6 +1049,16 @@ def _analyze_history(token, key, secret, now_kst, token_tg, chat_id):
             rows = []
     except Exception:
         rows = []
+    # [V26.18] 사용자 제보 로그에서 발견 — "종배픽"·"대체종배"가 "종배픽(NXT)"/"종배픽(NXT미거래)"·
+    # "대체종배(NXT거래량압도)"와 별도 항목으로 떠서 건수가 거의 맞아떨어짐(12건 vs 10+1건 등)을 확인.
+    # 원인: check_dolpanty_pick·check_nxt_premium_pick 둘 다 확정픽 1건마다 _log_pick(pick_history.json,
+    # signal="dolpanty"/"dolpanty_nonxt"/"dolpanty_nxtprem")과 _log_signal(state,...,"종배픽"/"대체종배",...)
+    # 를 같이 호출 — 후자는 내부에서 _scorecard_append(signal_scorecard.json, kind="종배픽"/"대체종배")도
+    # 호출해, 같은 확정픽 1건이 두 파일에 서로 다른 이름으로 중복 기록됨. 아래에서 pick_history.json
+    # 쪽(_kmap으로 더 구체적인 이름 부여)을 신뢰 소스로 쓰고, signal_scorecard.json의 중복 라벨("종배픽"/
+    # "대체종배")은 이 집계에서만 제외 — _scorecard_report(--report, "오늘 등록" 성적표)는 이 두 kind를
+    # 그대로 써야 하는 별개 용도라 그쪽 파일 자체나 다른 함수는 건드리지 않음.
+    rows = [r for r in rows if r.get("kind") not in ("종배픽", "대체종배")]
     # pick_history(종배/그림자)도 합침 — signal→kind 매핑
     _kmap = {"dolpanty": "종배픽(NXT)", "dolpanty_nonxt": "종배픽(NXT미거래)",
              "dolpanty_div": "종배분산", "dolpanty_shadow": "종배그림자",
