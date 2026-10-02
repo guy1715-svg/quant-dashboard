@@ -2172,6 +2172,19 @@ def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret
         seen.add(_k); arts.append(f"[{_tg}] {_t} :: {_d}")   # [출처 시각] 태그(최근·구분)
     if not arts:
         print("[저녁뉴스] 수집 0건 — 네이버·RSS 모두 실패(네트워크/피드 확인)")
+        # [V26.17] 사용자 제보 — "어제 저녁 브리핑 메시지를 못 받은 것 같다". 원인 추적: RSS 수집이
+        # 0건이면 evening_news_day를 세팅하지 않고 그냥 return해서 다음 루프에 재시도는 하지만,
+        # 그 사이 사용자에게는 아무 메시지도 안 감 — 대체종배·시가배팅 등의 "0건 침묵" 패턴과 같은
+        # 결함인데, 저건 "후보 없음"(콘솔 로그만으로 충분)인 반면 이건 "오늘 저녁 브리핑 자체가
+        # 통째로 안 나갈 수 있다"는 더 심각한 사안이라 텔레그램 고지가 필요하다고 판단. 같은 저녁에
+        # 재시도마다 스팸 가지 않도록 하루 1회만 발송(실패가 풀려서 나중에 정상 브리핑이 가면 그건
+        # 그것대로 또 감 — evening_news_day는 여기서 안 건드리므로 재시도·정상발송 동작은 그대로 유지).
+        if state.get("evening_news_fail_day") != today:
+            if send_telegram(token_tg, chat_id,
+                             "⚠️[저녁뉴스] 오늘 저녁 브리핑 수집 실패(RSS 피드 0건 — 네트워크/피드 문제로 "
+                             "추정) · 이후 주기마다 자동 재시도하며, 수집되면 정상 브리핑이 나갑니다. "
+                             "22시까지 계속 실패하면 오늘은 브리핑이 아예 안 나갈 수 있습니다."):
+                state["evening_news_fail_day"] = today
         return
     print(f"[저녁뉴스] 소스={_src} · 수집 {len(arts)}건(최근 {_news_hours}h)")
     _batch = "\n".join(arts[:80])
