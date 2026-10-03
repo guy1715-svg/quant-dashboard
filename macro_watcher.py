@@ -2861,20 +2861,34 @@ _EARLY_ETF_KW = ("ETN", "ETF", "선물", "레버리지", "인버스", "KODEX", "
 
 
 def _volume_rank(token, key, secret, top=40):
-    """당일 거래대금 상위 종목 — volume-rank(FHPST01710000). [{code,name,px,chg,turnover}]. 실패 시 []."""
-    try:
-        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/volume-rank",
-                         headers={"authorization": f"Bearer {token}", "appkey": key,
-                                  "appsecret": secret, "tr_id": "FHPST01710000"},
-                         params={"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20171",
-                                 "fid_input_iscd": "0000", "fid_div_cls_code": "0",
-                                 "fid_blng_cls_code": "3", "fid_trgt_cls_code": "111111111",
-                                 "fid_trgt_exls_cls_code": "000000", "fid_input_price_1": "",
-                                 "fid_input_price_2": "", "fid_vol_cnt": "", "fid_input_date_1": ""},
-                         timeout=6)
-        out = r.json().get("output", []) or []
-        rows = []
-        for x in out[:top]:
+    """당일 거래대금 상위 종목 — volume-rank(FHPST01710000). [{code,name,px,chg,turnover}]. 실패 시 [].
+    [V26.19] 사용자가 실전 로그로 "거래대금 상위 100종" 기준으로 설계된 수급상위가 실제론 "29종
+    스캔"으로 찍힌 걸 제보 — top=100을 요청해도 항상 한 페이지 분량(~29~30종)만 받고 있었음.
+    공식 KIS 예제 저장소(volume_rank.py)로 재확인한 결과, 이 API는 응답을 페이지 단위로 끊어 주고
+    (응답 헤더 tr_cont='M'/'F'면 다음 페이지가 더 있다는 뜻, 다음 요청 헤더에 tr_cont='N'을 실어
+    보내야 이어받음) 기존 코드는 첫 페이지 한 번만 요청하고 있었음. top개를 채울 때까지(또는
+    다음 페이지가 더 없을 때까지) 이어서 요청하도록 수정 — 이 함수를 공유해서 쓰는 대체종배·
+    수급상위·거래량급증·시가저격 라인업 전부가 이 수정 하나로 함께 "진짜 top개"를 받게 됨."""
+    rows = []
+    tr_cont = ""
+    for _ in range(10):                      # 안전장치 — 페이지 10개(최대 약 300종)면 top=100도 충분
+        try:
+            r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/volume-rank",
+                             headers={"authorization": f"Bearer {token}", "appkey": key,
+                                      "appsecret": secret, "tr_id": "FHPST01710000",
+                                      "tr_cont": tr_cont},
+                             params={"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20171",
+                                     "fid_input_iscd": "0000", "fid_div_cls_code": "0",
+                                     "fid_blng_cls_code": "3", "fid_trgt_cls_code": "111111111",
+                                     "fid_trgt_exls_cls_code": "000000", "fid_input_price_1": "",
+                                     "fid_input_price_2": "", "fid_vol_cnt": "", "fid_input_date_1": ""},
+                             timeout=6)
+            out = r.json().get("output", []) or []
+        except Exception:
+            break
+        if not out:
+            break
+        for x in out:
             if not isinstance(x, dict):
                 continue
             cd = str(x.get("mksc_shrn_iscd", "")).zfill(6)
@@ -2884,9 +2898,11 @@ def _volume_rank(token, key, secret, top=40):
             rows.append({"code": cd, "name": x.get("hts_kor_isnm", cd), "px": px,
                          "chg": float(str(x.get("prdy_ctrt", 0)).replace(",", "") or 0),
                          "turnover": _to_int(x.get("acml_tr_pbmn"))})
-        return rows
-    except Exception:
-        return []
+        if len(rows) >= top or r.headers.get("tr_cont", "") not in ("M", "F"):
+            break
+        tr_cont = "N"
+        time.sleep(0.1)                      # 레이트리밋 배려(짧은 지연)
+    return rows[:top]
 
 
 def _lineup_plus_turnover(token, key, secret, lineup, top=40):
