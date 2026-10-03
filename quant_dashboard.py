@@ -854,7 +854,7 @@ def render_dolpanty():
     if not tok:
         st.info("KIS 키 없음 — 새로고침 불가")
     elif st.button("🔄 지금 새로고침", key="nxt_live_refresh_btn"):
-        with st.spinner("거래대금 상위 100종 스캔 중... (약 30초~1분 소요)"):
+        with st.spinner("KRX+NXT 거래대금 상위 최대 200종 스캔 중... (약 1~2분 소요)"):
             _now_live = datetime.utcnow() + timedelta(hours=9)
             _gk_live = mw.read_gemini_key()
             _full_out = []
