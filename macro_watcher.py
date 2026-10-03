@@ -5512,7 +5512,7 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
 
 
 def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False,
-                           gemini_key=None):
+                           gemini_key=None, notify=True, full_out=None):
     """[V26.7] 대체종배 — 당일 거래대금 상위 100종 중 NXT거래대금 50억↑(노이즈 컷) AND
     (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이 당일 정규장 거래량을 이미 압도)인 종목을
     비율 내림차순 최대 15종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
@@ -5521,7 +5521,15 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
     [V26.13] 사용자 요청 — 확정픽(check_dolpanty_pick)에만 있던 수급(외인/기관)·AI뉴스·관심기준
     체크리스트를 대체종배 후보에도 보고 싶다는 요청. 종목당 API 호출이 여러 번 추가로 드는 항목이라
     (수급조회·뉴스검색·Gemini 판정), 사용자와 상의해 상위 3종에만 붙이기로 확정(전체 15종에 다 붙이면
-    메시지도 과도히 길어지고 API 호출도 크게 늘어남)."""
+    메시지도 과도히 길어지고 API 호출도 크게 늘어남).
+    [V26.17] 대시보드 "내가 보고싶은 시간때" 온디맨드 새로고침 지원 — notify=False면 텔레그램 발송과
+    성적표(pick_history/signal_scorecard) 기록을 모두 건너뛰고 계산만 함(장중 미확정가 기준 미리보기가
+    저녁 확정픽 승률 통계와 섞이지 않게). nxt_scan_log.json(날짜별 전체 스캔 표)은 어차피 같은 날짜면
+    덮어쓰므로 notify와 무관하게 항상 최신화. full_out에 리스트를 넘기면 비율순 상위 30종 전체를
+    그 리스트에 채워줌(대시보드가 1~30위 전체를 보여주고 싶을 때 씀 — out은 뉴스필터 후 최대 15종뿐).
+    호출 시 state에는 반드시 '매번 새로 만든 빈 dict({})'를 넘길 것 — 감시 프로세스가 쓰는 공유
+    macro_watcher_state.json을 그대로 넘기면 당일락(nxt_prem_pick_day)이 온디맨드 호출로 선점되어
+    저녁 정규 스캔이 당일 스킵될 수 있음."""
     m = now_kst.hour * 60 + now_kst.minute
     if not force and not (_NXT_PREM_START <= m <= _NXT_PREM_END):
         return []
@@ -5553,6 +5561,8 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
     full_rows.sort(key=lambda r: r["ratio"], reverse=True)
+    if full_out is not None:                           # [V26.17] 대시보드 온디맨드용 — 비율순 상위 30종 그대로 전달
+        full_out.extend(full_rows[:30])
     if full_rows:                                     # [V26.11] 비율 미달 포함 전체 스캔 결과를 날짜별로 남김
         try:                                           # (대시보드 "날짜별 전체 스캔" 표 — 9/23 엑셀의 자동/매일 버전)
             _nxt_scan_log_append(now_kst, full_rows[:50])
@@ -5570,13 +5580,21 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         if nbad:
             continue
         _score = 50 + min(30, round((r["ratio"] - 1) * 15)) + (20 if ng == "S" else 12 if ng == "A" else 0)
+        # [V26.17] 쌍끌이(외국인+기관 동시 순매수) 2주 이력 + 최근 거래량 추세(5일 평균 대비 배수) —
+        # 사용자가 직접 승인한 추가 체크 2종. 후보(최대 15종)에만 붙여 API 호출을 제한.
+        _ss2w, _ss3d = _ssangkkuli_check(_investor_daily_flow_history(token, key, secret, r["code"], now_kst))
+        _vr5 = _vol_ratio_5d(token, key, secret, r["code"])
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
                     "avg_turn_ratio": r.get("avg_turn_ratio"),
-                    "news": ng, "score": _score})
-        _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
-        _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
+                    "news": ng, "score": _score,
+                    "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
+                    "vol_trend_x": round(_vr5[2], 2) if _vr5 else None})
+        if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
+                          # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
+            _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
+            _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
         print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
         return []
@@ -5596,20 +5614,34 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
             _avr_tag = f" · 평소대비 {_avr*100:.0f}%"
         else:
             _avr_tag = f" · 평소대비 {_avr*100:.0f}%(약함)"
+        # [V26.17] 쌍끌이(외국인+기관 동시 순매수) · 최근 거래량 추세 태그
+        if o.get("ssangkkuli_3d"):
+            _ss_tag = " · 🧲쌍끌이3일연속"
+        elif o.get("ssangkkuli_2w"):
+            _ss_tag = " · 🧲쌍끌이(2주내)"
+        else:
+            _ss_tag = ""
+        _vx = o.get("vol_trend_x")
+        _vol_tag = f" · 거래량 5일평균대비 {_vx:.1f}배" if _vx else ""
         _base = (f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
-                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag} "
+                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}"
+                 f"{_ss_tag}{_vol_tag} "
                  f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
-        if o["rank"] <= _NXT_PREM_ENRICH_N:            # 상위 N종만 수급·AI뉴스·관심기준 풀체크(API 비용상 제한)
+        # 상위 N종, 또는 쌍끌이 3일연속 종목은 순위 밖이어도 수급·AI뉴스·관심기준 풀체크 확대(사용자 승인)
+        if o["rank"] <= _NXT_PREM_ENRICH_N or o.get("ssangkkuli_3d"):
             _enrich = _nxt_prem_enrich_block(token, key, secret, gemini_key, o)
             if _enrich:
                 _base += "\n" + _enrich
         _line_parts.append(_base)
     _lines = "\n".join(_line_parts)
-    send_telegram(token_tg, chat_id,
-                  f"{SIG_INFO}\n🌙📊 대체종배 후보 — NXT 거래량이 당일 정규장을 압도한 종목 (총 {len(out)}종)\n"
-                  f"{_lines}\n"
-                  f"※ 확정픽 아님 — 뉴스만 확인된 후보 목록. 진입은 개별 검토 후 결정 · 신규 신호(표본 적음)")
-    print(f"[대체종배] {len(out)}종 후보 발송")
+    if notify:
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_INFO}\n🌙📊 대체종배 후보 — NXT 거래량이 당일 정규장을 압도한 종목 (총 {len(out)}종)\n"
+                      f"{_lines}\n"
+                      f"※ 확정픽 아님 — 뉴스만 확인된 후보 목록. 진입은 개별 검토 후 결정 · 신규 신호(표본 적음)")
+        print(f"[대체종배] {len(out)}종 후보 발송")
+    else:
+        print(f"[대체종배] {len(out)}종 후보 확인(온디맨드 미리보기 — 텔레그램 발송·성적표 기록 생략)")
     return out
 
 
@@ -5791,6 +5823,52 @@ def _investor_est(token, key, secret, code, distinguish_fail=False):
     except Exception:
         pass
     return (None, None) if distinguish_fail else (0, 0)
+
+
+# [V26.17] "쌍끌이"(외국인+기관 동시 순매수) 판정용 — 사용자 제보: "수급에서 쌍끌이란 외국인과
+# 기관이 매수가 들어왔는지를 확인하는건데... 2주 동안 3일연속 외국인과 기관이 수급이 연속적으로
+# 들어왔는지 체크하는걸 말한건데"(상한가/가격제한폭과 무관함 — 처음엔 상한가로 오해했다가 정정됨).
+# _investor_est(investor-trend-estimate)는 증권사 직원이 하루 중 정해진 시각에만 입력하는 장중
+# 가집계라 날짜 간 비교(쌍끌이 이력)엔 부적합 — 장마감 후 확정되는 일별 데이터인
+# investor-trade-by-stock-daily(FHPTJ04160001)를 대신 씀.
+def _investor_daily_flow_history(token, key, secret, code, now_kst):
+    """종목별 투자자매매동향(일별) — 장마감 후 확정된 일별 외국인/기관계 순매수 '수량' 이력을
+    최신순으로 반환: [{"date":"YYYYMMDD","frgn":수량,"orgn":수량}, ...]. 실패 시 []."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHPTJ04160001"},
+                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
+                                 "FID_INPUT_DATE_1": now_kst.strftime("%Y%m%d"),
+                                 "FID_ORG_ADJ_PRC": "", "FID_ETC_CLS_CODE": ""}, timeout=6)
+        rows = r.json().get("output2", []) or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            d = row.get("stck_bsop_date")
+            if not d:
+                continue
+            out.append({"date": d, "frgn": _to_int(row.get("frgn_ntby_qty")),
+                        "orgn": _to_int(row.get("orgn_ntby_qty"))})
+        out.sort(key=lambda x: x["date"], reverse=True)
+        return out
+    except Exception:
+        return []
+
+
+def _ssangkkuli_check(hist):
+    """'쌍끌이'(외국인+기관계 동시 순매수) 판정. hist는 _investor_daily_flow_history 반환값(최신순).
+    최근 10거래일(약 2주)을 보고 (최근 10거래일 내 1회 이상 쌍끌이 여부, 3거래일 연속 쌍끌이 여부)."""
+    recent = hist[:10]
+    if not recent:
+        return False, False
+    flags = [(h["frgn"] > 0 and h["orgn"] > 0) for h in recent]
+    any2w = any(flags)
+    streak3 = any(flags[i] and flags[i + 1] and flags[i + 2] for i in range(len(flags) - 2))
+    return any2w, streak3
 
 
 # [V17.2] 종목별 프로그램매매 순매수 금액(원) — 진단(diag_program_trade)으로 실전 검증한 엔드포인트.
