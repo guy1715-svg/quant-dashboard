@@ -826,6 +826,99 @@ def render_dolpanty():
         st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
         st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
 
+    # [V26.17] 사용자 요청 — "내가 보고싶은 시간때 기준으로 거래대금+괴리율+수급을 확인이 되어
+    # 종목선정시 가이드를 삼으려고" 하는 온디맨드 새로고침. 아래 "날짜별 전체 스캔" 표는 감시
+    # 프로세스가 18:00~19:50에 '하루 1번' 찍어 GitHub에 올린 과거 기록이라 지금 이 순간 데이터가
+    # 아님 — 이 버튼은 누르는 그 순간 KIS를 직접 조회해 최신 데이터로 1~30위를 보여줌.
+    # notify=False로 호출해 텔레그램 발송·성적표(pick_history/signal_scorecard) 기록은 생략 —
+    # 장중 미확정가 기준 미리보기가 저녁 확정픽 승률 통계에 섞이지 않게 함.
+    st.subheader("⏱️ 지금 이 순간 새로고침 — 거래대금×괴리율×수급 통합")
+    st.caption(
+        "버튼을 누른 순간 KIS를 직접 조회해 1~30위를 보여줍니다(텔레그램 발송·성적표 기록 없음, "
+        "순수 미리보기). ⚠️ **'KRX정규장종가' 관련 주의**: 정규장 중(09:00~15:30)에 누르면 KRX가는 "
+        "그 순간의 장중 실시간가이고, 15:30 장마감 이후(특히 평소 스캔 시간대인 18:00~19:50)에 누르면 "
+        "KRX가는 당일 정규장 최종 종가로 고정됩니다 — MTS 괴리율 화면의 'KRX정규장종가'와 같은 의미가 "
+        "되는 건 장마감 후뿐입니다. 장중에 눌러보는 괴리율·거래량비율은 그 순간 기준 스냅샷이라 "
+        "시시각각 바뀔 수 있습니다."
+    )
+    st.caption(
+        "**현재 1위 선정 기준**: NXT거래량 ÷ 당일 KRX(정규장) 거래량 비율 내림차순입니다(괴리율·거래대금 "
+        "절대 크기순이 아닙니다). 이 기준은 소형주일수록 쉽게 커지는 착시가 있어, '평소(최근 20일평균) "
+        "정규장거래대금 대비 NXT거래대금 비율' 컬럼을 보조지표로 같이 보여드립니다. 사용자가 평소 보던 "
+        "방식(괴리율·거래대금이 **둘 다** 크게 터진 종목을 고르는 방식)과 지금 시스템의 거래량비율 "
+        "1위가 항상 일치하진 않습니다 — 거래량비율 1위가 괴리율·거래대금은 평범할 수 있고, 반대로 "
+        "괴리율·거래대금이 둘 다 큰 종목이 거래량비율로는 중위권에 머물 수 있습니다. 아래 표에서 거래량비율 "
+        "순위만 보지 마시고 괴리율(%)·NXT거래대금(억) 두 컬럼을 같이 봐 주시면, 사용자 방식과 현재 시스템 "
+        "기준을 동시에 확인하실 수 있습니다."
+    )
+    if not tok:
+        st.info("KIS 키 없음 — 새로고침 불가")
+    elif st.button("🔄 지금 새로고침", key="nxt_live_refresh_btn"):
+        with st.spinner("거래대금 상위 100종 스캔 중... (약 30초~1분 소요)"):
+            _now_live = datetime.utcnow() + timedelta(hours=9)
+            _gk_live = mw.read_gemini_key()
+            _full_out = []
+            try:
+                _live_out = mw.check_nxt_premium_pick(tok, key, sec, _now_live, {}, None, None,
+                                                       force=True, notify=False, gemini_key=_gk_live,
+                                                       full_out=_full_out)
+            except Exception as _lne:
+                st.error(f"대체종배 조회 실패: {type(_lne).__name__}")
+                _live_out = []
+            try:
+                _live_flow = mw.check_investor_flow_rank(tok, key, sec, _now_live, {}, force=True, top=100)
+            except Exception as _lfe:
+                st.error(f"수급 조회 실패: {type(_lfe).__name__}")
+                _live_flow = []
+            st.session_state["nxt_live_full"] = _full_out
+            st.session_state["nxt_live_out"] = _live_out
+            st.session_state["nxt_live_flow"] = _live_flow
+            st.session_state["nxt_live_time"] = _now_live.strftime("%Y-%m-%d %H:%M:%S")
+
+    if st.session_state.get("nxt_live_full"):
+        st.caption(f"⏱️ {st.session_state.get('nxt_live_time', '')} 기준(이 순간의 미리보기)")
+        _ldf = pd.DataFrame(st.session_state["nxt_live_full"])
+        _ldf.insert(0, "순위", range(1, len(_ldf) + 1))
+        _ldf["nxt_turn"] = (_ldf["nxt_turn"] / 1e8).round(1)
+        _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
+        if "avg_turn_ratio" in _ldf.columns:
+            _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
+        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
+                   "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+                   "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
+                   "ratio": "거래량비율", "기준충족": "기준충족"}
+        _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
+        st.dataframe(_ldf, use_container_width=True, hide_index=True)
+
+        _live_candidates = st.session_state.get("nxt_live_out") or []
+        if _live_candidates:
+            st.markdown("##### 🧲 쌍끌이·거래량추세 포함 후보 (기준 충족 + 뉴스필터 통과)")
+            st.caption("쌍끌이 = 최근 거래일 기준 외국인·기관이 동시에 순매수한 날이 있었는지(장마감 후 "
+                       "확정 데이터 기준) · 거래량추세 = 오늘 거래량이 최근 5일 평균 대비 몇 배인지")
+            _cdf = pd.DataFrame(_live_candidates)
+            _cdf["쌍끌이"] = _cdf.apply(
+                lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
+                axis=1)
+            _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
+            _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
+            _ccols = {"rank": "순위", "name": "종목명", "code": "종목코드", "ratio": "거래량비율",
+                       "nxt_turn_eok": "NXT거래대금(억)", "쌍끌이": "쌍끌이",
+                       "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수"}
+            _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
+            st.dataframe(_cdf, use_container_width=True, hide_index=True)
+
+        if st.session_state.get("nxt_live_flow"):
+            st.markdown("##### 💰 수급 상위 (이 순간 기준)")
+            _lfdf = pd.DataFrame(st.session_state["nxt_live_flow"])
+            _lfdf.insert(0, "순위", range(1, len(_lfdf) + 1))
+            _lfdf["turnover"] = (_lfdf["turnover"] / 1e8).round(0)
+            _lfcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "px": "현재가", "chg": "등락률(%)",
+                        "turnover": "거래대금(억)", "foreign_eok": "외인순매수(억)", "inst_eok": "기관순매수(억)",
+                        "total_eok": "합산순매수(억)"}
+            _lfdf = _lfdf[[c for c in _lfcols if c in _lfdf.columns]].rename(columns=_lfcols)
+            st.dataframe(_lfdf, use_container_width=True, hide_index=True)
+        st.caption("※ 위 결과는 미리보기용 — 텔레그램 발송·신호별 성적표(승률 통계)에는 반영되지 않습니다.")
+
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
     # 후보 전체(비율 1.0 미달 포함, 최대 50종)로 날짜별 기록해두고 여기서 날짜 골라 보여줌.
