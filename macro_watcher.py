@@ -4700,6 +4700,12 @@ def check_investor_flow_rank(token, key, secret, now_kst, state, force=False, to
         return []
     rows = []
     for s in _volume_rank(token, key, secret, top=top):
+        # [V26.22] 사용자가 실제 대시보드 출력을 캡처해서 제보 — "수급 상위" 표 중간에
+        # KODEX/TIGER 등 ETF 17종이 전부 외인/기관 순매수 0으로 끼어 있어 표가 지저분했음.
+        # ETF는 개별 투자자유형별 순매수 집계 대상이 아니라 늘 0/0으로만 잡혀 이 랭킹에서는
+        # 의미가 없음 — 다른 16개 스캔 함수가 이미 쓰는 _EARLY_ETF_KW 필터를 여기만 빠뜨렸던 것.
+        if any(k in str(s["name"]) for k in _EARLY_ETF_KW):
+            continue
         # [V26.16] 사용자 제보 — 100종을 스캔했는데 10~11종만 나옴. 원인: distinguish_fail=True로
         # 부르면 "이 종목 관련 행에서 외국인·기관 둘 다 0(눈에 띄는 수급 없음)"인 경우도 "조회 실패"로
         # 취급돼(_investor_est 자체가 (None,None) 반환) continue로 통째로 빠졌음 — 회전율 상위권
