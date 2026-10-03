@@ -15,6 +15,9 @@ program_history.json
 macro_watcher_state.json
 macro_snapshot.json
 macro_watcher.lock
+nxt_scan_log.json
+investor_flow_log.json
+krx_vol_snapshot.json
 
 # ── 파이썬 ──
 __pycache__/
