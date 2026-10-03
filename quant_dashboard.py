@@ -887,38 +887,24 @@ def render_dolpanty():
 
         if _live_candidates:
             st.markdown("##### 🏆 오늘의 추천 픽")
-            st.caption("점수(거래량비율+재료등급 종합) 상위 최대 10종 — 매수 추천이 아니라 1차 후보 압축용입니다. "
+            st.caption("점수(거래량비율+재료등급 종합) 내림차순 — 매수 추천이 아니라 1차 후보 압축용입니다. "
                        "진입은 개별 검토 후 결정하세요.")
-            # [V26.23] 사용자 요청 — "3위까지 말고 최소 10위까지 디테일하게 보고 싶다". 10장을
-            # 한 줄에 다 넣으면 카드가 너무 좁아져서, 한 줄에 5장씩 2줄로 나눠 배치.
-            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)[:10]
-            _PICK_ROW_SIZE = 5
-            for _row_start in range(0, len(_top_picks), _PICK_ROW_SIZE):
-                _row_picks = _top_picks[_row_start:_row_start + _PICK_ROW_SIZE]
-                _pick_cols = st.columns(len(_row_picks))
-                for _col, _p in zip(_pick_cols, _row_picks):
-                    with _col:
-                        with st.container(border=True):
-                            _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_p.get("news"), "⚪미확인")
-                            if _p.get("ssangkkuli_3d"):
-                                _ss = "🧲쌍끌이 3일연속"
-                            elif _p.get("ssangkkuli_2w"):
-                                _ss = "🧲쌍끌이 2주내 1회"
-                            else:
-                                _ss = "쌍끌이 없음"
-                            st.markdown(f"**{_p['rank']}위 · {_p['name']}**")
-                            st.metric("점수", f"{_p.get('score', 0)}점",
-                                     f"거래량비율 {_p.get('ratio', 0):.1f}배")
-                            st.caption(f"{_mat} · {_ss}")
-                            _vx = _p.get("vol_trend_x")
-                            _avr = _p.get("avg_turn_ratio")
-                            _detail = []
-                            if _vx:
-                                _detail.append(f"거래량 {_vx:.1f}배(5일평균)")
-                            if _avr:
-                                _detail.append(f"평소대비 {_avr*100:.0f}%")
-                            if _detail:
-                                st.caption(" · ".join(_detail))
+            # [V26.25] 사용자 피드백 — 카드 10장을 한 화면에 늘어놓으니 "너무 정신사나움". 표
+            # 한 장으로 정리(카드형 레이아웃 폐기).
+            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)
+            _pkdf = pd.DataFrame(_top_picks)
+            _pkdf.insert(0, "추천순위", range(1, len(_pkdf) + 1))
+            _pkdf["재료등급"] = _pkdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
+            _pkdf["쌍끌이"] = _pkdf.apply(
+                lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
+                axis=1)
+            _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
+            _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if x else None)
+            _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
+                       "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
+                       "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)"}
+            _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
+            st.dataframe(_pkdf, use_container_width=True, hide_index=True)
 
         st.markdown("##### 📈 평소 대비 거래대금 급증 TOP5")
         st.caption("거래량비율 1위 기준만 보면 대형주처럼 평소 대비 거래대금이 폭증했는데도 순위에서 "
