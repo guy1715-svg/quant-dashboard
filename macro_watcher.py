@@ -2978,6 +2978,49 @@ def check_vol_surge(token, key, secret, now_kst, state, token_tg, chat_id, sev=1
         print("[거래량급증] 해당 종목 없음")
 
 
+# [V26.21] 진단 전용(텔레그램 미발송, 필터·점수 로직 변경 없음) — 2026-09-14 KRX가 자체 애프터마켓
+# (16:00~20:00 실시간 체결, 기존 16~18시 시간외단일가 폐지)을 열면서 NXT와 밤 시간 유동성을 양분하게
+# 됨. 대체종배가 쓰는 "KRX 당일 누적거래량"(_price_turnover_vol mrkt="J")을 18~19시대에 조회하면
+# 이 KRX 애프터마켓 거래량까지 이미 합산돼서 커져있을 수 있음(그러면 "NXT거래량/KRX거래량" 비율의
+# 분모가 저녁 내내 같이 커져서 1.0 기준을 넘기 더 어려워짐) — 외부 AI 교차검증에서 지적받고
+# 사실관계(KRX 애프터마켓 동시 개장)는 확인했으나, 우리 KIS API 응답이 실제로 이걸 포함하는지는
+# 이 샌드박스에 라이브 KIS 접속이 없어 확인 불가. 정규장 마감(15:30) 직후 KRX 애프터마켓이 열리기
+# (16:00) 전인 15:31~15:40에 거래대금 상위 100종의 KRX 누적거래량을 1회 스냅샷으로 저장해두고,
+# check_nxt_premium_pick이 저녁에 같은 종목을 다시 조회할 때 이 값과 비교해 증가분을 콘솔에만
+# 로그로 남김 — 사용자가 실제 PC에서 증가분을 직접 확인한 뒤 분모 계산 방식을 고칠지 판단하기 위함.
+_KRX_VOL_SNAP_START, _KRX_VOL_SNAP_END = 15 * 60 + 31, 15 * 60 + 40
+KRX_VOL_SNAPSHOT_FILE = os.path.join(BASE, "krx_vol_snapshot.json")
+
+
+def check_krx_vol_snapshot(token, key, secret, now_kst, state):
+    """[V26.21] 진단용 — 정규장 마감 직후(15:31~15:40, KRX 애프터마켓 개장 전) 거래대금 상위
+    100종의 KRX 누적거래량을 날짜별로 1회 저장. 텔레그램 발송 없음, 당일 1회."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_KRX_VOL_SNAP_START <= m <= _KRX_VOL_SNAP_END):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("krx_vol_snap_day") == today:
+        return
+    snap = {}
+    for s in _volume_rank(token, key, secret, top=100):
+        _, _, _, vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="J")
+        if vol:
+            snap[s["code"]] = vol
+    state["krx_vol_snap_day"] = today
+    if snap:
+        _atomic_write_json(KRX_VOL_SNAPSHOT_FILE, {"date": today, "vols": snap})
+        print(f"[진단-KRX애프터영향] 정규장마감 직후 KRX 누적거래량 스냅샷 {len(snap)}종 저장")
+
+
+def _krx_vol_snapshot_read():
+    try:
+        with open(KRX_VOL_SNAPSHOT_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def _daily_setup(token, key, secret, code, px):
     """일봉 셋업 — inquire-daily-price 최근 30일. ma5/ma20/이격/기준선(26)/돌파·근접/5일선위/20일평균거래대금."""
     try:
@@ -5574,11 +5617,20 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _universe[s["code"]] = s
     for s in _volume_rank(token, key, secret, top=100, mrkt="NX"):
         _universe.setdefault(s["code"], s)
+    # [V26.21] 진단 — 정규장 마감 직후(15:31~15:40) 스냅샷과 비교해 "KRX 애프터마켓 개장 이후
+    # KRX 당일 누적거래량이 저녁에도 계속 늘어나는가"를 콘솔 로그로만 확인(텔레그램 미발송,
+    # 아래 필터·비율·점수 계산에는 전혀 관여하지 않음 — 순수 관측용).
+    _krx_snap_data = _krx_vol_snapshot_read()
+    _krx_snap = _krx_snap_data.get("vols", {}) if _krx_snap_data.get("date") == today else {}
     full_rows = []
     for s in _universe.values():
         krx_px, _kchg, _kturn, krx_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="J")
         if not krx_vol:
             continue
+        _snap_vol = _krx_snap.get(s["code"])
+        if _snap_vol and krx_vol > _snap_vol:
+            print(f"[진단-KRX애프터영향] {s['name']}({s['code']}) 15:30직후 {_snap_vol:,}주 → 지금 "
+                  f"{krx_vol:,}주 (+{krx_vol - _snap_vol:,}, {(krx_vol / _snap_vol - 1) * 100:+.1f}%)")
         nxt_px, _nchg, nxt_turn, nxt_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="NX")
         if not nxt_px or not nxt_turn or not nxt_vol or nxt_turn < _NXT_MIN_TURN:  # 50억 미달은 노이즈로 컷
             continue
@@ -7951,6 +8003,12 @@ def main():
                         check_vol_surge(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _vse:
                         print("거래량 급증 오류:", _vse)
+                    # [V26.21] 진단 — KRX 애프터마켓(16~20시) 개장 이후 "KRX 당일 누적거래량"이
+                    # 저녁에도 계속 늘어나는지 확인용 스냅샷(15:31~15:40, 텔레그램 미발송)
+                    try:
+                        check_krx_vol_snapshot(tok, kis_key, kis_secret, now, st)
+                    except Exception as _kvse:
+                        print("KRX거래량 스냅샷 오류:", _kvse)
                     # [V23.8] 내 관심종목 타점 검색기 — my_watch.json 종목 실시간 감시
                     try:
                         check_my_watch(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
