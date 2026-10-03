@@ -887,33 +887,38 @@ def render_dolpanty():
 
         if _live_candidates:
             st.markdown("##### 🏆 오늘의 추천 픽")
-            st.caption("점수(거래량비율+재료등급 종합) 상위 3종 — 매수 추천이 아니라 1차 후보 압축용입니다. "
+            st.caption("점수(거래량비율+재료등급 종합) 상위 최대 10종 — 매수 추천이 아니라 1차 후보 압축용입니다. "
                        "진입은 개별 검토 후 결정하세요.")
-            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)[:3]
-            _pick_cols = st.columns(len(_top_picks))
-            for _col, _p in zip(_pick_cols, _top_picks):
-                with _col:
-                    with st.container(border=True):
-                        _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_p.get("news"), "⚪미확인")
-                        if _p.get("ssangkkuli_3d"):
-                            _ss = "🧲쌍끌이 3일연속"
-                        elif _p.get("ssangkkuli_2w"):
-                            _ss = "🧲쌍끌이 2주내 1회"
-                        else:
-                            _ss = "쌍끌이 없음"
-                        st.markdown(f"**{_p['rank']}위 · {_p['name']}**")
-                        st.metric("점수", f"{_p.get('score', 0)}점",
-                                 f"거래량비율 {_p.get('ratio', 0):.1f}배")
-                        st.caption(f"{_mat} · {_ss}")
-                        _vx = _p.get("vol_trend_x")
-                        _avr = _p.get("avg_turn_ratio")
-                        _detail = []
-                        if _vx:
-                            _detail.append(f"거래량 {_vx:.1f}배(5일평균)")
-                        if _avr:
-                            _detail.append(f"평소대비 {_avr*100:.0f}%")
-                        if _detail:
-                            st.caption(" · ".join(_detail))
+            # [V26.23] 사용자 요청 — "3위까지 말고 최소 10위까지 디테일하게 보고 싶다". 10장을
+            # 한 줄에 다 넣으면 카드가 너무 좁아져서, 한 줄에 5장씩 2줄로 나눠 배치.
+            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)[:10]
+            _PICK_ROW_SIZE = 5
+            for _row_start in range(0, len(_top_picks), _PICK_ROW_SIZE):
+                _row_picks = _top_picks[_row_start:_row_start + _PICK_ROW_SIZE]
+                _pick_cols = st.columns(len(_row_picks))
+                for _col, _p in zip(_pick_cols, _row_picks):
+                    with _col:
+                        with st.container(border=True):
+                            _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_p.get("news"), "⚪미확인")
+                            if _p.get("ssangkkuli_3d"):
+                                _ss = "🧲쌍끌이 3일연속"
+                            elif _p.get("ssangkkuli_2w"):
+                                _ss = "🧲쌍끌이 2주내 1회"
+                            else:
+                                _ss = "쌍끌이 없음"
+                            st.markdown(f"**{_p['rank']}위 · {_p['name']}**")
+                            st.metric("점수", f"{_p.get('score', 0)}점",
+                                     f"거래량비율 {_p.get('ratio', 0):.1f}배")
+                            st.caption(f"{_mat} · {_ss}")
+                            _vx = _p.get("vol_trend_x")
+                            _avr = _p.get("avg_turn_ratio")
+                            _detail = []
+                            if _vx:
+                                _detail.append(f"거래량 {_vx:.1f}배(5일평균)")
+                            if _avr:
+                                _detail.append(f"평소대비 {_avr*100:.0f}%")
+                            if _detail:
+                                st.caption(" · ".join(_detail))
 
         st.markdown("##### 📈 평소 대비 거래대금 급증 TOP5")
         st.caption("거래량비율 1위 기준만 보면 대형주처럼 평소 대비 거래대금이 폭증했는데도 순위에서 "
@@ -950,9 +955,43 @@ def render_dolpanty():
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
 
+        # [V26.24] 사용자 제보 — "거래대금×괴리율×수급 통합 차트가 사라졌다". 지난 PR에서 이 1~30위
+        # 전체 표·수급 상위 미니표를 "바로 아래 날짜별 섹션에서 '오늘'이 자동 선택되니 중복"이라고
+        # 판단해 지웠는데 잘못된 가정이었음 — 아래 "날짜별 전체 스캔"/"수급 상위" 섹션은 GitHub
+        # 'data' 브랜치(macro_watcher.py가 PC에서 돌 때만 올림)를 먼저 보고, 그게 성공하면 로컬
+        # 데이터는 아예 안 씀. 즉 대시보드의 "지금 새로고침"은 클라우드 서버 로컬에만 저장되고
+        # GitHub엔 안 올라가서, PC 쪽 저녁 스캔이 그날 아직 GitHub에 안 올렸으면 "오늘"이 날짜
+        # 선택지에 뜨지도 않음 — 그러면 방금 조회한 이 순간 데이터를 볼 곳이 없어져 버렸던 것.
+        # 복구.
+        st.markdown("##### 📋 거래대금×괴리율×수급 통합 — 1~30위 전체")
+        _ldf = pd.DataFrame(st.session_state["nxt_live_full"])
+        _ldf.insert(0, "순위", range(1, len(_ldf) + 1))
+        _ldf["nxt_turn"] = (_ldf["nxt_turn"] / 1e8).round(1)
+        _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
+        if "avg_turn_ratio" in _ldf.columns:
+            _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
+        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
+                   "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+                   "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
+                   "ratio": "거래량비율", "기준충족": "기준충족"}
+        _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
+        st.dataframe(_ldf, use_container_width=True, hide_index=True)
+
+        if st.session_state.get("nxt_live_flow"):
+            st.markdown("##### 💰 수급 상위 (이 순간 기준)")
+            _lfdf = pd.DataFrame(st.session_state["nxt_live_flow"])
+            _lfdf.insert(0, "순위", range(1, len(_lfdf) + 1))
+            _lfdf["turnover"] = (_lfdf["turnover"] / 1e8).round(0)
+            _lfcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "px": "현재가", "chg": "등락률(%)",
+                        "turnover": "거래대금(억)", "foreign_eok": "외인순매수(억)", "inst_eok": "기관순매수(억)",
+                        "total_eok": "합산순매수(억)"}
+            _lfdf = _lfdf[[c for c in _lfcols if c in _lfdf.columns]].rename(columns=_lfcols)
+            st.dataframe(_lfdf, use_container_width=True, hide_index=True)
+
         st.caption("※ 위 결과는 미리보기용 — 텔레그램 발송·신호별 성적표(승률 통계)에는 반영되지 않습니다. "
-                   "1~30위 전체 표·수급 상위 상세는 바로 아래 '날짜별 전체 스캔'·'수급 상위' 섹션에서 "
-                   "확인하세요(새로고침 직후엔 '오늘'이 자동으로 선택되어 있습니다).")
+                   "아래 '날짜별 전체 스캔'·'수급 상위' 섹션은 PC 감시 프로그램이 GitHub에 올린 과거 "
+                   "기록이라, 오늘 PC 쪽 저녁 스캔이 아직 안 돌았으면 '오늘'이 안 뜰 수 있습니다 — "
+                   "그럴 땐 위 표가 지금 보는 유일한 최신 데이터입니다.")
 
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
