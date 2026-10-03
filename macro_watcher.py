@@ -5477,7 +5477,8 @@ def check_dolpanty_exit(token, key, secret, now_kst, state, token_tg, chat_id):
 #   [V26.7] 그래서 원화 금액 비율이 아니라 순수 거래량(주식수) 비율로 최종 재설계.
 _NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프터마켓 거래량이 쌓인 뒤)
 _NXT_PREM_MIN_RATIO = 1.0    # NXT거래량이 당일 정규장 거래량을 이미 넘어선(비율>1) 종목만
-_NXT_PREM_ENRICH_N = 3       # [V26.13] 수급·AI뉴스·관심기준 풀체크를 붙일 상위 종목 수(사용자 확정)
+_NXT_PREM_ENRICH_N = 10      # [V26.18] 수급·AI뉴스·관심기준 풀체크를 붙일 상위 종목 수 —
+                              # 사용자 재요청으로 3 → 10(=표시 후보 전체)으로 확대
 
 
 def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
@@ -5515,13 +5516,16 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                            gemini_key=None, notify=True, full_out=None):
     """[V26.7] 대체종배 — 당일 거래대금 상위 100종 중 NXT거래대금 50억↑(노이즈 컷) AND
     (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이 당일 정규장 거래량을 이미 압도)인 종목을
-    비율 내림차순 최대 15종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
+    비율 내림차순 최대 10종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
     기준이라 종목 크기·가격 등락률에 좌우되지 않음. force=True: 시간창·당일락 무시(수동 테스트,
     --force-pick). 반환: 스냅샷용 리스트.
     [V26.13] 사용자 요청 — 확정픽(check_dolpanty_pick)에만 있던 수급(외인/기관)·AI뉴스·관심기준
-    체크리스트를 대체종배 후보에도 보고 싶다는 요청. 종목당 API 호출이 여러 번 추가로 드는 항목이라
-    (수급조회·뉴스검색·Gemini 판정), 사용자와 상의해 상위 3종에만 붙이기로 확정(전체 15종에 다 붙이면
-    메시지도 과도히 길어지고 API 호출도 크게 늘어남).
+    체크리스트를 대체종배 후보에도 보고 싶다는 요청.
+    [V26.18] 사용자 재요청 — "텔레그램으로 메세지도 보내주고 1위부터 10위까지만 나오게 해주고
+    그에대한 뉴스나 근거이유도 함께 설명해주면 좋겠어": 후보 상한을 15→10으로 줄이고, 수급·
+    AI뉴스·관심기준 풀체크(뉴스·근거이유 설명)를 상위 3종이 아니라 10종(=표시되는 후보 전체)에
+    모두 붙이도록 확대. API 호출이 늘지만(Gemini 뉴스판정 등 종목당 수회 추가 호출) 수동으로
+    누를 때만 발생하는 비용이라 허용.
     [V26.17] 대시보드 "내가 보고싶은 시간때" 온디맨드 새로고침 지원 — notify=False면 텔레그램 발송과
     성적표(pick_history/signal_scorecard) 기록을 모두 건너뛰고 계산만 함(장중 미확정가 기준 미리보기가
     저녁 확정픽 승률 통계와 섞이지 않게). nxt_scan_log.json(날짜별 전체 스캔 표)은 어차피 같은 날짜면
@@ -5574,14 +5578,14 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         return []
     out = []
     for r in rows:
-        if len(out) >= 15:
+        if len(out) >= 10:          # [V26.18] 15 → 10(사용자 재요청: "1위부터 10위까지만")
             break
         ng, nbad = _news_grade(r["code"])              # 사용자 요청: 이 후보군에 한해서만 뉴스 확인
         if nbad:
             continue
         _score = 50 + min(30, round((r["ratio"] - 1) * 15)) + (20 if ng == "S" else 12 if ng == "A" else 0)
         # [V26.17] 쌍끌이(외국인+기관 동시 순매수) 2주 이력 + 최근 거래량 추세(5일 평균 대비 배수) —
-        # 사용자가 직접 승인한 추가 체크 2종. 후보(최대 15종)에만 붙여 API 호출을 제한.
+        # 사용자가 직접 승인한 추가 체크 2종. 후보(최대 10종)에만 붙여 API 호출을 제한.
         _ss2w, _ss3d = _ssangkkuli_check(_investor_daily_flow_history(token, key, secret, r["code"], now_kst))
         _vr5 = _vol_ratio_5d(token, key, secret, r["code"])
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
@@ -5627,7 +5631,9 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                  f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}"
                  f"{_ss_tag}{_vol_tag} "
                  f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
-        # 상위 N종, 또는 쌍끌이 3일연속 종목은 순위 밖이어도 수급·AI뉴스·관심기준 풀체크 확대(사용자 승인)
+        # [V26.18] _NXT_PREM_ENRICH_N(10) == 후보 상한(10)이라 사실상 전체 후보에 뉴스·근거이유
+        # 풀체크가 붙음(사용자 재요청). ssangkkuli_3d 조건은 N을 다시 줄이게 되더라도 쌍끌이
+        # 3일연속 종목만큼은 계속 풀체크되도록 남겨둠.
         if o["rank"] <= _NXT_PREM_ENRICH_N or o.get("ssangkkuli_3d"):
             _enrich = _nxt_prem_enrich_block(token, key, secret, gemini_key, o)
             if _enrich:
