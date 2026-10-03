@@ -875,24 +875,67 @@ def render_dolpanty():
             st.session_state["nxt_live_flow"] = _live_flow
             st.session_state["nxt_live_time"] = _now_live.strftime("%Y-%m-%d %H:%M:%S")
 
+    # [V26.22] 사용자 요청 — "직관적인 추천 픽을 표현해달라" + "기존 표들과 겹치는건 삭제".
+    # 아래 1~30위 전체(_ldf)·수급 상위(_fdf) 원시 표는 새로고침 즉시 nxt_scan_log.json/
+    # investor_flow_log.json에도 "오늘" 날짜로 저장되므로, 이 섹션 바로 아래 "날짜별 전체 스캔"·
+    # "수급 상위" 섹션의 날짜선택이 자동으로 "오늘"을 기본 선택해 똑같은 내용을 그대로 보여줌 —
+    # 그래서 그 두 표는 여기서 제거하고(완전 중복), 대신 한눈에 들어오는 "오늘의 추천 픽" 카드와
+    # 거래량비율 1위 기준에 가려지는 종목을 잡아주는 "평소 대비 급증" 표를 새로 추가함.
     if st.session_state.get("nxt_live_full"):
         st.caption(f"⏱️ {st.session_state.get('nxt_live_time', '')} 기준(이 순간의 미리보기)")
-        _ldf = pd.DataFrame(st.session_state["nxt_live_full"])
-        _ldf.insert(0, "순위", range(1, len(_ldf) + 1))
-        _ldf["nxt_turn"] = (_ldf["nxt_turn"] / 1e8).round(1)
-        _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
-        if "avg_turn_ratio" in _ldf.columns:
-            _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
-        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
-                   "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
-                   "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
-                   "ratio": "거래량비율", "기준충족": "기준충족"}
-        _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
-        st.dataframe(_ldf, use_container_width=True, hide_index=True)
-
         _live_candidates = st.session_state.get("nxt_live_out") or []
+
         if _live_candidates:
-            st.markdown("##### 🧲 쌍끌이·거래량추세 포함 후보 (기준 충족 + 뉴스필터 통과)")
+            st.markdown("##### 🏆 오늘의 추천 픽")
+            st.caption("점수(거래량비율+재료등급 종합) 상위 3종 — 매수 추천이 아니라 1차 후보 압축용입니다. "
+                       "진입은 개별 검토 후 결정하세요.")
+            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)[:3]
+            _pick_cols = st.columns(len(_top_picks))
+            for _col, _p in zip(_pick_cols, _top_picks):
+                with _col:
+                    with st.container(border=True):
+                        _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_p.get("news"), "⚪미확인")
+                        if _p.get("ssangkkuli_3d"):
+                            _ss = "🧲쌍끌이 3일연속"
+                        elif _p.get("ssangkkuli_2w"):
+                            _ss = "🧲쌍끌이 2주내 1회"
+                        else:
+                            _ss = "쌍끌이 없음"
+                        st.markdown(f"**{_p['rank']}위 · {_p['name']}**")
+                        st.metric("점수", f"{_p.get('score', 0)}점",
+                                 f"거래량비율 {_p.get('ratio', 0):.1f}배")
+                        st.caption(f"{_mat} · {_ss}")
+                        _vx = _p.get("vol_trend_x")
+                        _avr = _p.get("avg_turn_ratio")
+                        _detail = []
+                        if _vx:
+                            _detail.append(f"거래량 {_vx:.1f}배(5일평균)")
+                        if _avr:
+                            _detail.append(f"평소대비 {_avr*100:.0f}%")
+                        if _detail:
+                            st.caption(" · ".join(_detail))
+
+        st.markdown("##### 📈 평소 대비 거래대금 급증 TOP5")
+        st.caption("거래량비율 1위 기준만 보면 대형주처럼 평소 대비 거래대금이 폭증했는데도 순위에서 "
+                   "묻히는 종목을 놓칠 수 있어 별도로 보여드립니다(거래량비율 기준 미달 종목 포함).")
+        _full_rows = st.session_state.get("nxt_live_full") or []
+        _surge = sorted([r for r in _full_rows if r.get("avg_turn_ratio")],
+                        key=lambda r: r["avg_turn_ratio"], reverse=True)[:5]
+        if _surge:
+            _sgdf = pd.DataFrame(_surge)
+            _sgdf.insert(0, "순위", range(1, len(_sgdf) + 1))
+            _sgdf["avg_turn_ratio"] = (_sgdf["avg_turn_ratio"] * 100).round(0)
+            _sgdf["nxt_turn"] = (_sgdf["nxt_turn"] / 1e8).round(1)
+            _sgdf["기준충족"] = _sgdf["pass"].map({True: "✅", False: "—"})
+            _sgcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "avg_turn_ratio": "평소대비(%)",
+                       "nxt_turn": "NXT거래대금(억)", "ratio": "거래량비율", "기준충족": "기준충족"}
+            _sgdf = _sgdf[[c for c in _sgcols if c in _sgdf.columns]].rename(columns=_sgcols)
+            st.dataframe(_sgdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("평소대비 데이터 없음")
+
+        if _live_candidates:
+            st.markdown("##### 🧲 쌍끌이·거래량추세 포함 후보 전체 (기준 충족 + 뉴스필터 통과)")
             st.caption("쌍끌이 = 최근 거래일 기준 외국인·기관이 동시에 순매수한 날이 있었는지(장마감 후 "
                        "확정 데이터 기준) · 거래량추세 = 오늘 거래량이 최근 5일 평균 대비 몇 배인지")
             _cdf = pd.DataFrame(_live_candidates)
@@ -907,17 +950,9 @@ def render_dolpanty():
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
 
-        if st.session_state.get("nxt_live_flow"):
-            st.markdown("##### 💰 수급 상위 (이 순간 기준)")
-            _lfdf = pd.DataFrame(st.session_state["nxt_live_flow"])
-            _lfdf.insert(0, "순위", range(1, len(_lfdf) + 1))
-            _lfdf["turnover"] = (_lfdf["turnover"] / 1e8).round(0)
-            _lfcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "px": "현재가", "chg": "등락률(%)",
-                        "turnover": "거래대금(억)", "foreign_eok": "외인순매수(억)", "inst_eok": "기관순매수(억)",
-                        "total_eok": "합산순매수(억)"}
-            _lfdf = _lfdf[[c for c in _lfcols if c in _lfdf.columns]].rename(columns=_lfcols)
-            st.dataframe(_lfdf, use_container_width=True, hide_index=True)
-        st.caption("※ 위 결과는 미리보기용 — 텔레그램 발송·신호별 성적표(승률 통계)에는 반영되지 않습니다.")
+        st.caption("※ 위 결과는 미리보기용 — 텔레그램 발송·신호별 성적표(승률 통계)에는 반영되지 않습니다. "
+                   "1~30위 전체 표·수급 상위 상세는 바로 아래 '날짜별 전체 스캔'·'수급 상위' 섹션에서 "
+                   "확인하세요(새로고침 직후엔 '오늘'이 자동으로 선택되어 있습니다).")
 
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
