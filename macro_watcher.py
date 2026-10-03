@@ -2860,7 +2860,7 @@ _EARLY_ETF_KW = ("ETN", "ETF", "선물", "레버리지", "인버스", "KODEX", "
                  "1Q", "FOCUS", "파워", "KIWOOM", "HANARO", "액티브", "커버드콜")   # [V22.9] 신규 ETF 브랜드 추가
 
 
-def _volume_rank(token, key, secret, top=40):
+def _volume_rank(token, key, secret, top=40, mrkt="J"):
     """당일 거래대금 상위 종목 — volume-rank(FHPST01710000). [{code,name,px,chg,turnover}]. 실패 시 [].
     [V26.19] 사용자가 실전 로그로 "거래대금 상위 100종" 기준으로 설계된 수급상위가 실제론 "29종
     스캔"으로 찍힌 걸 제보 — top=100을 요청해도 항상 한 페이지 분량(~29~30종)만 받고 있었음.
@@ -2868,7 +2868,12 @@ def _volume_rank(token, key, secret, top=40):
     (응답 헤더 tr_cont='M'/'F'면 다음 페이지가 더 있다는 뜻, 다음 요청 헤더에 tr_cont='N'을 실어
     보내야 이어받음) 기존 코드는 첫 페이지 한 번만 요청하고 있었음. top개를 채울 때까지(또는
     다음 페이지가 더 없을 때까지) 이어서 요청하도록 수정 — 이 함수를 공유해서 쓰는 대체종배·
-    수급상위·거래량급증·시가저격 라인업 전부가 이 수정 하나로 함께 "진짜 top개"를 받게 됨."""
+    수급상위·거래량급증·시가저격 라인업 전부가 이 수정 하나로 함께 "진짜 top개"를 받게 됨.
+    [V26.20] mrkt 파라미터 추가 — "J"(KRX 정규장, 기존 기본값) 외에 "NX"(NXT)도 지원. 사용자가
+    실전 MTS의 "애프터마켓등락률상위" 화면과 우리 KRX거래대금 상위 100종을 대조해보니, 그 화면
+    상위권 종목 대부분이 KRX 거래대금 100위 안에 아예 안 들어서 대체종배 후보 모집단에서 원천
+    배제되고 있었음을 발견 — mrkt="NX"로 호출하면 이 공식 KIS API가 그대로 NXT 쪽 거래대금 상위를
+    주므로, 새 엔드포인트 없이 이 함수 재사용만으로 "밤에만 활발한" 종목도 모집단에 포함 가능."""
     rows = []
     tr_cont = ""
     for _ in range(10):                      # 안전장치 — 페이지 10개(최대 약 300종)면 top=100도 충분
@@ -2877,7 +2882,7 @@ def _volume_rank(token, key, secret, top=40):
                              headers={"authorization": f"Bearer {token}", "appkey": key,
                                       "appsecret": secret, "tr_id": "FHPST01710000",
                                       "tr_cont": tr_cont},
-                             params={"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20171",
+                             params={"fid_cond_mrkt_div_code": mrkt, "fid_cond_scr_div_code": "20171",
                                      "fid_input_iscd": "0000", "fid_div_cls_code": "0",
                                      "fid_blng_cls_code": "3", "fid_trgt_cls_code": "111111111",
                                      "fid_trgt_exls_cls_code": "000000", "fid_input_price_1": "",
@@ -5530,11 +5535,13 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
 
 def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id, sev=1, force=False,
                            gemini_key=None, notify=True, full_out=None):
-    """[V26.7] 대체종배 — 당일 거래대금 상위 100종 중 NXT거래대금 50억↑(노이즈 컷) AND
-    (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이 당일 정규장 거래량을 이미 압도)인 종목을
-    비율 내림차순 최대 10종 추려 뉴스(재료) 확인 후 종목별 당일 1회 텔레그램. 거래량(주식수) 비율
-    기준이라 종목 크기·가격 등락률에 좌우되지 않음. force=True: 시간창·당일락 무시(수동 테스트,
-    --force-pick). 반환: 스냅샷용 리스트.
+    """[V26.7] 대체종배 — (KRX 거래대금 상위 100종 + NXT 거래대금 상위 100종을 합친 모집단, 중복제거)
+    중 NXT거래대금 50억↑(노이즈 컷) AND (NXT거래량/정규장 당일거래량) 비율 1배↑(=NXT 거래량이
+    당일 정규장 거래량을 이미 압도)인 종목을 비율 내림차순 최대 10종 추려 뉴스(재료) 확인 후
+    종목별 당일 1회 텔레그램. 거래량(주식수) 비율 기준이라 종목 크기·가격 등락률에 좌우되지 않음.
+    force=True: 시간창·당일락 무시(수동 테스트, --force-pick). 반환: 스냅샷용 리스트.
+    [V26.20] 모집단을 KRX 거래대금 상위뿐 아니라 NXT 거래대금 상위도 합치도록 확장 — 사유는 아래
+    참조.
     [V26.13] 사용자 요청 — 확정픽(check_dolpanty_pick)에만 있던 수급(외인/기관)·AI뉴스·관심기준
     체크리스트를 대체종배 후보에도 보고 싶다는 요청.
     [V26.18] 사용자 재요청 — "텔레그램으로 메세지도 보내주고 1위부터 10위까지만 나오게 해주고
@@ -5556,8 +5563,19 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
     today = now_kst.strftime("%Y%m%d")
     if not force and state.get("nxt_prem_pick_day") == today:      # 당일 1회
         return []
-    full_rows = []
+    # [V26.20] 사용자가 실전 MTS의 "애프터마켓등락률상위"와 우리 모집단(KRX 거래대금 상위 100종)을
+    # 직접 대조 — 10/3 상위 15종 중 10종이 KRX 거래대금 100위 안에 아예 없었음(낮엔 조용하다가
+    # NXT에서만 크게 움직인 종목들, 에스투더블유가 9/23에 이미 보여준 것과 같은 패턴). KRX
+    # 거래대금 상위만으로는 이런 종목이 후보 모집단에 원천적으로 들어오지 못해 비율 기준을
+    # 아무리 조정해도 못 잡음 — NXT 거래대금 상위 100종도 같이 모집단에 합침(같은 API를
+    # mrkt="NX"로 한 번 더 호출, 신규 엔드포인트 불필요). 종목코드로 중복 제거.
+    _universe = {}
     for s in _volume_rank(token, key, secret, top=100):
+        _universe[s["code"]] = s
+    for s in _volume_rank(token, key, secret, top=100, mrkt="NX"):
+        _universe.setdefault(s["code"], s)
+    full_rows = []
+    for s in _universe.values():
         krx_px, _kchg, _kturn, krx_vol = _price_turnover_vol(token, key, secret, s["code"], mrkt="J")
         if not krx_vol:
             continue
