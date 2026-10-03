@@ -782,13 +782,23 @@ def _price_turnover_vol(token, key, secret, code, mrkt="J"):
     비율"이 아니라 사용자가 실제로 말한 "거래량(주식수) 비율" 기준으로 판정해야 해서 신설
     (실사례 9/23 에스투더블유로 대조: 거래대금 비율은 0.43배로 기준 미달, 거래량 비율은 3.52배로
     기준 충족 — 두 지표가 다른 결론을 냄. 원화금액은 가격×거래량이라 등락에 따라 왜곡될 수 있어
-    "거래량이 압도"라는 원래 표현 그대로 주식수로 비교해야 정확함)."""
+    "거래량이 압도"라는 원래 표현 그대로 주식수로 비교해야 정확함).
+    [V26.26] rt_cd(API 성공여부) 검증 추가 — 이 코드베이스에 이미 한 번 확인된 결함
+    (`_price_full` 주석 참고: rt_cd 확인 없이 'output 비어있지 않으면 성공'으로만 판정해 레이트
+    리밋 등으로 실패한 호출도 조용히 신뢰하던 문제)이 대체종배의 핵심 함수인 여기도 그대로
+    있었음 — 대체종배는 종목당 이 함수를 2번(KRX·NXT)씩, 많게는 한 스캔에 300~400회 호출해
+    레이트리밋에 더 취약함. 실패를 조용히 삼키지 않고 콘솔에 남김."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010100"},
                          params={"fid_cond_mrkt_div_code": mrkt, "fid_input_iscd": code}, timeout=6)
-        o = r.json().get("output", {})
+        j = r.json()
+        _rt = str(j.get("rt_cd", "")).strip()
+        if _rt not in ("0", ""):
+            print(f"[진단-시세조회] {code}({mrkt}) rt_cd={_rt!r} msg={j.get('msg1', '')!r} — 조회 실패")
+            return None, None, None, None
+        o = j.get("output", {})
         if isinstance(o, dict) and o:
             return (_to_int(o.get("stck_prpr")),
                     float(str(o.get("prdy_ctrt", 0)).replace(",", "") or 0),
@@ -5931,7 +5941,15 @@ def _investor_est(token, key, secret, code, distinguish_fail=False):
 # investor-trade-by-stock-daily(FHPTJ04160001)를 대신 씀.
 def _investor_daily_flow_history(token, key, secret, code, now_kst):
     """종목별 투자자매매동향(일별) — 장마감 후 확정된 일별 외국인/기관계 순매수 '수량' 이력을
-    최신순으로 반환: [{"date":"YYYYMMDD","frgn":수량,"orgn":수량}, ...]. 실패 시 []."""
+    최신순으로 반환: [{"date":"YYYYMMDD","frgn":수량,"orgn":수량}, ...]. 실패 시 [].
+    [V26.26] 사용자가 실제 대시보드에서 쌍끌이 후보 10종 전부가 "—"(이력 없음)로 나오는 걸
+    제보 — 10종 전부 쌍끌이가 없는 건 통계적으로 부자연스러워 재점검. 이 코드베이스에
+    기존에 한 번 확인된 바로 그 결함(`_price_full`·`_intraday_snapshot` 주석 참고) — rt_cd
+    (API 성공여부)를 확인 안 하고 output이 비어있으면 그냥 "데이터 없음"으로만 처리해서, 레이트
+    리밋 등으로 호출이 실패해도 조용히 빈 리스트를 반환해 매번 "—"로만 보이게 하고 있었을 가능성.
+    rt_cd 검증과 output1/output2 둘 다 확인(어느 쪽에 일별 리스트가 오는지 라이브로 검증 못한
+    상태라 둘 다 받아봄)을 추가하고, 실패 시 원인을 콘솔에 남겨 실제 원인(API 실패 vs 진짜
+    쌍끌이 없음)을 구분할 수 있게 함."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -5939,7 +5957,13 @@ def _investor_daily_flow_history(token, key, secret, code, now_kst):
                          params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
                                  "FID_INPUT_DATE_1": now_kst.strftime("%Y%m%d"),
                                  "FID_ORG_ADJ_PRC": "", "FID_ETC_CLS_CODE": ""}, timeout=6)
-        rows = r.json().get("output2", []) or []
+        j = r.json()
+        _rt = str(j.get("rt_cd", "")).strip()
+        if _rt not in ("0", ""):
+            print(f"[진단-쌍끌이] {code} API 실패 rt_cd={_rt!r} msg={j.get('msg1', '')!r} — "
+                  "이력 조회 안 됨(진짜 쌍끌이 없음이 아니라 API 호출 실패)")
+            return []
+        rows = j.get("output2") or j.get("output1") or []
         if isinstance(rows, dict):
             rows = [rows]
         out = []
@@ -5952,8 +5976,13 @@ def _investor_daily_flow_history(token, key, secret, code, now_kst):
             out.append({"date": d, "frgn": _to_int(row.get("frgn_ntby_qty")),
                         "orgn": _to_int(row.get("orgn_ntby_qty"))})
         out.sort(key=lambda x: x["date"], reverse=True)
+        if not out:
+            print(f"[진단-쌍끌이] {code} rt_cd=0(성공)인데 날짜별 이력을 못 찾음 — "
+                  f"output1 {len(j.get('output1') or [])}건·output2 {len(j.get('output2') or [])}건 "
+                  "(필드명 불일치 의심)")
         return out
-    except Exception:
+    except Exception as _e:
+        print(f"[진단-쌍끌이] {code} 조회 예외: {type(_e).__name__}: {_e}")
         return []
 
 
