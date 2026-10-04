@@ -861,7 +861,7 @@ def _scorecard_append(now_kst, kind, code, name, px):
     _atomic_write_json(SCORECARD_FILE, rows[-2000:])
 
 
-_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅")
+_DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅", "윌리엄스바닥")
 _OVERNIGHT_KINDS = ("종배픽", "브리핑")
 
 
@@ -3770,24 +3770,30 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
 
 def _daily_ohlcv(token, key, secret, code):
     """[V25.56] 일봉 시계열(과거→최근순) — inquire-daily-price(_daily_setup과 동일 TR, 최신순 응답을 뒤집음).
-    RSI/MACD/CMF 등 지표 계산용. 최소 40거래일 미만이면 None."""
+    RSI/MACD/CMF/윌리엄스%R 등 지표 계산용. 최소 40거래일 미만이면 None.
+    [V26.27] rt_cd 검증 추가(이 코드베이스에 이미 한 번 확인된 결함 — `_price_full` 참고) +
+    시가(open) 필드 추가(윌리엄스%R 바닥반전 신호의 양봉 판정용)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010400"},
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
                                  "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
-        rows = [x for x in (r.json().get("output", []) or []) if isinstance(x, dict)]
+        j = r.json()
+        if str(j.get("rt_cd", "")).strip() not in ("0", ""):
+            return None
+        rows = [x for x in (j.get("output", []) or []) if isinstance(x, dict)]
         if len(rows) < 40:
             return None
         rows = rows[::-1]                       # 최신순 → 과거→최근순(지표 계산은 시간순 필요)
         clpr = [_to_int(x.get("stck_clpr")) for x in rows]
         hgpr = [_to_int(x.get("stck_hgpr")) for x in rows]
         lwpr = [_to_int(x.get("stck_lwpr")) for x in rows]
+        oppr = [_to_int(x.get("stck_oprc")) for x in rows]
         vol = [_to_int(x.get("acml_vol")) for x in rows]
-        if not (all(clpr) and all(hgpr) and all(lwpr)):
+        if not (all(clpr) and all(hgpr) and all(lwpr) and all(oppr)):
             return None
-        return {"close": clpr, "high": hgpr, "low": lwpr, "volume": vol}
+        return {"close": clpr, "high": hgpr, "low": lwpr, "open": oppr, "volume": vol}
     except Exception:
         return None
 
@@ -3908,6 +3914,113 @@ def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, ch
               f"RSI조건통과 {_cnt['rsi_ok']}종 → CMF조건통과 {_cnt['cmf_ok']}종 → MACD조건통과 {_cnt['macd_ok']}종"
               f"(그중 악재제외 {_cnt['newsbad']}종) → 발송 0건"
               + ("(1차후보 자체가 없음 — 거래대금30억↑·변동폭조건 통과 종목 없음)" if _cnt["budget"] == 0 else ""))
+
+
+def check_williams_bottom_reversal(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
+    """[V26.27] 윌리엄스%R 바닥 반전 검색기 — 사용자가 키움 HTS에서 윌리엄스%R 단독 신호를
+    쓰는데 "신호가 너무 많이 온다"며, 차트의 특정 저점 반등 지점(지지선 터치 후 아래꼬리 양봉
+    반등)만 잡고 싶다고 요청. check_rsi_cmf_macd_recovery와 같은 "다중 확인(AND)으로 단독
+    지표의 과다신호를 줄인다" 철학을 윌리엄스%R에 적용 — 아래 4가지를 전부 충족해야 발송:
+    ①윌리엄스%R(14) 최근 과매도(≤-80) 터치 이력 + 오늘 반등 전환(전일대비 상승) + 아직
+    과매수권 전(-50 이하, 쫓아가기 방지) ②오늘 저가가 최근 20일 최저가 대비 +3% 이내(진짜
+    저점권에서 반등인지 — 차트의 '지지선 터치'에 해당) ③오늘 캔들이 양봉이면서 당일 변동폭의
+    상단 60% 이상에서 마감(아래꼬리 달고 올라온 반전캔들) ④거래량이 최근 5일평균 이상(받쳐주는
+    매수세). 09:05~15:20, 종목별 하루 1회, 리스크오프(sev2) 억제, '눌림' 계열 공용 중복방지
+    락(_claim_daily_signal) 적용 — RSI·CMF·MACD반등 등 다른 바닥반등 신호와 같은 종목에
+    중복 발송 안 함."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((9 * 60 + 5) <= m <= (15 * 60 + 20)) or sev == 2:
+        return
+    try:
+        import pandas as pd
+        from indicators import calc_williams_r
+    except Exception as _ie:
+        print(f"[윌리엄스바닥] indicators 모듈 로드 실패 — 스킵: {_ie}")
+        return
+    today = now_kst.strftime("%Y%m%d")
+    sent = state.get("williams_bottom_sent", {})
+    if sent.get("_day") != today:
+        sent = {"_day": today}
+    _mywatch = {str(s.get("code", "")).zfill(6) for s in (_read_my_watch() or [])}
+    _cnt = {"budget": 0, "wr_ok": 0, "low_ok": 0, "candle_ok": 0, "newsbad": 0}
+    _sent_n = 0
+    for s in _volume_rank(token, key, secret, top=40):
+        cd, nm, px, chg, turn = s["code"], s["name"], s["px"], s["chg"], s["turnover"]
+        if not px or not turn or any(k in str(nm) for k in _EARLY_ETF_KW):
+            continue
+        if cd in _mywatch or sent.get(cd):
+            continue
+        if (turn or 0) < 30 * 1e8:                    # 거래대금 30억↓ 제외(과다신호 방지 취지와 일관)
+            continue
+        _cnt["budget"] += 1
+        if _cnt["budget"] > 30:
+            break
+        oh = _daily_ohlcv(token, key, secret, cd)
+        if not oh:
+            continue
+        try:
+            high = pd.Series(oh["high"], dtype=float)
+            low = pd.Series(oh["low"], dtype=float)
+            close = pd.Series(oh["close"], dtype=float)
+            openp = pd.Series(oh["open"], dtype=float)
+            wr = calc_williams_r(high, low, close, period=14)
+        except Exception:
+            continue
+        if len(wr) < 6 or wr.iloc[-6:].isna().any() or len(low) < 21:
+            continue
+        # ① 윌리엄스%R — 최근 5거래일(오늘 제외) 중 과매도(≤-80) 터치 + 오늘 반등 전환 + 과매수권 전
+        _wr_recent_min = float(wr.iloc[-6:-1].min())
+        _wr_now, _wr_prev = float(wr.iloc[-1]), float(wr.iloc[-2])
+        if _wr_recent_min > -80 or not (_wr_now > _wr_prev) or _wr_now > -50:
+            continue
+        _cnt["wr_ok"] += 1
+        # ② 저점권 — 오늘 저가가 최근 20일(오늘 제외) 최저가 대비 +3% 이내(차트의 '지지선 터치')
+        _today_hi, _today_lo = float(high.iloc[-1]), float(low.iloc[-1])
+        _recent_low = float(low.iloc[-21:-1].min())
+        if _today_lo > _recent_low * 1.03:
+            continue
+        _cnt["low_ok"] += 1
+        # ③ 반전 캔들 — 양봉 + 당일 변동폭의 상단 60%↑에서 마감(아래꼬리 반전캔들)
+        _today_cl, _today_op = float(close.iloc[-1]), float(openp.iloc[-1])
+        _rng = _today_hi - _today_lo
+        if _rng <= 0 or _today_cl <= _today_op:
+            continue
+        _close_pos = (_today_cl - _today_lo) / _rng
+        if _close_pos < 0.6:
+            continue
+        _cnt["candle_ok"] += 1
+        # ④ 거래량 확인 — 최근 5일평균 이상(받쳐주는 매수세)
+        _vr = _vol_ratio_5d(token, key, secret, cd)
+        if not _vr or _vr[2] < 1.0:
+            continue
+        _ng, _nbad = _news_grade(cd)
+        if _nbad:
+            _cnt["newsbad"] += 1
+            continue
+        _mat = "🔥재료S" if _ng == "S" else "🟢재료A" if _ng == "A" else ""
+        _stop = int(_today_lo * 0.985)                 # 손절 = 오늘 저가 이탈(반전 무효화 기준)
+        _stoppct = (_stop / px - 1) * 100
+        _t1 = int(px * 1.04)
+        if not _claim_daily_signal(state, "pullback", cd, now_kst):   # 눌림 계열 공용 중복방지
+            continue
+        if send_telegram(token_tg, chat_id,
+                         f"{SIG_BUY}\n🩹 [윌리엄스 바닥반전] {nm} — 저점권 반전캔들 확인\n"
+                         f"윌리엄스%R {_wr_recent_min:.0f}→{_wr_now:.0f}(과매도 반등) · "
+                         f"저가 {int(_today_lo):,}(최근20일 최저 {int(_recent_low):,} 근접) · "
+                         f"종가위치 {_close_pos*100:.0f}%(아래꼬리 양봉) · 거래량 5일평균 {_vr[2]:.1f}배"
+                         + (f" · {_mat}" if _mat else "") + "\n"
+                         f"현재 {px:,}({(chg or 0):+.1f}%)\n"
+                         f"진입 {px:,} · 손절 {_stop:,}({_stoppct:+.1f}%·오늘 저가 이탈시) · 익절 {_t1:,}(+4%)\n"
+                         f"※ 지표·캔들·거래량 다중 확인일 뿐 매수확정 아님 — 분할매수 · 손절 엄수"):
+            sent[cd] = True
+            _sent_n += 1
+            _log_signal(state, now_kst, "윌리엄스바닥", nm, cd, px)
+            print(f"[윌리엄스바닥] {nm} {px:,} — %R{_wr_now:.0f} 종가위치{_close_pos*100:.0f}%")
+    state["williams_bottom_sent"] = sent
+    if _sent_n == 0:
+        print(f"[윌리엄스바닥] {now_kst.strftime('%H:%M')} 스캔 완료 — 1차후보 {_cnt['budget']}종 중 "
+              f"%R조건통과 {_cnt['wr_ok']}종 → 저점권통과 {_cnt['low_ok']}종 → 반전캔들통과 {_cnt['candle_ok']}종"
+              f"(그중 악재제외 {_cnt['newsbad']}종) → 발송 0건")
 
 
 def check_material_washout(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
@@ -8074,6 +8187,12 @@ def main():
                         check_rsi_cmf_macd_recovery(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
                     except Exception as _rcme:
                         print("RSI·CMF·MACD검색 오류:", _rcme)
+                    # [V26.27] 윌리엄스%R 바닥 반전 검색기(사용자 요청 — 키움 윌리엄스%R 단독 신호가
+                    # 너무 잦아서, 저점권+반전캔들+거래량까지 다 맞을 때만 걸러내고 싶다는 요청)
+                    try:
+                        check_williams_bottom_reversal(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)
+                    except Exception as _wbe:
+                        print("윌리엄스바닥 오류:", _wbe)
                     # [V25.29] 레인지(박스) 매매 — 박스장 전용(횡보 종목 하단 지지 반등)
                     try:
                         check_range_trade(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev)

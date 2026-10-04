@@ -128,7 +128,34 @@ def calc_cmf(
     return cmf.rename(f"CMF{period}").round(4)
 
 
-# ── 4. 볼린저 밴드 ────────────────────────────────────────────────────────────
+# ── 4. 윌리엄스 %R ────────────────────────────────────────────────────────────
+def calc_williams_r(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """
+    윌리엄스 %R (Williams %R).
+
+    수식:
+      %R = (최근 N일 최고가 − 종가) / (최근 N일 최고가 − 최근 N일 최저가) × -100
+
+    값 범위: -100(완전 과매도) ~ 0(완전 과매수)
+      ≤ -80 : 과매도
+      ≥ -20 : 과매수
+
+    Returns:
+        pd.Series, 이름 'WR{period}'
+    """
+    hh = high.rolling(period).max()
+    ll = low.rolling(period).min()
+    rng = (hh - ll).replace(0, np.nan)
+    wr = (hh - close) / rng * -100
+    return wr.rename(f"WR{period}").round(1)
+
+
+# ── 5. 볼린저 밴드 ────────────────────────────────────────────────────────────
 def calc_bb(
     close: pd.Series,
     period: int = 20,
@@ -148,7 +175,7 @@ def calc_bb(
     return upper.rename("BB_upper"), mid.rename("BB_mid"), lower.rename("BB_lower")
 
 
-# ── 5. MACD ───────────────────────────────────────────────────────────────────
+# ── 6. MACD ───────────────────────────────────────────────────────────────────
 def calc_macd(
     close: pd.Series,
     fast: int = 12,
@@ -175,14 +202,14 @@ def calc_ma(close: pd.Series, periods: list[int] = [5, 20, 60, 120]) -> dict[str
     return {f"MA{p}": close.rolling(p).mean().round(2) for p in periods}
 
 
-# ── 7. 통합 지표 계산 (DataFrame 입력 → 지표 컬럼 추가) ──────────────────────
+# ── 8. 통합 지표 계산 (DataFrame 입력 → 지표 컬럼 추가) ──────────────────────
 def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     OHLCV DataFrame에 전체 기술지표를 추가하여 반환.
 
     입력 컬럼 필수: 시가, 고가, 저가, 종가, 거래량
     추가 컬럼:
-        RSI, ATR14
+        RSI, ATR14, WR14
         MACD, Signal, MACD_hist
         BB_upper, BB_mid, BB_lower
         MA5, MA20, MA60, MA120
@@ -201,6 +228,9 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ATR14
     df["ATR14"] = calc_atr(h, l, c, period=14, method="wilder")
+
+    # 윌리엄스 %R
+    df["WR14"] = calc_williams_r(h, l, c, period=14)
 
     # MACD
     df["MACD"], df["Signal"], df["MACD_hist"] = calc_macd(c)
