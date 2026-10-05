@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
 import requests
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="퀀트 관제탑", page_icon="📊", layout="wide",
                     initial_sidebar_state="auto")
@@ -62,6 +64,60 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 import macro_watcher as mw  # noqa: E402  (신호 로직의 유일한 출처 — 재구현하지 않고 그대로 재사용)
+import indicators as ind  # noqa: E402  (RSI·이평선 등 지표 계산 — 추천픽 차트 표시용)
+
+
+# [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 대시보드에 차트 표시 기능.
+# 다른 AI가 보여준 예시(장황한 "매수 근거" 서술형 분석)처럼 "강력한 상승 랠리 기대" 같은 결론을
+# 내리는 문구는 일부러 넣지 않음 — 이 저장소 전체의 기존 원칙("매수 추천이 아니라 참고용")과
+# 어긋나고, 특정 수치 몇 개만 보고 확정적 매매 결론을 내리는 건 과도한 확신이라 판단. 가격·거래량·
+# 이평선 배열 같은 객관적 사실만 차트+캡션으로 보여주고, 판단은 사용자 몫으로 남김.
+def _render_pick_chart(token, key, secret, code, name):
+    """추천픽 종목 선택 시 일봉 캔들차트(이평선 오버레이)+거래량 차트를 그려 보여준다."""
+    oh = mw._daily_ohlcv(token, key, secret, code)
+    if not oh:
+        st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다(최소 40거래일 데이터 필요).")
+        return
+    df = pd.DataFrame({"종가": oh["close"], "고가": oh["high"], "저가": oh["low"],
+                       "시가": oh["open"], "거래량": oh["volume"]})
+    df = ind.calc_indicators(df)
+    df["idx"] = range(len(df))
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+                         vertical_spacing=0.03)
+    # 한국 관행: 양봉=빨강(상승), 음봉=파랑(하락) — 거래량 막대도 같은 색 규칙으로 통일
+    fig.add_trace(go.Candlestick(
+        x=df["idx"], open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
+        increasing_line_color="#d93025", increasing_fillcolor="#d93025",
+        decreasing_line_color="#1a73e8", decreasing_fillcolor="#1a73e8", name="일봉"),
+        row=1, col=1)
+    for _ma, _color in [("MA5", "#f2a900"), ("MA20", "#6b7280"),
+                         ("MA60", "#1a9850"), ("MA120", "#9333ea")]:
+        if _ma in df.columns:
+            fig.add_trace(go.Scatter(x=df["idx"], y=df[_ma], mode="lines", name=_ma,
+                                      line=dict(width=1.3, color=_color)), row=1, col=1)
+    _vol_colors = ["#d93025" if c >= o else "#1a73e8" for c, o in zip(df["종가"], df["시가"])]
+    fig.add_trace(go.Bar(x=df["idx"], y=df["거래량"], marker_color=_vol_colors,
+                          name="거래량", showlegend=False), row=2, col=1)
+    fig.update_layout(height=480, margin=dict(l=10, r=10, t=30, b=10),
+                       xaxis_rangeslider_visible=False, title=f"{name}({code}) 일봉",
+                       legend=dict(orientation="h", yanchor="bottom", y=1.02))
+    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_xaxes(showticklabels=False, row=2, col=1)
+    st.plotly_chart(fig, use_container_width=True)
+
+    _last = df.iloc[-1]
+    _vol_avg20 = df["거래량"].iloc[-21:-1].mean() if len(df) > 21 else None
+    _vol_x = (_last["거래량"] / _vol_avg20) if _vol_avg20 else None
+    _ma20_disp = (_last["종가"] / _last["MA20"] - 1) * 100 if pd.notna(_last.get("MA20")) else None
+    _facts = [f"종가 {int(_last['종가']):,}원"]
+    if pd.notna(_last.get("RSI")):
+        _facts.append(f"RSI {_last['RSI']:.0f}")
+    if _ma20_disp is not None:
+        _facts.append(f"20일선 대비 {_ma20_disp:+.1f}%")
+    if _vol_x:
+        _facts.append(f"거래량 20일평균 대비 {_vol_x:.1f}배")
+    st.caption(" · ".join(_facts) + " — 객관적 수치 참고용(매수·매도 판단 아님)")
 
 
 # ══════════════════════════════════════════
@@ -905,6 +961,16 @@ def render_dolpanty():
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+
+            # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
+            # 일봉 차트(이평선+거래량)를 바로 보여줌.
+            _pick_opts = {f"{p['name']}({p['code']})": p["code"] for p in _top_picks}
+            _pick_sel = st.selectbox("📈 차트 볼 종목 선택", list(_pick_opts.keys()),
+                                      key="nxt_pick_chart_sel")
+            if _pick_sel:
+                with st.spinner(f"{_pick_sel} 일봉 데이터 조회 중..."):
+                    _render_pick_chart(tok, key, sec, _pick_opts[_pick_sel],
+                                        _pick_sel.split("(")[0])
 
         st.markdown("##### 📈 평소 대비 거래대금 급증 TOP5")
         st.caption("거래량비율 1위 기준만 보면 대형주처럼 평소 대비 거래대금이 폭증했는데도 순위에서 "
