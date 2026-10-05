@@ -965,18 +965,19 @@ def render_dolpanty():
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
 
         # [V26.28] 사용자 요청 — "전날 대비 15% 위에 있는 종목들의 상승이유와 뉴스, 어떤 섹터에
-        # 속해있는지 정리가 필요". 위 표엔 종목이 최대 30개까지 뜨는데 그중 급등 종목만 추려
-        # 섹터(_sector_name)·실제 뉴스 헤드라인(_news_headlines)을 별도로 붙여서 보여줌 — 매
-        # 종목마다 KIS 조회 1회 + 네이버뉴스 조회 1회가 추가로 드는 비용이라, 버튼 눌렀을 때만
-        # 도는 이 온디맨드 새로고침 섹션에서만 수행(상시 감시 루프에는 추가하지 않음).
-        _surge15 = [r for r in (st.session_state.get("nxt_live_full") or [])
-                    if r.get("chg") is not None and r["chg"] >= 15]
-        if _surge15:
-            st.markdown("##### 🔥 전일대비 +15%↑ 종목 — 상승이유 · 섹터")
-            st.caption("위 표에서 전일 종가 대비 15% 이상 오른 종목만 추려, 종목별 업종(섹터)과 "
+        # 속해있는지 정리가 필요". 처음엔 15% 고정 기준으로 필터링했으나, 그러면 그 기준을 넘는
+        # 종목이 아예 없는 날이 많을 거라는 사용자 지적 반영 — 고정 % 기준 대신 "등락률 상위
+        # 10종목"으로 바꿔 항상 일정 개수가 보이게 하고, 종목마다 KIS 조회 1회 + 네이버뉴스
+        # 조회 1회가 추가로 드는 비용도 10종 고정이라 예측 가능하게 함(버튼 눌렀을 때만 도는 이
+        # 온디맨드 새로고침 섹션에서만 수행 — 상시 감시 루프에는 추가하지 않음).
+        _surge_rows = [r for r in (st.session_state.get("nxt_live_full") or []) if r.get("chg") is not None]
+        _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"], reverse=True)[:10]
+        if _surge_top10:
+            st.markdown("##### 🔥 등락률 상위 10종목 — 상승이유 · 섹터")
+            st.caption("위 표에서 전일 종가 대비 등락률이 높은 상위 10종목을 추려, 종목별 업종(섹터)과 "
                        "최근 뉴스 헤드라인을 보여줍니다 — 급등 사유를 수동으로 하나씩 검색하지 "
                        "않아도 되게 하기 위한 참고용 정리입니다(상승 사유 확정 아님).")
-            for r in sorted(_surge15, key=lambda r: r["chg"], reverse=True):
+            for r in _surge_top10:
                 with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
                     _sec = mw._sector_name(tok, key, sec, r["code"]) or "업종 미확인"
                     _heads = mw._news_headlines(r["code"], n=3)
