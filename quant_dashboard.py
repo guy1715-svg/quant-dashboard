@@ -72,8 +72,31 @@ import indicators as ind  # noqa: E402  (RSI·이평선 등 지표 계산 — �
 # 내리는 문구는 일부러 넣지 않음 — 이 저장소 전체의 기존 원칙("매수 추천이 아니라 참고용")과
 # 어긋나고, 특정 수치 몇 개만 보고 확정적 매매 결론을 내리는 건 과도한 확신이라 판단. 가격·거래량·
 # 이평선 배열 같은 객관적 사실만 차트+캡션으로 보여주고, 판단은 사용자 몫으로 남김.
+def _find_support_resistance(df, window=3):
+    """[V26.30] 스윙 고점/저점(피벗) 기준 저항·지지 — 좌우 window봉보다 고가가 높으면 스윙고점,
+    저가가 낮으면 스윙저점으로 본다. 현재가 위쪽 스윙고점 중 가장 가까운 걸 저항, 아래쪽
+    스윙저점 중 가장 가까운 걸 지지로 삼는다(해당하는 스윙이 없으면 전체 구간 고가/저가로 대체).
+    "산업방향성·실적" 같은 정성적 판단까지는 자동화 범위 밖이라, 가격 구조만으로 계산 가능한
+    이 부분만 우선 구현 — 기관마다 그리는 방식이 다를 수 있는 '참고용 한 가지 해석'일 뿐임."""
+    highs = df["고가"].values
+    lows = df["저가"].values
+    n = len(df)
+    swing_highs, swing_lows = [], []
+    for i in range(window, n - window):
+        if highs[i] == max(highs[i - window:i + window + 1]):
+            swing_highs.append(highs[i])
+        if lows[i] == min(lows[i - window:i + window + 1]):
+            swing_lows.append(lows[i])
+    cur = df["종가"].iloc[-1]
+    _above = [h for h in swing_highs if h > cur]
+    _below = [l for l in swing_lows if l < cur]
+    resistance = min(_above) if _above else (max(highs) if n else None)
+    support = max(_below) if _below else (min(lows) if n else None)
+    return resistance, support
+
+
 def _render_pick_chart(token, key, secret, code, name):
-    """추천픽 종목 선택 시 일봉 캔들차트(이평선 오버레이)+거래량 차트를 그려 보여준다."""
+    """추천픽 종목 선택 시 일봉 캔들차트(이평선+저항/지지 오버레이)+거래량 차트를 그려 보여준다."""
     oh = mw._daily_ohlcv(token, key, secret, code)
     if not oh:
         st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다(최소 40거래일 데이터 필요).")
@@ -82,6 +105,8 @@ def _render_pick_chart(token, key, secret, code, name):
                        "시가": oh["open"], "거래량": oh["volume"]})
     df = ind.calc_indicators(df)
     df["idx"] = range(len(df))
+    _cur_px = df["종가"].iloc[-1]
+    _resist, _support = _find_support_resistance(df)
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
                          vertical_spacing=0.03)
@@ -96,6 +121,17 @@ def _render_pick_chart(token, key, secret, code, name):
         if _ma in df.columns:
             fig.add_trace(go.Scatter(x=df["idx"], y=df[_ma], mode="lines", name=_ma,
                                       line=dict(width=1.3, color=_color)), row=1, col=1)
+    # 저항(위)·지지(아래) — 가격 방향(빨강/파랑)과 안 헷갈리게 점선+주황/청록으로 구분
+    if _resist is not None:
+        _rpct = (_resist / _cur_px - 1) * 100
+        fig.add_hline(y=_resist, line_dash="dot", line_color="#c2410c", line_width=1.5,
+                      annotation_text=f"저항 {_resist:,.0f}({_rpct:+.1f}%)",
+                      annotation_position="top left", row=1, col=1)
+    if _support is not None:
+        _spct = (_support / _cur_px - 1) * 100
+        fig.add_hline(y=_support, line_dash="dot", line_color="#0d9488", line_width=1.5,
+                      annotation_text=f"지지 {_support:,.0f}({_spct:+.1f}%)",
+                      annotation_position="bottom left", row=1, col=1)
     _vol_colors = ["#d93025" if c >= o else "#1a73e8" for c, o in zip(df["종가"], df["시가"])]
     fig.add_trace(go.Bar(x=df["idx"], y=df["거래량"], marker_color=_vol_colors,
                           name="거래량", showlegend=False), row=2, col=1)
@@ -117,7 +153,14 @@ def _render_pick_chart(token, key, secret, code, name):
         _facts.append(f"20일선 대비 {_ma20_disp:+.1f}%")
     if _vol_x:
         _facts.append(f"거래량 20일평균 대비 {_vol_x:.1f}배")
+    if _resist is not None:
+        _facts.append(f"저항 {_resist:,.0f}원({(_resist/_cur_px-1)*100:+.1f}%)")
+    if _support is not None:
+        _facts.append(f"지지 {_support:,.0f}원({(_support/_cur_px-1)*100:+.1f}%)")
     st.caption(" · ".join(_facts) + " — 객관적 수치 참고용(매수·매도 판단 아님)")
+    st.caption("저항·지지는 최근 스윙 고점/저점 기준 산출(기관·사용자마다 긋는 방식이 다를 수 "
+               "있는 참고용 해석 중 하나입니다). 산업·시장 방향성, 실적, 수급 연속성 같은 "
+               "정성적 판단은 자동화 범위 밖이라 직접 확인하셔야 합니다.")
 
 
 # ══════════════════════════════════════════
