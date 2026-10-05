@@ -3807,13 +3807,17 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
 
 def _daily_ohlcv(token, key, secret, code, _diag=False):
     """[V25.56] 일봉 시계열(과거→최근순) — inquire-daily-price(_daily_setup과 동일 TR, 최신순 응답을 뒤집음).
-    RSI/MACD/CMF/윌리엄스%R 등 지표 계산용. 최소 40거래일 미만이면 None.
+    RSI/MACD/CMF/윌리엄스%R 등 지표 계산용. 최소 26거래일 미만이면 None.
     [V26.27] rt_cd 검증 추가(이 코드베이스에 이미 한 번 확인된 결함 — `_price_full` 참고) +
     시가(open) 필드 추가(윌리엄스%R 바닥반전 신호의 양봉 판정용).
     [V26.31] _diag=True면 실패 시 (None, 실패사유 문자열) 튜플을 반환 — 기본값 False(기존 호출부
     전부 무변경, 그냥 None만 반환)는 그대로 둠. 대시보드 추천픽 차트에서 "데이터를 못 가져왔다"는
-    말만으로는 rt_cd 실패/40거래일 미만/가격필드 이상 중 뭐가 원인인지 알 수 없다는 사용자 제보
-    대응 — 화면에 실제 원인을 보여주기 위해 추가."""
+    말만으로는 rt_cd 실패/거래일 부족/가격필드 이상 중 뭐가 원인인지 알 수 없다는 사용자 제보
+    대응 — 화면에 실제 원인을 보여주기 위해 추가.
+    [V26.32] 최소 거래일 기준 40→26으로 수정 — 날짜범위를 안 주면 이 엔드포인트는 최근 "30일치"만
+    주는 게 정상 동작(API 버그 아님, 이미 같은 TR을 쓰는 `_daily_setup`이 "최근 30일"이라 문서화해
+    두고 26개 이상이면 통과시키고 있었음). 이 함수를 새로 만들 때 그 전제를 확인 안 하고 40으로
+    잡아서, 정상적으로 30개를 받고도 매번 '데이터 부족'으로 실패하고 있었음(실사용 제보로 발견)."""
     def _ret(data, reason=None):
         return (data, reason) if _diag else data
     try:
@@ -3827,8 +3831,8 @@ def _daily_ohlcv(token, key, secret, code, _diag=False):
         if _rt not in ("0", ""):
             return _ret(None, f"API 조회 실패(rt_cd={_rt!r}, msg={j.get('msg1', '')!r})")
         rows = [x for x in (j.get("output", []) or []) if isinstance(x, dict)]
-        if len(rows) < 40:
-            return _ret(None, f"거래일 데이터 부족({len(rows)}개 수신, 40개 이상 필요)")
+        if len(rows) < 26:
+            return _ret(None, f"거래일 데이터 부족({len(rows)}개 수신, 26개 이상 필요)")
         rows = rows[::-1]                       # 최신순 → 과거→최근순(지표 계산은 시간순 필요)
         clpr = [_to_int(x.get("stck_clpr")) for x in rows]
         hgpr = [_to_int(x.get("stck_hgpr")) for x in rows]
