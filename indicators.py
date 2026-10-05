@@ -197,7 +197,7 @@ def calc_macd(
 
 
 # ── 6. 이동평균 ───────────────────────────────────────────────────────────────
-def calc_ma(close: pd.Series, periods: list[int] = [5, 20, 60, 120]) -> dict[str, pd.Series]:
+def calc_ma(close: pd.Series, periods: list[int] = [5, 10, 20, 30, 60, 120]) -> dict[str, pd.Series]:
     """단순이동평균 딕셔너리 반환."""
     return {f"MA{p}": close.rolling(p).mean().round(2) for p in periods}
 
