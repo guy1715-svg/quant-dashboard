@@ -96,7 +96,13 @@ def _find_support_resistance(df, window=3):
 
 
 def _render_pick_chart(token, key, secret, code, name):
-    """추천픽 종목 선택 시 일봉 캔들차트(이평선+저항/지지 오버레이)+거래량 차트를 그려 보여준다."""
+    """추천픽 종목 선택 시 일봉 캔들차트(이평선+저항/지지 오버레이)+거래량 차트를 그려 보여준다.
+    [V26.33] 사용자 UI 피드백 반영 — ① 차트 안 title과 범례가 겹쳐서 안 보이던 것 → title은
+    차트 밖 st.markdown으로 빼고 범례만 차트 상단에 깔끔히 배치 ② x축에 날짜가 전혀 안 보이던
+    것 → 실제 영업일자를 범주형 x축으로 표시(주말·공휴일 빈칸 없이, 눈금은 과밀 방지로 일부만)
+    ③ 저항·지지 글자가 초반 캔들과 겹치던 것 → 주석을 오른쪽으로 옮기고 텍스트를 짧게 ④ 왼쪽에
+    보이던 정체불명의 빨간 세로선 → plotly 숫자축 기본 zeroline이 idx=0 자리에 그려지던 것이라
+    명시적으로 꺼서 제거 ⑤ 이동평균선 범례를 한글(5일선/20일선/60일선/120일선)로 표기."""
     oh, _reason = mw._daily_ohlcv(token, key, secret, code, _diag=True)
     if not oh:
         st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다 — {_reason or '원인 미상'}")
@@ -105,6 +111,12 @@ def _render_pick_chart(token, key, secret, code, name):
                        "시가": oh["open"], "거래량": oh["volume"]})
     df = ind.calc_indicators(df)
     df["idx"] = range(len(df))
+    # 영업일자(YYYYMMDD) → "MM/DD" 표기. 날짜 정보가 없으면(구버전 데이터 등) idx로 대체.
+    _dates = oh.get("date") or []
+    if len(_dates) == len(df) and all(_dates):
+        df["날짜"] = [f"{d[4:6]}/{d[6:8]}" for d in _dates]
+    else:
+        df["날짜"] = df["idx"].astype(str)
     _cur_px = df["종가"].iloc[-1]
     _resist, _support = _find_support_resistance(df)
 
@@ -112,34 +124,38 @@ def _render_pick_chart(token, key, secret, code, name):
                          vertical_spacing=0.03)
     # 한국 관행: 양봉=빨강(상승), 음봉=파랑(하락) — 거래량 막대도 같은 색 규칙으로 통일
     fig.add_trace(go.Candlestick(
-        x=df["idx"], open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
+        x=df["날짜"], open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
         increasing_line_color="#d93025", increasing_fillcolor="#d93025",
         decreasing_line_color="#1a73e8", decreasing_fillcolor="#1a73e8", name="일봉"),
         row=1, col=1)
-    for _ma, _color in [("MA5", "#f2a900"), ("MA20", "#6b7280"),
-                         ("MA60", "#1a9850"), ("MA120", "#9333ea")]:
+    for _ma, _label, _color in [("MA5", "5일선", "#f2a900"), ("MA20", "20일선", "#6b7280"),
+                                 ("MA60", "60일선", "#1a9850"), ("MA120", "120일선", "#9333ea")]:
         if _ma in df.columns:
-            fig.add_trace(go.Scatter(x=df["idx"], y=df[_ma], mode="lines", name=_ma,
+            fig.add_trace(go.Scatter(x=df["날짜"], y=df[_ma], mode="lines", name=_label,
                                       line=dict(width=1.3, color=_color)), row=1, col=1)
-    # 저항(위)·지지(아래) — 가격 방향(빨강/파랑)과 안 헷갈리게 점선+주황/청록으로 구분
+    # 저항(위)·지지(아래) — 가격 방향(빨강/파랑)과 안 헷갈리게 점선+주황/청록, 글자는 오른쪽으로
+    # 빼서 캔들과 안 겹치게(자세한 가격·%는 아래 캡션에 이미 있어 차트엔 짧게만 표기)
     if _resist is not None:
-        _rpct = (_resist / _cur_px - 1) * 100
         fig.add_hline(y=_resist, line_dash="dot", line_color="#c2410c", line_width=1.5,
-                      annotation_text=f"저항 {_resist:,.0f}({_rpct:+.1f}%)",
-                      annotation_position="top left", row=1, col=1)
+                      annotation_text="저항", annotation_position="top right",
+                      annotation_font_color="#c2410c", row=1, col=1)
     if _support is not None:
-        _spct = (_support / _cur_px - 1) * 100
         fig.add_hline(y=_support, line_dash="dot", line_color="#0d9488", line_width=1.5,
-                      annotation_text=f"지지 {_support:,.0f}({_spct:+.1f}%)",
-                      annotation_position="bottom left", row=1, col=1)
+                      annotation_text="지지", annotation_position="bottom right",
+                      annotation_font_color="#0d9488", row=1, col=1)
     _vol_colors = ["#d93025" if c >= o else "#1a73e8" for c, o in zip(df["종가"], df["시가"])]
-    fig.add_trace(go.Bar(x=df["idx"], y=df["거래량"], marker_color=_vol_colors,
+    fig.add_trace(go.Bar(x=df["날짜"], y=df["거래량"], marker_color=_vol_colors,
                           name="거래량", showlegend=False), row=2, col=1)
-    fig.update_layout(height=480, margin=dict(l=10, r=10, t=30, b=10),
-                       xaxis_rangeslider_visible=False, title=f"{name}({code}) 일봉",
-                       legend=dict(orientation="h", yanchor="bottom", y=1.02))
-    fig.update_xaxes(showticklabels=False, row=1, col=1)
-    fig.update_xaxes(showticklabels=False, row=2, col=1)
+    fig.update_layout(height=520, margin=dict(l=10, r=10, t=40, b=10),
+                       xaxis_rangeslider_visible=False,
+                       legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0))
+    # idx(숫자) 대신 날짜(범주형) 축을 쓰므로 0 지점에 그려지던 기본 zeroline이 더 이상 안 생기지만,
+    # 혹시 모를 테마별 차이를 대비해 명시적으로 꺼둠
+    fig.update_xaxes(type="category", zeroline=False, row=1, col=1,
+                      showticklabels=False)
+    fig.update_xaxes(type="category", zeroline=False, row=2, col=1,
+                      tickangle=0, nticks=8)
+    st.markdown(f"**{name}({code}) 일봉**")
     st.plotly_chart(fig, use_container_width=True)
 
     _last = df.iloc[-1]

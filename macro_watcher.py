@@ -3839,9 +3839,10 @@ def _daily_ohlcv(token, key, secret, code, _diag=False):
         lwpr = [_to_int(x.get("stck_lwpr")) for x in rows]
         oppr = [_to_int(x.get("stck_oprc")) for x in rows]
         vol = [_to_int(x.get("acml_vol")) for x in rows]
+        dt = [str(x.get("stck_bsop_date") or "") for x in rows]   # 영업일자(YYYYMMDD) — 차트 x축 표기용
         if not (all(clpr) and all(hgpr) and all(lwpr) and all(oppr)):
             return _ret(None, "일부 거래일의 가격 필드가 0 또는 누락(데이터 이상)")
-        return _ret({"close": clpr, "high": hgpr, "low": lwpr, "open": oppr, "volume": vol})
+        return _ret({"close": clpr, "high": hgpr, "low": lwpr, "open": oppr, "volume": vol, "date": dt})
     except Exception as e:
         return _ret(None, f"예외 발생({type(e).__name__}: {e})")
 
