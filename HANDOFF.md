@@ -118,6 +118,42 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.81 대시보드 "지금 새로고침" — 전일대비 +15%↑ 종목 상승이유·섹터 정리 추가
+
+**배경**: 사용자가 "종배픽·재료등급 탭에서 거래대금 괴리율 수급통합 차트의 종목들이 전날 15%
+위에 있는 종목들의 상승이유와 뉴스, 어떤 섹터에 속해있는지대한 정리가 필요하다고 생각함"이라고
+요청. "⏱️ 지금 이 순간 새로고침 — 거래대금×괴리율×수급 통합" 섹션의 "📋 거래대금×괴리율×수급
+통합 — 1~30위 전체" 표에는 전일대비 등락률 컬럼 자체가 없었고, 급등 사유(뉴스)·업종(섹터) 정보도
+전혀 없어 급등 종목이 왜 올랐는지 표만 봐서는 알 수 없었음.
+
+**수정**:
+- `macro_watcher.py` `check_nxt_premium_pick`: `_price_turnover_vol`이 이미 계산하고 있던 KRX
+  등락률(`_kchg`)을 그동안 지역변수로만 쓰고 `full_rows` dict에 담지 않고 버리고 있었음 —
+  `"chg": _kchg`로 추가해 대시보드 쪽에서 쓸 수 있게 함(신규 API 호출 없음, 이미 계산되던 값을
+  그냥 안 버리는 것뿐).
+- `macro_watcher.py`에 `_news_headlines(code, n=3)` 신규 — 기존 `_news_grade`와 같은 네이버
+  모바일 뉴스 API를 쓰지만, `_news_grade`는 S/A/T/none 등급 판정 + 일당 캐시만 반환해 실제
+  헤드라인 텍스트를 못 보여줌. 등급 캐시 로직과 섞이면 "그날 가장 강한 등급"과 "최신 헤드라인"
+  시점이 어긋날 수 있어 일부러 독립 함수로 분리. 네트워크 실패/빈 응답 시 빈 리스트.
+- `quant_dashboard.py`: "1~30위 전체" 표에 "등락률(%)" 컬럼 추가. 그 아래 "🔥 전일대비 +15%↑
+  종목 — 상승이유·섹터" 섹션 신규 — `chg>=15`인 종목만 추려 종목별로 `_sector_name`(기존 함수
+  재사용, 신규 API 호출 없음)과 `_news_headlines`(신규)를 호출해 업종명 + 뉴스 헤드라인 최대
+  3개를 보여줌. 종목당 KIS 조회 1회 + 네이버뉴스 조회 1회가 추가 비용이라, 상시 감시 루프가
+  아니라 사용자가 "🔄 지금 새로고침" 버튼을 누른 온디맨드 경로에서만 실행(보통 급등 종목은
+  0~5종 수준이라 비용 작음).
+
+**검증**: `py_compile` 통과. 모의 테스트(`test_surge15_feature.py`, scratchpad) —
+`_news_headlines`가 (1) 정상 응답에서 제목 파싱 + 중복 제거 + n개 제한, (2) 네트워크 예외 시
+빈 리스트, (3) 빈 응답 시 빈 리스트 반환하는지 확인. `check_nxt_premium_pick`을 모킹해
+`full_out`의 각 row에 `chg` 필드가 KRX 등락률 그대로 담기는지 확인. 기존 7.x대 모의 테스트
+전체 재실행 — `test_avg_turn_ratio.py`/`test_check_nxt_premium_pick.py`/`test_nxt_prem_enrich.py`/
+`test_investor_flow_full100.py`/`test_holdings_nxt.py`가 실패했으나, 전부 이번 변경과 무관한
+코드 경로(또는 `mrkt` 파라미터 미지원 등 예전 PR 이후로 갱신 안 된 scratchpad 모의 함수) —
+이번 diff(full_rows에 키 1개 추가, 신규 함수 1개 추가, 대시보드 렌더 추가)가 건드리지 않는
+부분이라 회귀 아님으로 판단. 직접 관련된 `test_nxt_scan_log.py`·`test_nxt_universe_merge.py`·
+`test_top10_enrich.py`·`test_investor_flow_etf_filter.py`·`test_rtcd_validation.py`는 전부
+정상 통과.
+
 ### 7.80 "윌리엄스%R 바닥 반전" 신호 신규 — 키움 윌리엄스%R 단독 신호 과다 문제 대응
 
 **배경**: 사용자가 키움증권 차트 캡처(특정 종목이 지지선 근처에서 아래꼬리 달고 반등한 지점을

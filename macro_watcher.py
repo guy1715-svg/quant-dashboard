@@ -2843,6 +2843,43 @@ def _news_grade(code):
     return _res
 
 
+def _news_headlines(code, n=3):
+    """[V26.28] 종목 뉴스 제목 N개(원문 그대로) — 대시보드 "전일대비 +15%↑ 종목 상승이유" 표시용.
+    _news_grade와 같은 네이버 API를 쓰지만, _news_grade는 S/A/T/none 등급 판정 + 일당 캐시만
+    반환해 실제 헤드라인 텍스트를 못 보여줌 — 사람이 읽을 제목 원문이 필요해 별도 함수로 분리
+    (등급 캐시 로직과 섞이면 "그날 가장 강한 등급"과 "최신 헤드라인"이 서로 다른 시점을 가리킬
+    수 있어 일부러 독립시킴). 실패 시 빈 리스트."""
+    titles = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={n}&page=1",
+                         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
+                         timeout=7)
+        _j = r.json()
+
+        def _walk(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str):
+                        titles.append(v)
+                    else:
+                        _walk(v)
+            elif isinstance(o, list):
+                for it in o:
+                    _walk(it)
+        _walk(_j)
+    except Exception:
+        return []
+    seen = set()
+    out = []
+    for t in titles:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+        if len(out) >= n:
+            break
+    return out
+
+
 def _verdict_tag(level, price_bad=False, is_bad=False, quant_basis=False):
     """[V26.1] 사용자 학습 프레임(사건→전이경로→기업→가격, 재료 직접성 + 가격 자리로 A~D 판정) 반영 —
     텔레그램 신호 메시지에 한 글자 판정을 붙여 대시보드 분석저널의 '판정' 필드와 바로 대조 가능하게 함.
@@ -5776,7 +5813,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
                           "disparity_pct": _disp, "krx_vol": krx_vol, "nxt_vol": nxt_vol,
                           "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
-                          "avg_turn_ratio": _avg_turn_ratio,
+                          "avg_turn_ratio": _avg_turn_ratio, "chg": _kchg,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
     full_rows.sort(key=lambda r: r["ratio"], reverse=True)
