@@ -128,7 +128,8 @@ def _render_pick_chart(token, key, secret, code, name):
         increasing_line_color="#d93025", increasing_fillcolor="#d93025",
         decreasing_line_color="#1a73e8", decreasing_fillcolor="#1a73e8", name="일봉"),
         row=1, col=1)
-    for _ma, _label, _color in [("MA5", "5일선", "#f2a900"), ("MA20", "20일선", "#6b7280"),
+    for _ma, _label, _color in [("MA5", "5일선", "#f2a900"), ("MA10", "10일선", "#e05ec4"),
+                                 ("MA20", "20일선", "#6b7280"), ("MA30", "30일선", "#2563eb"),
                                  ("MA60", "60일선", "#1a9850"), ("MA120", "120일선", "#9333ea")]:
         if _ma in df.columns:
             fig.add_trace(go.Scatter(x=df["날짜"], y=df[_ma], mode="lines", name=_label,
@@ -143,11 +144,21 @@ def _render_pick_chart(token, key, secret, code, name):
         fig.add_hline(y=_support, line_dash="dot", line_color="#0d9488", line_width=1.5,
                       annotation_text="지지", annotation_position="bottom right",
                       annotation_font_color="#0d9488", row=1, col=1)
-    _vol_colors = ["#d93025" if c >= o else "#1a73e8" for c, o in zip(df["종가"], df["시가"])]
-    fig.add_trace(go.Bar(x=df["날짜"], y=df["거래량"], marker_color=_vol_colors,
-                          name="거래량", showlegend=False), row=2, col=1)
+    # [V26.34] 사용자 요청 — "거래량은 매수매도 게이지 나오게 해줘". 틱 단위 실제 체결(매수/매도)
+    # 데이터는 없어서(일봉만 조회), CMF와 같은 공식(Money Flow Multiplier)으로 그날 종가가
+    # 고가/저가 범위 중 어디에 있었는지를 근거로 그날 거래량을 매수추정/매도추정으로 비율 분할한
+    # "추정치"임 — 실제 체결 매수·매도 구분이 아니라는 걸 캡션에도 명시.
+    _rng = (df["고가"] - df["저가"]).replace(0, pd.NA)
+    _mfm = (((df["종가"] - df["저가"]) - (df["고가"] - df["종가"])) / _rng).fillna(0.0)
+    _buy_ratio = (_mfm + 1) / 2                 # -1~+1 → 0~1 (고가=매수100%, 저가=매도100%)
+    _buy_vol = df["거래량"] * _buy_ratio
+    _sell_vol = df["거래량"] * (1 - _buy_ratio)
+    fig.add_trace(go.Bar(x=df["날짜"], y=_buy_vol, marker_color="#d93025", name="매수추정"),
+                  row=2, col=1)
+    fig.add_trace(go.Bar(x=df["날짜"], y=_sell_vol, marker_color="#1a73e8", name="매도추정"),
+                  row=2, col=1)
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=40, b=10),
-                       xaxis_rangeslider_visible=False,
+                       xaxis_rangeslider_visible=False, barmode="stack",
                        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0))
     # idx(숫자) 대신 날짜(범주형) 축을 쓰므로 0 지점에 그려지던 기본 zeroline이 더 이상 안 생기지만,
     # 혹시 모를 테마별 차이를 대비해 명시적으로 꺼둠
@@ -177,6 +188,9 @@ def _render_pick_chart(token, key, secret, code, name):
     st.caption("저항·지지는 최근 스윙 고점/저점 기준 산출(기관·사용자마다 긋는 방식이 다를 수 "
                "있는 참고용 해석 중 하나입니다). 산업·시장 방향성, 실적, 수급 연속성 같은 "
                "정성적 판단은 자동화 범위 밖이라 직접 확인하셔야 합니다.")
+    st.caption("거래량의 매수추정(빨강)·매도추정(파랑) 분할은 실제 체결 데이터가 아니라, 그날 "
+               "종가가 고가·저가 범위 중 어디에 위치했는지로 추정한 근사치입니다(일봉만 조회 "
+               "가능해 틱 단위 매수·매도 체결량은 확인할 수 없습니다).")
 
 
 # ══════════════════════════════════════════
