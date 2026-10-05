@@ -97,9 +97,9 @@ def _find_support_resistance(df, window=3):
 
 def _render_pick_chart(token, key, secret, code, name):
     """추천픽 종목 선택 시 일봉 캔들차트(이평선+저항/지지 오버레이)+거래량 차트를 그려 보여준다."""
-    oh = mw._daily_ohlcv(token, key, secret, code)
+    oh, _reason = mw._daily_ohlcv(token, key, secret, code, _diag=True)
     if not oh:
-        st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다(최소 40거래일 데이터 필요).")
+        st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다 — {_reason or '원인 미상'}")
         return
     df = pd.DataFrame({"종가": oh["close"], "고가": oh["high"], "저가": oh["low"],
                        "시가": oh["open"], "거래량": oh["volume"]})

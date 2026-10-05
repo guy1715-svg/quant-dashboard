@@ -3805,11 +3805,17 @@ def check_oversold_bounce(token, key, secret, now_kst, state, token_tg, chat_id,
     state["oversold_sent"] = sent
 
 
-def _daily_ohlcv(token, key, secret, code):
+def _daily_ohlcv(token, key, secret, code, _diag=False):
     """[V25.56] 일봉 시계열(과거→최근순) — inquire-daily-price(_daily_setup과 동일 TR, 최신순 응답을 뒤집음).
     RSI/MACD/CMF/윌리엄스%R 등 지표 계산용. 최소 40거래일 미만이면 None.
     [V26.27] rt_cd 검증 추가(이 코드베이스에 이미 한 번 확인된 결함 — `_price_full` 참고) +
-    시가(open) 필드 추가(윌리엄스%R 바닥반전 신호의 양봉 판정용)."""
+    시가(open) 필드 추가(윌리엄스%R 바닥반전 신호의 양봉 판정용).
+    [V26.31] _diag=True면 실패 시 (None, 실패사유 문자열) 튜플을 반환 — 기본값 False(기존 호출부
+    전부 무변경, 그냥 None만 반환)는 그대로 둠. 대시보드 추천픽 차트에서 "데이터를 못 가져왔다"는
+    말만으로는 rt_cd 실패/40거래일 미만/가격필드 이상 중 뭐가 원인인지 알 수 없다는 사용자 제보
+    대응 — 화면에 실제 원인을 보여주기 위해 추가."""
+    def _ret(data, reason=None):
+        return (data, reason) if _diag else data
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -3817,11 +3823,12 @@ def _daily_ohlcv(token, key, secret, code):
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code,
                                  "fid_period_div_code": "D", "fid_org_adj_prc": "1"}, timeout=6)
         j = r.json()
-        if str(j.get("rt_cd", "")).strip() not in ("0", ""):
-            return None
+        _rt = str(j.get("rt_cd", "")).strip()
+        if _rt not in ("0", ""):
+            return _ret(None, f"API 조회 실패(rt_cd={_rt!r}, msg={j.get('msg1', '')!r})")
         rows = [x for x in (j.get("output", []) or []) if isinstance(x, dict)]
         if len(rows) < 40:
-            return None
+            return _ret(None, f"거래일 데이터 부족({len(rows)}개 수신, 40개 이상 필요)")
         rows = rows[::-1]                       # 최신순 → 과거→최근순(지표 계산은 시간순 필요)
         clpr = [_to_int(x.get("stck_clpr")) for x in rows]
         hgpr = [_to_int(x.get("stck_hgpr")) for x in rows]
@@ -3829,10 +3836,10 @@ def _daily_ohlcv(token, key, secret, code):
         oppr = [_to_int(x.get("stck_oprc")) for x in rows]
         vol = [_to_int(x.get("acml_vol")) for x in rows]
         if not (all(clpr) and all(hgpr) and all(lwpr) and all(oppr)):
-            return None
-        return {"close": clpr, "high": hgpr, "low": lwpr, "open": oppr, "volume": vol}
-    except Exception:
-        return None
+            return _ret(None, "일부 거래일의 가격 필드가 0 또는 누락(데이터 이상)")
+        return _ret({"close": clpr, "high": hgpr, "low": lwpr, "open": oppr, "volume": vol})
+    except Exception as e:
+        return _ret(None, f"예외 발생({type(e).__name__}: {e})")
 
 
 def check_rsi_cmf_macd_recovery(token, key, secret, now_kst, state, token_tg, chat_id, sev=1):
