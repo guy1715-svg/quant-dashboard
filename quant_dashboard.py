@@ -956,12 +956,36 @@ def render_dolpanty():
         _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
         if "avg_turn_ratio" in _ldf.columns:
             _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
-        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
+        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "chg": "등락률(%)",
+                   "krx_px": "KRX가", "nxt_px": "NXT가",
                    "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
                    "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
                    "ratio": "거래량비율", "기준충족": "기준충족"}
         _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
+
+        # [V26.28] 사용자 요청 — "전날 대비 15% 위에 있는 종목들의 상승이유와 뉴스, 어떤 섹터에
+        # 속해있는지 정리가 필요". 위 표엔 종목이 최대 30개까지 뜨는데 그중 급등 종목만 추려
+        # 섹터(_sector_name)·실제 뉴스 헤드라인(_news_headlines)을 별도로 붙여서 보여줌 — 매
+        # 종목마다 KIS 조회 1회 + 네이버뉴스 조회 1회가 추가로 드는 비용이라, 버튼 눌렀을 때만
+        # 도는 이 온디맨드 새로고침 섹션에서만 수행(상시 감시 루프에는 추가하지 않음).
+        _surge15 = [r for r in (st.session_state.get("nxt_live_full") or [])
+                    if r.get("chg") is not None and r["chg"] >= 15]
+        if _surge15:
+            st.markdown("##### 🔥 전일대비 +15%↑ 종목 — 상승이유 · 섹터")
+            st.caption("위 표에서 전일 종가 대비 15% 이상 오른 종목만 추려, 종목별 업종(섹터)과 "
+                       "최근 뉴스 헤드라인을 보여줍니다 — 급등 사유를 수동으로 하나씩 검색하지 "
+                       "않아도 되게 하기 위한 참고용 정리입니다(상승 사유 확정 아님).")
+            for r in sorted(_surge15, key=lambda r: r["chg"], reverse=True):
+                with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
+                    _sec = mw._sector_name(tok, key, sec, r["code"]) or "업종 미확인"
+                    _heads = mw._news_headlines(r["code"], n=3)
+                st.markdown(f"**{r['name']}**({r['code']}) {r['chg']:+.1f}% · 🏷️ {_sec}")
+                if _heads:
+                    for h in _heads:
+                        st.caption(f"· {h}")
+                else:
+                    st.caption("· 관련 뉴스 헤드라인 확인 안 됨")
 
         if st.session_state.get("nxt_live_flow"):
             st.markdown("##### 💰 수급 상위 (이 순간 기준)")
