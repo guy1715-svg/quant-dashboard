@@ -1351,7 +1351,34 @@ def _fetch_nxt_scan_log(_bust):
         return None
 
 
-@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...")
+_TRACK_RECORD_MAX_CODES = 150     # 종목 예산 한도(1단계·2단계 공통) — 사용자 제보("너무 느림")
+_TRACK_RECORD_WORKERS = 5         # 동시 KIS 조회 스레드 수 — 감시 프로세스도 같은 앱키로 동시에
+                                   # API를 쓸 수 있어, 체감 속도 개선은 충분하면서 KIS 초당 호출
+                                   # 제한(EGW00201)에 걸릴 위험은 낮게 보수적으로 설정
+
+
+def _fetch_closes_parallel(tok, key, sec, codes):
+    """[V26.38] 사용자 제보 — "종목별 적중 이력" 조회가 너무 느림. 원인: 종목마다
+    mw._daily_closes(KIS API 1회)를 순서대로 하나씩 호출(완전 블로킹)했던 게 느려진 핵심 원인 —
+    네트워크 I/O 대기라 파이썬 GIL이 풀리는 구간이라 스레드풀로 동시 호출해도 안전함. 종목별
+    조회는 서로 완전히 독립적(공유 상태 없음)이라 병렬화에 경쟁조건 위험 없음. codes는 이미
+    중복제거·예산한도 적용된 뒤 들어온다고 가정(이 함수 자체는 호출 수만 신경씀)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out = {}
+    if not codes:
+        return out
+    with ThreadPoolExecutor(max_workers=min(_TRACK_RECORD_WORKERS, len(codes))) as ex:
+        futs = {ex.submit(mw._daily_closes, tok, key, sec, c): c for c in codes}
+        for fut in as_completed(futs):
+            c = futs[fut]
+            try:
+                out[c] = fut.result()
+            except Exception:
+                out[c] = {}
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...(병렬 조회)")
 def _compute_stock_track_record(_bust):
     """[V26.35] 사용자 요청 — "오늘의 추천 픽/쌍끌이 후보에 뜬 종목들이 실제로 어떤 결과를
     가져왔는지, 어떤 종목이 승률이 좋았는지 보고 싶다"는 1단계 구현. "오늘의 추천 픽"과
@@ -1362,7 +1389,10 @@ def _compute_stock_track_record(_bust):
     signal_scorecard.json(r1/r3)은 일부러 안 씀 — 클라우드 배포는 로컬 파일에 직접 접근
     못 하는데(render_journal 주석 참고) 이 파일은 아직 GitHub data 브랜치 업로드가 안 돼 있어서
     클라우드에서 비어 보일 위험이 있음. pick_history.json은 이미 _fetch_pick_history로 클라우드
-    대응이 돼 있어 그걸로 충분."""
+    대응이 돼 있어 그걸로 충분.
+    [V26.38] 속도 개선 — 종목별 KIS 조회를 순차 → 병렬(_fetch_closes_parallel)로 바꾸고, 그동안
+    없었던 고유종목 예산 한도(150개, 2단계와 동일 기준)를 추가해 pick_history가 누적될수록
+    무한정 느려지던 것도 같이 막음(최신 등장분 우선)."""
     tok, key, sec = _kis()
     if not tok:
         return None, "KIS 키 없음"
@@ -1372,18 +1402,27 @@ def _compute_stock_track_record(_bust):
     rows = [r for r in (rows or []) if r.get("signal") == "dolpanty_nxtprem"]
     if not rows:
         return None, "대체종배 추천픽 기록 없음"
-    from collections import defaultdict
-    by_stock = defaultdict(list)
-    cache = {}
+    valid = []
     for r in rows[-500:]:
         code = str(r.get("code", "")).zfill(6)
         date, px, name = r.get("date", ""), r.get("px"), r.get("name", "")
-        if not (code.isdigit() and px and date):
+        if code.isdigit() and px and date:
+            valid.append((code, name, date, px))
+    if not valid:
+        return None, "대체종배 추천픽 기록 없음"
+    allowed = set()
+    for code, *_ in reversed(valid):                    # 최신 등장분 우선으로 예산 소진
+        if len(allowed) >= _TRACK_RECORD_MAX_CODES:
+            break
+        allowed.add(code)
+    closes = _fetch_closes_parallel(tok, key, sec, allowed)
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    for code, name, date, px in valid:
+        if code not in allowed:
             continue
+        cl = closes.get(code) or {}
         ymd = date.replace("-", "")
-        if code not in cache:
-            cache[code] = mw._daily_closes(tok, key, sec, code)
-        cl = cache[code]
         later = sorted(d for d in cl if d > ymd)
         if later:
             by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
@@ -1444,7 +1483,7 @@ def render_stock_track_record():
         st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
 
 
-@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...")
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...(병렬 조회)")
 def _compute_scan_track_record(_bust, top5_only):
     """[V26.36] 7.89(1단계)의 이어서 2단계 — "거래대금×괴리율×수급통합 1~30위 전체"·"평소 대비
     거래대금 급증 TOP5"는 대체종배 필터(ratio>=기준)를 통과 못 한 종목도 포함하는 더 넓은 모집단
@@ -1456,7 +1495,9 @@ def _compute_scan_track_record(_bust, top5_only):
     진입가는 pick_history와 동일하게 nxt_px(스캔 시점 NXT 애프터마켓가) 사용 — 1단계와 같은 기준.
     API 호출(mw._daily_closes, 종목당 1회)이 날짜별 중복 종목까지 더하면 많아질 수 있어(최대
     30일×50종) 최근 날짜부터 우선 처리하고 고유종목 150개 한도로 끊음(그 이후 신규 종목은
-    스킵 — 예전 날짜에만 나온 종목이 누락될 수 있다는 뜻, 참고용이라 허용)."""
+    스킵 — 예전 날짜에만 나온 종목이 누락될 수 있다는 뜻, 참고용이라 허용).
+    [V26.38] 속도 개선 — 종목별 KIS 조회를 순차 → 병렬(_fetch_closes_parallel, 1단계와 공용)로
+    변경."""
     tok, key, sec = _kis()
     if not tok:
         return None, "KIS 키 없음"
@@ -1465,10 +1506,7 @@ def _compute_scan_track_record(_bust, top5_only):
         scan_log = mw._nxt_scan_log_read()
     if not scan_log:
         return None, "날짜별 전체 스캔 기록 없음"
-    from collections import defaultdict
-    by_stock = defaultdict(list)
-    cache = {}
-    _MAX_CODES = 150
+    valid = []
     for entry in sorted(scan_log, key=lambda e: e.get("date", ""), reverse=True):
         date = entry.get("date", "")
         rows = entry.get("rows") or []
@@ -1478,17 +1516,26 @@ def _compute_scan_track_record(_bust, top5_only):
         for r in rows:
             code = str(r.get("code", "")).zfill(6)
             name, px = r.get("name", ""), r.get("nxt_px")
-            if not (code.isdigit() and px and date):
-                continue
-            if code not in cache:
-                if len(cache) >= _MAX_CODES:
-                    continue
-                cache[code] = mw._daily_closes(tok, key, sec, code)
-            cl = cache[code]
-            ymd = date.replace("-", "")
-            later = sorted(d for d in cl if d > ymd)
-            if later:
-                by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
+            if code.isdigit() and px and date:
+                valid.append((code, name, date, px))
+    if not valid:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    allowed = set()
+    for code, *_ in valid:                              # 이미 최신 날짜 우선 순서로 쌓여 있음
+        if len(allowed) >= _TRACK_RECORD_MAX_CODES:
+            break
+        allowed.add(code)
+    closes = _fetch_closes_parallel(tok, key, sec, allowed)
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    for code, name, date, px in valid:
+        if code not in allowed:
+            continue
+        cl = closes.get(code) or {}
+        ymd = date.replace("-", "")
+        later = sorted(d for d in cl if d > ymd)
+        if later:
+            by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
     if not by_stock:
         return None, "익일 결과 대조 가능한 기록 없음"
     out = []
