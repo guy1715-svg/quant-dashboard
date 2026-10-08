@@ -1183,6 +1183,8 @@ def render_dolpanty():
                "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격 · "
                "평소대비(%)=NXT거래대금÷최근20일평균 정규장거래대금(소형주 거래량비율 착시·대형주 절대금액 착시 보정용)")
 
+    render_scan_track_record()
+
     # [V26.13] 사용자 요청 — 수급(외인/기관/개인)·뉴스재료·시황 체크리스트를 이 표에서도 보고 싶다는
     # 요청. 후보 전체(최대 50종)에 미리 계산해두면 API 호출이 매 스캔마다 크게 늘어나므로, 사용자와
     # 상의해 "종목을 고르면 그 순간 조회"하는 온디맨드 방식으로 확정 — 평소엔 API 부담 없음.
@@ -1418,6 +1420,92 @@ def render_stock_track_record():
         use_container_width=True, hide_index=True)
     if df["표본작음"].any():
         st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
+
+
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...")
+def _compute_scan_track_record(_bust, top5_only):
+    """[V26.36] 7.89(1단계)의 이어서 2단계 — "거래대금×괴리율×수급통합 1~30위 전체"·"평소 대비
+    거래대금 급증 TOP5"는 대체종배 필터(ratio>=기준)를 통과 못 한 종목도 포함하는 더 넓은 모집단
+    (nxt_scan_log.json, check_nxt_premium_pick의 full_rows — pass 여부 무관하게 날짜별 최대
+    50종 기록)이라 pick_history.json(1단계, dolpanty_nxtprem만)으로는 커버 안 됨. 같은
+    "익일 종가 대비 라이브 계산" 방식을 재사용하되 이 넓은 모집단에 적용.
+    급증TOP5 기준(top5_only=True)은 날짜별로 avg_turn_ratio 상위 5종만 추려 같은 방식으로 집계
+    — "평소 대비 거래대금 급증 TOP5"가 실제로 다음날 어떻게 됐는지를 보여줌.
+    진입가는 pick_history와 동일하게 nxt_px(스캔 시점 NXT 애프터마켓가) 사용 — 1단계와 같은 기준.
+    API 호출(mw._daily_closes, 종목당 1회)이 날짜별 중복 종목까지 더하면 많아질 수 있어(최대
+    30일×50종) 최근 날짜부터 우선 처리하고 고유종목 150개 한도로 끊음(그 이후 신규 종목은
+    스킵 — 예전 날짜에만 나온 종목이 누락될 수 있다는 뜻, 참고용이라 허용)."""
+    tok, key, sec = _kis()
+    if not tok:
+        return None, "KIS 키 없음"
+    scan_log = _fetch_nxt_scan_log(_bust)
+    if scan_log is None:
+        scan_log = mw._nxt_scan_log_read()
+    if not scan_log:
+        return None, "날짜별 전체 스캔 기록 없음"
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    cache = {}
+    _MAX_CODES = 150
+    for entry in sorted(scan_log, key=lambda e: e.get("date", ""), reverse=True):
+        date = entry.get("date", "")
+        rows = entry.get("rows") or []
+        if top5_only:
+            rows = sorted([r for r in rows if r.get("avg_turn_ratio")],
+                          key=lambda r: r["avg_turn_ratio"], reverse=True)[:5]
+        for r in rows:
+            code = str(r.get("code", "")).zfill(6)
+            name, px = r.get("name", ""), r.get("nxt_px")
+            if not (code.isdigit() and px and date):
+                continue
+            if code not in cache:
+                if len(cache) >= _MAX_CODES:
+                    continue
+                cache[code] = mw._daily_closes(tok, key, sec, code)
+            cl = cache[code]
+            ymd = date.replace("-", "")
+            later = sorted(d for d in cl if d > ymd)
+            if later:
+                by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
+    if not by_stock:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    out = []
+    for (code, name), items in by_stock.items():
+        rets = [x for _, x in items]
+        wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+        out.append({"종목명": name, "종목코드": code, "등장횟수": len(rets),
+                    "승률%": round(wr, 0), "평균수익%": round(sum(rets) / len(rets), 2),
+                    "최근등장일": max(d for d, _ in items), "표본작음": len(rets) < 3})
+    df = pd.DataFrame(out).sort_values(["승률%", "등장횟수"], ascending=[False, False])
+    return df.reset_index(drop=True), None
+
+
+def render_scan_track_record():
+    import time as _t
+    st.markdown("##### 📊 전체 스캔 · 급증 TOP5 — 종목별 적중 이력")
+    st.caption("대체종배 기준 미달 종목까지 포함한 '전체 스캔' 기준, 또는 '평소 대비 거래대금 급증 "
+               "TOP5' 기준으로 그날 뜬 종목들이 익일 종가 기준 몇 번이나 올랐는지 집계합니다.")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        _mode = st.radio("집계 기준", ["전체 스캔(1~30위 전체)", "평소대비 급증 TOP5만"],
+                          key="scan_track_mode", horizontal=True)
+    with col2:
+        if st.button("🔄 새로고침", key="scan_track_refresh"):
+            _compute_scan_track_record.clear()
+    _top5_only = _mode.startswith("평소대비")
+    df, err = _compute_scan_track_record(_t.time() // 1800, _top5_only)
+    if err:
+        st.info(err)
+        return
+    _show = df[["종목명", "종목코드", "등장횟수", "승률%", "평균수익%", "최근등장일"]]
+    st.dataframe(
+        _show.style.apply(lambda r: [f"background-color:{_pct_color(r['평균수익%'])}22"] * len(r), axis=1),
+        use_container_width=True, hide_index=True)
+    if df["표본작음"].any():
+        st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
+    st.caption("진입가는 스캔 시점 NXT 애프터마켓가 기준(위 '종목별 적중 이력'과 동일 산출 방식) — "
+               "최근 날짜 우선으로 최대 150개 종목까지만 조회합니다(API 부담 제한, 오래된 날짜에만 "
+               "나온 종목은 누락될 수 있음).")
 
 
 @st.cache_data(ttl=60, show_spinner=False)
