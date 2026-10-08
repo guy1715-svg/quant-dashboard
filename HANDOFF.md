@@ -118,6 +118,37 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.91 종배픽 탭 — 7.89/7.90 "종목별 적중 이력" 기능 때문에 탭 전체가 먹통되던 실사용 버그 수정
+
+**배경**: 사용자 제보 — "오늘의 추천픽/급증TOP5/쌍끌이·거래량추세 포함 후보 전체/거래대금×괴리율×
+수급통합 표가 다 사라졌다"(7.89·7.90 PR 머지 후 실사용). 코드 확인 결과 실제 원인: 두 신규 섹션
+모두 `render_stock_track_record()`(quant_dashboard.py, `render_dolpanty()` line 958에서
+호출 — 아래 모든 섹션보다 먼저 실행됨)·`render_scan_track_record()`가 **버튼 클릭 여부와 무관
+하게** `_compute_stock_track_record`/`_compute_scan_track_record`를 무조건 호출했음. 그
+안에서는 `pick_history.json`(최근 500건) 또는 `nxt_scan_log.json`(최대 150종)의 **고유
+종목마다** `mw._daily_closes`로 KIS를 블로킹 호출 — 종목 수가 많으면 이 호출이 끝날 때까지
+Streamlit이 그 아래 코드(스크립트를 위에서부터 순차 실행)를 아예 그리지 못함. "느려진 것"이
+아니라 "오늘의 추천 픽"·"지금 새로고침" 버튼·"거래대금×괴리율×수급통합 1~30위 전체" 등 뒤에
+있는 모든 섹션이 통째로 렌더링 자체를 못 하게 막아버린 것 — 사용자가 본 "다 사라짐"과 정확히
+일치. 같은 파일 안에 이미 "🔍 종목별 수급·AI뉴스·관심기준 조회"처럼 "버튼을 눌러야만 조회"하는
+온디맨드 패턴이 있었는데, 신규 기능을 그 패턴 없이(무조건 즉시 실행) 작성한 게 원인.
+
+**수정**: `render_stock_track_record()`·`render_scan_track_record()`를 다른 온디맨드 섹션과
+같은 패턴으로 변경 — "🔍 조회" 버튼을 눌러야만(또는 "🔄 새로고침") 실제 계산 함수를 호출하고,
+한 번 누르면 `st.session_state`(`track_record_shown`/`scan_track_shown`)에 남아 탭 안 다른
+위젯 조작으로 재실행돼도 다시 눌러야 하는 불편은 없게 함(단, `st.cache_data` ttl 30분이 지나면
+그 다음 재실행 때 다시 블로킹 계산이 걸릴 수 있음 — 참고용 기능이라 허용). 혹시 모를 예외도
+`try/except`로 격리해 이 기능 하나가 터져도 나머지 탭 전체는 항상 그려지도록 방어.
+
+**검증**: `py_compile` 통과. 기존 `test_stock_track_record.py`·`test_scan_track_record.py`
+(집계 로직) 재실행 — 회귀 없음. 신규 `test_track_record_gating.py`(scratchpad) — Streamlit의
+`AppTest`로 실제 버튼 클릭·재실행을 시뮬레이션해, (1) 페이지 최초 로드 시 계산 함수가 자동
+호출되지 않는지, (2) 버튼 클릭 후에만 호출되는지, (3) 계산 함수가 예외를 던져도 그 아래 섹션이
+항상 렌더링되는지 — 수정 전 버그와 정확히 반대되는 동작을 재현 코드(`mini_track_app.py`,
+실제 함수와 동일한 제어 흐름)로 검증. `streamlit run --server.headless` 기동 테스트 — HTTP
+200, 콘솔 에러 없음. 사용자 실제 KIS 키·실제 `pick_history.json`/`nxt_scan_log.json` 데이터로
+탭 전체가 다시 정상 노출되는지는 사용자 환경에서 최종 확인 필요.
+
 ### 7.90 종배픽 탭 — "📊 전체 스캔·급증 TOP5 종목별 적중 이력" 섹션 신규(2단계)
 
 **배경**: 7.89(1단계)는 "오늘의 추천 픽"·"쌍끌이 후보 전체"(둘 다 `dolpanty_nxtprem` 통과분만)만

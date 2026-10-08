@@ -1401,19 +1401,41 @@ def _compute_stock_track_record(_bust):
 
 
 def render_stock_track_record():
+    # [V26.37] 사용자 제보 — "오늘의 추천픽/급증TOP5/쌍끌이/통합 표가 다 사라졌다". 원인:
+    # 이 함수가 무조건(버튼 클릭 여부 무관) _compute_stock_track_record를 호출했는데, 그 안에서
+    # pick_history.json 최근 500건의 '고유 종목마다' mw._daily_closes로 KIS를 블로킹 호출함 —
+    # 종목 수가 많으면 render_dolpanty() 안에서 이 호출(line 958, 아래 모든 섹션보다 먼저 실행)이
+    # 끝날 때까지 그 아래 "오늘의 추천 픽"·"지금 새로고침" 버튼 등 나머지 전체가 렌더링 자체가
+    # 안 됨(Streamlit은 스크립트를 위에서부터 순서대로 실행하므로, 여기서 멈추거나 느려지면 아래는
+    # 아예 그려지지 않음) — 느린 게 아니라 "먼저 눌러야 계산하는" 다른 온디맨드 섹션들(예:
+    # "🔍 종목별 수급·AI뉴스·관심기준 조회")과 똑같이 버튼을 눌러야만 계산하도록 수정, 혹시 모를
+    # 예외도 try/except로 격리해 이 섹션 하나가 터져도 나머지 탭 전체는 항상 그려지게 함.
     import time as _t
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("🔄 새로고침", key="track_refresh"):
-            _compute_stock_track_record.clear()
-    df, err = _compute_stock_track_record(_t.time() // 1800)
-    if err:
-        st.info(err)
-        return
     st.markdown("##### 📊 대체종배 추천픽 — 종목별 적중 이력")
     st.caption("오늘의 추천 픽·쌍끌이 후보 전체에 떴던 종목들이 실제로 익일 종가 기준 몇 번이나 "
                "올랐는지 집계한 것입니다(승률 높은 순). 같은 종목이 여러 날 반복해서 뜬 경우를 "
                "모아 집계한 것이라, 당일 1회성 추천 순위와는 다른 관점입니다.")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        _go = st.button("🔍 조회(종목 수에 따라 시간이 걸릴 수 있음)", key="track_calc_btn")
+    with col2:
+        if st.button("🔄 새로고침", key="track_refresh"):
+            _compute_stock_track_record.clear()
+            st.session_state["track_record_shown"] = True
+            _go = True
+    if _go:
+        st.session_state["track_record_shown"] = True
+    if not st.session_state.get("track_record_shown"):
+        st.caption("버튼을 눌러야 계산합니다(종목별로 KIS 조회가 필요해 자동 실행하지 않습니다).")
+        return
+    try:
+        df, err = _compute_stock_track_record(_t.time() // 1800)
+    except Exception as _e:
+        st.error(f"계산 중 오류 발생: {type(_e).__name__}")
+        return
+    if err:
+        st.info(err)
+        return
     _show = df[["종목명", "종목코드", "등장횟수", "승률%", "평균수익%", "최근등장일"]]
     st.dataframe(
         _show.style.apply(lambda r: [f"background-color:{_pct_color(r['평균수익%'])}22"] * len(r), axis=1),
@@ -1481,6 +1503,9 @@ def _compute_scan_track_record(_bust, top5_only):
 
 
 def render_scan_track_record():
+    # [V26.37] 7.90(2단계)에도 같은 결함 있었음 — render_stock_track_record 수정 사유(V26.37
+    # 주석) 참고. 여기는 "전체 스캔" 모드가 최대 150종 KIS 조회라 더 심각(사용자가 보고한
+    # "다 사라짐"의 더 큰 원인일 가능성이 높음) — 동일하게 버튼 클릭 전엔 계산 안 하도록 수정.
     import time as _t
     st.markdown("##### 📊 전체 스캔 · 급증 TOP5 — 종목별 적중 이력")
     st.caption("대체종배 기준 미달 종목까지 포함한 '전체 스캔' 기준, 또는 '평소 대비 거래대금 급증 "
@@ -1490,10 +1515,23 @@ def render_scan_track_record():
         _mode = st.radio("집계 기준", ["전체 스캔(1~30위 전체)", "평소대비 급증 TOP5만"],
                           key="scan_track_mode", horizontal=True)
     with col2:
+        _go = st.button("🔍 조회(전체 스캔은 특히 오래 걸릴 수 있음)", key="scan_track_calc_btn")
         if st.button("🔄 새로고침", key="scan_track_refresh"):
             _compute_scan_track_record.clear()
+            st.session_state["scan_track_shown"] = True
+            _go = True
+    if _go:
+        st.session_state["scan_track_shown"] = True
+    if not st.session_state.get("scan_track_shown"):
+        st.caption("버튼을 눌러야 계산합니다(종목별로 KIS 조회가 필요해 자동 실행하지 않습니다 — "
+                   "'전체 스캔' 기준은 최대 150개 종목을 순서대로 조회해 특히 오래 걸릴 수 있습니다).")
+        return
     _top5_only = _mode.startswith("평소대비")
-    df, err = _compute_scan_track_record(_t.time() // 1800, _top5_only)
+    try:
+        df, err = _compute_scan_track_record(_t.time() // 1800, _top5_only)
+    except Exception as _e:
+        st.error(f"계산 중 오류 발생: {type(_e).__name__}")
+        return
     if err:
         st.info(err)
         return
