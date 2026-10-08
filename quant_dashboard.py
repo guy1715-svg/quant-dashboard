@@ -955,6 +955,8 @@ def render_dolpanty():
         st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
         st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
 
+    render_stock_track_record()
+
     # [V26.17] 사용자 요청 — "내가 보고싶은 시간때 기준으로 거래대금+괴리율+수급을 확인이 되어
     # 종목선정시 가이드를 삼으려고" 하는 온디맨드 새로고침. 아래 "날짜별 전체 스캔" 표는 감시
     # 프로세스가 18:00~19:50에 '하루 1번' 찍어 GitHub에 올린 과거 기록이라 지금 이 순간 데이터가
@@ -1345,6 +1347,77 @@ def _fetch_nxt_scan_log(_bust):
         return d if isinstance(d, list) else None
     except Exception:
         return None
+
+
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...")
+def _compute_stock_track_record(_bust):
+    """[V26.35] 사용자 요청 — "오늘의 추천 픽/쌍끌이 후보에 뜬 종목들이 실제로 어떤 결과를
+    가져왔는지, 어떤 종목이 승률이 좋았는지 보고 싶다"는 1단계 구현. "오늘의 추천 픽"과
+    "쌍끌이·거래량추세 포함 후보 전체"는 사실 같은 데이터(대체종배, signal="dolpanty_nxtprem")를
+    다르게 정렬/표시만 다르게 한 것이라 pick_history.json 하나만 보면 됨 — _compute_signal_stats
+    (신호 종류별 집계)와 같은 "익일 종가 대비 수익률을 그때그때 라이브로 계산" 방식을 그대로
+    재사용하되, 종류(kind)가 아니라 종목(code) 단위로 묶는다는 점만 다름.
+    signal_scorecard.json(r1/r3)은 일부러 안 씀 — 클라우드 배포는 로컬 파일에 직접 접근
+    못 하는데(render_journal 주석 참고) 이 파일은 아직 GitHub data 브랜치 업로드가 안 돼 있어서
+    클라우드에서 비어 보일 위험이 있음. pick_history.json은 이미 _fetch_pick_history로 클라우드
+    대응이 돼 있어 그걸로 충분."""
+    tok, key, sec = _kis()
+    if not tok:
+        return None, "KIS 키 없음"
+    rows = _fetch_pick_history(_bust)
+    if rows is None:
+        rows = mw._pick_read()
+    rows = [r for r in (rows or []) if r.get("signal") == "dolpanty_nxtprem"]
+    if not rows:
+        return None, "대체종배 추천픽 기록 없음"
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    cache = {}
+    for r in rows[-500:]:
+        code = str(r.get("code", "")).zfill(6)
+        date, px, name = r.get("date", ""), r.get("px"), r.get("name", "")
+        if not (code.isdigit() and px and date):
+            continue
+        ymd = date.replace("-", "")
+        if code not in cache:
+            cache[code] = mw._daily_closes(tok, key, sec, code)
+        cl = cache[code]
+        later = sorted(d for d in cl if d > ymd)
+        if later:
+            by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
+    if not by_stock:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    out = []
+    for (code, name), items in by_stock.items():
+        rets = [x for _, x in items]
+        wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+        out.append({"종목명": name, "종목코드": code, "등장횟수": len(rets),
+                    "승률%": round(wr, 0), "평균수익%": round(sum(rets) / len(rets), 2),
+                    "최근등장일": max(d for d, _ in items), "표본작음": len(rets) < 3})
+    df = pd.DataFrame(out).sort_values(["승률%", "등장횟수"], ascending=[False, False])
+    return df.reset_index(drop=True), None
+
+
+def render_stock_track_record():
+    import time as _t
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 새로고침", key="track_refresh"):
+            _compute_stock_track_record.clear()
+    df, err = _compute_stock_track_record(_t.time() // 1800)
+    if err:
+        st.info(err)
+        return
+    st.markdown("##### 📊 대체종배 추천픽 — 종목별 적중 이력")
+    st.caption("오늘의 추천 픽·쌍끌이 후보 전체에 떴던 종목들이 실제로 익일 종가 기준 몇 번이나 "
+               "올랐는지 집계한 것입니다(승률 높은 순). 같은 종목이 여러 날 반복해서 뜬 경우를 "
+               "모아 집계한 것이라, 당일 1회성 추천 순위와는 다른 관점입니다.")
+    _show = df[["종목명", "종목코드", "등장횟수", "승률%", "평균수익%", "최근등장일"]]
+    st.dataframe(
+        _show.style.apply(lambda r: [f"background-color:{_pct_color(r['평균수익%'])}22"] * len(r), axis=1),
+        use_container_width=True, hide_index=True)
+    if df["표본작음"].any():
+        st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
 
 
 @st.cache_data(ttl=60, show_spinner=False)
