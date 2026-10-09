@@ -4775,7 +4775,8 @@ def _pick_write(rows):
     _atomic_write_json(PICK_FILE, rows[-1500:])
 
 
-def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
+def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
+              sell_ratio_frgn=None, sell_ratio_orgn=None):
     """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유).
     [V26.12] 사용자 제보 로그 검토 중 발견 — 기존엔 (날짜,종목코드)가 이미 있으면 무조건
     조용히 무시했음. 문제: ①그림자(_shadow)로 먼저 찍힌 종목이 같은 날 나중에 진짜 확정픽이
@@ -4783,7 +4784,10 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
     (--force-pick 등)으로 같은 종목이 같은 날 다른 가격에 다시 확정픽 발송되면, 실제로 나간
     텔레그램 진입가와 기록된 등록가가 서로 달라짐(성적표 대조가 옛날 가격 기준으로 틀어짐).
     이제: 그림자→확정 승격은 항상 반영, 확정→그림자 강등은 막고(이미 나간 확정픽 기록 보존),
-    그 외(둘 다 그림자 또는 둘 다 확정)는 최신 호출값으로 덮어써 실제 마지막 발송과 기록을 일치."""
+    그 외(둘 다 그림자 또는 둘 다 확정)는 최신 호출값으로 덮어써 실제 마지막 발송과 기록을 일치.
+    [V26.39] sell_ratio_frgn/orgn(매도율, %) 선택적 기록 추가 — 1단계(관찰용, 점수 미반영)로
+    pick_history.json에 같이 쌓아뒀다가, 나중에 실제 승률과 상관관계가 있는지(2단계) 검증하기
+    위함. None이면(옛 호출부·조회 실패) 그냥 null로 기록됨."""
     if not code or not score:
         return
     today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
@@ -4799,14 +4803,16 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty"):
                      "score": round(float(score), 1), "px": int(px or 0),
                      "regime": "", "signal": signal,
                      "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
-                     "open_next": None, "gap": None}
+                     "open_next": None, "gap": None,
+                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn}
         _pick_write(rows)
         return
     rows.append({"date": today, "code": str(code), "name": name or "",
                  "score": round(float(score), 1), "px": int(px or 0),
                  "regime": "", "signal": signal,
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
-                 "open_next": None, "gap": None})
+                 "open_next": None, "gap": None,
+                 "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn})
     _pick_write(rows)
 
 
@@ -5739,6 +5745,19 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
                           + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
     except Exception:
         pass
+    # [V26.39] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미 계산해
+    # o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수 미반영.
+    try:
+        _fsr, _osr = o.get("sell_ratio_frgn"), o.get("sell_ratio_orgn")
+        if _fsr is not None or _osr is not None:
+            _parts = []
+            if _fsr is not None:
+                _parts.append(f"외인 {_fsr:.0f}%")
+            if _osr is not None:
+                _parts.append(f"기관 {_osr:.0f}%")
+            _lines.append(f"   📊 매도율(참고용·낮을수록 매수세 깨끗): {' · '.join(_parts)}")
+    except Exception:
+        pass
     try:
         _ai = _gemini_stock_news_verdict(gemini_key, o["code"], o["name"])
         if _ai:
@@ -5852,16 +5871,26 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         # 사용자가 직접 승인한 추가 체크 2종. 후보(최대 10종)에만 붙여 API 호출을 제한.
         _ss2w, _ss3d = _ssangkkuli_check(_investor_daily_flow_history(token, key, secret, r["code"], now_kst))
         _vr5 = _vol_ratio_5d(token, key, secret, r["code"])
+        # [V26.39] 사용자 제보(유튜브 강의 "매도율") — 순매수가 같아도 매수·매도 총량(회전)이
+        # 다르면 수급의 질이 다르다는 개념. 1단계: 표시·기록만(점수 미반영) — 이 함수가 평가하는
+        # 후보는 최대 10종이라 쌍끌이·거래량추세와 같은 방식으로 종목당 API 1회 추가 허용.
+        # 대체종배는 18:00~19:50(정규장 마감 후)에만 돌아 inquire-investor의 "장마감 후 확정"
+        # 오늘자 데이터가 이미 준비돼 있음(장중 가집계 _investor_est와 달리 확정치라 더 신뢰 가능).
+        _idy = _investor_daily(token, key, secret, r["code"], days=1)
+        _sr_frgn = _sell_ratio(_idy[0].get("frgn_shnu_vol"), _idy[0].get("frgn_seln_vol")) if _idy else None
+        _sr_orgn = _sell_ratio(_idy[0].get("orgn_shnu_vol"), _idy[0].get("orgn_seln_vol")) if _idy else None
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
                     "avg_turn_ratio": r.get("avg_turn_ratio"),
                     "news": ng, "score": _score,
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
-                    "vol_trend_x": round(_vr5[2], 2) if _vr5 else None})
+                    "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
+                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
-            _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem")
+            _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
+                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn)
             _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
         print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
@@ -5995,7 +6024,14 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
 
 def _investor_daily(token, key, secret, code, days=5):
     """[V25.32] 종목 일별 외국인/기관 순매수 최근 N일 — inquire-investor(FHKST01010900).
-    최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 []."""
+    최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 [].
+    [V26.39] 사용자 제보(유튜브 강의 "매도율" 개념) — 매도율(매도거래량÷매수거래량) 계산용으로
+    매수·매도 거래량 필드 추가. 이 TR(FHKST01010900)이 순매수 수량·금액 말고도 투자자별 매수·매도
+    거래량을 각각 제공한다는 걸 KIS 공식 예제 저장소(examples_llm/domestic_stock/inquire_investor/
+    chk_inquire_investor.py의 COLUMN_MAPPING)로 직접 확인함 — frgn_shnu_vol(외국인 매수 거래량)·
+    frgn_seln_vol(외국인 매도 거래량)·orgn_shnu_vol·orgn_seln_vol. 기존 호출부
+    (_supply_avgprice, _supply_daily_tag_from)는 frgn/orgn/frgn_amt/orgn_amt 키만 읽으므로
+    새 키 추가는 기존 동작에 영향 없음."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -6006,10 +6042,26 @@ def _investor_daily(token, key, secret, code, days=5):
             if isinstance(x, dict):
                 out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty")),
                             "frgn_amt": _to_int(x.get("frgn_ntby_tr_pbmn")),
-                            "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn"))})
+                            "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn")),
+                            "frgn_shnu_vol": _to_int(x.get("frgn_shnu_vol")),
+                            "frgn_seln_vol": _to_int(x.get("frgn_seln_vol")),
+                            "orgn_shnu_vol": _to_int(x.get("orgn_shnu_vol")),
+                            "orgn_seln_vol": _to_int(x.get("orgn_seln_vol"))})
         return out
     except Exception:
         return []
+
+
+def _sell_ratio(shnu_vol, seln_vol):
+    """[V26.39] "매도율"(사용자가 접한 유튜브 수급 강의 개념) = 매도거래량÷매수거래량×100.
+    순매수가 같아도 총 매수·매도 규모(회전)가 다르면 수급의 '질'이 다르다는 관찰 —
+    매도율이 낮을수록 저항 없이 깨끗하게 들어왔다고 해석. 매수거래량이 0(또는 미확인)이면
+    0으로 나누기라 None 반환. 1단계: 관찰/표시·기록용으로만 쓰고 점수·필터에는 아직 반영
+    안 함 — pick_history.json에 같이 쌓아 2단계(며칠 뒤 실제 승률과 상관관계 검증)·3단계
+    (검증되면 점수 반영) 순서로 진행 예정(HANDOFF.md 참고)."""
+    if not shnu_vol:
+        return None
+    return round((seln_vol or 0) / shnu_vol * 100, 1)
 
 
 def _supply_avgprice(rows):
