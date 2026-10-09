@@ -376,6 +376,18 @@ def _pct_color(x):
     return "#e74c3c" if x < 0 else ("#2ecc71" if x > 0 else "#888")
 
 
+def _sell_ratio_label(frgn, orgn):
+    """[V26.39] 매도율(사용자 제보 — 유튜브 수급 강의 개념) 표시용 포맷터. mw.check_nxt_premium_pick이
+    이미 계산해준 sell_ratio_frgn/orgn(%, None 가능)을 "외38%·기52%" 식 한 줄로 합침 — 둘 다
+    없으면 "—". 1단계: 표시용일 뿐 점수·정렬에는 쓰지 않음."""
+    parts = []
+    if frgn is not None:
+        parts.append(f"외{frgn:.0f}%")
+    if orgn is not None:
+        parts.append(f"기{orgn:.0f}%")
+    return "·".join(parts) if parts else "—"
+
+
 # ══════════════════════════════════════════
 # 🚦 AI 브리핑 신호등 — 환율·외국인수급 레짐 게이트 (순수 로직, test_ai_briefing.py로 검증됨)
 # ══════════════════════════════════════════
@@ -1031,11 +1043,18 @@ def render_dolpanty():
                 axis=1)
             _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if x else None)
+            # [V26.39] 매도율(참고용 표시만, 점수 미반영) — 1단계. 2단계 검증 후 점수 반영 여부 결정.
+            _pkdf["매도율"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                     r.get("sell_ratio_orgn")), axis=1)
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
-                       "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)"}
+                       "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
+                       "매도율": "매도율(참고용)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
+                       "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
+                       "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
             # 일봉 차트(이평선+거래량)를 바로 보여줌.
@@ -1076,9 +1095,12 @@ def render_dolpanty():
                 axis=1)
             _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
+            _cdf["매도율"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                   r.get("sell_ratio_orgn")), axis=1)
             _ccols = {"rank": "순위", "name": "종목명", "code": "종목코드", "ratio": "거래량비율",
                        "nxt_turn_eok": "NXT거래대금(억)", "쌍끌이": "쌍끌이",
-                       "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수"}
+                       "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수",
+                       "매도율": "매도율(참고용)"}
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
 

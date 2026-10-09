@@ -118,6 +118,62 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.93 대체종배 — "매도율" 관찰·기록 추가(1단계, 점수 미반영)
+
+**배경**: 사용자가 유튜브 수급 강의에서 "매도율"(매도거래량÷매수거래량×100, 순매수가 같아도
+매도율 낮을수록 저항 없이 깨끗하게 매수세가 들어온 것) 개념을 접하고, 종배픽·재료등급 탭에
+이미 적용돼 있는지 질문. 코드 확인 결과 `check_dolpanty_pick`·`check_nxt_premium_pick`
+점수식 어디에도 수급(외국인/기관) 항목 자체가 없고, 유일한 수급 로직인 "쌍끌이"도 순매수
+유무만 보는 이진 판정(점수 가점 없음)이라 전혀 다른 개념임을 확인. 매도율 계산에 필요한
+투자자별 매수·매도 "거래량"(순매수 아님)을 KIS가 실제로 제공하는지가 핵심 쟁점이었음 —
+다른 AI와 교차검증 후, KIS 공식 GitHub 예제 저장소
+(`examples_llm/domestic_stock/inquire_investor/chk_inquire_investor.py`의
+`COLUMN_MAPPING`)를 직접 열어 `{prsn,frgn,orgn}_shnu_vol`(매수 거래량)·
+`{prsn,frgn,orgn}_seln_vol`(매도 거래량) 필드가 실제로 `inquire-investor`
+(FHKST01010900, 장마감 후 확정) 응답에 존재함을 확인 완료(장중 추정 API인
+`investor-trend-estimate`는 반대로 `*_fake_ntby_qty` 순매수 추정치 3개뿐이라 매도율 계산
+불가능함도 같이 확인). 사용자가 "검증 전엔 점수화 금지, 1단계(표시·기록)만 먼저"로 범위를
+명확히 확정.
+
+**수정**:
+- `macro_watcher.py` `_investor_daily`(line 5996, 이미 여러 신호 함수가 호출 중인 함수) —
+  기존 순매수 필드(`frgn`/`orgn`/`frgn_amt`/`orgn_amt`)는 그대로 두고 `frgn_shnu_vol`·
+  `frgn_seln_vol`·`orgn_shnu_vol`·`orgn_seln_vol` 4개 필드 추가 파싱(기존 호출부엔 영향 없음).
+- 신규 `_sell_ratio(shnu_vol, seln_vol)` — 매도율(%) 계산, 매수거래량 0/미확인이면 None(0으로
+  나누기 방지).
+- `check_nxt_premium_pick`의 후보(최대 10종) 루프에 `_investor_daily(...,days=1)` 1회 추가
+  호출 → 외인·기관 매도율 계산 → `out` 딕셔너리와 `_log_pick`(→`pick_history.json`)에
+  `sell_ratio_frgn`/`sell_ratio_orgn`으로 같이 기록. 대체종배는 18:00~19:50(정규장 마감 후)에만
+  돌아 `inquire-investor`의 "장마감 후 확정" 오늘자 데이터가 이미 준비돼 있어 타이밍 문제 없음.
+  **주의**: 이 추가 호출은 쌍끌이·거래량추세 체크와 같은 이유로 종목당 API 1회가 늘어남(최대
+  10종 한정 — "API 호출이 전혀 안 늘어난다"던 제 초기 설명은 이미 `_investor_daily`를 쓰던
+  *다른* 신호 함수 기준이었고, 이 enrich 경로는 원래 `_investor_est`를 썼어서 수정이 필요했음).
+- `_nxt_prem_enrich_block`(대체종배 텔레그램 메시지 + 대시보드 "종목별 수급·AI뉴스·관심기준
+  조회"가 공유하는 함수) — 위에서 이미 계산된 `o`의 매도율을 그대로 표시만 함(추가 API 호출
+  없음) — "📊 매도율(참고용·낮을수록 매수세 깨끗): 외인 X% · 기관 Y%" 한 줄 추가.
+- `quant_dashboard.py` — "오늘의 추천 픽"·"쌍끌이·거래량추세 포함 후보 전체" 표에 "매도율(참고용)"
+  컬럼 추가(`_sell_ratio_label` 포맷터, 둘 다 없으면 "—"). 점수·정렬에는 전혀 관여 안 함, 순수
+  표시 컬럼.
+- 점수식(`_score = 50 + ...`)과 필터 조건은 **일절 손대지 않음** — 1단계는 관찰·기록까지만.
+
+**검증**: `py_compile` 통과. 모의 테스트 3종(scratchpad) — `test_sell_ratio.py`(강의 예시 2건
+그대로 재현: 매수100/매도90→90%, 매수10/매도0→0%, 0으로 나누기 안전성, `_investor_daily`가
+기존 키 안 깨고 신규 필드 추가 파싱하는지, `_log_pick` 신규/덮어쓰기 양쪽 분기에서
+sell_ratio가 정상 저장되는지, `sell_ratio` 인자 없이 호출하는 기존 호출부들이 그대로
+동작하는지, 대시보드 포맷터), `test_sell_ratio_wiring.py`(check_nxt_premium_pick에 실제로
+추가한 3줄을 그대로 복제해 `_investor_daily` 응답 성공/실패/일부필드누락 케이스별 검증) —
+전부 통과. 기존 회귀 테스트(`test_parallel_fetch.py`·`test_scan_track_record.py`·
+`test_stock_track_record.py`·`test_track_record_gating.py`) 재실행 — 회귀 없음.
+`streamlit run --server.headless` 기동 테스트 — HTTP 200, 콘솔 에러 없음. 실제 KIS 응답으로
+매도율 수치가 기대대로 찍히는지는 샌드박스에 KIS 키가 없어 직접 확인 못 함 — 사용자 환경에서
+최종 확인 필요.
+
+**다음 일정(사용자 확정)**: 2단계(매도율과 실제 익일 수익률의 상관관계 검증)는 **거래일 약
+15일(영업일 기준, 달력상 약 3주) 치 데이터가 pick_history.json에 쌓인 뒤** 진행하기로 함 —
+Claude가 그 시점에 먼저 확인하고 사용자에게 알리기로 약속(크론 트리거 등록, 다음 항목 참고).
+3단계(점수 반영 여부)는 2단계 결과를 사용자와 같이 보고 나서 결정 — **검증 전 점수화 금지**가
+사용자의 명시적 지시.
+
 ### 7.92 "종목별 적중 이력" 조회 속도 개선 — 종목별 KIS 조회 순차→병렬
 
 **배경**: 7.91로 탭 전체가 먹통되던 건 고쳤지만, 사용자가 실제로 "🔍 조회" 버튼을 눌러보니
