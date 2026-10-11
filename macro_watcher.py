@@ -5889,6 +5889,13 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         # 폐기됨 — 외국인/기관/개인 투자자 분류는 체결 거래소(KRX/NXT)와 무관한 개념이라 이
         # TR은 mrkt 값과 무관하게 항상 같은 데이터를 반환함(사용자가 실제 캡처로 확인: 4종목
         # 전부 "정규장"·"NXT" 수치가 완전히 동일). API 호출만 2배로 늘고 추가 정보가 없어 제거.
+        # [V26.43] 사용자 재요청 — "외국인/기관 구분 없이는 (NXT 매수/매도 추정) 가능하냐" →
+        # 투자자 분류 없이 그 세션 고가·저가·현재가로 매수/매도 압력을 추정하는 건 가격·거래량계
+        # TR(_price_full, 7.96에서 mrkt별로 실제 다른 값을 준다고 확인된 종류)로 가능 — NXT
+        # 세션의 시가·고가·저가·현재가를 조회해 Money Flow Multiplier로 근사.
+        _nxt_px2, _nxt_chg2, _nxt_open, _nxt_high, _nxt_low = _price_full(token, key, secret, r["code"], mrkt="NX")
+        _nxt_buy_pct = (_buy_pressure_pct(_nxt_high, _nxt_low, _nxt_px2)
+                        if all(v is not None for v in (_nxt_high, _nxt_low, _nxt_px2)) else None)
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
@@ -5896,7 +5903,8 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "news": ng, "score": _score,
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
-                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn})
+                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
+                    "nxt_buy_pct": _nxt_buy_pct})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
@@ -6637,18 +6645,24 @@ TA_UNIVERSE = [("005930", "삼성전자"), ("000660", "SK하이닉스"), ("04270
                ("012450", "한화에어로스페이스"), ("035420", "NAVER")]
 
 
-def _price_full(token, key, secret, code):
+def _price_full(token, key, secret, code, mrkt="J"):
     """현재가·등락률·시가·고가·저가 — inquire-price. 실패 시 (None,...).
     [실전투자 점검 — 성적표 이상현상 추적] rt_cd 검증 없이 'output이 비어있지 않으면 성공'으로만
     판정했었음 — 이 코드베이스 전체에서 rt_cd를 확인하는 곳이 단 한 곳도 없었음(레이트리밋 등으로
     rt_cd!=0인데 output에 정상처럼 보이는(그러나 실은 stale/기본값) 데이터가 들어있는 응답을 그대로
     신뢰했을 가능성). 실제 성적표에서 5종목이 '현재가==추천가(원단위 일치)인데 고/저는 실제로 다름'
-    이라는, 우연으론 설명 안 되는 모순이 재현 확인됨 — rt_cd 검증을 추가해 실제 원인인지 확인."""
+    이라는, 우연으론 설명 안 되는 모순이 재현 확인됨 — rt_cd 검증을 추가해 실제 원인인지 확인.
+    [V26.43] mrkt 파라미터 추가(기본값 "J"=KRX, 기존 호출부 전부 무변경) — 사용자 요청
+    "NXT 매수우세%"(투자자 구분 없는 근사 매수/매도 압력) 계산용 NXT 시가·고가·저가·현재가
+    조회에 재사용. `_price_turnover_vol`이 이미 mrkt="NX"로 NXT 가격·거래량을 정상 조회 중
+    (대체종배 핵심 로직 — 같은 inquire-price TR) — 가격·거래량계 TR은 7.96 조사에서 투자자
+    매매동향 TR과 달리 거래소별로 실제 다른 값을 준다고 확인됐으므로 이 TR의 mrkt 세그멘테이션은
+    신뢰 가능."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010100"},
-                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+                         params={"fid_cond_mrkt_div_code": mrkt, "fid_input_iscd": code}, timeout=6)
         _j = r.json()
         _rt = str(_j.get("rt_cd", "")).strip()
         o = _j.get("output", {})
@@ -6665,6 +6679,19 @@ def _price_full(token, key, secret, code):
     except Exception:
         pass
     return None, None, None, None, None
+
+
+def _buy_pressure_pct(high, low, close):
+    """[V26.43] 사용자 요청 — "외국인/기관 구분 없이, NXT에서 그냥 매수세/매도세 어느 쪽이
+    강한지" 근사치. 실제 체결 매수/매도 데이터가 아니라 그 세션 고가·저가 범위 중 현재가 위치로
+    추정(Money Flow Multiplier 공식 — quant_dashboard.py `_render_pick_chart`의 거래량
+    매수/매도 추정 게이지와 동일 아이디어 재사용, 신규 수식 아님). 고가==저가(거래 희박 등)면
+    분모 0이라 중립값 50.0 반환. 값이 50보다 높을수록 매수 우세, 낮을수록 매도 우세로 해석."""
+    rng = high - low
+    if rng <= 0:
+        return 50.0
+    mfm = ((close - low) - (high - close)) / rng
+    return round((mfm + 1) / 2 * 100, 1)
 
 
 def _pullback_levels(token, key, secret, code, px, chg, ds=None):
