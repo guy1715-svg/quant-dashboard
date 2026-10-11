@@ -5902,7 +5902,9 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         # 같은 TR이 FID_COND_MRKT_DIV_CODE="NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를
         # 시장코드만 바꿔 한 번 더 호출(신규 TR 불필요) — 단, 실동작은 사용자 실환경에서 최초
         # 검증 필요(공식 예제는 "J" 호출만 실제로 보여줌).
-        _idy_nxt = _investor_daily(token, key, secret, r["code"], days=1, mrkt="NX")
+        # [V26.41] 사용자가 "매도율(NXT)"이 전부 "—"로만 뜬다고 캡처해 옴 — _diag=True로
+        # rt_cd 에러/output 정상이지만 빈 응답/예외 중 정확히 뭔지 사유를 같이 받아 화면에 노출.
+        _idy_nxt, _idy_nxt_reason = _investor_daily(token, key, secret, r["code"], days=1, mrkt="NX", _diag=True)
         _sr_frgn_nxt = _sell_ratio(_idy_nxt[0].get("frgn_shnu_vol"), _idy_nxt[0].get("frgn_seln_vol")) if _idy_nxt else None
         _sr_orgn_nxt = _sell_ratio(_idy_nxt[0].get("orgn_shnu_vol"), _idy_nxt[0].get("orgn_seln_vol")) if _idy_nxt else None
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
@@ -5913,7 +5915,8 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
                     "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
-                    "sell_ratio_frgn_nxt": _sr_frgn_nxt, "sell_ratio_orgn_nxt": _sr_orgn_nxt})
+                    "sell_ratio_frgn_nxt": _sr_frgn_nxt, "sell_ratio_orgn_nxt": _sr_orgn_nxt,
+                    "sell_ratio_nxt_reason": None if _idy_nxt else _idy_nxt_reason})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
@@ -6050,7 +6053,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     return out
 
 
-def _investor_daily(token, key, secret, code, days=5, mrkt="J"):
+def _investor_daily(token, key, secret, code, days=5, mrkt="J", _diag=False):
     """[V25.32] 종목 일별 외국인/기관 순매수 최근 N일 — inquire-investor(FHKST01010900).
     최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 [].
     [V26.39] 사용자 제보(유튜브 강의 "매도율" 개념) — 매도율(매도거래량÷매수거래량) 계산용으로
@@ -6066,25 +6069,37 @@ def _investor_daily(token, key, secret, code, days=5, mrkt="J"):
     있었음. KIS 공식 예제(inquire_investor.py 독스트링)에 이 TR이 fid_cond_mrkt_div_code=
     "NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를 시장코드만 바꿔 재사용 — 신규 TR 불필요.
     단, 공식 예제는 "J" 호출만 실제로 보여주고 "NX" 호출 예시는 없어 실동작은 미검증(사용자
-    실환경에서 최초 확인 필요)."""
+    실환경에서 최초 확인 필요).
+    [V26.41] _diag=True면 (data, 실패사유) 튜플 반환(_daily_ohlcv와 동일 패턴) — 사용자가
+    "매도율(NXT)"이 전부 "—"로만 뜬다고 캡처해 왔는데, 기존엔 rt_cd 에러인지/output이 정상
+    응답인데 그냥 비어있는 건지/예외인지 구분할 방법이 없었음. 기본값 False는 기존 호출부
+    전부 그대로(바로 리스트 반환)."""
+    def _ret(data, reason=None):
+        return (data, reason) if _diag else data
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010900"},
                          params={"FID_COND_MRKT_DIV_CODE": mrkt, "FID_INPUT_ISCD": code}, timeout=6)
+        j = r.json()
+        _rt = str(j.get("rt_cd", "")).strip()
+        if _rt not in ("0", ""):
+            return _ret([], f"API 조회 실패(rt_cd={_rt!r}, msg={j.get('msg1', '')!r})")
+        raw = [x for x in (j.get("output") or []) if isinstance(x, dict)]
+        if not raw:
+            return _ret([], f"응답 성공(rt_cd=0)이지만 output이 비어있음(market={mrkt!r})")
         out = []
-        for x in (r.json().get("output") or [])[:days]:
-            if isinstance(x, dict):
-                out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty")),
-                            "frgn_amt": _to_int(x.get("frgn_ntby_tr_pbmn")),
-                            "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn")),
-                            "frgn_shnu_vol": _to_int(x.get("frgn_shnu_vol")),
-                            "frgn_seln_vol": _to_int(x.get("frgn_seln_vol")),
-                            "orgn_shnu_vol": _to_int(x.get("orgn_shnu_vol")),
-                            "orgn_seln_vol": _to_int(x.get("orgn_seln_vol"))})
-        return out
-    except Exception:
-        return []
+        for x in raw[:days]:
+            out.append({"frgn": _to_int(x.get("frgn_ntby_qty")), "orgn": _to_int(x.get("orgn_ntby_qty")),
+                        "frgn_amt": _to_int(x.get("frgn_ntby_tr_pbmn")),
+                        "orgn_amt": _to_int(x.get("orgn_ntby_tr_pbmn")),
+                        "frgn_shnu_vol": _to_int(x.get("frgn_shnu_vol")),
+                        "frgn_seln_vol": _to_int(x.get("frgn_seln_vol")),
+                        "orgn_shnu_vol": _to_int(x.get("orgn_shnu_vol")),
+                        "orgn_seln_vol": _to_int(x.get("orgn_seln_vol"))})
+        return _ret(out)
+    except Exception as e:
+        return _ret([], f"예외 발생({type(e).__name__}: {e})")
 
 
 def _sell_ratio(shnu_vol, seln_vol):
