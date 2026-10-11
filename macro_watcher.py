@@ -4776,8 +4776,7 @@ def _pick_write(rows):
 
 
 def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
-              sell_ratio_frgn=None, sell_ratio_orgn=None,
-              sell_ratio_frgn_nxt=None, sell_ratio_orgn_nxt=None):
+              sell_ratio_frgn=None, sell_ratio_orgn=None):
     """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유).
     [V26.12] 사용자 제보 로그 검토 중 발견 — 기존엔 (날짜,종목코드)가 이미 있으면 무조건
     조용히 무시했음. 문제: ①그림자(_shadow)로 먼저 찍힌 종목이 같은 날 나중에 진짜 확정픽이
@@ -4789,10 +4788,10 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
     [V26.39] sell_ratio_frgn/orgn(매도율, %) 선택적 기록 추가 — 1단계(관찰용, 점수 미반영)로
     pick_history.json에 같이 쌓아뒀다가, 나중에 실제 승률과 상관관계가 있는지(2단계) 검증하기
     위함. None이면(옛 호출부·조회 실패) 그냥 null로 기록됨.
-    [V26.40] sell_ratio_{frgn,orgn}_nxt 추가 — 기존 sell_ratio_frgn/orgn은 정규장(KRX) 수급
-    기준인데, 대체종배 후보는 애초에 NXT 거래량이 주력인 종목들이라 "진짜 수급"을 놓치고 있다는
-    사용자 지적 반영. 같은 이름 유지(KRX=기존 필드 그대로, NXT=새 _nxt 접미사)로 기존 몇 안 되는
-    로그 데이터와 호환 유지."""
+    [V26.40~41에서 sell_ratio_{frgn,orgn}_nxt를 추가했다가, V26.42에서 실측 확인 후 제거함
+    — 투자자 분류(외국인/기관/개인)는 체결 거래소(KRX/NXT)와 무관한 개념이라 이 TR은 mrkt
+    값과 무관하게 항상 같은 데이터를 반환함(_investor_daily 독스트링 참고). "NXT 전용 수급"은
+    이 API로는 확인 불가능하다는 결론.]"""
     if not code or not score:
         return
     today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
@@ -4809,8 +4808,7 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                      "regime": "", "signal": signal,
                      "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                      "open_next": None, "gap": None,
-                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn,
-                     "sell_ratio_frgn_nxt": sell_ratio_frgn_nxt, "sell_ratio_orgn_nxt": sell_ratio_orgn_nxt}
+                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn}
         _pick_write(rows)
         return
     rows.append({"date": today, "code": str(code), "name": name or "",
@@ -4818,8 +4816,7 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                  "regime": "", "signal": signal,
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                  "open_next": None, "gap": None,
-                 "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn,
-                 "sell_ratio_frgn_nxt": sell_ratio_frgn_nxt, "sell_ratio_orgn_nxt": sell_ratio_orgn_nxt})
+                 "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn})
     _pick_write(rows)
 
 
@@ -5752,27 +5749,19 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
                           + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
     except Exception:
         pass
-    # [V26.39/V26.40] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미
-    # 계산해 o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수
-    # 미반영. 정규장(KRX)·NXT 둘 다 표시 — 대체종배 후보의 "진짜 수급"은 NXT 쪽일 수 있어서
-    # 둘을 구분해 보여줌(사용자가 KRX 수치만으로 "다 100% 넘는다"고 제보해 추가).
+    # [V26.39] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미 계산해
+    # o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수 미반영.
+    # [V26.40~41에서 NXT 쪽도 따로 보여주려 했으나 V26.42에서 실측 결과 이 TR은 거래소 구분이
+    # 안 된다는 게 확인돼 제거 — _investor_daily 독스트링 참고.]
     try:
-        def _sr_parts(fsr, osr):
-            p = []
-            if fsr is not None:
-                p.append(f"외인 {fsr:.0f}%")
-            if osr is not None:
-                p.append(f"기관 {osr:.0f}%")
-            return " · ".join(p)
-        _krx_part = _sr_parts(o.get("sell_ratio_frgn"), o.get("sell_ratio_orgn"))
-        _nxt_part = _sr_parts(o.get("sell_ratio_frgn_nxt"), o.get("sell_ratio_orgn_nxt"))
-        if _krx_part or _nxt_part:
-            _line = "   📊 매도율(참고용·낮을수록 매수세 깨끗)"
-            if _krx_part:
-                _line += f" — 정규장: {_krx_part}"
-            if _nxt_part:
-                _line += f" / NXT: {_nxt_part}"
-            _lines.append(_line)
+        _fsr, _osr = o.get("sell_ratio_frgn"), o.get("sell_ratio_orgn")
+        if _fsr is not None or _osr is not None:
+            _parts = []
+            if _fsr is not None:
+                _parts.append(f"외인 {_fsr:.0f}%")
+            if _osr is not None:
+                _parts.append(f"기관 {_osr:.0f}%")
+            _lines.append(f"   📊 매도율(참고용·낮을수록 매수세 깨끗): {' · '.join(_parts)}")
     except Exception:
         pass
     try:
@@ -5896,17 +5885,10 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _idy = _investor_daily(token, key, secret, r["code"], days=1)
         _sr_frgn = _sell_ratio(_idy[0].get("frgn_shnu_vol"), _idy[0].get("frgn_seln_vol")) if _idy else None
         _sr_orgn = _sell_ratio(_idy[0].get("orgn_shnu_vol"), _idy[0].get("orgn_seln_vol")) if _idy else None
-        # [V26.40] 사용자 제보 — 위 매도율(정규장/KRX 기준)이 전부 100%를 넘는 걸 실제로 확인해보니,
-        # 대체종배 후보는 애초에 NXT 애프터마켓 거래량이 주력인 종목들이라 "진짜 수급"은 NXT 쪽에
-        # 있는데 정규장만 보고 있었던 게 원인. KIS 공식 예제(inquire_investor.py 독스트링)에
-        # 같은 TR이 FID_COND_MRKT_DIV_CODE="NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를
-        # 시장코드만 바꿔 한 번 더 호출(신규 TR 불필요) — 단, 실동작은 사용자 실환경에서 최초
-        # 검증 필요(공식 예제는 "J" 호출만 실제로 보여줌).
-        # [V26.41] 사용자가 "매도율(NXT)"이 전부 "—"로만 뜬다고 캡처해 옴 — _diag=True로
-        # rt_cd 에러/output 정상이지만 빈 응답/예외 중 정확히 뭔지 사유를 같이 받아 화면에 노출.
-        _idy_nxt, _idy_nxt_reason = _investor_daily(token, key, secret, r["code"], days=1, mrkt="NX", _diag=True)
-        _sr_frgn_nxt = _sell_ratio(_idy_nxt[0].get("frgn_shnu_vol"), _idy_nxt[0].get("frgn_seln_vol")) if _idy_nxt else None
-        _sr_orgn_nxt = _sell_ratio(_idy_nxt[0].get("orgn_shnu_vol"), _idy_nxt[0].get("orgn_seln_vol")) if _idy_nxt else None
+        # [V26.40~41] mrkt="NX"로 "진짜 NXT 수급"을 따로 보려던 시도는 [V26.42]에서 실측으로
+        # 폐기됨 — 외국인/기관/개인 투자자 분류는 체결 거래소(KRX/NXT)와 무관한 개념이라 이
+        # TR은 mrkt 값과 무관하게 항상 같은 데이터를 반환함(사용자가 실제 캡처로 확인: 4종목
+        # 전부 "정규장"·"NXT" 수치가 완전히 동일). API 호출만 2배로 늘고 추가 정보가 없어 제거.
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
@@ -5914,14 +5896,11 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "news": ng, "score": _score,
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
-                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
-                    "sell_ratio_frgn_nxt": _sr_frgn_nxt, "sell_ratio_orgn_nxt": _sr_orgn_nxt,
-                    "sell_ratio_nxt_reason": None if _idy_nxt else _idy_nxt_reason})
+                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
-                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn,
-                      sell_ratio_frgn_nxt=_sr_frgn_nxt, sell_ratio_orgn_nxt=_sr_orgn_nxt)
+                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn)
             _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
         print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
@@ -6063,17 +6042,20 @@ def _investor_daily(token, key, secret, code, days=5, mrkt="J", _diag=False):
     frgn_seln_vol(외국인 매도 거래량)·orgn_shnu_vol·orgn_seln_vol. 기존 호출부
     (_supply_avgprice, _supply_daily_tag_from)는 frgn/orgn/frgn_amt/orgn_amt 키만 읽으므로
     새 키 추가는 기존 동작에 영향 없음.
-    [V26.40] mrkt 파라미터 추가(기본값 "J"=KRX, 기존 호출부 전부 무변경) — 사용자가 "매도율이
-    전부 100%를 넘는다"며 캡처해 온 실제 수치를 보니, 대체종배 후보는 애초에 NXT 애프터마켓
-    거래량이 주력인 종목들인데 매도율은 정규장(KRX) 수급만 보고 있어 "진짜 수급"을 놓치고
-    있었음. KIS 공식 예제(inquire_investor.py 독스트링)에 이 TR이 fid_cond_mrkt_div_code=
-    "NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를 시장코드만 바꿔 재사용 — 신규 TR 불필요.
-    단, 공식 예제는 "J" 호출만 실제로 보여주고 "NX" 호출 예시는 없어 실동작은 미검증(사용자
-    실환경에서 최초 확인 필요).
-    [V26.41] _diag=True면 (data, 실패사유) 튜플 반환(_daily_ohlcv와 동일 패턴) — 사용자가
-    "매도율(NXT)"이 전부 "—"로만 뜬다고 캡처해 왔는데, 기존엔 rt_cd 에러인지/output이 정상
-    응답인데 그냥 비어있는 건지/예외인지 구분할 방법이 없었음. 기본값 False는 기존 호출부
-    전부 그대로(바로 리스트 반환)."""
+    [V26.40] mrkt 파라미터 추가(기본값 "J"=KRX, 기존 호출부 전부 무변경) — KIS 공식 예제
+    (inquire_investor.py 독스트링)에 이 TR이 fid_cond_mrkt_div_code="NX"(NXT)도 지원한다고
+    명시돼 있어 대체종배 후보의 "진짜(NXT) 수급"을 보려고 시도.
+    [V26.41] _diag=True면 (data, 실패사유) 튜플 반환(_daily_ohlcv와 동일 패턴) — 추가.
+    [V26.42] **실측 확인 완료 — mrkt="NX"는 이 TR에서 사실상 무의미함.** 사용자가 실제
+    환경에서 "정규장"과 "NXT" 두 컬럼이 4종목 전부 소수점까지 완전히 동일하게 나오는 걸
+    캡처로 확인해줌 — 에러도 아니고 rt_cd=0으로 "정상 성공"하는데 "J"와 "NX"가 완전히 같은
+    데이터를 반환함. 원인: 외국인/기관/개인이라는 "투자자 분류"는 체결 거래소(KRX vs NXT)가
+    아니라 계좌·결제 주체 성격으로 정해지는 개념이라, 이 TR 자체가 애초에 거래소 단위로
+    쪼개서 주는 구조가 아님(가격·거래량과 달리 투자자 분류는 거래소별 개념이 아님). KIS
+    문서의 "NX도 지원"은 다른(가격·거래량계) TR들에 공통으로 쓰는 파라미터 설명을 그대로
+    복붙해놓은 것으로 보이며, 이 TR에는 실질적으로 적용 안 됨. 그래서 check_nxt_premium_pick
+    에서 mrkt="NX" 호출은 제거했음(API 호출만 2배로 늘고 추가 정보 없음) — mrkt 파라미터
+    자체는 범용 인프라로 남겨둠(혹시 다른 TR에서 쓸 일 있을 수 있어 제거 안 함)."""
     def _ret(data, reason=None):
         return (data, reason) if _diag else data
     try:
