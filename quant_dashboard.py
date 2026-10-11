@@ -1063,6 +1063,12 @@ def render_dolpanty():
                        "(NXT 쪽은 KIS가 공식 지원한다고 문서에 명시했지만 실동작은 아직 검증 전 — "
                        "값이 안 뜨면 '—'로 표시되고 정규장 수치만 참고하시면 됩니다). "
                        "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
+            # [V26.41] 사용자 제보 — "매도율(NXT)"이 전부 "—"로만 뜸. 원인 진단(_investor_daily
+            # _diag=True)이 잡아준 실패 사유를 노출해, KIS가 NX를 실제로 지원 안 하는 건지
+            # (API 에러/빈 응답) 다른 문제인지 바로 알 수 있게 함.
+            _nxt_reasons = [p.get("sell_ratio_nxt_reason") for p in _top_picks if p.get("sell_ratio_nxt_reason")]
+            if _nxt_reasons:
+                st.caption(f"ℹ️ 매도율(NXT) 조회 실패 사유(1건 예시): {_nxt_reasons[0]}")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
             # 일봉 차트(이평선+거래량)를 바로 보여줌.
