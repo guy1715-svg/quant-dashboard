@@ -1043,32 +1043,24 @@ def render_dolpanty():
                 axis=1)
             _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if x else None)
-            # [V26.39/V26.40] 매도율(참고용 표시만, 점수 미반영) — 1단계. 처음엔 정규장(KRX)
-            # 수급만 봤는데, 대체종배 후보는 애초에 NXT 거래량이 주력인 종목들이라 "진짜 수급"을
-            # 놓치고 있다는 사용자 지적 반영 — NXT 쪽도 같이 표시(둘 다 KIS가 공식 지원한다고
-            # 밝힌 파라미터지만 NXT 쪽은 실동작 미검증 상태).
-            _pkdf["매도율_krx"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
-                                                                        r.get("sell_ratio_orgn")), axis=1)
-            _pkdf["매도율_nxt"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn_nxt"),
-                                                                        r.get("sell_ratio_orgn_nxt")), axis=1)
+            # [V26.39] 매도율(참고용 표시만, 점수 미반영) — 1단계.
+            # [V26.40~41에서 정규장(KRX)·NXT를 분리해서 보여주려 했으나, V26.42에서 사용자가
+            # 실제 캡처로 "두 컬럼이 완전히 동일한 수치"임을 확인해줌 — 원인 조사 결과
+            # 외국인/기관/개인 투자자 분류는 체결 거래소(KRX/NXT)와 무관한 개념이라 이 TR
+            # 자체가 거래소별로 쪼개서 주지 않는다는 게 KIS 실측으로 확인됨(macro_watcher.py
+            # _investor_daily 독스트링 참고). 그래서 원래대로 단일 컬럼으로 되돌림.]
+            _pkdf["매도율"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                     r.get("sell_ratio_orgn")), axis=1)
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
-                       "매도율_krx": "매도율(정규장)", "매도율_nxt": "매도율(NXT)"}
+                       "매도율": "매도율(참고용)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
             st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
                        "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
-                       "대체종배 후보는 NXT 거래량이 주력이라 정규장·NXT 수급을 따로 보여드립니다 "
-                       "(NXT 쪽은 KIS가 공식 지원한다고 문서에 명시했지만 실동작은 아직 검증 전 — "
-                       "값이 안 뜨면 '—'로 표시되고 정규장 수치만 참고하시면 됩니다). "
+                       "외국인·기관 투자자 분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. "
                        "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
-            # [V26.41] 사용자 제보 — "매도율(NXT)"이 전부 "—"로만 뜸. 원인 진단(_investor_daily
-            # _diag=True)이 잡아준 실패 사유를 노출해, KIS가 NX를 실제로 지원 안 하는 건지
-            # (API 에러/빈 응답) 다른 문제인지 바로 알 수 있게 함.
-            _nxt_reasons = [p.get("sell_ratio_nxt_reason") for p in _top_picks if p.get("sell_ratio_nxt_reason")]
-            if _nxt_reasons:
-                st.caption(f"ℹ️ 매도율(NXT) 조회 실패 사유(1건 예시): {_nxt_reasons[0]}")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
             # 일봉 차트(이평선+거래량)를 바로 보여줌.
@@ -1109,19 +1101,18 @@ def render_dolpanty():
                 axis=1)
             _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
-            _cdf["매도율_krx"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
-                                                                      r.get("sell_ratio_orgn")), axis=1)
-            _cdf["매도율_nxt"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn_nxt"),
-                                                                      r.get("sell_ratio_orgn_nxt")), axis=1)
+            _cdf["매도율"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                   r.get("sell_ratio_orgn")), axis=1)
             _ccols = {"rank": "순위", "name": "종목명", "code": "종목코드", "ratio": "거래량비율",
                        "nxt_turn_eok": "NXT거래대금(억)", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수",
-                       "매도율_krx": "매도율(정규장)", "매도율_nxt": "매도율(NXT)"}
+                       "매도율": "매도율(참고용)"}
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
-            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각) — 낮을수록 "
-                       "저항 없이 깨끗하게 매수세가 들어왔다는 해석. 정규장(장마감 후 확정치)·"
-                       "NXT(실동작 미검증, 안 뜨면 '—') 둘 다 표시 — 1단계 관찰·기록용, 점수·필터 미반영.")
+            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
+                       "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석. 외국인·기관 투자자 "
+                       "분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. 1단계 관찰·기록용, "
+                       "점수·필터 미반영.")
 
         # [V26.24] 사용자 제보 — "거래대금×괴리율×수급 통합 차트가 사라졌다". 지난 PR에서 이 1~30위
         # 전체 표·수급 상위 미니표를 "바로 아래 날짜별 섹션에서 '오늘'이 자동 선택되니 중복"이라고
