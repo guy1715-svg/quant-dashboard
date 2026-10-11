@@ -1113,6 +1113,9 @@ def render_dolpanty():
                        "매도율_krx": "매도율(정규장)", "매도율_nxt": "매도율(NXT)"}
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
+            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각) — 낮을수록 "
+                       "저항 없이 깨끗하게 매수세가 들어왔다는 해석. 정규장(장마감 후 확정치)·"
+                       "NXT(실동작 미검증, 안 뜨면 '—') 둘 다 표시 — 1단계 관찰·기록용, 점수·필터 미반영.")
 
         # [V26.24] 사용자 제보 — "거래대금×괴리율×수급 통합 차트가 사라졌다". 지난 PR에서 이 1~30위
         # 전체 표·수급 상위 미니표를 "바로 아래 날짜별 섹션에서 '오늘'이 자동 선택되니 중복"이라고
