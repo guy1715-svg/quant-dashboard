@@ -1051,16 +1051,24 @@ def render_dolpanty():
             # _investor_daily 독스트링 참고). 그래서 원래대로 단일 컬럼으로 되돌림.]
             _pkdf["매도율"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
                                                                      r.get("sell_ratio_orgn")), axis=1)
+            # [V26.43] 사용자 요청 — "외국인/기관 구분 없이는 (NXT 매수/매도 추정) 가능하냐" →
+            # 투자자 분류 없이 그 세션 고가·저가·현재가로 매수/매도 압력만 근사(Money Flow
+            # Multiplier, _render_pick_chart의 거래량 게이지와 동일 아이디어). 실제 체결
+            # 매수/매도 데이터가 아니라 가격 위치 기반 추정치임을 캡션에 명시.
+            _pkdf["NXT매수우세"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if x is not None else "—")
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
-                       "매도율": "매도율(참고용)"}
+                       "매도율": "매도율(참고용)", "NXT매수우세": "NXT 매수우세%"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
             st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
                        "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
                        "외국인·기관 투자자 분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. "
                        "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
+            st.caption("NXT 매수우세% = 투자자 구분 없이, NXT 세션 고가·저가 범위 중 현재가 위치로 "
+                       "추정한 매수/매도 압력(실제 체결 매수·매도 데이터 아님) — 50%보다 높을수록 "
+                       "매수 우세, 낮을수록 매도 우세로 해석. 참고용 추정치입니다.")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
             # 일봉 차트(이평선+거래량)를 바로 보여줌.
