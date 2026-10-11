@@ -118,6 +118,51 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.94 매도율 — 정규장(KRX) 외 NXT 수급도 같이 조회(1단계 보강)
+
+**배경**: 7.93 머지 후 사용자가 실제 대시보드 캡처를 보내줌 — 대체종배 후보 4종(펩트론·
+가온전선·한미사이언스·알테오젠) 전부 매도율이 85~308%로 강의 기준("40% 이하가 좋다")에
+전혀 못 미쳤음. 설명드리는 과정에서 중요한 설계 허점을 발견 — 매도율은 `_investor_daily`가
+조회하는 `inquire-investor`(FHKST01010900)의 **정규장(KRX) 데이터만** 반영하는데, 대체종배
+후보 자체가 "NXT 애프터마켓 거래량이 정규장을 압도하는 종목"을 뽑는 로직이라, 정작 "진짜
+수급"이 몰려있는 NXT 쪽 데이터는 전혀 안 보고 있었음(100%를 넘는 수치들이 실제 순매도인지,
+아니면 정규장 비중 자체가 작아 생긴 착시인지 구분 불가능했던 상태). 사용자가 "NXT용 투자자별
+매수·매도 API가 있는지 조사해달라"고 요청 — KIS 공식 GitHub 예제 저장소
+(`examples_llm/domestic_stock/inquire_investor/inquire_investor.py`의 docstring)를 다시
+열어 확인한 결과, **같은 TR(FHKST01010900)이 `fid_cond_mrkt_div_code="NX"`(NXT)도 공식
+지원한다고 명시**돼 있음을 확인 — 신규 TR 없이 기존 함수를 시장코드만 바꿔 재사용 가능. 단,
+공식 예제 자체는 "J"(KRX) 호출만 실제로 보여주고 "NX" 호출 예시는 없어 실동작은 미검증.
+
+**수정**:
+- `macro_watcher.py` `_investor_daily`에 `mrkt="J"` 파라미터 추가(기본값 유지로 기존 호출부
+  전부 무변경), `FID_COND_MRKT_DIV_CODE`에 그대로 전달.
+- `check_nxt_premium_pick`의 후보(최대 10종) 루프에서 기존 KRX 조회(`_investor_daily(...)`)
+  외에 `_investor_daily(..., mrkt="NX")`를 추가 호출(종목당 API 1회 더 늘어남, 최대 10종
+  한정) → `sell_ratio_frgn_nxt`/`sell_ratio_orgn_nxt`로 `out`과 `pick_history.json`에
+  별도 기록(기존 `sell_ratio_frgn`/`orgn`은 KRX 그대로 유지, 필드 이름 안 건드림 — 그간
+  쌓인 이틀치 데이터와 호환 유지).
+- `_log_pick` 시그니처에 `sell_ratio_frgn_nxt`/`sell_ratio_orgn_nxt` 추가(둘 다 선택 인자,
+  기존 호출부 전부 무변경).
+- `_nxt_prem_enrich_block`(텔레그램 메시지 + 대시보드 "종목별 수급·AI뉴스·관심기준 조회"
+  공유 함수) — "정규장: 외인 X%·기관 Y% / NXT: 외인 A%·기관 B%" 형식으로 둘 다 표시.
+- `quant_dashboard.py` — "오늘의 추천 픽"·"쌍끌이 후보 전체" 표의 "매도율(참고용)" 컬럼을
+  "매도율(정규장)"·"매도율(NXT)" 두 컬럼으로 분리, NXT 쪽이 비어있으면(API가 실제로는 NX를
+  지원 안 하거나 데이터가 없는 경우) "—"로 자연스럽게 표시되도록 처리. 캡션에 "NXT 쪽은
+  KIS가 문서상 지원한다고 밝혔지만 실동작 미검증"이라고 명시.
+
+**검증**: `py_compile` 통과. `test_sell_ratio.py`에 `mrkt` 파라미터 기본값(J)·전달(NX) 검증,
+`_log_pick` 신규 NXT 필드 신규/덮어쓰기 양쪽 분기 저장 검증, 기존 호출부(NXT 인자 없이 호출)도
+그대로 동작하는지 추가. `test_sell_ratio_wiring.py`를 KRX+NXT 두 번 호출하는 새 구조로
+재작성 — (1) 두 시장 각각 다른 값이 올바르게 매핑되는지(교차 오염 없음, NXT가 100% 넘는
+순매도 값이어도 그대로 보존되는지) (2) NXT 조회가 실패(빈 리스트)해도 KRX 결과는 영향 없는지
+(3) 둘 다 실패해도 안전한지 (4) 다른 기존 호출부가 여전히 기본값 "J"로 호출되는지 — 전부
+통과. 기존 회귀 테스트(`test_parallel_fetch.py`·`test_scan_track_record.py`·
+`test_stock_track_record.py`·`test_track_record_gating.py`) 재실행 — 회귀 없음.
+`streamlit run --server.headless` 기동 테스트 — HTTP 200, 콘솔 에러 없음. **NXT 시장코드가
+실제로 유효한 데이터를 반환하는지는 사용자 실환경에서 최초 확인 필요** — 만약 KIS가 실제로는
+NX를 지원 안 해서 매번 빈 응답이 오면 "매도율(NXT)" 컬럼은 전부 "—"로만 보일 텐데, 그 경우도
+크래시 없이 안전하게 처리되도록 만들어뒀음(값이 전부 "—"면 그게 신호).
+
 ### 7.93 대체종배 — "매도율" 관찰·기록 추가(1단계, 점수 미반영)
 
 **배경**: 사용자가 유튜브 수급 강의에서 "매도율"(매도거래량÷매수거래량×100, 순매수가 같아도

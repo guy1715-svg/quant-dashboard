@@ -4776,7 +4776,8 @@ def _pick_write(rows):
 
 
 def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
-              sell_ratio_frgn=None, sell_ratio_orgn=None):
+              sell_ratio_frgn=None, sell_ratio_orgn=None,
+              sell_ratio_frgn_nxt=None, sell_ratio_orgn_nxt=None):
     """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유).
     [V26.12] 사용자 제보 로그 검토 중 발견 — 기존엔 (날짜,종목코드)가 이미 있으면 무조건
     조용히 무시했음. 문제: ①그림자(_shadow)로 먼저 찍힌 종목이 같은 날 나중에 진짜 확정픽이
@@ -4787,7 +4788,11 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
     그 외(둘 다 그림자 또는 둘 다 확정)는 최신 호출값으로 덮어써 실제 마지막 발송과 기록을 일치.
     [V26.39] sell_ratio_frgn/orgn(매도율, %) 선택적 기록 추가 — 1단계(관찰용, 점수 미반영)로
     pick_history.json에 같이 쌓아뒀다가, 나중에 실제 승률과 상관관계가 있는지(2단계) 검증하기
-    위함. None이면(옛 호출부·조회 실패) 그냥 null로 기록됨."""
+    위함. None이면(옛 호출부·조회 실패) 그냥 null로 기록됨.
+    [V26.40] sell_ratio_{frgn,orgn}_nxt 추가 — 기존 sell_ratio_frgn/orgn은 정규장(KRX) 수급
+    기준인데, 대체종배 후보는 애초에 NXT 거래량이 주력인 종목들이라 "진짜 수급"을 놓치고 있다는
+    사용자 지적 반영. 같은 이름 유지(KRX=기존 필드 그대로, NXT=새 _nxt 접미사)로 기존 몇 안 되는
+    로그 데이터와 호환 유지."""
     if not code or not score:
         return
     today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
@@ -4804,7 +4809,8 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                      "regime": "", "signal": signal,
                      "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                      "open_next": None, "gap": None,
-                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn}
+                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn,
+                     "sell_ratio_frgn_nxt": sell_ratio_frgn_nxt, "sell_ratio_orgn_nxt": sell_ratio_orgn_nxt}
         _pick_write(rows)
         return
     rows.append({"date": today, "code": str(code), "name": name or "",
@@ -4812,7 +4818,8 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                  "regime": "", "signal": signal,
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                  "open_next": None, "gap": None,
-                 "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn})
+                 "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn,
+                 "sell_ratio_frgn_nxt": sell_ratio_frgn_nxt, "sell_ratio_orgn_nxt": sell_ratio_orgn_nxt})
     _pick_write(rows)
 
 
@@ -5745,17 +5752,27 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
                           + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
     except Exception:
         pass
-    # [V26.39] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미 계산해
-    # o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수 미반영.
+    # [V26.39/V26.40] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미
+    # 계산해 o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수
+    # 미반영. 정규장(KRX)·NXT 둘 다 표시 — 대체종배 후보의 "진짜 수급"은 NXT 쪽일 수 있어서
+    # 둘을 구분해 보여줌(사용자가 KRX 수치만으로 "다 100% 넘는다"고 제보해 추가).
     try:
-        _fsr, _osr = o.get("sell_ratio_frgn"), o.get("sell_ratio_orgn")
-        if _fsr is not None or _osr is not None:
-            _parts = []
-            if _fsr is not None:
-                _parts.append(f"외인 {_fsr:.0f}%")
-            if _osr is not None:
-                _parts.append(f"기관 {_osr:.0f}%")
-            _lines.append(f"   📊 매도율(참고용·낮을수록 매수세 깨끗): {' · '.join(_parts)}")
+        def _sr_parts(fsr, osr):
+            p = []
+            if fsr is not None:
+                p.append(f"외인 {fsr:.0f}%")
+            if osr is not None:
+                p.append(f"기관 {osr:.0f}%")
+            return " · ".join(p)
+        _krx_part = _sr_parts(o.get("sell_ratio_frgn"), o.get("sell_ratio_orgn"))
+        _nxt_part = _sr_parts(o.get("sell_ratio_frgn_nxt"), o.get("sell_ratio_orgn_nxt"))
+        if _krx_part or _nxt_part:
+            _line = "   📊 매도율(참고용·낮을수록 매수세 깨끗)"
+            if _krx_part:
+                _line += f" — 정규장: {_krx_part}"
+            if _nxt_part:
+                _line += f" / NXT: {_nxt_part}"
+            _lines.append(_line)
     except Exception:
         pass
     try:
@@ -5879,6 +5896,15 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _idy = _investor_daily(token, key, secret, r["code"], days=1)
         _sr_frgn = _sell_ratio(_idy[0].get("frgn_shnu_vol"), _idy[0].get("frgn_seln_vol")) if _idy else None
         _sr_orgn = _sell_ratio(_idy[0].get("orgn_shnu_vol"), _idy[0].get("orgn_seln_vol")) if _idy else None
+        # [V26.40] 사용자 제보 — 위 매도율(정규장/KRX 기준)이 전부 100%를 넘는 걸 실제로 확인해보니,
+        # 대체종배 후보는 애초에 NXT 애프터마켓 거래량이 주력인 종목들이라 "진짜 수급"은 NXT 쪽에
+        # 있는데 정규장만 보고 있었던 게 원인. KIS 공식 예제(inquire_investor.py 독스트링)에
+        # 같은 TR이 FID_COND_MRKT_DIV_CODE="NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를
+        # 시장코드만 바꿔 한 번 더 호출(신규 TR 불필요) — 단, 실동작은 사용자 실환경에서 최초
+        # 검증 필요(공식 예제는 "J" 호출만 실제로 보여줌).
+        _idy_nxt = _investor_daily(token, key, secret, r["code"], days=1, mrkt="NX")
+        _sr_frgn_nxt = _sell_ratio(_idy_nxt[0].get("frgn_shnu_vol"), _idy_nxt[0].get("frgn_seln_vol")) if _idy_nxt else None
+        _sr_orgn_nxt = _sell_ratio(_idy_nxt[0].get("orgn_shnu_vol"), _idy_nxt[0].get("orgn_seln_vol")) if _idy_nxt else None
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
@@ -5886,11 +5912,13 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "news": ng, "score": _score,
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
-                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn})
+                    "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
+                    "sell_ratio_frgn_nxt": _sr_frgn_nxt, "sell_ratio_orgn_nxt": _sr_orgn_nxt})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
-                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn)
+                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn,
+                      sell_ratio_frgn_nxt=_sr_frgn_nxt, sell_ratio_orgn_nxt=_sr_orgn_nxt)
             _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
         print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
@@ -6022,7 +6050,7 @@ def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup,
     return out
 
 
-def _investor_daily(token, key, secret, code, days=5):
+def _investor_daily(token, key, secret, code, days=5, mrkt="J"):
     """[V25.32] 종목 일별 외국인/기관 순매수 최근 N일 — inquire-investor(FHKST01010900).
     최신순 [{frgn,orgn(수량), frgn_amt,orgn_amt(금액원)}]. 수급 연속성·강도·평단 판정용. 실패 시 [].
     [V26.39] 사용자 제보(유튜브 강의 "매도율" 개념) — 매도율(매도거래량÷매수거래량) 계산용으로
@@ -6031,12 +6059,19 @@ def _investor_daily(token, key, secret, code, days=5):
     chk_inquire_investor.py의 COLUMN_MAPPING)로 직접 확인함 — frgn_shnu_vol(외국인 매수 거래량)·
     frgn_seln_vol(외국인 매도 거래량)·orgn_shnu_vol·orgn_seln_vol. 기존 호출부
     (_supply_avgprice, _supply_daily_tag_from)는 frgn/orgn/frgn_amt/orgn_amt 키만 읽으므로
-    새 키 추가는 기존 동작에 영향 없음."""
+    새 키 추가는 기존 동작에 영향 없음.
+    [V26.40] mrkt 파라미터 추가(기본값 "J"=KRX, 기존 호출부 전부 무변경) — 사용자가 "매도율이
+    전부 100%를 넘는다"며 캡처해 온 실제 수치를 보니, 대체종배 후보는 애초에 NXT 애프터마켓
+    거래량이 주력인 종목들인데 매도율은 정규장(KRX) 수급만 보고 있어 "진짜 수급"을 놓치고
+    있었음. KIS 공식 예제(inquire_investor.py 독스트링)에 이 TR이 fid_cond_mrkt_div_code=
+    "NX"(NXT)도 지원한다고 명시돼 있어 같은 함수를 시장코드만 바꿔 재사용 — 신규 TR 불필요.
+    단, 공식 예제는 "J" 호출만 실제로 보여주고 "NX" 호출 예시는 없어 실동작은 미검증(사용자
+    실환경에서 최초 확인 필요)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010900"},
-                         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=6)
+                         params={"FID_COND_MRKT_DIV_CODE": mrkt, "FID_INPUT_ISCD": code}, timeout=6)
         out = []
         for x in (r.json().get("output") or [])[:days]:
             if isinstance(x, dict):

@@ -1043,17 +1043,25 @@ def render_dolpanty():
                 axis=1)
             _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if x else None)
-            # [V26.39] 매도율(참고용 표시만, 점수 미반영) — 1단계. 2단계 검증 후 점수 반영 여부 결정.
-            _pkdf["매도율"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
-                                                                     r.get("sell_ratio_orgn")), axis=1)
+            # [V26.39/V26.40] 매도율(참고용 표시만, 점수 미반영) — 1단계. 처음엔 정규장(KRX)
+            # 수급만 봤는데, 대체종배 후보는 애초에 NXT 거래량이 주력인 종목들이라 "진짜 수급"을
+            # 놓치고 있다는 사용자 지적 반영 — NXT 쪽도 같이 표시(둘 다 KIS가 공식 지원한다고
+            # 밝힌 파라미터지만 NXT 쪽은 실동작 미검증 상태).
+            _pkdf["매도율_krx"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                        r.get("sell_ratio_orgn")), axis=1)
+            _pkdf["매도율_nxt"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn_nxt"),
+                                                                        r.get("sell_ratio_orgn_nxt")), axis=1)
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
-                       "매도율": "매도율(참고용)"}
+                       "매도율_krx": "매도율(정규장)", "매도율_nxt": "매도율(NXT)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
             st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
                        "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
+                       "대체종배 후보는 NXT 거래량이 주력이라 정규장·NXT 수급을 따로 보여드립니다 "
+                       "(NXT 쪽은 KIS가 공식 지원한다고 문서에 명시했지만 실동작은 아직 검증 전 — "
+                       "값이 안 뜨면 '—'로 표시되고 정규장 수치만 참고하시면 됩니다). "
                        "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
@@ -1095,12 +1103,14 @@ def render_dolpanty():
                 axis=1)
             _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
             _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
-            _cdf["매도율"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
-                                                                   r.get("sell_ratio_orgn")), axis=1)
+            _cdf["매도율_krx"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                      r.get("sell_ratio_orgn")), axis=1)
+            _cdf["매도율_nxt"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn_nxt"),
+                                                                      r.get("sell_ratio_orgn_nxt")), axis=1)
             _ccols = {"rank": "순위", "name": "종목명", "code": "종목코드", "ratio": "거래량비율",
                        "nxt_turn_eok": "NXT거래대금(억)", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수",
-                       "매도율": "매도율(참고용)"}
+                       "매도율_krx": "매도율(정규장)", "매도율_nxt": "매도율(NXT)"}
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
 
