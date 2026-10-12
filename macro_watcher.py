@@ -2786,6 +2786,13 @@ _NEWS_T_KW = ("테마", "수혜주", "클러스터", "정책 수혜", "정부 �
 _NEWS_NEG_KW = ("무산", "해지", "철회", "횡령", "배임", "상장폐지", "감자", "유상증자", "적자전환",
                 "소송", "불성실공시", "분식", "거래정지", "관리종목", "리콜")
 
+# [지시서 P0-8] 종목 개별 재료가 아니라 전체 시황(지수·환율·금리 등)을 다루는 기사를 가려내기 위한
+# 키워드 — 해당 종목 고유 이슈가 아니라 "오늘 코스피 왜 빠졌나" 류 기사를 상승이유 표에서
+# 회색으로 구분 표시하기 위함(네이버 뉴스 API가 기사 분류 메타데이터를 안정적으로 안 줘서,
+# 기존 _NEWS_S/A/T_KW와 같은 제목 키워드 매칭 방식을 그대로 재사용).
+_NEWS_MARKET_WIDE_KW = ("코스피", "코스닥", "다우", "나스닥", "S&P", "뉴욕증시", "국내증시", "아시아증시",
+                        "글로벌증시", "환율", "국채금리", "기준금리", "연준", "FOMC", "유가")
+
 
 _NEWS_GRADE_CACHE = {}   # [V25.23] {code_YYYYMMDD: (grade, is_bad)} — 일당 캐시로 판정 안정화
 
@@ -2843,13 +2850,25 @@ def _news_grade(code):
     return _res
 
 
+_NEWS_DATE_KEYS = ("datetime", "pubDate", "ptDateTime", "regDt", "writeDate", "date", "dt")
+_NEWS_SOURCE_KEYS = ("officeName", "office", "press", "source", "provider")
+
+
 def _news_headlines(code, n=3):
-    """[V26.28] 종목 뉴스 제목 N개(원문 그대로) — 대시보드 "전일대비 +15%↑ 종목 상승이유" 표시용.
+    """[V26.28] 종목 뉴스 N건 — 대시보드 "전일대비 +15%↑ 종목 상승이유" 표시용.
     _news_grade와 같은 네이버 API를 쓰지만, _news_grade는 S/A/T/none 등급 판정 + 일당 캐시만
     반환해 실제 헤드라인 텍스트를 못 보여줌 — 사람이 읽을 제목 원문이 필요해 별도 함수로 분리
     (등급 캐시 로직과 섞이면 "그날 가장 강한 등급"과 "최신 헤드라인"이 서로 다른 시점을 가리킬
-    수 있어 일부러 독립시킴). 실패 시 빈 리스트."""
-    titles = []
+    수 있어 일부러 독립시킴). 실패 시 빈 리스트.
+    [지시서 P0-8] 사용자가 "상승이유" 헤드라인에 기사 날짜·출처가 없어 최신성·신뢰도를 판단하기
+    어렵다고 지적 — 반환 형식을 bare 문자열에서 {"title","date","source","market_wide"} dict로
+    확장. 이 API는 비공식(공식 문서 없음)이라 날짜·출처 필드명이 확정돼 있지 않음 — 흔히 쓰이는
+    후보 키 이름들(_NEWS_DATE_KEYS/_NEWS_SOURCE_KEYS)을 모두 시도해보고, 전부 없으면 None으로
+    그냥 넘어감(헤드라인 자체는 기존처럼 항상 나오고, 날짜·출처만 "확인 안 됨"으로 표시되는 것으로
+    degrade — 필드명 추측이 틀려도 기존 기능이 깨지지 않도록 함). market_wide: 종목 고유 재료가
+    아니라 전체 시황(코스피·환율·금리 등)을 다루는 기사인지 제목 키워드로 판별(_NEWS_MARKET_WIDE_KW)
+    — 대시보드에서 이런 기사는 회색으로 구분 표시해 "이 종목만의 상승 이유"와 섞이지 않게 함."""
+    articles = []
     try:
         r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={n}&page=1",
                          headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
@@ -2859,8 +2878,12 @@ def _news_headlines(code, n=3):
         def _walk(o):
             if isinstance(o, dict):
                 for k, v in o.items():
-                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str):
-                        titles.append(v)
+                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str) and v:
+                        _date = next((o[dk] for dk in _NEWS_DATE_KEYS
+                                      if isinstance(o.get(dk), str) and 0 < len(o[dk]) <= 20), None)
+                        _src = next((o[sk] for sk in _NEWS_SOURCE_KEYS
+                                     if isinstance(o.get(sk), str) and 0 < len(o[sk]) <= 20), None)
+                        articles.append({"title": v, "date": _date, "source": _src})
                     else:
                         _walk(v)
             elif isinstance(o, list):
@@ -2871,10 +2894,11 @@ def _news_headlines(code, n=3):
         return []
     seen = set()
     out = []
-    for t in titles:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
+    for a in articles:
+        if a["title"] not in seen:
+            seen.add(a["title"])
+            a["market_wide"] = any(kw in a["title"] for kw in _NEWS_MARKET_WIDE_KW)
+            out.append(a)
         if len(out) >= n:
             break
     return out
