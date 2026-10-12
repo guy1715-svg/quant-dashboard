@@ -146,16 +146,19 @@ def _render_pick_chart(token, key, secret, code, name):
                       annotation_font_color="#0d9488", row=1, col=1)
     # [V26.34] 사용자 요청 — "거래량은 매수매도 게이지 나오게 해줘". 틱 단위 실제 체결(매수/매도)
     # 데이터는 없어서(일봉만 조회), CMF와 같은 공식(Money Flow Multiplier)으로 그날 종가가
-    # 고가/저가 범위 중 어디에 있었는지를 근거로 그날 거래량을 매수추정/매도추정으로 비율 분할한
+    # 고가/저가 범위 중 어디에 있었는지를 근거로 그날 거래량을 상승압력/하락압력으로 비율 분할한
     # "추정치"임 — 실제 체결 매수·매도 구분이 아니라는 걸 캡션에도 명시.
+    # [V26.44] "매수추정/매도추정"이라는 이름이 실제 체결 매수·매도 데이터처럼 오해될 수 있다는
+    # 지적 반영 — 데이터 출처(종가 위치 기반 추정)가 드러나는 이름으로 변경. 공식·값은 그대로,
+    # 표시 라벨만 수정.
     _rng = (df["고가"] - df["저가"]).replace(0, pd.NA)
     _mfm = (((df["종가"] - df["저가"]) - (df["고가"] - df["종가"])) / _rng).fillna(0.0)
-    _buy_ratio = (_mfm + 1) / 2                 # -1~+1 → 0~1 (고가=매수100%, 저가=매도100%)
+    _buy_ratio = (_mfm + 1) / 2                 # -1~+1 → 0~1 (고가=상승압력100%, 저가=하락압력100%)
     _buy_vol = df["거래량"] * _buy_ratio
     _sell_vol = df["거래량"] * (1 - _buy_ratio)
-    fig.add_trace(go.Bar(x=df["날짜"], y=_buy_vol, marker_color="#d93025", name="매수추정"),
+    fig.add_trace(go.Bar(x=df["날짜"], y=_buy_vol, marker_color="#d93025", name="상승압력(추정)"),
                   row=2, col=1)
-    fig.add_trace(go.Bar(x=df["날짜"], y=_sell_vol, marker_color="#1a73e8", name="매도추정"),
+    fig.add_trace(go.Bar(x=df["날짜"], y=_sell_vol, marker_color="#1a73e8", name="하락압력(추정)"),
                   row=2, col=1)
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=40, b=10),
                        xaxis_rangeslider_visible=False, barmode="stack",
@@ -188,9 +191,9 @@ def _render_pick_chart(token, key, secret, code, name):
     st.caption("저항·지지는 최근 스윙 고점/저점 기준 산출(기관·사용자마다 긋는 방식이 다를 수 "
                "있는 참고용 해석 중 하나입니다). 산업·시장 방향성, 실적, 수급 연속성 같은 "
                "정성적 판단은 자동화 범위 밖이라 직접 확인하셔야 합니다.")
-    st.caption("거래량의 매수추정(빨강)·매도추정(파랑) 분할은 실제 체결 데이터가 아니라, 그날 "
-               "종가가 고가·저가 범위 중 어디에 위치했는지로 추정한 근사치입니다(일봉만 조회 "
-               "가능해 틱 단위 매수·매도 체결량은 확인할 수 없습니다).")
+    st.caption("거래량의 상승압력(빨강)·하락압력(파랑) 분할은 실제 체결 주체별 매수·매도 데이터가 "
+               "아니라, 그날 종가가 고가·저가 범위 중 어디에 위치했는지(OHLC)로 추정한 근사치입니다 "
+               "(일봉만 조회 가능해 틱 단위 매수·매도 체결량은 확인할 수 없습니다).")
 
 
 # ══════════════════════════════════════════
@@ -1055,20 +1058,24 @@ def render_dolpanty():
             # 투자자 분류 없이 그 세션 고가·저가·현재가로 매수/매도 압력만 근사(Money Flow
             # Multiplier, _render_pick_chart의 거래량 게이지와 동일 아이디어). 실제 체결
             # 매수/매도 데이터가 아니라 가격 위치 기반 추정치임을 캡션에 명시.
-            _pkdf["NXT매수우세"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if x is not None else "—")
+            # [V26.44] "매수우세%"라는 이름이 실제 매수세 우위(체결 데이터)처럼 오해될 수 있다는
+            # 지적 반영 — 금융권에서 이 계산(종가의 당일 고가·저가 범위 내 위치, 0~100%)을 부르는
+            # 표준 용어인 "가격위치(CLV, Close Location Value)"로 이름 변경. 값·공식은 그대로.
+            _pkdf["NXT가격위치"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if x is not None else "—")
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
-                       "매도율": "매도율(참고용)", "NXT매수우세": "NXT 매수우세%"}
+                       "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
             st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
                        "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
                        "외국인·기관 투자자 분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. "
                        "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
-            st.caption("NXT 매수우세% = 투자자 구분 없이, NXT 세션 고가·저가 범위 중 현재가 위치로 "
-                       "추정한 매수/매도 압력(실제 체결 매수·매도 데이터 아님) — 50%보다 높을수록 "
-                       "매수 우세, 낮을수록 매도 우세로 해석. 참고용 추정치입니다.")
+            st.caption("NXT 가격위치(CLV) = 투자자 구분·실제 체결 주체별 매수·매도 데이터가 아니라, "
+                       "NXT 세션 고가·저가 범위 중 현재가 위치(OHLC 기반)로 추정한 지표입니다 — "
+                       "50%보다 높을수록 고가 쪽(상승압력), 낮을수록 저가 쪽(하락압력)에 가깝다는 "
+                       "뜻으로만 해석하세요. 참고용 추정치입니다.")
 
             # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
             # 일봉 차트(이평선+거래량)를 바로 보여줌.
@@ -1092,7 +1099,13 @@ def render_dolpanty():
             _sgdf["avg_turn_ratio"] = (_sgdf["avg_turn_ratio"] * 100).round(0)
             _sgdf["nxt_turn"] = (_sgdf["nxt_turn"] / 1e8).round(1)
             _sgdf["기준충족"] = _sgdf["pass"].map({True: "✅", False: "—"})
-            _sgcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "avg_turn_ratio": "평소대비(%)",
+            # [지시서 P0-8] 거래대금이 터진 게 상승 때문인지 하락 때문인지 표만 봐선 구분이 안 된다는
+            # 지적 반영 — 등락률(chg) 부호로 방향 태그 추가(거래대금 급증 자체의 좋고 나쁨 판단 아님).
+            if "chg" in _sgdf.columns:
+                _sgdf["방향"] = _sgdf["chg"].map(
+                    lambda x: "🔺상승급증" if (x or 0) > 0 else ("🔻하락급증" if (x or 0) < 0 else "보합"))
+            _sgcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "방향": "방향",
+                       "avg_turn_ratio": "평소대비(%)",
                        "nxt_turn": "NXT거래대금(억)", "ratio": "거래량비율", "기준충족": "기준충족"}
             _sgdf = _sgdf[[c for c in _sgcols if c in _sgdf.columns]].rename(columns=_sgcols)
             st.dataframe(_sgdf, use_container_width=True, hide_index=True)
@@ -1154,10 +1167,14 @@ def render_dolpanty():
         _surge_rows = [r for r in (st.session_state.get("nxt_live_full") or []) if r.get("chg") is not None]
         _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"], reverse=True)[:10]
         if _surge_top10:
-            st.markdown("##### 🔥 등락률 상위 10종목 — 상승이유 · 섹터")
+            # [지시서 P0-8] "상승이유"라는 이름이 뉴스=등락 원인 확정처럼 읽힐 수 있다는 지적 반영 —
+            # "등락 관련 뉴스"로 변경(하락 종목도 이 표에 섞여 나올 수 있어 "상승"은 부정확하기도 함).
+            st.markdown("##### 🔥 등락률 상위 10종목 — 등락 관련 뉴스 · 섹터")
             st.caption("위 표에서 전일 종가 대비 등락률이 높은 상위 10종목을 추려, 종목별 업종(섹터)과 "
-                       "최근 뉴스 헤드라인을 보여줍니다 — 급등 사유를 수동으로 하나씩 검색하지 "
-                       "않아도 되게 하기 위한 참고용 정리입니다(상승 사유 확정 아님).")
+                       "최근 뉴스 헤드라인(날짜·언론사 확인되는 경우 함께 표시)을 보여줍니다 — 등락 "
+                       "사유를 수동으로 하나씩 검색하지 않아도 되게 하기 위한 참고용 정리입니다(등락 "
+                       "사유 확정 아님). 종목 고유 재료가 아니라 전체 시황(코스피·환율·금리 등)을 "
+                       "다루는 기사는 회색 '(시황)' 표시로 구분됩니다.")
             for r in _surge_top10:
                 with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
                     _sec = mw._sector_name(tok, key, sec, r["code"]) or "업종 미확인"
@@ -1165,7 +1182,15 @@ def render_dolpanty():
                 st.markdown(f"**{r['name']}**({r['code']}) {r['chg']:+.1f}% · 🏷️ {_sec}")
                 if _heads:
                     for h in _heads:
-                        st.caption(f"· {h}")
+                        _meta = " · ".join(x for x in (h.get("date"), h.get("source")) if x)
+                        _line = f"· {h['title']}" + (f" ({_meta})" if _meta else "")
+                        if h.get("market_wide"):
+                            # [지시서 P0-8] 종목 고유 재료가 아니라 전체 시황 기사 — 회색으로 구분해
+                            # "이 종목만의 상승 이유"와 섞여 보이지 않게 함(값 판단엔 안 쓰고 표시만).
+                            st.markdown(f"<span style='color:gray'>{_line} (시황)</span>",
+                                        unsafe_allow_html=True)
+                        else:
+                            st.caption(_line)
                 else:
                     st.caption("· 관련 뉴스 헤드라인 확인 안 됨")
 
@@ -1875,4 +1900,10 @@ with tabs[9]:
     render_settings()
 
 st.divider()
-st.caption("📊 퀀트 관제탑 · macro_watcher.py 신호를 그대로 보여주는 뷰어(자체 판단 로직 없음)")
+# [지시서 P0-8] "자체 판단 로직 없음"이 "🔄 지금 새로고침" 버튼 기능과는 안 맞는 설명이었음 —
+# 그 버튼은 macro_watcher.py가 미리 계산해둔 신호를 그대로 보여주는 게 아니라, 누른 그 순간 KIS를
+# 직접 조회해서 대시보드 자체에서 점수·매도율·NXT 지표 등을 새로 계산함(다만 그 결과는 텔레그램
+# 발송도, pick_history 등 기록도 되지 않는 1회성 화면 표시일 뿐). 두 동작을 구분해서 명시.
+st.caption("📊 퀀트 관제탑 · 기본은 macro_watcher.py가 계산해둔 신호를 그대로 보여주는 뷰어입니다. "
+           "단, '🔄 지금 새로고침'은 그 순간 KIS 조회 후 대시보드에서 직접 계산한 결과이며, "
+           "텔레그램 발송·기록(로그) 없이 화면에만 표시됩니다.")
