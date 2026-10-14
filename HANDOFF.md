@@ -118,6 +118,38 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.108 "ETF 구성종목 수집 실패: AttributeError" 제보 — 에러 메시지에 상세 사유 추가
+
+**배경**: 7.107 머지 직후 사용자가 "ETF 구성종목 수집 실패: AttributeError"만 보인다고 제보.
+quant_dashboard.py:1125/1142의 두 에러 메시지가 `{type(_e).__name__}`만 출력해 예외 타입
+이름만 보여주고 실제 메시지(어디서 왜 났는지)는 숨기고 있었음 — 이 포맷으로는 사용자도
+개발자도 원인을 알 수 없음.
+
+`etf_raw_scan`/`_etf_universe`/`_volume_rank`/`_etf_component_stocks` 전체 호출 체인을
+다시 훑고, None/list 등 깨진 KIS 응답·구성종목 중 쓰레기 행(None/str/숫자/코드없음)을
+주입하는 모의 테스트로 재현한 결과 이 체인 자체에서 AttributeError가 새는 지점은 찾지
+못함(`_etf_component_stocks`는 통째로 try/except로 감싸져 있고, `_volume_rank`도 요청·
+파싱 구간이 try/except로 감싸져 있어 None/list 응답이 와도 각자 빈 리스트/사유 문자열로
+귀결됨 — `test_etf_raw_scan_full_chain_with_malformed_responses_no_attributeerror` 등
+8개 테스트로 확인). 이 사실 자체가 가장 유력한 원인을 가리킴: Streamlit 프로세스가 아직
+재시작 전이라 `import macro_watcher as mw`가 7.107 이전(= `etf_raw_scan` 함수가 없던)
+버전을 메모리에 그대로 들고 있었을 가능성 — 그 경우 `mw.etf_raw_scan(...)` 호출 자체가
+`AttributeError: module 'macro_watcher' has no attribute 'etf_raw_scan'`을 내고, 지금의
+메시지 포맷(타입 이름만)으로는 이 구체적 사유가 전부 가려짐.
+
+**수정**: quant_dashboard.py 두 곳(ETF 구성종목 수집 실패/분석 범위 재계산 실패) 에러
+메시지에 `: {_e}`를 추가해 실제 예외 메시지까지 표시하도록 변경 — 이 파일의 다른 곳
+(예: "스캔 실패: {type(_e).__name__}: {_e}")이 이미 쓰던 더 상세한 패턴과 통일.
+
+**검증**: py_compile 통과. 신규 모의 테스트 8개(`test_etf_attributeerror_report.py`) —
+수정된 포맷 문자열이 실제로 상세 메시지를 포함하는지, 그리고 수집 체인이 깨진 KIS 응답
+전반(JSON None/list, output2 쓰레기 행 등)에 AttributeError를 흘리지 않는지 확인, 전부
+통과. 기존 회귀 테스트 전체 재실행 통과.
+**확인 못한 부분**: 사용자가 실제로 본 AttributeError의 상세 메시지(정확히 어떤 속성이
+없다고 했는지)를 받지 못해, 위 "프로세스 재시작 전" 가설이 맞는지 직접 확인은 못함 —
+이번 수정 이후 같은 증상이 재발하면 이제는 구체적 사유가 화면에 그대로 찍히므로 바로
+확진 가능.
+
 ### 7.107 "ETF 상위 편입종목 중복" — 지시서에 따라 "ETF별 편입비중 상위 10종목 기준"으로 전면 재설계
 
 **배경**: 사용자가 상세한 지시서(9개 섹션, 완료 검증 체크리스트 포함)를 전달 — ETF 구성종목이
