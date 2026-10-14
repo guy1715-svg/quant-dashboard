@@ -2995,14 +2995,33 @@ def _lineup_plus_turnover(token, key, secret, lineup, top=40):
     return _out
 
 
-def _etf_top_by_turnover(token, key, secret, n=10, scan_top=150):
+_KOSDAQ_ETF_KW = ("코스닥", "KOSDAQ")   # [V26.45] ETF 이름으로 코스피/코스닥 계열 추정용 키워드
+
+
+def _etf_market_tag(name):
+    """[V26.45] 사용자 제보 — "코스닥/코스피로 나눠야될듯". 거래대금 전체 1등 랭킹만 뽑으면
+    코스피200 추종 상품(KODEX 200·KODEX 레버리지·TIGER 200 등 절대 거래대금이 압도적으로 큼)이
+    상위 10종을 거의 다 차지해 코스닥 ETF는 '코스닥150' 하나 정도만 겨우 10위 근처에 끼는
+    수준이었음(실측: 10종 중 9종이 코스피/해외지수/합성형, 코스닥 키워드 ETF는 1종뿐). 그 결과
+    "겹치는 종목" 집계도 사실상 코스피200 상위 종목 재탕이 되어버려 의미가 희석됨 — 이름에
+    '코스닥'/'KOSDAQ'이 들어가면 코스닥 계열로, 그 외는 코스피 계열로 분류(해외지수·합성형처럼
+    둘 다 아닌 상품도 코스피 쪽으로 묶이는 단순화이지만, '코스닥이 전체 랭킹에 묻힌다'는 지적을
+    해소하는 데는 이 정도 키워드 분류로 충분함 — 기존 _EARLY_ETF_KW·_NEWS_*_KW와 같은 방식)."""
+    return "KOSDAQ" if any(k in str(name) for k in _KOSDAQ_ETF_KW) else "KOSPI"
+
+
+def _etf_top_by_turnover(token, key, secret, n=10, scan_top=150, market=None):
     """[사용자 요청] 당일 거래대금 상위 ETF n종 — 별도 'ETF 랭킹' API 대신, 이미 있는 거래대금
     상위 API(_volume_rank)를 그대로 재사용해 ETF 브랜드 키워드(_EARLY_ETF_KW)로 걸러냄. 이
     키워드는 기존에 16곳에서 ETF를 스캔 대상에서 '제외'하는 용도로만 쓰였는데, 여기서는 반대로
     '포함'만 추려내는 용도로 재사용. _volume_rank가 이미 거래대금 내림차순으로 주지만, 필터링
-    후에도 순서가 보장되도록 재정렬함. [{"code","name","turnover","px","chg"}] 상위 n종."""
+    후에도 순서가 보장되도록 재정렬함. market="KOSPI"/"KOSDAQ"로 주면 _etf_market_tag로 그
+    계열만 추려서 순위를 다시 매김(코스닥 ETF가 전체 혼합 랭킹에 묻히는 문제 대응 — V26.45).
+    [{"code","name","turnover","px","chg"}] 상위 n종."""
     rows = _volume_rank(token, key, secret, top=scan_top)
     etfs = [r for r in rows if any(k in str(r["name"]) for k in _EARLY_ETF_KW)]
+    if market:
+        etfs = [r for r in etfs if _etf_market_tag(r["name"]) == market]
     etfs.sort(key=lambda r: r["turnover"], reverse=True)
     return etfs[:n]
 
@@ -3013,7 +3032,12 @@ def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
     화면과 동일 데이터(공식 예제 저장소 koreainvestment/open-trading-api로 필드명 확인 —
     stck_shrn_iscd=종목코드, hts_kor_isnm=종목명. 둘 다 이 코드베이스 다른 TR에서도 쓰는
     표준 필드명). 반환: [{"code","name"}]. _diag=True면 _investor_daily와 같은 패턴으로
-    (rows, reason) 튜플을 줘서 rt_cd 에러/빈 응답/예외를 구분할 수 있게 함."""
+    (rows, reason) 튜플을 줘서 rt_cd 에러/빈 응답(raw 건수까지)/예외를 구분할 수 있게 함
+    — 실전에서 "ETF 10종 중 3종만 구성종목이 잡힘" 제보가 들어와(7.99 직후), 원인이 ①인버스·
+    레버리지·합성형처럼 애초에 종목 단위 PDF가 없는 상품 구조 때문인지, ②이 TR 자체의
+    레이트리밋에 걸린 것인지 구분할 증거가 필요해서 추가(_volume_rank가 과거 페이지네이션
+    레이트리밋 문제를 겪었던 선례가 있어 이쪽도 의심됨 — 아래 etf_overlap_scan의 호출 간
+    time.sleep 추가와 짝을 이루는 진단 장치)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/etfetn/v1/quotations/inquire-component-stock-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -3034,30 +3058,46 @@ def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
             nm = x.get("hts_kor_isnm", "")
             if cd.isdigit() and len(cd) == 6 and nm:
                 rows.append({"code": cd, "name": nm})
-        reason = None if rows else "output2 empty"
+        if rows:
+            reason = None
+        elif out2:
+            reason = f"output2 {len(out2)}건 수신했으나 종목코드·종목명 형식이 전부 안 맞아 전부 걸러짐(해외지수·합성형 ETF라 코드가 KRX 6자리 형식이 아닐 가능성)"
+        else:
+            reason = "output2 비어있음(0건) — 구성종목 데이터 자체가 없음(인버스·레버리지·합성형처럼 종목 단위 PDF가 없는 상품 구조일 가능성, 또는 레이트리밋)"
         return (rows, reason) if _diag else rows
     except Exception as e:
         return ([], f"exception: {e}") if _diag else []
 
 
-def etf_overlap_scan(token, key, secret, etf_n=10, overlap_n=10):
+def etf_overlap_scan(token, key, secret, etf_n=10, overlap_n=10, market=None):
     """[사용자 요청] "종배 탭에서 상위 ETF 10종목 구성종목을 겹쳐서 1~10위 공통종목을 보고,
-    그 종목들 수급현황도 같이 보고싶다" — 거래대금 상위 ETF etf_n종(_etf_top_by_turnover)의
-    구성종목(_etf_component_stocks)을 모아 종목별로 몇 개 ETF에 들어있는지 집계하고, 겹치는
-    ETF 개수 내림차순 상위 overlap_n종에 대해 현재가·외국인/기관 당일 추정 순매수를 추가
-    조회(check_investor_flow_rank와 동일 공식 — _price_full의 현재가 × _investor_est의
-    추정 순매수 수량 ÷ 1억). 반환: {"etfs": [...], "overlap": [{"code","name","count","etfs",
-    "px","foreign_eok","inst_eok"}, ...]}. ETF 랭킹 조회가 비면 양쪽 다 빈 리스트로 반환
-    (구성종목 개별 조회가 실패한 ETF 한두 개는 건너뛰고 나머지로 계속 집계함)."""
-    etfs = _etf_top_by_turnover(token, key, secret, n=etf_n)
+    그 종목들 수급현황도 같이 보고싶다" + (V26.45) "코스닥/코스피로 나눠야될듯" — 거래대금 상위
+    ETF etf_n종(_etf_top_by_turnover, market으로 코스피/코스닥 계열 한정 가능)의 구성종목
+    (_etf_component_stocks)을 모아 종목별로 몇 개 ETF에 들어있는지 집계하고, 겹치는 ETF 개수
+    내림차순 상위 overlap_n종에 대해 현재가·외국인/기관 당일 추정 순매수를 추가 조회
+    (check_investor_flow_rank와 동일 공식 — _price_full의 현재가 × _investor_est의 추정
+    순매수 수량 ÷ 1억). ETF별 호출 사이에 _volume_rank 페이지네이션과 같은 레이트리밋 배려용
+    짧은 지연을 둠(실전에서 10종 중 뒤쪽 7종이 전부 구성종목 0건으로 나온 제보가 있어, 상품
+    구조 때문인지 레이트리밋 때문인지 구분하려고 _etf_component_stocks의 _diag도 같이 수집).
+    반환: {"etfs": [...], "overlap": [{"code","name","count","etfs","px","foreign_eok",
+    "inst_eok"}, ...], "etf_diag": [{"code","name","holdings_count","reason"}, ...]}.
+    ETF 랭킹 조회가 비면 전부 빈 리스트로 반환(구성종목 개별 조회가 실패한 ETF는 건너뛰고
+    나머지로 계속 집계함)."""
+    etfs = _etf_top_by_turnover(token, key, secret, n=etf_n, market=market)
     if not etfs:
-        return {"etfs": [], "overlap": []}
+        return {"etfs": [], "overlap": [], "etf_diag": []}
     agg = {}   # code -> {"name":, "count":, "etfs":[...]}
-    for e in etfs:
-        for h in _etf_component_stocks(token, key, secret, e["code"]):
+    etf_diag = []
+    for i, e in enumerate(etfs):
+        holdings, reason = _etf_component_stocks(token, key, secret, e["code"], _diag=True)
+        etf_diag.append({"code": e["code"], "name": e["name"],
+                          "holdings_count": len(holdings), "reason": reason})
+        for h in holdings:
             slot = agg.setdefault(h["code"], {"name": h["name"], "count": 0, "etfs": []})
             slot["count"] += 1
             slot["etfs"].append(e["name"])
+        if i < len(etfs) - 1:
+            time.sleep(0.15)                 # 레이트리밋 배려(짧은 지연) — _volume_rank와 동일 취지
     ranked = sorted(agg.items(), key=lambda kv: (-kv[1]["count"], kv[0]))[:overlap_n]
     overlap = []
     for cd, info in ranked:
@@ -3074,7 +3114,7 @@ def etf_overlap_scan(token, key, secret, etf_n=10, overlap_n=10):
                 fa = oa = None
         overlap.append({"code": cd, "name": info["name"], "count": info["count"],
                          "etfs": info["etfs"], "px": px, "foreign_eok": fa, "inst_eok": oa})
-    return {"etfs": etfs, "overlap": overlap}
+    return {"etfs": etfs, "overlap": overlap, "etf_diag": etf_diag}
 
 
 def _vol_ratio_5d(token, key, secret, code):
