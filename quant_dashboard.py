@@ -858,6 +858,20 @@ def render_dolpanty():
         "순위만 보지 마시고 거래대금괴리율(%)·NXT거래대금(억) 두 컬럼을 같이 봐 주시면, 사용자 방식과 현재 시스템 "
         "기준을 동시에 확인하실 수 있습니다."
     )
+    # [사용자 요청] "새로고침하면 너무 시간 오래 걸리니까 저장기능이라고 보면 될듯" + "조회눌러서
+    # 나온 차트가 계속 유지가 되는거지" + "필요시 새로고침으로 최신화를 시키는거지" — 이 세션이
+    # 아직 한 번도 새로고침을 안 눌렀으면(즉 집·회사 등 다른 기기를 방금 새로 열었으면), 다른
+    # 기기에서 마지막으로 눌러 GitHub에 저장해둔 결과가 있는지 먼저 확인해서 보여줌 — 매번 1~2분
+    # 걸리는 조회를 다시 기다리지 않아도, 누군가 최근에 눌러둔 결과를 기기 상관없이 바로 봄.
+    if "nxt_live_full" not in st.session_state:
+        _cached_scan = _fetch_live_scan_cache(_t.time() // 60)
+        if _cached_scan:
+            st.session_state["nxt_live_full"] = _cached_scan.get("full") or []
+            st.session_state["nxt_live_out"] = _cached_scan.get("out") or []
+            st.session_state["nxt_live_flow"] = _cached_scan.get("flow") or []
+            st.session_state["nxt_live_time"] = _cached_scan.get("time", "")
+            st.session_state["nxt_live_from_cache"] = True
+
     if not tok:
         st.info("KIS 키 없음 — 새로고침 불가")
     elif st.button("🔄 지금 새로고침", key="nxt_live_refresh_btn"):
@@ -877,10 +891,19 @@ def render_dolpanty():
             except Exception as _lfe:
                 st.error(f"수급 조회 실패: {type(_lfe).__name__}")
                 _live_flow = []
+            _live_time = _now_live.strftime("%Y-%m-%d %H:%M:%S")
             st.session_state["nxt_live_full"] = _full_out
             st.session_state["nxt_live_out"] = _live_out
             st.session_state["nxt_live_flow"] = _live_flow
-            st.session_state["nxt_live_time"] = _now_live.strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state["nxt_live_time"] = _live_time
+            st.session_state["nxt_live_from_cache"] = False
+            _git_save_live_scan({"time": _live_time, "full": _full_out,
+                                 "out": _live_out, "flow": _live_flow})
+
+    if st.session_state.get("nxt_live_time"):
+        _src_note = "다른 기기에서 저장된 결과" if st.session_state.get("nxt_live_from_cache") else "이 기기에서 방금 조회"
+        st.caption(f"🕒 {st.session_state['nxt_live_time']} 기준({_src_note}) — 더 최신으로 보려면 "
+                   "위 '🔄 지금 새로고침'을 다시 누르세요.")
 
     # [V26.22] 사용자 요청 — "직관적인 추천 픽을 표현해달라" + "기존 표들과 겹치는건 삭제".
     # 아래 1~30위 전체(_ldf)·수급 상위(_fdf) 원시 표는 새로고침 즉시 nxt_scan_log.json/
@@ -889,7 +912,6 @@ def render_dolpanty():
     # 그래서 그 두 표는 여기서 제거하고(완전 중복), 대신 한눈에 들어오는 "오늘의 추천 픽" 카드와
     # 거래량비율 1위 기준에 가려지는 종목을 잡아주는 "평소 대비 급증" 표를 새로 추가함.
     if st.session_state.get("nxt_live_full"):
-        st.caption(f"⏱️ {st.session_state.get('nxt_live_time', '')} 기준(이 순간의 미리보기)")
         _live_candidates = st.session_state.get("nxt_live_out") or []
 
         if _live_candidates:
@@ -1372,6 +1394,61 @@ def _fetch_nxt_scan_log(_bust):
             return None
         d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
         return d if isinstance(d, list) else None
+    except Exception:
+        return None
+
+
+_LIVE_SCAN_CACHE_FILE = "nxt_live_cache.json"
+
+
+def _git_save_live_scan(payload):
+    """[사용자 요청] "새로고침하면 너무 시간이 오래걸리고 하니까 저장기능이라고 보면 될듯" —
+    "⏱️ 지금 이 순간 새로고침"(약 1~2분 소요) 결과를 이 세션(session_state)에만 담아두면,
+    집에서 조회해도 회사 노트북 등 다른 기기·브라우저로 열면 다시 텅 비어있어 매번 또
+    1~2분을 기다려야 했음. _git_sync_journal(분석저널 자동커밋)과 동일 패턴으로 GitHub
+    'main' 브랜치에도 같이 저장해, 조회 버튼을 누르는 사람이 다를 때마다 최신화하고(= 필요할
+    때만 새로고침) 그 결과는 기기와 상관없이 계속 보이게 함. 저장 실패해도 누른 화면 자체는
+    이미 session_state로 정상 표시되니 경고만 띄우고 넘어감."""
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 조회 결과는 이 기기(이 세션)에서만 유지됩니다.")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/{_LIVE_SCAN_CACHE_FILE}"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(payload, ensure_ascii=False)
+        body = {"message": f"라이브 새로고침 결과 저장(대시보드 자동커밋) {payload.get('time', '')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code not in (200, 201):
+            st.warning(f"⚠️ 결과 저장 실패({p.status_code}) — 이 기기에서는 정상 표시되지만 "
+                       "다른 기기에는 반영되지 않습니다.")
+    except Exception as _e:
+        st.warning(f"⚠️ 결과 저장 실패: {type(_e).__name__} — 이 기기에서는 정상 표시되지만 "
+                   "다른 기기에는 반영되지 않습니다.")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_live_scan_cache(_bust):
+    """[사용자 요청] 다른 기기·세션을 열었을 때도 마지막으로 누군가 저장해둔 "지금 새로고침"
+    결과를 바로 볼 수 있게, _git_save_live_scan이 'main' 브랜치에 올려둔 파일을 읽어옴
+    (_fetch_pick_history와 동일 패턴, 다만 그쪽은 'data' 브랜치·이쪽은 대시보드 자체가 쓰는
+    'main' 브랜치). 실패 시 None(호출부가 "아직 저장된 결과 없음"으로 처리 — 크래시 없음)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/{_LIVE_SCAN_CACHE_FILE}",
+                          headers=headers, params={"ref": "main"}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, dict) else None
     except Exception:
         return None
 
