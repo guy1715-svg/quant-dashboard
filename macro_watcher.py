@@ -3096,23 +3096,47 @@ def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
 
 
 def _price_and_market(token, key, secret, code):
-    """현재가 + 상장시장 한글명(코스피/코스닥 등) — inquire-price(_price_full과 동일 TR)
-    한 번으로 같이 뽑음. rprs_mrkt_kor_name 필드를 추가로 보는 것뿐이라, 기존 _price_full
-    호출부 9곳의 반환값 개수(튜플 길이)를 안 건드리려고 별도 함수로 분리. 실패 시 (None, None)."""
+    """현재가(inquire-price) + 상장시장(코스피/코스닥, search-stock-info) — 실패 시 (None, None).
+    [V26.53] 7.109 — 사용자가 실측으로 제보: inquire-price의 rprs_mrkt_kor_name 필드로 코스피/
+    코스닥을 판정했더니(7.107) 실제 코스닥 종목(주성엔지니어링·이오테크닉스·리노공업·원익IPS 등)이
+    전부 "코스피" 표에 나오고 코스닥 표는 통째로 비어 집계됨 — 이 필드(또는 그 값 포맷)를 신뢰할
+    수 없다고 판단해 교체. 대신 주식기본조회(search-stock-info, CTPF1002R)의 유가증권시장·코스닥
+    시장 상장일자/상장폐지일자 필드로 판정 — "그 시장 상장일자가 있고 상장폐지일자가 없으면 그
+    시장에 현재 상장돼 있다"는 날짜 존재 여부 판정이라, 불확실한 한글 라벨 문자열 매칭보다 포맷
+    리스크가 훨씬 적음. 가격·시장을 각각 다른 TR로 조회(해서 호출 1회 늘지만, 이 함수 자체가
+    overlap_n<=30 상한 안에서만 호출돼 비용은 제한적)."""
+    px = None
     try:
         r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
                                   "appsecret": secret, "tr_id": "FHKST01010100"},
                          params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
         j = r.json()
-        if str(j.get("rt_cd", "")).strip() not in ("0", ""):
-            return None, None
-        o = j.get("output", {})
-        if isinstance(o, dict) and o:
-            return _to_int(o.get("stck_prpr")), (o.get("rprs_mrkt_kor_name") or "").strip()
+        if str(j.get("rt_cd", "")).strip() in ("0", ""):
+            o = j.get("output", {})
+            if isinstance(o, dict) and o:
+                px = _to_int(o.get("stck_prpr"))
     except Exception:
         pass
-    return None, None
+    market = None
+    try:
+        r2 = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/search-stock-info",
+                          headers={"authorization": f"Bearer {token}", "appkey": key,
+                                   "appsecret": secret, "tr_id": "CTPF1002R"},
+                          params={"prdt_type_cd": "300", "pdno": code}, timeout=6)
+        j2 = r2.json()
+        if str(j2.get("rt_cd", "")).strip() in ("0", ""):
+            o2 = j2.get("output") or {}
+            if isinstance(o2, dict) and o2:
+                _kosdaq_on = bool(o2.get("kosdaq_mket_lstg_dt")) and not o2.get("kosdaq_mket_lstg_abol_dt")
+                _kospi_on = bool(o2.get("scts_mket_lstg_dt")) and not o2.get("scts_mket_lstg_abol_dt")
+                if _kosdaq_on:
+                    market = "코스닥"
+                elif _kospi_on:
+                    market = "코스피"
+    except Exception:
+        pass
+    return px, market
 
 
 _ETF_TOP_N_CHOICES = (5, 10, 20, None)   # None = 전체 구성종목(지시서 4번 "분석 범위 선택")
