@@ -196,143 +196,13 @@ def _render_pick_chart(token, key, secret, code, name):
                "(일봉만 조회 가능해 틱 단위 매수·매도 체결량은 확인할 수 없습니다).")
 
 
-# ══════════════════════════════════════════
-# 🔐 다중 사용자 인증 (기존 그대로 유지)
-#
-# secrets.toml 설정 예시:
-#   [users.guy]
-#   password = "내비밀번호"
-# ※ 구버전 호환: [auth] password = "..." 도 계속 지원(단일 사용자 "default")
-# ══════════════════════════════════════════
-
-def _get_user_db() -> dict:
-    try:
-        _users_cfg = dict(st.secrets.get("users", {}))
-        if _users_cfg:
-            return {u: dict(v).get("password", "") for u, v in _users_cfg.items()}
-    except Exception:
-        pass
-    try:
-        _pw = st.secrets.get("auth", {}).get("password", "")
-        if _pw:
-            return {"default": _pw}
-    except Exception:
-        pass
-    return {}
-
-
-_AUTH_TOKEN_DAYS = 14
-
-
-def _make_auth_token(uid: str, pw: str) -> str:
-    import hmac, hashlib, base64, time
-    _exp = int(time.time()) + _AUTH_TOKEN_DAYS * 86400
-    _msg = f"{uid}.{_exp}"
-    _sig = hmac.new(pw.encode(), _msg.encode(), hashlib.sha256).hexdigest()[:32]
-    return base64.urlsafe_b64encode(f"{_msg}.{_sig}".encode()).decode()
-
-
-def _verify_auth_token(token: str, user_db: dict):
-    import hmac, hashlib, base64, time
-    try:
-        _raw = base64.urlsafe_b64decode(token.encode()).decode()
-        _uid, _exp, _sig = _raw.rsplit(".", 2)
-        if int(_exp) < int(time.time()):
-            return None
-        _pw = user_db.get(_uid, "")
-        if not _pw:
-            return None
-        _expect = hmac.new(_pw.encode(), f"{_uid}.{_exp}".encode(), hashlib.sha256).hexdigest()[:32]
-        if hmac.compare_digest(_sig, _expect):
-            return _uid
-    except Exception:
-        pass
-    return None
-
-
+# [V26.47] 사용자 요청 — 로그인(아이디·비번) 기능 전체 삭제. 이 대시보드 URL을 아는 사람은
+# 누구나 접근 가능해짐(계좌·API 키 자체는 노출 안 되지만 종배픽·실시간 스캔 결과 등은 누구나
+# 볼 수 있음 — 사용자가 이 영향을 확인하고 명시적으로 선택). 기존 로그인 인프라(_check_auth·
+# _get_user_db·토큰 발급/검증·Firebase 연동)를 통째로 제거. _current_username()만 다른 곳
+# (분석 저널 작성자 태그 등)에서 계속 참조해서 남겨둠 — 로그인이 없으니 항상 "default" 반환.
 def _current_username() -> str:
     return st.session_state.get("_username", "default") or "default"
-
-
-def _check_auth() -> bool:
-    if st.session_state.get("_auth_ok"):
-        return True
-    _user_db = _get_user_db()
-    if not _user_db:
-        st.session_state["_auth_ok"] = True
-        st.session_state["_username"] = "default"
-        return True
-    try:
-        _tok = st.query_params.get("t", "")
-    except Exception:
-        _tok = ""
-    if _tok:
-        _uid_ok = _verify_auth_token(_tok, _user_db)
-        if _uid_ok:
-            st.session_state["_auth_ok"] = True
-            st.session_state["_username"] = _uid_ok
-            return True
-    _is_multi = len(_user_db) > 1
-    st.markdown(
-        "<div style='text-align:center;margin:40px 0 8px'>"
-        "<div style='font-size:48px;margin-bottom:12px'>📊</div>"
-        "<div style='font-size:24px;font-weight:900;margin-bottom:6px'>퀀트 관제탑</div>"
-        "<div style='font-size:13px;color:#64748b;margin-bottom:20px'>접근 권한이 필요합니다</div>"
-        "</div>", unsafe_allow_html=True)
-    if _is_multi:
-        _inp_user = st.text_input("사용자 ID", placeholder="아이디를 입력하세요",
-                                   label_visibility="collapsed", key="_auth_user_input")
-    else:
-        _inp_user = list(_user_db.keys())[0]
-    _inp_pw = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요",
-                             label_visibility="collapsed", key="_auth_pw_input")
-    if st.button("🔓 입장", use_container_width=True, type="primary", key="_auth_login_btn"):
-        _uid = _inp_user.strip().lower() if _inp_user else ""
-        _expected_pw = _user_db.get(_uid, "")
-        if _uid and _expected_pw and _inp_pw == _expected_pw:
-            st.session_state["_auth_ok"] = True
-            st.session_state["_username"] = _uid
-            try:
-                st.query_params["t"] = _make_auth_token(_uid, _expected_pw)
-            except Exception:
-                pass
-            st.rerun()
-        elif not _uid:
-            st.error("❌ 사용자 ID를 입력하세요.")
-        else:
-            st.error("❌ ID 또는 비밀번호가 틀렸습니다.")
-    st.stop()
-    return False
-
-
-_check_auth()
-
-
-# ══════════════════════════════════════════
-# Firebase (로그인 인프라 유지 — 그 외 용도는 사용 안 함)
-# ══════════════════════════════════════════
-try:
-    import firebase_admin
-    from firebase_admin import credentials as fb_credentials
-except Exception:
-    firebase_admin = None
-
-
-@st.cache_resource(show_spinner=False)
-def _get_firebase_app():
-    if firebase_admin is None:
-        return None
-    try:
-        if not firebase_admin._apps:
-            _fb_cfg = st.secrets.get("firebase")
-            _fb_conf = st.secrets.get("firebase_config")
-            if not _fb_cfg or not _fb_conf or not (_fb_conf.get("database_url") if hasattr(_fb_conf, "get") else None):
-                return None
-            firebase_admin.initialize_app(fb_credentials.Certificate(dict(_fb_cfg)),
-                                           {"databaseURL": _fb_conf["database_url"]})
-        return firebase_admin.get_app()
-    except Exception:
-        return None
 
 
 # ══════════════════════════════════════════
@@ -518,15 +388,6 @@ with st.sidebar:
                 st.caption(f"외인 {_frn*_px/1e8:+.0f}억 · 기관 {_org*_px/1e8:+.0f}억 {_icon}")
     else:
         st.caption("KIS 키 없음 — 수급 조회 불가")
-    st.divider()
-    st.caption(f"👤 {_current_username()}")
-    if st.button("로그아웃", use_container_width=True):
-        st.session_state.clear()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
 
 
 st.title("📊 퀀트 관제탑")
@@ -1958,16 +1819,6 @@ def render_settings():
             st.info("상태 파일도 GitHub 스냅샷도 확인 못 했습니다 — 감시가 꺼져 있거나, "
                     "GITHUB_TOKEN(로컬 run_gui.bat)·[github] token(클라우드 secrets) 설정이 안 되어 "
                     "있을 수 있습니다.")
-
-    st.subheader("👤 계정")
-    st.markdown(f"로그인: **{_current_username()}**")
-    if st.button("로그아웃", key="settings_logout"):
-        st.session_state.clear()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
 
 
 # ══════════════════════════════════════════
