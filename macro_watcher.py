@@ -5984,17 +5984,11 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         if not nxt_px or not nxt_turn or not nxt_vol or nxt_turn < _NXT_MIN_TURN:  # 50억 미달은 노이즈로 컷
             continue
         _ratio = nxt_vol / krx_vol
-        # [V26.46] 사용자 제보 — "거래대금×괴리율×수급 통합" 표의 "괴리율(%)"이 (NXT가/KRX가-1)
-        # 처럼 가격 괴리율로 계산돼 있었는데, 사용자는 이 표 제목을 보고 "거래대금의 괴리율"로
-        # 기대하고 있었음("갑자기 왜 가격에 대한 괴리율을 보여주는거지?"). 가격 괴리율은 애초에
-        # V26.5 때 증권사 MTS의 'KRX/NXT 괴리율 순위' 화면을 본떠 만든 것이었으나, 사용자가
-        # 명시적으로 "거래대금 기준으로 교체"를 선택 — NXT 거래대금이 KRX 거래대금 대비 몇 %
-        # 많은지/적은지로 바꿈. KRX·NXT 두 시장은 같은 종목을 거래하는 서로 다른 거래 창구라
-        # 가격은 차익거래로 거의 항상 비슷하게 묶여있어(그래서 가격 괴리율은 항상 0%에 가까웠음)
-        # 실제로 의미 있는 건 거래대금(자금) 쏠림 쪽이라는 점도 이 교체를 뒷받침함. KRX거래대금
-        # (_kturn)은 원래도 _price_turnover_vol로 조회는 해놓고 안 쓰고 버리고 있던 값이라
-        # API 호출 추가 없이 바로 씀.
-        _disp = round((nxt_turn / _kturn - 1) * 100, 2) if _kturn else None
+        # [V26.51] 사용자 지적 — "우리는 거래대금괴리율이 필요한게 아니야 거래량비율이 필요한거야".
+        # V26.46에서 가격 기준 괴리율을 거래대금 기준으로 바꿨었으나, 선정 기준은 처음부터
+        # 거래량비율(_ratio) 하나뿐이고 이 괴리율은 순위에 전혀 안 쓰이는 참고용 컬럼이라 사용자가
+        # 혼란만 준다고 판단해 완전히 삭제 — disparity_pct 계산·저장 자체를 제거. KRX거래대금
+        # (_kturn)은 NXT거래대금과 나란히 비교해보는 원시 수치로는 여전히 쓸모 있어 그대로 유지.
         # [V26.14] 사용자 제안 — "거래량비율만으로는 소형주가 유리하고, 삼성전기처럼 거래량비율은
         # 낮아도 절대 거래대금이 큰 종목을 놓친다"는 지적 반영. NXT 애프터거래대금을 절대금액이
         # 아니라 '그 종목 평소(최근 20일 평균) 정규장 거래대금 대비 몇 %인가'로도 같이 보여줘서,
@@ -6004,7 +5998,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _turnavg = (_ds or {}).get("turnavg") or 0
         _avg_turn_ratio = round(nxt_turn / _turnavg, 3) if _turnavg else None
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
-                          "disparity_pct": _disp, "krx_turn": _kturn, "krx_vol": krx_vol,
+                          "krx_turn": _kturn, "krx_vol": krx_vol,
                           "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
                           "avg_turn_ratio": _avg_turn_ratio, "chg": _kchg,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
@@ -8289,6 +8283,7 @@ def main():
                 "kospi_fut": None,                    # 코스피200 선물 실측(주간/야간 세션·KIS)
                 "nxt_after": [],                      # 넥장(넥스트레이드 야간 16~20시) 급등 타점
                 "nxt_premium_pick": [],                # 대체종배(NXT거래량/정규장 당일거래량 비율 압도 종목)
+                "etf_overlap": None,                   # [사용자 요청] 상위 ETF 구성종목 겹침 분석(코스피/코스닥)
             }
             # 시장 전체(코스피) 기관·외인 전환 알림 — 네이버 소스(KIS 무관, 정규장만)
             try:
@@ -8577,11 +8572,40 @@ def main():
                     except Exception as _nxe:
                         print("넥장 체크 오류:", _nxe)
                     # 대체종배(NXT거래량이 당일 정규장 거래량을 압도한 종목) — 넥장 후반(18~19:50) 1회
+                    _today_str = now.strftime("%Y%m%d")
                     try:
-                        snap["nxt_premium_pick"] = check_nxt_premium_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
-                                                                          gemini_key=gemini_key)
+                        _npp_live = check_nxt_premium_pick(tok, kis_key, kis_secret, now, st, token_tg, chat_id, sev,
+                                                            gemini_key=gemini_key)
+                        # [사용자 요청] 실전속보(live_dashboard.html)에 매도율·NXT가격위치(CLV)를
+                        # 보여달라는 요청 — check_nxt_premium_pick은 당일 첫 호출(18:00~19:50 윈도)
+                        # 때만 실제 값을 반환하고 그 이후 같은 날의 모든 루프는 당일락으로 []를
+                        # 돌려줌. snap을 그대로 덮으면 계산 직후 몇 분만 반짝 보이고 그날 저녁
+                        # 내내·다음날 아침까지 빈 카드로 보임 — st(영속 상태, macro_watcher_state.
+                        # json)에 당일 결과를 캐싱해 그날 안에는 계속 마지막 값을 보여주게 함.
+                        if _npp_live:
+                            st["nxt_premium_pick_cache"] = {"date": _today_str, "items": _npp_live}
+                        _npp_cache = st.get("nxt_premium_pick_cache") or {}
+                        snap["nxt_premium_pick"] = (_npp_cache.get("items") or []
+                                                     if _npp_cache.get("date") == _today_str else [])
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
+                    # [사용자 요청] 실전속보에 ETF 겹침 분석(코스피·코스닥 상위 ETF 구성종목 교집합)도
+                    # 같이 보여달라는 요청 — ETF 구성종목은 실시간성이 필요 없고(하루 중 거의 안
+                    # 바뀜) 코스피·코스닥 각 10종 구성종목 조회+겹침 상위 수급 조회라 비용이 커서
+                    # (최대 약 60~70회 KIS 호출), 대체종배와 같은 저녁 시간대에 하루 1회만 계산하고
+                    # 역시 st에 캐싱해 그날 내내 마지막 값을 보여줌.
+                    try:
+                        if (_NXT_PREM_START <= (now.hour * 60 + now.minute) <= _NXT_PREM_END
+                                and st.get("etf_overlap_day") != _today_str):
+                            snap["etf_overlap"] = {"KOSPI": etf_overlap_scan(tok, kis_key, kis_secret, market="KOSPI"),
+                                                    "KOSDAQ": etf_overlap_scan(tok, kis_key, kis_secret, market="KOSDAQ")}
+                            st["etf_overlap_day"] = _today_str
+                            st["etf_overlap_cache"] = snap["etf_overlap"]
+                        else:
+                            snap["etf_overlap"] = (st.get("etf_overlap_cache")
+                                                    if st.get("etf_overlap_day") == _today_str else None)
+                    except Exception as _eoe:
+                        print("ETF 겹침분석 오류:", _eoe)
                     # [V26.15] 수급상위 — 키움 파워맵(유료) 대체용, 거래대금 상위 종목 외국인/기관 순매수 랭킹
                     try:
                         snap["investor_flow_rank"] = check_investor_flow_rank(tok, kis_key, kis_secret, now, st)
