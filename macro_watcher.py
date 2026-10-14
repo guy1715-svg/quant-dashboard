@@ -2963,6 +2963,18 @@ def _fmt_news_dt(dt):
     return dt.strftime("%m/%d %H:%M")
 
 
+_IMG_URL_KEY_HINT = ("img", "image", "thumb", "photo", "picture", "banner", "logo")
+_IMG_URL_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg")
+
+
+def _is_probable_image_url(key, value):
+    """[7.111] 넓게 찾은 URL 후보 중 썸네일·이미지로 보이는 것 제외용(키 이름에 img/image/
+    thumb 등이 들어있거나, 경로가 이미지 확장자로 끝나면 이미지로 간주)."""
+    if any(h in key.lower() for h in _IMG_URL_KEY_HINT):
+        return True
+    return value.split("?")[0].lower().endswith(_IMG_URL_EXT)
+
+
 def _split_news_urls(urls):
     """[지시서 3번] 수집된 URL 후보들(API가 실제로 준 값 그대로 — 생성·추정 없음)을 네이버
     도메인 여부로 원문(original_url)/네이버(portal_url) 구분. http/https 스킴만 인정, 그 외
@@ -3008,11 +3020,20 @@ def _classify_news_relevance(title, name):
         return "직접", _ev
     if _surge_hit and not _direct_hit:
         return "등락보도", f"가격 움직임 서술('{_surge_hit}') — 원재료 미언급"
-    if _has_sector_mark or _has_buzz_theme or _direct_hit:
+    # [7.111] 사용자 실측 제보 — 대한제강(철강)에 반도체 소부장 기사가 "업종"으로 잘못 떠서
+    # 실제 관련 기사(알래스카 LNG)보다 위에 노출됨. 원인: _has_buzz_theme가 종목 고유성 검증
+    # 없이(제목에 종목명도 없는데) 아무 테마 키워드나 매치되면 바로 "업종"으로 승격시켰음
+    # (_BUZZ_THEMES는 원래 저녁뉴스 "오늘 전체 시장이 떠든 테마"용 딕셔너리라, 이 종목과 무관한
+    # 산업 기사에도 흔히 매치됨 — 지시서 2번이 경고한 "검색 결과에 종목명이 잡혀도 실제 본문은
+    # 다른 종목·전체 시장 기사일 수 있음"이 그대로 재현된 사례). 테마 키워드 단독 매치는 더 이상
+    # "업종" 근거로 인정하지 않고, 종목명이 제목에 있을 때만(=이 테마가 실제로 이 종목 얘기와
+    # 같이 등장) 인정 — 명시적 그룹핑 표현(관련주/테마주 등)이나 직접 키워드는 종목명 없이도 그대로 인정.
+    if _has_sector_mark or _direct_hit or (_has_buzz_theme and _name_in):
         return "업종", "업종·테마 그룹 언급(종목 자신이 당사자로 직접 언급되진 않음)"
     if any(k in title for k in _NEWS_MARKET_WIDE_KW):
         return "시황", "전체 시장 시황 키워드(코스피/환율/금리 등)"
-    return "낮은관련성", ("종목명 언급은 있으나 직접 재료 키워드 없음" if _name_in else "종목명이 제목에 없음·관련성 약함")
+    return "낮은관련성", ("종목명 언급은 있으나 직접 재료 키워드 없음" if _name_in
+                       else "종목명이 제목에 없고 명시적 그룹핑 표현도 없음 — 다른 종목·산업 기사일 가능성")
 
 
 def _classify_news_direction(title, relevance_type):
@@ -3086,13 +3107,18 @@ def _news_sort_key(a):
 
 
 def _today_theme_tags(articles):
-    """[지시서 9번] 당일 연관 테마("뉴스상 연관 테마") — 이 종목의 오늘 수집 기사 제목에서
-    _BUZZ_THEMES(화제성 랭킹에 쓰는 테마 키워드 그룹, _topic_buzz와 동일 딕셔너리 재사용)와
-    겹치는 테마만 추출. 확인된 사업분류가 아니라 '오늘 뉴스 제목에 등장한 테마어'일 뿐이므로
-    라벨은 항상 "뉴스상 연관 테마"로 고정(공식 사업 태그와 혼동 안 되게)."""
-    if not articles:
+    """[지시서 9번] 당일 연관 테마("뉴스상 연관 테마") — 이 종목의 수집 기사 중 관련성 분류를
+    이미 통과한("직접"/"업종") 기사의 제목에서만 _BUZZ_THEMES(화제성 랭킹에 쓰는 테마 키워드
+    그룹, _topic_buzz와 동일 딕셔너리 재사용)와 겹치는 테마를 추출. [7.111] 원래는 수집된
+    모든 기사 제목을 그대로 스캔했는데, 이 종목과 무관한 기사(예: 반도체 산업 기사가 철강
+    종목 쿼리에 섞여 들어온 경우)의 테마 키워드까지 "당일 연관 테마"로 잘못 노출되는 문제가
+    실측으로 확인돼(대한제강 카드에 "반도체/AI" 표시) — 관련성 필터를 먼저 거치게 함. 확인된
+    사업분류가 아니라 '관련 기사 제목에 등장한 테마어'일 뿐이므로 라벨은 항상 "뉴스상 연관
+    테마"로 고정(공식 사업 태그와 혼동 안 되게)."""
+    _relevant = [a for a in articles if a.get("relevance_type") in ("직접", "업종")]
+    if not _relevant:
         return []
-    _blob = " ".join(a["headline"] for a in articles)
+    _blob = " ".join(a["headline"] for a in _relevant)
     return [theme for theme, kws in _BUZZ_THEMES.items() if any(kw in _blob for kw in kws)]
 
 
@@ -3145,6 +3171,15 @@ def _stock_news_detail(code, name, n=10):
                     _src = next((o[sk] for sk in _NEWS_SOURCE_KEYS
                                 if isinstance(o.get(sk), str) and 0 < len(o[sk]) <= 20), None)
                     _urls = [o[uk] for uk in _NEWS_URL_KEYS if isinstance(o.get(uk), str) and o[uk]]
+                    # [7.111] 사용자 실측 — 고정 후보 키 목록으로는 URL을 하나도 못 찾는 게
+                    # 확인됨(실제 라이브 응답에 어떤 필드가 오는지 이 샌드박스에서 끝까지 검증은
+                    # 못 함). 키 이름을 더 추측하는 대신, 이 dict 안의 모든 값 중 http(s)로
+                    # 시작하는 문자열이면 키 이름과 무관하게 후보로 잡음(썸네일/이미지로 보이는
+                    # 것만 제외) — 그래도 하나도 안 잡히면 여전히 "링크 미확인"으로 정직하게 둠.
+                    for _k2, _v2 in o.items():
+                        if (isinstance(_v2, str) and _v2.startswith(("http://", "https://"))
+                                and _v2 not in _urls and not _is_probable_image_url(_k2, _v2)):
+                            _urls.append(_v2)
                     raw.append({"title": _title, "date_raw": _date_raw, "source": _src, "urls": _urls,
                                "office_id": o.get("officeId"), "article_id": o.get("articleId")})
                 for v in o.values():
