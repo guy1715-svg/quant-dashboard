@@ -97,6 +97,19 @@
   .ace .n{font-weight:800;font-size:14px}.ace .s{font-size:11px;color:var(--sec)}
   .ace .a{font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--gold)}
   .empty{color:var(--dim);font-size:12px;padding:6px 0}
+  /* ── 대체종배(매도율·NXT가격위치) / ETF 겹침 — 사용자 요청으로 신규 추가 ── */
+  .npp{display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:8px;margin-bottom:2px;flex-wrap:wrap}
+  .npp .nm{flex:0 0 auto;font-weight:800;font-size:13px;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .npp .mid{flex:1;min-width:120px;font-size:11.5px;color:var(--sec);display:flex;gap:8px;flex-wrap:wrap}
+  .npp .clv{flex:0 0 72px;height:7px;border-radius:5px;background:rgba(255,255,255,0.08);position:relative;overflow:hidden}
+  .npp .clv > i{position:absolute;top:0;bottom:0;left:0;border-radius:5px}
+  .npp .clvv{flex:0 0 34px;font-size:11px;font-weight:800;text-align:right;font-variant-numeric:tabular-nums}
+  .subhd{font-size:10.5px;font-weight:800;color:var(--dim);margin:8px 0 4px;letter-spacing:0.03em}
+  .subhd:first-child{margin-top:0}
+  .etfov{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:5px 6px;font-size:12.5px}
+  .etfov .n{font-weight:800}
+  .etfov .c{color:var(--sec);font-size:11px}
+  .etfov .k{flex:0 0 22px;text-align:center;font-weight:900;color:var(--gold)}
   .stale{background:rgba(242,85,90,0.12);border:1px solid rgba(242,85,90,0.4);color:#fca5a5;
     border-radius:11px;padding:10px 13px;font-size:12px;font-weight:700;margin-bottom:11px;display:none}
   /* ── ② 색상 범례 ── */
@@ -173,6 +186,20 @@
       <div class="card" id="aceWrap">
         <div class="lbl">A급 종목 · 자금유입 × 연기금</div>
         <div id="ace"><div class="empty">데이터 대기…</div></div>
+      </div>
+      <!-- [사용자 요청] 대체종배 매도율·NXT가격위치(CLV) 카드 신규 — 18:00~19:50 넥장 후반
+           1회만 계산돼 들어오고(macro_watcher.py 쪽에서 당일 내내 캐시해 보여줌), 그 전엔
+           카드 자체를 숨김(display:none) — "데이터 없음"보다 아예 안 보이는 게 덜 혼란스러움. -->
+      <div class="card" id="nppCard" style="display:none">
+        <div class="lbl">대체종배 후보 · 매도율 · NXT가격위치(CLV)</div>
+        <div id="npp"></div>
+        <div class="empty" style="margin-top:2px">매도율=매도÷매수거래량(낮을수록 깨끗한 매수) · CLV=NXT 세션 고가·저가 중 위치(50%↑면 상승압력) · 둘 다 참고용 추정치</div>
+      </div>
+      <!-- [사용자 요청] ETF 겹침 분석(코스피/코스닥 상위 ETF 구성종목 교집합) 카드 신규 —
+           대체종배와 같은 시간대 1회 계산, 역시 당일 캐시. -->
+      <div class="card" id="etfCard" style="display:none">
+        <div class="lbl">ETF 겹침 분석 · 코스피 · 코스닥</div>
+        <div id="etfov"></div>
       </div>
     </div>
   </div>
@@ -334,6 +361,42 @@
       ace.innerHTML=d.ace.map(function(a){ return '<div class="ace"><div><div class="n">'+a.name+'</div>'
         +'<div class="s">'+a.sector+' · '+a.code+'</div></div><div class="a">'+eok(a.amt_eok)+'</div></div>'; }).join("");
     } else ace.innerHTML='<div class="empty">현재 겹침 종목 없음 (유입×연기금)</div>';
+
+    // [사용자 요청] 대체종배 후보 · 매도율 · NXT가격위치(CLV) — 넥장 후반(18:00~19:50) 1회
+    // 계산된 값을 그날 내내 캐시해서 받음(macro_watcher.py 쪽 처리). 점수 내림차순 상위 5종만
+    // 간단히 보여줌(속보판은 한눈에 훑어보는 용도라 전체 15종까지는 과함 — 전체는 Streamlit).
+    var nppCard=document.getElementById("nppCard");
+    if(d.nxt_premium_pick&&d.nxt_premium_pick.length){
+      var _npp=d.nxt_premium_pick.slice().sort(function(a,b){return (b.score||0)-(a.score||0);}).slice(0,5);
+      document.getElementById("npp").innerHTML=_npp.map(function(r){
+        var sr=[]; if(r.sell_ratio_frgn!=null) sr.push("외"+Math.round(r.sell_ratio_frgn)+"%");
+        if(r.sell_ratio_orgn!=null) sr.push("기"+Math.round(r.sell_ratio_orgn)+"%");
+        var srTxt=sr.length?sr.join("·"):"매도율 —";
+        var clv=r.nxt_buy_pct, clvTxt=clv!=null?Math.round(clv)+"%":"—";
+        var clvCol=clv==null?"var(--sec)":clv>=50?"var(--up)":"var(--down)";
+        var clvBar=clv!=null?'<div class="clv"><i style="width:'+clv+'%;background:'+clvCol+'"></i></div>':"";
+        return '<div class="npp"><div class="nm" title="'+r.name+'">'+r.name+'</div>'
+          +'<div class="mid"><span>거래량비율 '+(r.ratio||0).toFixed(1)+'배</span><span>'+srTxt+'</span></div>'
+          +clvBar+'<div class="clvv" style="color:'+clvCol+'">'+clvTxt+'</div></div>';
+      }).join("");
+      nppCard.style.display="block";
+    } else nppCard.style.display="none";
+
+    // [사용자 요청] ETF 겹침 분석(코스피/코스닥 상위 ETF 구성종목 교집합) — 역시 넥장 후반 1회
+    // 계산 후 당일 캐시. 각 시장 상위 3종만 보여줌.
+    var etfCard=document.getElementById("etfCard"), etfBody="";
+    ["KOSPI","KOSDAQ"].forEach(function(mk){
+      var mkData=d.etf_overlap&&d.etf_overlap[mk], ov=mkData&&mkData.overlap;
+      if(ov&&ov.length){
+        etfBody+='<div class="subhd">'+(mk==="KOSPI"?"🔵 코스피":"🟢 코스닥")+'</div>';
+        etfBody+=ov.slice(0,3).map(function(o){
+          return '<div class="etfov"><div class="k">'+o.count+'</div><div class="n">'+o.name+'</div>'
+            +'<div class="c">'+(o.etfs||[]).slice(0,2).join(", ")+'</div></div>';
+        }).join("");
+      }
+    });
+    if(etfBody){ document.getElementById("etfov").innerHTML=etfBody; etfCard.style.display="block"; }
+    else etfCard.style.display="none";
 
     // 신선도 + 푸터
     var mins=d.updated_ts?(Date.now()/1000-d.updated_ts)/60:999;
