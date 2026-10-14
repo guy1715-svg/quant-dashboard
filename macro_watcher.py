@@ -2995,49 +2995,58 @@ def _lineup_plus_turnover(token, key, secret, lineup, top=40):
     return _out
 
 
-_KOSDAQ_ETF_KW = ("코스닥", "KOSDAQ")   # [V26.45] ETF 이름으로 코스피/코스닥 계열 추정용 키워드
+# [V26.52] 사용자 지시서 — "ETF별 편입 비중 상위 10종목 기준"으로 분석 범위 재설계. 핵심 변경:
+#   ① ETF '선정'(어떤 ETF를 볼지)은 더 이상 코스피/코스닥으로 나누지 않고 거래대금 상위 하나의
+#      풀에서 뽑음("코스피 10개+코스닥 10개를 각각 추출하지 말 것" 요구사항).
+#   ② 대신 각 ETF '내부'에서 편입 비중 상위 N종목만 집계 대상으로 삼음(비중 많은 ETF의 꼬리
+#      소액 종목까지 전부 집계돼 중복이 과대 집계되는 문제 방지 — 지시서의 핵심 동기).
+#   ③ 종목코드 기준 중복 집계까지 끝낸 뒤, 마지막에 그 결과를 종목 자신의 상장시장(코스피/
+#      코스닥)별로 나눠서 보여줌(ETF 선정 단계가 아니라 결과 표시 단계에서 시장 분리).
+_ETF_OPERATOR_BY_BRAND = {
+    # [사용자 확인] KIS API엔 운용사 메타데이터가 없어 공개적으로 잘 알려진 ETF 브랜드→운용사
+    # 매핑으로 대체하기로 확정(사용자가 "상품명 그대로"를 테마·전략 칸에, 운용사는 브랜드
+    # 매핑으로 채우는 방향에 동의). 확신이 낮은 브랜드(KoAct=복수 운용사 공용 브랜드 등)는
+    # 틀린 정보를 주느니 아예 빼고 "미상"으로 둠 — 잘 알려진 주요 브랜드만 포함.
+    "KODEX": "삼성자산운용", "TIGER": "미래에셋자산운용", "KBSTAR": "KB자산운용",
+    "ACE": "한국투자신탁운용", "SOL": "신한자산운용", "RISE": "NH-아문디자산운용",
+    "HANARO": "NH-아문디자산운용", "PLUS": "한화자산운용", "WON": "우리자산운용",
+    "KIWOOM": "키움투자자산운용", "BNK": "BNK자산운용", "TIMEFOLIO": "타임폴리오자산운용",
+}
 
 
-def _etf_market_tag(name):
-    """[V26.45] 사용자 제보 — "코스닥/코스피로 나눠야될듯". 거래대금 전체 1등 랭킹만 뽑으면
-    코스피200 추종 상품(KODEX 200·KODEX 레버리지·TIGER 200 등 절대 거래대금이 압도적으로 큼)이
-    상위 10종을 거의 다 차지해 코스닥 ETF는 '코스닥150' 하나 정도만 겨우 10위 근처에 끼는
-    수준이었음(실측: 10종 중 9종이 코스피/해외지수/합성형, 코스닥 키워드 ETF는 1종뿐). 그 결과
-    "겹치는 종목" 집계도 사실상 코스피200 상위 종목 재탕이 되어버려 의미가 희석됨 — 이름에
-    '코스닥'/'KOSDAQ'이 들어가면 코스닥 계열로, 그 외는 코스피 계열로 분류(해외지수·합성형처럼
-    둘 다 아닌 상품도 코스피 쪽으로 묶이는 단순화이지만, '코스닥이 전체 랭킹에 묻힌다'는 지적을
-    해소하는 데는 이 정도 키워드 분류로 충분함 — 기존 _EARLY_ETF_KW·_NEWS_*_KW와 같은 방식)."""
-    return "KOSDAQ" if any(k in str(name) for k in _KOSDAQ_ETF_KW) else "KOSPI"
+def _etf_operator(name):
+    """ETF 이름 맨 앞 브랜드 토큰으로 운용사 추정(_ETF_OPERATOR_BY_BRAND). 확신 없는 브랜드나
+    매핑에 없는 경우 "미상"(추측해서 틀린 정보를 주지 않음)."""
+    _first = str(name).strip().split()[0] if str(name).strip() else ""
+    return _ETF_OPERATOR_BY_BRAND.get(_first, "미상")
 
 
-def _etf_top_by_turnover(token, key, secret, n=10, scan_top=150, market=None):
-    """[사용자 요청] 당일 거래대금 상위 ETF n종 — 별도 'ETF 랭킹' API 대신, 이미 있는 거래대금
-    상위 API(_volume_rank)를 그대로 재사용해 ETF 브랜드 키워드(_EARLY_ETF_KW)로 걸러냄. 이
-    키워드는 기존에 16곳에서 ETF를 스캔 대상에서 '제외'하는 용도로만 쓰였는데, 여기서는 반대로
-    '포함'만 추려내는 용도로 재사용. _volume_rank가 이미 거래대금 내림차순으로 주지만, 필터링
-    후에도 순서가 보장되도록 재정렬함. market="KOSPI"/"KOSDAQ"로 주면 _etf_market_tag로 그
-    계열만 추려서 순위를 다시 매김(코스닥 ETF가 전체 혼합 랭킹에 묻히는 문제 대응 — V26.45).
-    [{"code","name","turnover","px","chg"}] 상위 n종."""
+def _etf_universe(token, key, secret, n=30, scan_top=200):
+    """[V26.52] 거래대금 상위 ETF n종 — 코스피/코스닥 구분 없는 단일 풀(지시서: "코스피 10개+
+    코스닥 10개를 각각 추출하지 말 것"). 기존 _EARLY_ETF_KW(16곳에서 ETF '제외' 용도로 쓰이던
+    키워드)를 거꾸로 '포함' 필터로 재사용 — 새 엔드포인트 불필요.
+    '적격 국내 주식형 ETF만 선정'(지시서 2번 1단계)은 여기서 이름 키워드로 미리 추측해 거르지
+    않고, 다음 단계(_etf_component_stocks)가 실제로 비중 있는 구성종목을 주는지로 사후 판정함
+    — 인버스·레버리지선물·해외지수·합성형 ETF는 이 TR 자체가 빈 응답을 주는 것으로 7.100에서
+    이미 실측 확인됐고, 이름 키워드 추측보다 훨씬 신뢰할 수 있는 판정 방식이기 때문."""
     rows = _volume_rank(token, key, secret, top=scan_top)
     etfs = [r for r in rows if any(k in str(r["name"]) for k in _EARLY_ETF_KW)]
-    if market:
-        etfs = [r for r in etfs if _etf_market_tag(r["name"]) == market]
     etfs.sort(key=lambda r: r["turnover"], reverse=True)
     return etfs[:n]
 
 
 def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
-    """[사용자 요청] ETF 구성종목(PDF, Portfolio Deposit File) 코드·종목명 — 공식 KIS
-    inquire-component-stock-price(FHKST121600C0), 한국투자 HTS [0245] 'ETF/ETN 구성종목시세'
-    화면과 동일 데이터(공식 예제 저장소 koreainvestment/open-trading-api로 필드명 확인 —
-    stck_shrn_iscd=종목코드, hts_kor_isnm=종목명. 둘 다 이 코드베이스 다른 TR에서도 쓰는
-    표준 필드명). 반환: [{"code","name"}]. _diag=True면 _investor_daily와 같은 패턴으로
-    (rows, reason) 튜플을 줘서 rt_cd 에러/빈 응답(raw 건수까지)/예외를 구분할 수 있게 함
-    — 실전에서 "ETF 10종 중 3종만 구성종목이 잡힘" 제보가 들어와(7.99 직후), 원인이 ①인버스·
-    레버리지·합성형처럼 애초에 종목 단위 PDF가 없는 상품 구조 때문인지, ②이 TR 자체의
-    레이트리밋에 걸린 것인지 구분할 증거가 필요해서 추가(_volume_rank가 과거 페이지네이션
-    레이트리밋 문제를 겪었던 선례가 있어 이쪽도 의심됨 — 아래 etf_overlap_scan의 호출 간
-    time.sleep 추가와 짝을 이루는 진단 장치)."""
+    """ETF 구성종목(PDF) 코드·종목명·편입비중 — 공식 KIS inquire-component-stock-price
+    (FHKST121600C0), 한국투자 HTS [0245] 'ETF/ETN 구성종목시세' 화면과 동일 데이터.
+    [V26.52] 지시서("ETF별 편입 비중 상위 10종목 기준") 대응 — 비중 필드(etf_cnfg_issu_rlim)를
+    새로 추출. 이 필드명은 7.99 때 그 예제 파일의 COLUMN_MAPPING 딕셔너리 전체가 한 칸씩
+    밀려있어 신뢰 못 하겠다고 판단해 일부러 안 썼었으나, 재검토 결과 stck_shrn_iscd부터
+    끝까지(이 필드 포함)는 이 코드베이스 다른 TR에서 이미 검증된 표준 필드명(acml_vol·
+    acml_tr_pbmn·hts_avls 등)과 정확히 일치하는 자기일관적 구간이고 앞부분만 밀려있던 것으로
+    재확인 — 그래도 틀렸을 가능성에 대비해 _diag로 "비중 결측" 여부가 바로 드러나게 함.
+    동일 ETF 내 동일 종목코드 중복 행은 비중을 합산해 하나로 정리(지시서 2번 3단계).
+    반환: [{"code","name","weight"}] (weight: float% 또는 None), 비중 내림차순·동률은
+    종목코드 오름차순 정렬(지시서 7번 — 동점 처리 재현 가능하게)."""
     try:
         r = requests.get(f"{KIS_BASE}/uapi/etfetn/v1/quotations/inquire-component-stock-price",
                          headers={"authorization": f"Bearer {token}", "appkey": key,
@@ -3050,14 +3059,31 @@ def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
             reason = f"rt_cd={j.get('rt_cd')} msg={j.get('msg1')}"
             return ([], reason) if _diag else []
         out2 = j.get("output2") or []
-        rows = []
+        _by_code = {}
         for x in out2:
             if not isinstance(x, dict):
                 continue
             cd = str(x.get("stck_shrn_iscd", "")).zfill(6)
             nm = x.get("hts_kor_isnm", "")
-            if cd.isdigit() and len(cd) == 6 and nm:
-                rows.append({"code": cd, "name": nm})
+            if not (cd.isdigit() and len(cd) == 6 and nm):
+                continue
+            w = None
+            _wraw = x.get("etf_cnfg_issu_rlim")
+            if _wraw not in (None, ""):
+                try:
+                    w = float(str(_wraw).replace(",", ""))
+                except Exception:
+                    w = None
+            if cd in _by_code:
+                _prev = _by_code[cd]
+                _wsum = None
+                if _prev["weight"] is not None or w is not None:
+                    _wsum = (_prev["weight"] or 0) + (w or 0)
+                _by_code[cd] = {"code": cd, "name": nm, "weight": _wsum}
+            else:
+                _by_code[cd] = {"code": cd, "name": nm, "weight": w}
+        rows = list(_by_code.values())
+        rows.sort(key=lambda row: (-(row["weight"] if row["weight"] is not None else -1), row["code"]))
         if rows:
             reason = None
         elif out2:
@@ -3069,52 +3095,146 @@ def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
         return ([], f"exception: {e}") if _diag else []
 
 
-def etf_overlap_scan(token, key, secret, etf_n=10, overlap_n=10, market=None):
-    """[사용자 요청] "종배 탭에서 상위 ETF 10종목 구성종목을 겹쳐서 1~10위 공통종목을 보고,
-    그 종목들 수급현황도 같이 보고싶다" + (V26.45) "코스닥/코스피로 나눠야될듯" — 거래대금 상위
-    ETF etf_n종(_etf_top_by_turnover, market으로 코스피/코스닥 계열 한정 가능)의 구성종목
-    (_etf_component_stocks)을 모아 종목별로 몇 개 ETF에 들어있는지 집계하고, 겹치는 ETF 개수
-    내림차순 상위 overlap_n종에 대해 현재가·외국인/기관 당일 추정 순매수를 추가 조회
-    (check_investor_flow_rank와 동일 공식 — _price_full의 현재가 × _investor_est의 추정
-    순매수 수량 ÷ 1억). ETF별 호출 사이에 _volume_rank 페이지네이션과 같은 레이트리밋 배려용
-    짧은 지연을 둠(실전에서 10종 중 뒤쪽 7종이 전부 구성종목 0건으로 나온 제보가 있어, 상품
-    구조 때문인지 레이트리밋 때문인지 구분하려고 _etf_component_stocks의 _diag도 같이 수집).
-    반환: {"etfs": [...], "overlap": [{"code","name","count","etfs","px","foreign_eok",
-    "inst_eok"}, ...], "etf_diag": [{"code","name","holdings_count","reason"}, ...]}.
-    ETF 랭킹 조회가 비면 전부 빈 리스트로 반환(구성종목 개별 조회가 실패한 ETF는 건너뛰고
-    나머지로 계속 집계함)."""
-    etfs = _etf_top_by_turnover(token, key, secret, n=etf_n, market=market)
+def _price_and_market(token, key, secret, code):
+    """현재가 + 상장시장 한글명(코스피/코스닥 등) — inquire-price(_price_full과 동일 TR)
+    한 번으로 같이 뽑음. rprs_mrkt_kor_name 필드를 추가로 보는 것뿐이라, 기존 _price_full
+    호출부 9곳의 반환값 개수(튜플 길이)를 안 건드리려고 별도 함수로 분리. 실패 시 (None, None)."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST01010100"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}, timeout=6)
+        j = r.json()
+        if str(j.get("rt_cd", "")).strip() not in ("0", ""):
+            return None, None
+        o = j.get("output", {})
+        if isinstance(o, dict) and o:
+            return _to_int(o.get("stck_prpr")), (o.get("rprs_mrkt_kor_name") or "").strip()
+    except Exception:
+        pass
+    return None, None
+
+
+_ETF_TOP_N_CHOICES = (5, 10, 20, None)   # None = 전체 구성종목(지시서 4번 "분석 범위 선택")
+
+
+def etf_raw_scan(token, key, secret, etf_n=30):
+    """[V26.52] 지시서 1번 "수집과 분석을 분리" — 1단계(수집): 거래대금 상위 ETF etf_n종의
+    전체 구성종목을 비중 포함 원본 그대로 가져옴(아무것도 상위 N으로 자르지 않음). 이 결과를
+    대시보드가 세션에 캐싱해두면, 사용자가 '분석 범위'(상위 5/10/20/전체)를 바꿀 때마다
+    etf_overlap_aggregate를 다시 불러 KIS 재호출 없이(=ETF 구성종목 재수집 없이) 즉시
+    재계산할 수 있음 — 수집(비용 큰 부분, ETF당 1회 호출)과 분석(순수 파이썬 집계)을 분리한
+    핵심 이유. 반환: {"etfs":[...], "etf_holdings": {etf_code: {"name","operator","holdings":
+    [{"code","name","weight"}],"has_weight":bool}}, "etf_diag":[...]}."""
+    etfs = _etf_universe(token, key, secret, n=etf_n)
     if not etfs:
-        return {"etfs": [], "overlap": [], "etf_diag": []}
-    agg = {}   # code -> {"name":, "count":, "etfs":[...]}
+        return {"etfs": [], "etf_holdings": {}, "etf_diag": []}
+    etf_holdings = {}
     etf_diag = []
     for i, e in enumerate(etfs):
         holdings, reason = _etf_component_stocks(token, key, secret, e["code"], _diag=True)
-        etf_diag.append({"code": e["code"], "name": e["name"],
-                          "holdings_count": len(holdings), "reason": reason})
-        for h in holdings:
-            slot = agg.setdefault(h["code"], {"name": h["name"], "count": 0, "etfs": []})
-            slot["count"] += 1
-            slot["etfs"].append(e["name"])
+        _has_weight = any(h["weight"] is not None for h in holdings)
+        etf_diag.append({"code": e["code"], "name": e["name"], "holdings_count": len(holdings),
+                          "has_weight": _has_weight, "reason": reason})
+        etf_holdings[e["code"]] = {"name": e["name"], "operator": _etf_operator(e["name"]),
+                                    "holdings": holdings, "has_weight": _has_weight}
         if i < len(etfs) - 1:
             time.sleep(0.15)                 # 레이트리밋 배려(짧은 지연) — _volume_rank와 동일 취지
-    ranked = sorted(agg.items(), key=lambda kv: (-kv[1]["count"], kv[0]))[:overlap_n]
-    overlap = []
-    for cd, info in ranked:
+    return {"etfs": etfs, "etf_holdings": etf_holdings, "etf_diag": etf_diag}
+
+
+def etf_overlap_aggregate(raw, token, key, secret, top_n=10, min_overlap=2, overlap_n=30):
+    """[V26.52] 지시서 1번 "수집과 분석을 분리" — 2단계(분석): etf_raw_scan이 이미 받아둔 원본
+    구성종목에서 상위 top_n(5/10/20/None=전체)만 골라 집계. ETF 구성종목을 다시 조회하지
+    않으므로 '분석 범위' 변경은 KIS 호출 없이 즉시 재계산됨(지시서 4번) — 단, 결과로 어떤
+    종목이 겹치는지가 top_n에 따라 바뀌므로, 그 종목들의 상장시장·수급(KIS 호출 필요)은
+    top_n이 바뀔 때마다 다시 조회함(겹침 결과 집합 자체가 달라지는 이상 불가피).
+
+    계산 순서(지시서 2번):
+      3) ETF별로 이미 비중 내림차순 정렬된 구성종목에서 상위 top_n개만 선택(top_n=None이면
+         전체) — 원본 비중은 그대로 두고 재정규화하지 않음(지시서 7번). 비중 결측 ETF는
+         "상위 N 판정 불가"로 기본 집계에서 제외, excluded_no_weight에 사유와 함께 남김
+      4) 선택된 종목을 종목코드 기준으로 교차 집계 — "중복 ETF 수"는 그 종목이 선택 구간
+         (top_n) 안에 든 고유 ETF 개수만 셈(지시서 3번 — 상위 N 밖에 걸친 ETF는 안 셈).
+         min_overlap(기본 2) 미만은 기본 결과에서 제외
+      5) 집계가 끝난 뒤에야 종목 '자신'의 상장시장(코스피/코스닥)을 조회해 결과를 분리
+         (지시서 "중요" — ETF 선정 단계가 아니라 여기서 시장을 나눔)
+
+    반환: {"etfs":[...], "overlap_kospi":[...], "overlap_kosdaq":[...], "etf_diag":[...],
+    "excluded_no_weight":[...], "etf_count":int, "excluded_count":int, "top_n":top_n}.
+    overlap 항목: {"code","name","count","best_rank","avg_rank","avg_weight","max_weight",
+    "px","foreign_eok","inst_eok","members":[{"etf_code","etf_name","operator","rank","weight",
+    "etf_total_domestic","etf_selected_sum_pct"}]} — members가 지시서 6번 "종목 상세표"의 재료.
+    overlap_n(기본 30)은 수급 조회(종목당 2회 KIS 호출) 비용을 제한하기 위한 표시 상한 —
+    지시서엔 명시적 상한이 없으나, 최소 2개 ETF 조건을 통과하는 종목이 많을 경우 전부에
+    수급을 조회하면 비용이 통제 불가능해져 실용적으로 추가."""
+    etf_holdings = raw.get("etf_holdings") or {}
+    agg = {}   # code -> {"name":, "members":[...]}
+    excluded_no_weight = []
+    for etf_code, info in etf_holdings.items():
+        holdings = info.get("holdings") or []
+        if not holdings:
+            continue
+        if not info.get("has_weight"):
+            excluded_no_weight.append({"code": etf_code, "name": info["name"],
+                                        "reason": "비중 미제공(etf_cnfg_issu_rlim 필드 없음) — "
+                                                   "상위 종목 판정 불가해 기본 분석에서 제외"})
+            continue
+        _total_domestic = len(holdings)
+        _selected = holdings if top_n is None else holdings[:top_n]
+        _selected_sum_pct = round(sum((h["weight"] or 0) for h in _selected), 2)
+        for rank, h in enumerate(_selected, start=1):
+            slot = agg.setdefault(h["code"], {"name": h["name"], "members": []})
+            slot["members"].append({
+                "etf_code": etf_code, "etf_name": info["name"], "operator": info["operator"],
+                "rank": rank, "weight": h["weight"],
+                "etf_total_domestic": _total_domestic, "etf_selected_sum_pct": _selected_sum_pct,
+            })
+    ranked = []
+    for code, info in agg.items():
+        members = info["members"]
+        cnt = len(members)
+        if cnt < min_overlap:
+            continue
+        ranks = [m["rank"] for m in members]
+        weights = [m["weight"] for m in members if m["weight"] is not None]
+        ranked.append({"code": code, "name": info["name"], "count": cnt,
+                       "best_rank": min(ranks), "avg_rank": round(sum(ranks) / len(ranks), 1),
+                       "avg_weight": round(sum(weights) / len(weights), 2) if weights else None,
+                       "max_weight": round(max(weights), 2) if weights else None,
+                       "members": members})
+    ranked.sort(key=lambda r: (-r["count"], r["code"]))
+    ranked = ranked[:overlap_n]
+    overlap_kospi, overlap_kosdaq = [], []
+    for idx, r in enumerate(ranked):
         try:
-            px, _chg, _o, _h, _l = _price_full(token, key, secret, cd)
+            px, mkt_name = _price_and_market(token, key, secret, r["code"])
         except Exception:
-            px = None
+            px, mkt_name = None, None
         fa = oa = None
         if px:
             try:
-                f, o = _investor_est(token, key, secret, cd, distinguish_fail=False)
+                f, o = _investor_est(token, key, secret, r["code"], distinguish_fail=False)
                 fa, oa = round(f * px / 1e8, 1), round(o * px / 1e8, 1)
             except Exception:
                 fa = oa = None
-        overlap.append({"code": cd, "name": info["name"], "count": info["count"],
-                         "etfs": info["etfs"], "px": px, "foreign_eok": fa, "inst_eok": oa})
-    return {"etfs": etfs, "overlap": overlap, "etf_diag": etf_diag}
+        r["px"], r["foreign_eok"], r["inst_eok"] = px, fa, oa
+        (overlap_kosdaq if mkt_name == "코스닥" else overlap_kospi).append(r)
+        if idx < len(ranked) - 1:
+            time.sleep(0.1)
+    return {"etfs": raw.get("etfs") or [], "overlap_kospi": overlap_kospi, "overlap_kosdaq": overlap_kosdaq,
+            "etf_diag": raw.get("etf_diag") or [], "excluded_no_weight": excluded_no_weight,
+            "etf_count": len(raw.get("etfs") or []), "excluded_count": len(excluded_no_weight),
+            "top_n": top_n}
+
+
+def etf_overlap_scan(token, key, secret, etf_n=30, top_n=10, min_overlap=2, overlap_n=30):
+    """편의 함수 — etf_raw_scan + etf_overlap_aggregate를 한 번에 수행(대시보드처럼 '분석 범위'를
+    바꿔가며 보는 인터랙션이 필요 없는 PC 감시 루프·실전속보 스냅샷용). 대시보드는 이 둘을
+    분리해서 직접 호출해, 분석 범위를 바꿀 때마다 ETF 구성종목 수집을 반복하지 않게 함."""
+    raw = etf_raw_scan(token, key, secret, etf_n=etf_n)
+    return etf_overlap_aggregate(raw, token, key, secret, top_n=top_n,
+                                  min_overlap=min_overlap, overlap_n=overlap_n)
 
 
 def _vol_ratio_5d(token, key, secret, code):
@@ -8589,16 +8709,16 @@ def main():
                                                      if _npp_cache.get("date") == _today_str else [])
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
-                    # [사용자 요청] 실전속보에 ETF 겹침 분석(코스피·코스닥 상위 ETF 구성종목 교집합)도
-                    # 같이 보여달라는 요청 — ETF 구성종목은 실시간성이 필요 없고(하루 중 거의 안
-                    # 바뀜) 코스피·코스닥 각 10종 구성종목 조회+겹침 상위 수급 조회라 비용이 커서
-                    # (최대 약 60~70회 KIS 호출), 대체종배와 같은 저녁 시간대에 하루 1회만 계산하고
-                    # 역시 st에 캐싱해 그날 내내 마지막 값을 보여줌.
+                    # [사용자 요청] 실전속보에 ETF 겹침 분석(상위 ETF들의 편입비중 상위종목 교집합)도
+                    # 같이 보여달라는 요청. [V26.52] 지시서 재설계로 코스피/코스닥을 ETF 선정
+                    # 단계에서 나누지 않고 단일 풀(etf_n=30)로 한 번만 스캔 — ETF 구성종목은
+                    # 실시간성이 필요 없고(하루 중 거의 안 바뀜) 비용이 커서(최대 약 30~90회 KIS
+                    # 호출), 대체종배와 같은 저녁 시간대에 하루 1회만 계산하고 st에 캐싱해 그날
+                    # 내내 마지막 값을 보여줌.
                     try:
                         if (_NXT_PREM_START <= (now.hour * 60 + now.minute) <= _NXT_PREM_END
                                 and st.get("etf_overlap_day") != _today_str):
-                            snap["etf_overlap"] = {"KOSPI": etf_overlap_scan(tok, kis_key, kis_secret, market="KOSPI"),
-                                                    "KOSDAQ": etf_overlap_scan(tok, kis_key, kis_secret, market="KOSDAQ")}
+                            snap["etf_overlap"] = etf_overlap_scan(tok, kis_key, kis_secret)
                             st["etf_overlap_day"] = _today_str
                             st["etf_overlap_cache"] = snap["etf_overlap"]
                         else:
