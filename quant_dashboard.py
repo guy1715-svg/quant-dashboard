@@ -994,7 +994,7 @@ def render_dolpanty():
         "방식(괴리율·거래대금이 **둘 다** 크게 터진 종목을 고르는 방식)과 지금 시스템의 거래량비율 "
         "1위가 항상 일치하진 않습니다 — 거래량비율 1위가 괴리율·거래대금은 평범할 수 있고, 반대로 "
         "괴리율·거래대금이 둘 다 큰 종목이 거래량비율로는 중위권에 머물 수 있습니다. 아래 표에서 거래량비율 "
-        "순위만 보지 마시고 괴리율(%)·NXT거래대금(억) 두 컬럼을 같이 봐 주시면, 사용자 방식과 현재 시스템 "
+        "순위만 보지 마시고 거래대금괴리율(%)·NXT거래대금(억) 두 컬럼을 같이 봐 주시면, 사용자 방식과 현재 시스템 "
         "기준을 동시에 확인하실 수 있습니다."
     )
     if not tok:
@@ -1144,19 +1144,32 @@ def render_dolpanty():
         # 선택지에 뜨지도 않음 — 그러면 방금 조회한 이 순간 데이터를 볼 곳이 없어져 버렸던 것.
         # 복구.
         st.markdown("##### 📋 거래대금×괴리율×수급 통합 — 1~30위 전체")
+        # [V26.46] 사용자 지적 — "거래대금×괴리율×수급 통합"이라는 표 제목을 보고 "괴리율"도
+        # 거래대금 기준일 거라 기대했는데 실제로는 가격(NXT가/KRX가) 기준이었음("갑자기 왜
+        # 가격에 대한 괴리율을 보여주는거지?"). 사용자가 명시적으로 "거래대금 기준으로 교체"를
+        # 선택해 macro_watcher.py의 disparity_pct 계산 자체를 (NXT거래대금/KRX거래대금-1)×100으로
+        # 바꿈 — KRX거래대금(krx_turn) 컬럼도 같이 보여줘서 이 %가 어떻게 나온 값인지 바로
+        # 검산할 수 있게 함.
         _ldf = pd.DataFrame(st.session_state["nxt_live_full"])
         _ldf.insert(0, "순위", range(1, len(_ldf) + 1))
         _ldf["nxt_turn"] = (_ldf["nxt_turn"] / 1e8).round(1)
+        if "krx_turn" in _ldf.columns:
+            _ldf["krx_turn"] = (_ldf["krx_turn"] / 1e8).round(1)
         _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
         if "avg_turn_ratio" in _ldf.columns:
             _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
         _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "chg": "등락률(%)",
-                   "krx_px": "KRX가", "nxt_px": "NXT가",
-                   "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+                   "krx_px": "KRX가", "nxt_px": "NXT가", "krx_turn": "KRX거래대금(억)",
+                   "disparity_pct": "거래대금괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
                    "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
                    "ratio": "거래량비율", "기준충족": "기준충족"}
         _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
+        st.caption("거래대금괴리율(%) = (NXT거래대금 ÷ KRX거래대금 − 1) × 100 — NXT에 몰린 자금이 "
+                   "정규장(KRX) 거래대금 대비 몇 % 많은지/적은지입니다. 예전엔 가격(NXT가/KRX가) "
+                   "기준이었는데, KRX·NXT는 같은 종목을 거래하는 서로 다른 거래 창구라 가격은 "
+                   "차익거래로 거의 항상 거의 똑같이 붙어있어(그래서 항상 0%에 가까웠음) 거래대금 "
+                   "기준으로 바꿨습니다.")
 
         # [V26.28] 사용자 요청 — "전날 대비 15% 위에 있는 종목들의 상승이유와 뉴스, 어떤 섹터에
         # 속해있는지 정리가 필요". 처음엔 15% 고정 기준으로 필터링했으나, 그러면 그 기준을 넘는
@@ -1310,19 +1323,27 @@ def render_dolpanty():
     _sdf = pd.DataFrame(_entry["rows"])
     _sdf.insert(0, "순위", range(1, len(_sdf) + 1))
     _sdf["nxt_turn"] = (_sdf["nxt_turn"] / 1e8).round(1)
+    if "krx_turn" in _sdf.columns:
+        _sdf["krx_turn"] = (_sdf["krx_turn"] / 1e8).round(1)
     _sdf["기준충족"] = _sdf["pass"].map({True: "✅", False: "—"})
     # [V26.14] 사용자 제안 반영 — 거래량비율만 보면 소형주가 유리하고, 삼성전기처럼 절대 거래대금이
     # 큰데 거래량비율은 낮은 종목이 묻힘. NXT거래대금이 그 종목 평소(20일평균) 정규장 거래대금 대비
     # 몇 %인지 같이 보여줌(옛 스캔 기록엔 이 필드가 없을 수 있어 없으면 빈 칸으로 표시).
     if "avg_turn_ratio" in _sdf.columns:
         _sdf["avg_turn_ratio"] = (_sdf["avg_turn_ratio"] * 100).round(0)
+    # [V26.46] 사용자 지적 반영 — 괴리율을 가격(NXT가/KRX가) 기준에서 거래대금(NXT거래대금/
+    # KRX거래대금) 기준으로 교체. krx_turn 컬럼도 같이 표시(이 날짜가 교체 이전 기록이면 그
+    # 필드가 아예 없어 자동으로 빠짐 — 옛 기록은 여전히 가격 괴리율 값이니 날짜 비교 시 주의).
     _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
-              "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+              "krx_turn": "KRX거래대금(억)", "disparity_pct": "거래대금괴리율(%)",
+              "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
               "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
               "ratio": "거래량비율", "기준충족": "기준충족"}
     _sdf = _sdf[[c for c in _cols if c in _sdf.columns]].rename(columns=_cols)
     st.dataframe(_sdf, use_container_width=True, hide_index=True)
-    st.caption(f"{_entry.get('time', '')} 기준 스캔 · 괴리율=(NXT가/KRX가-1)×100 · "
+    _disp_note = ("거래대금괴리율(%)=(NXT거래대금/KRX거래대금-1)×100" if "krx_turn" in _entry["rows"][0]
+                  else "괴리율(%)=(NXT가/KRX가-1)×100(이 날짜는 거래대금 기준 교체 이전 기록)")
+    st.caption(f"{_entry.get('time', '')} 기준 스캔 · {_disp_note} · "
                "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격 · "
                "평소대비(%)=NXT거래대금÷최근20일평균 정규장거래대금(소형주 거래량비율 착시·대형주 절대금액 착시 보정용)")
 

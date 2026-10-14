@@ -5984,7 +5984,17 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         if not nxt_px or not nxt_turn or not nxt_vol or nxt_turn < _NXT_MIN_TURN:  # 50억 미달은 노이즈로 컷
             continue
         _ratio = nxt_vol / krx_vol
-        _disp = round((nxt_px / krx_px - 1) * 100, 2) if krx_px else None
+        # [V26.46] 사용자 제보 — "거래대금×괴리율×수급 통합" 표의 "괴리율(%)"이 (NXT가/KRX가-1)
+        # 처럼 가격 괴리율로 계산돼 있었는데, 사용자는 이 표 제목을 보고 "거래대금의 괴리율"로
+        # 기대하고 있었음("갑자기 왜 가격에 대한 괴리율을 보여주는거지?"). 가격 괴리율은 애초에
+        # V26.5 때 증권사 MTS의 'KRX/NXT 괴리율 순위' 화면을 본떠 만든 것이었으나, 사용자가
+        # 명시적으로 "거래대금 기준으로 교체"를 선택 — NXT 거래대금이 KRX 거래대금 대비 몇 %
+        # 많은지/적은지로 바꿈. KRX·NXT 두 시장은 같은 종목을 거래하는 서로 다른 거래 창구라
+        # 가격은 차익거래로 거의 항상 비슷하게 묶여있어(그래서 가격 괴리율은 항상 0%에 가까웠음)
+        # 실제로 의미 있는 건 거래대금(자금) 쏠림 쪽이라는 점도 이 교체를 뒷받침함. KRX거래대금
+        # (_kturn)은 원래도 _price_turnover_vol로 조회는 해놓고 안 쓰고 버리고 있던 값이라
+        # API 호출 추가 없이 바로 씀.
+        _disp = round((nxt_turn / _kturn - 1) * 100, 2) if _kturn else None
         # [V26.14] 사용자 제안 — "거래량비율만으로는 소형주가 유리하고, 삼성전기처럼 거래량비율은
         # 낮아도 절대 거래대금이 큰 종목을 놓친다"는 지적 반영. NXT 애프터거래대금을 절대금액이
         # 아니라 '그 종목 평소(최근 20일 평균) 정규장 거래대금 대비 몇 %인가'로도 같이 보여줘서,
@@ -5994,8 +6004,8 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _turnavg = (_ds or {}).get("turnavg") or 0
         _avg_turn_ratio = round(nxt_turn / _turnavg, 3) if _turnavg else None
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
-                          "disparity_pct": _disp, "krx_vol": krx_vol, "nxt_vol": nxt_vol,
-                          "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
+                          "disparity_pct": _disp, "krx_turn": _kturn, "krx_vol": krx_vol,
+                          "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
                           "avg_turn_ratio": _avg_turn_ratio, "chg": _kchg,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
