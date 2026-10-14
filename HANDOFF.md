@@ -118,6 +118,60 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.99 종배픽 탭 — "상위 ETF 구성종목 겹침 분석" 신규(거래대금 상위 ETF 10종 교차 + 수급현황)
+
+**배경**: 사용자 요청 — "대시보드에 종배 탭에서 상위 ETF 10종목에서 구성리스트를 만들어서,
+겹치는 종목이 뭔지 1위~10위 정도 보고 싶고, 그 종목들 수급현황도 같이 볼 수 있게 제작해줘".
+이 코드베이스엔 지금까지 ETF를 다루는 로직이 전부 "제외" 방향뿐이었음(`_EARLY_ETF_KW`가
+16곳에서 "이 이름이면 ETF니까 스캔 대상에서 빼라"는 용도로만 쓰임 — macro_watcher.py:2928).
+ETF 구성종목(PDF) 자체를 조회하는 기능은 전무해서 신규 KIS API 연동이 필요했음. 공식
+`koreainvestment/open-trading-api` 저장소(`examples_llm/etfetn/inquire_component_stock_price/`)
+로 확인한 결과 `inquire-component-stock-price`(FHKST121600C0, HTS [0245] 'ETF/ETN
+구성종목시세'와 동일)가 ETF 1종의 구성종목 전체를 `output2`로 줌 — 이 응답의 종목코드·
+종목명 필드는 `stck_shrn_iscd`/`hts_kor_isnm`로, 이미 이 코드베이스 다른 TR들(`_volume_rank`
+등)에서도 쓰는 표준 KIS 필드명이라 신뢰도 높음(단, 그 예제 파일의 전체 COLUMN_MAPPING 딕셔너리
+자체는 행이 한 칸씩 밀려 매핑된 것으로 보이는 오류가 있어 — 예: `stck_prpr`를 '매매 일자'로
+표기 — 그 딕셔너리를 통째로 믿지 않고, 다른 TR에서 이미 검증된 공통 필드명만 신뢰함).
+"거래대금 상위 ETF 10종" 랭킹은 별도 전용 API를 새로 찾는 대신, 이미 있는 `_volume_rank`
+(거래대금 상위, ETF 포함 혼합 유니버스)에 `_EARLY_ETF_KW`를 거꾸로 "포함" 필터로 재사용해서
+해결 — 새 엔드포인트 불필요.
+
+**구현**: `macro_watcher.py`에 3개 함수 신규(`_lineup_plus_turnover` 바로 뒤, macro_watcher.py:2984
+부근) —
+- `_etf_top_by_turnover(token,key,secret,n=10,scan_top=150)`: `_volume_rank(top=150)` 결과에서
+  `_EARLY_ETF_KW` 매칭분만 추려 거래대금 내림차순 상위 n종 반환.
+- `_etf_component_stocks(token,key,secret,etf_code,_diag=False)`: 위 TR 호출, `rt_cd` 검증
+  (7.95의 `_diag` 패턴 재사용 — rt_cd 에러/빈 output2/예외를 구분), `[{"code","name"}]` 반환.
+- `etf_overlap_scan(token,key,secret,etf_n=10,overlap_n=10)`: 상위 ETF 10종 각각의 구성종목을
+  모아 종목코드별로 몇 개 ETF에 들어있는지 집계(겹치는 ETF 개수 내림차순, 동률은 코드 오름차순
+  타이브레이크) → 상위 overlap_n종에 대해 `_price_full`(현재가) × `_investor_est`(외국인/기관
+  당일 추정 순매수 수량) ÷ 1억으로 수급현황 억원 환산 — `check_investor_flow_rank`가 이미 쓰는
+  것과 동일한 공식 재사용. 반환: `{"etfs":[...], "overlap":[{"code","name","count","etfs",
+  "px","foreign_eok","inst_eok"}]}`.
+- `quant_dashboard.py` `render_dolpanty()`(종배픽·재료등급 탭)의 "지금 새로고침" 라이브 미리보기
+  섹션 바로 뒤에 "🧩 상위 ETF 구성종목 겹침 분석" 섹션 신규 — 별도의 독립 "🔄 ETF 겹침 분석
+  새로고침" 버튼(ETF 구성종목 조회 10회 + 겹침 상위 10종 수급 조회 최대 20회가 추가로 드는
+  비용이라, 위 섹션만 보려는 사용자에게 매번 강제하지 않으려 분리). 거래대금 상위 ETF 10종 표 +
+  겹치는 종목(겹치는ETF수·포함 ETF 목록·현재가·외인/기관 순매수 추정) 표 2개를 표시, 외인·기관
+  순매수는 "장중 추정치(가집계)"이며 장마감 후 확정치와 다를 수 있다는 캡션 명시(매도율 컬럼이
+  쓰는 장마감 후 확정 데이터와는 다른 종류임을 혼동하지 않도록 구분).
+
+**검증**: `py_compile` 통과. 신규 `test_etf_overlap.py`(11건) — `_etf_top_by_turnover`의
+ETF만 필터링·거래대금 정렬·n 제한, `_etf_component_stocks`의 output2 파싱·rt_cd 에러 시
+`_diag` 사유·빈 응답과 예외 구분·예외 시 빈 리스트, `etf_overlap_scan`의 ETF 멤버십 집계
+정확성(교집합 개수가 실제로 몇 개 ETF에 들어있는지와 일치)·동률 타이브레이크(코드 오름차순)·
+overlap_n 상한·ETF 랭킹이 비면 양쪽 다 빈 리스트·한 ETF의 구성종목 조회가 빈 리스트여도 나머지
+ETF들의 집계는 정상 진행·가격 조회 실패 시 수급 필드가 크래시 없이 `None`으로 degrade, 대시보드
+렌더링 포맷(부호 있는 억원 표시, 포함 ETF 목록 join). 기존 회귀 테스트(54건) 전체 재실행 —
+전부 통과. `streamlit run --server.headless` 기동 테스트 — HTTP 200, 콘솔 에러 없음. **확인
+못한 부분**: 이 TR이 실제로 ETF 전체 구성종목(100종 넘는 것도 있음, 예: KODEX200)을 페이지
+분할 없이 한 번에 다 주는지는 공식 예제 코드가 페이지네이션 처리를 안 해서(=안 하거나, 혹은
+예제가 놓친 것일 수도 있음) 라이브로 확인 못함 — 응답이 일부만 올 경우 "겹침" 집계가 실제보다
+적게 나올 수 있음. 또한 `etf_cnfg_issu_rlim`(비중) 필드는 이번 기능에서 아예 안 씀(겹치는 ETF
+개수만 집계) — 그 예제 파일의 COLUMN_MAPPING 전체가 신뢰할 수 없다고 판단해 가장 널리 검증된
+두 필드(종목코드·종목명)만 사용하는 보수적 선택. 사용자 실전 환경에서 KIS 키로 직접 눌러봐야
+최종 확인됩니다.
+
 ### 7.98 외부 "지시서" P0-8(문구 수정 6건) 적용 — 추정치 라벨링·시황 뉴스 구분·새로고침 동작 설명
 
 **배경**: 사용자가 다른 AI가 작성한 종배픽 전면 개편 "지시서"(리스크 게이트·레짐 엔진·뉴스등급
