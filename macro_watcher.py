@@ -2995,6 +2995,88 @@ def _lineup_plus_turnover(token, key, secret, lineup, top=40):
     return _out
 
 
+def _etf_top_by_turnover(token, key, secret, n=10, scan_top=150):
+    """[사용자 요청] 당일 거래대금 상위 ETF n종 — 별도 'ETF 랭킹' API 대신, 이미 있는 거래대금
+    상위 API(_volume_rank)를 그대로 재사용해 ETF 브랜드 키워드(_EARLY_ETF_KW)로 걸러냄. 이
+    키워드는 기존에 16곳에서 ETF를 스캔 대상에서 '제외'하는 용도로만 쓰였는데, 여기서는 반대로
+    '포함'만 추려내는 용도로 재사용. _volume_rank가 이미 거래대금 내림차순으로 주지만, 필터링
+    후에도 순서가 보장되도록 재정렬함. [{"code","name","turnover","px","chg"}] 상위 n종."""
+    rows = _volume_rank(token, key, secret, top=scan_top)
+    etfs = [r for r in rows if any(k in str(r["name"]) for k in _EARLY_ETF_KW)]
+    etfs.sort(key=lambda r: r["turnover"], reverse=True)
+    return etfs[:n]
+
+
+def _etf_component_stocks(token, key, secret, etf_code, _diag=False):
+    """[사용자 요청] ETF 구성종목(PDF, Portfolio Deposit File) 코드·종목명 — 공식 KIS
+    inquire-component-stock-price(FHKST121600C0), 한국투자 HTS [0245] 'ETF/ETN 구성종목시세'
+    화면과 동일 데이터(공식 예제 저장소 koreainvestment/open-trading-api로 필드명 확인 —
+    stck_shrn_iscd=종목코드, hts_kor_isnm=종목명. 둘 다 이 코드베이스 다른 TR에서도 쓰는
+    표준 필드명). 반환: [{"code","name"}]. _diag=True면 _investor_daily와 같은 패턴으로
+    (rows, reason) 튜플을 줘서 rt_cd 에러/빈 응답/예외를 구분할 수 있게 함."""
+    try:
+        r = requests.get(f"{KIS_BASE}/uapi/etfetn/v1/quotations/inquire-component-stock-price",
+                         headers={"authorization": f"Bearer {token}", "appkey": key,
+                                  "appsecret": secret, "tr_id": "FHKST121600C0"},
+                         params={"fid_cond_mrkt_div_code": "J", "fid_input_iscd": etf_code,
+                                 "fid_cond_scr_div_code": "11216"},
+                         timeout=7)
+        j = r.json()
+        if j.get("rt_cd") != "0":
+            reason = f"rt_cd={j.get('rt_cd')} msg={j.get('msg1')}"
+            return ([], reason) if _diag else []
+        out2 = j.get("output2") or []
+        rows = []
+        for x in out2:
+            if not isinstance(x, dict):
+                continue
+            cd = str(x.get("stck_shrn_iscd", "")).zfill(6)
+            nm = x.get("hts_kor_isnm", "")
+            if cd.isdigit() and len(cd) == 6 and nm:
+                rows.append({"code": cd, "name": nm})
+        reason = None if rows else "output2 empty"
+        return (rows, reason) if _diag else rows
+    except Exception as e:
+        return ([], f"exception: {e}") if _diag else []
+
+
+def etf_overlap_scan(token, key, secret, etf_n=10, overlap_n=10):
+    """[사용자 요청] "종배 탭에서 상위 ETF 10종목 구성종목을 겹쳐서 1~10위 공통종목을 보고,
+    그 종목들 수급현황도 같이 보고싶다" — 거래대금 상위 ETF etf_n종(_etf_top_by_turnover)의
+    구성종목(_etf_component_stocks)을 모아 종목별로 몇 개 ETF에 들어있는지 집계하고, 겹치는
+    ETF 개수 내림차순 상위 overlap_n종에 대해 현재가·외국인/기관 당일 추정 순매수를 추가
+    조회(check_investor_flow_rank와 동일 공식 — _price_full의 현재가 × _investor_est의
+    추정 순매수 수량 ÷ 1억). 반환: {"etfs": [...], "overlap": [{"code","name","count","etfs",
+    "px","foreign_eok","inst_eok"}, ...]}. ETF 랭킹 조회가 비면 양쪽 다 빈 리스트로 반환
+    (구성종목 개별 조회가 실패한 ETF 한두 개는 건너뛰고 나머지로 계속 집계함)."""
+    etfs = _etf_top_by_turnover(token, key, secret, n=etf_n)
+    if not etfs:
+        return {"etfs": [], "overlap": []}
+    agg = {}   # code -> {"name":, "count":, "etfs":[...]}
+    for e in etfs:
+        for h in _etf_component_stocks(token, key, secret, e["code"]):
+            slot = agg.setdefault(h["code"], {"name": h["name"], "count": 0, "etfs": []})
+            slot["count"] += 1
+            slot["etfs"].append(e["name"])
+    ranked = sorted(agg.items(), key=lambda kv: (-kv[1]["count"], kv[0]))[:overlap_n]
+    overlap = []
+    for cd, info in ranked:
+        try:
+            px, _chg, _o, _h, _l = _price_full(token, key, secret, cd)
+        except Exception:
+            px = None
+        fa = oa = None
+        if px:
+            try:
+                f, o = _investor_est(token, key, secret, cd, distinguish_fail=False)
+                fa, oa = round(f * px / 1e8, 1), round(o * px / 1e8, 1)
+            except Exception:
+                fa = oa = None
+        overlap.append({"code": cd, "name": info["name"], "count": info["count"],
+                         "etfs": info["etfs"], "px": px, "foreign_eok": fa, "inst_eok": oa})
+    return {"etfs": etfs, "overlap": overlap}
+
+
 def _vol_ratio_5d(token, key, secret, code):
     """[V22.7] 오늘 거래량 / 최근 5거래일(전일까지) 평균 거래량 배수. (오늘vol, 5일평균, 배수) or None."""
     try:
