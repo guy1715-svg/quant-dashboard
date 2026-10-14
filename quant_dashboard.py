@@ -902,6 +902,7 @@ def render_dolpanty():
             st.session_state["nxt_live_flow"] = _live_flow
             st.session_state["nxt_live_time"] = _live_time
             st.session_state["nxt_live_from_cache"] = False
+            st.session_state.pop("surge_news_cache", None)   # [7.110] 가격 새로고침 시 뉴스도 재조회
             _git_save_live_scan({"time": _live_time, "full": _full_out,
                                  "out": _live_out, "flow": _live_flow})
 
@@ -1052,41 +1053,152 @@ def render_dolpanty():
         _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
 
-        # [V26.28] 사용자 요청 — "전날 대비 15% 위에 있는 종목들의 상승이유와 뉴스, 어떤 섹터에
-        # 속해있는지 정리가 필요". 처음엔 15% 고정 기준으로 필터링했으나, 그러면 그 기준을 넘는
-        # 종목이 아예 없는 날이 많을 거라는 사용자 지적 반영 — 고정 % 기준 대신 "등락률 상위
-        # 10종목"으로 바꿔 항상 일정 개수가 보이게 하고, 종목마다 KIS 조회 1회 + 네이버뉴스
-        # 조회 1회가 추가로 드는 비용도 10종 고정이라 예측 가능하게 함(버튼 눌렀을 때만 도는 이
-        # 온디맨드 새로고침 섹션에서만 수행 — 상시 감시 루프에는 추가하지 않음).
+        # [V26.54] 7.110 지시서 전면 재설계 — "등락률 상위 10종목 — 등락 관련 뉴스 · 섹터".
+        # 기존(V26.28)은 "상위 10종목(상승만, 하락 없음) + 최신 3건 고정 + 시황/일반 이진분류 +
+        # URL 없음 + 날짜 원문 그대로"였음. 지시서 요구: 원문 링크·5단계 관련성·방향(별도 필드)·
+        # 장전/장중/장후 태그·사람이 읽는 날짜·필터·상승/하락 분리·종목카드 UI. 데이터 소스
+        # (nxt_live_full, check_nxt_premium_pick 결과)는 그대로 재사용 — 순위산출 로직 자체는
+        # 변경하지 않음(지시서 14번: "뉴스 수집·분류·표시 기능만 분리 개선").
+        _REL_LABEL = {"직접": "[직접]", "업종": "[업종]", "시황": "[시황]",
+                      "등락보도": "[등락 보도]", "낮은관련성": "[낮은 관련성]"}
+        _DIR_LABEL = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Mixed": "🟠 혼합",
+                      "Neutral": "⚪ 중립", "Unknown": "⚪ 판단 불가"}
+
+        def _render_news_article(a):
+            import html as _html
+            _title_esc = _html.escape(a["headline"])
+            _link = a.get("original_url") or a.get("portal_url")
+            if _link:
+                _title_html = (f'<a href="{_html.escape(_link, quote=True)}" target="_blank" '
+                               f'rel="noopener noreferrer">{_title_esc}</a> ↗')
+            else:
+                _title_html = _title_esc
+            st.markdown(f"{_REL_LABEL.get(a['relevance_type'], a['relevance_type'])} {_title_html}",
+                       unsafe_allow_html=True)
+            _dt_txt = mw._fmt_news_dt(a["published_at"]) if a.get("published_at") else "게시 시각 미확인"
+            _parts = [_dt_txt]
+            if a.get("publisher"):
+                _parts.append(a["publisher"])
+            if a.get("market_session"):
+                _parts.append(a["market_session"])
+            if a.get("original_url") and a.get("portal_url"):
+                _parts.append("원문 / 네이버")
+            elif a.get("original_url"):
+                _parts.append("원문")
+            elif a.get("portal_url"):
+                _parts.append("네이버")
+            else:
+                _parts.append("링크 미확인")
+            if (a.get("related_report_count") or 1) > 1:
+                _parts.append(f"관련 보도 {a['related_report_count']}건")
+            st.caption(" · ".join(_parts) + f" · {_DIR_LABEL.get(a['direction'], a['direction'])} · "
+                      f"신뢰도 {a.get('confidence', '?')}(제목 기준)")
+
+        st.markdown("##### 🔥 등락률 상위 10종목 — 등락 관련 뉴스 · 섹터")
+        st.caption("종목·업종 관련 뉴스를 정리한 참고 화면입니다. 등락 원인은 확정하지 않습니다.")
         _surge_rows = [r for r in (st.session_state.get("nxt_live_full") or []) if r.get("chg") is not None]
-        _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"], reverse=True)[:10]
-        if _surge_top10:
-            # [지시서 P0-8] "상승이유"라는 이름이 뉴스=등락 원인 확정처럼 읽힐 수 있다는 지적 반영 —
-            # "등락 관련 뉴스"로 변경(하락 종목도 이 표에 섞여 나올 수 있어 "상승"은 부정확하기도 함).
-            st.markdown("##### 🔥 등락률 상위 10종목 — 등락 관련 뉴스 · 섹터")
-            st.caption("위 표에서 전일 종가 대비 등락률이 높은 상위 10종목을 추려, 종목별 업종(섹터)과 "
-                       "최근 뉴스 헤드라인(날짜·언론사 확인되는 경우 함께 표시)을 보여줍니다 — 등락 "
-                       "사유를 수동으로 하나씩 검색하지 않아도 되게 하기 위한 참고용 정리입니다(등락 "
-                       "사유 확정 아님). 종목 고유 재료가 아니라 전체 시황(코스피·환율·금리 등)을 "
-                       "다루는 기사는 회색 '(시황)' 표시로 구분됩니다.")
+        if _surge_rows:
+            # [지시서 11번] 가격·모집단 기준 명시 — "전일 종가 대비 등락률"이 KRX 정규장 기준이고,
+            # 전체 시장이 아니라 거래대금+NXT비율 상위 약 200종 중 30종으로 미리 추려진 스캐너
+            # 후보군 안에서의 순위라는 사실을 숨기지 않고 그대로 밝힘.
+            _src_txt = ("다른 기기에서 저장된 결과" if st.session_state.get("nxt_live_from_cache")
+                       else "이 기기에서 방금 조회")
+            st.caption(f"**선정 기준**: KRX 정규장 등락률(전일 종가 대비) · 스캐너 후보군(거래대금+NXT "
+                      f"거래량비율 상위 약 200종 중 선별된 최대 30종) 내 순위 — 전체 시장 전수 스캔 "
+                      f"아님 · 조회 시각 {st.session_state.get('nxt_live_time', '미확인')}({_src_txt})")
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            with _c1:
+                _dir_filter = st.selectbox("정렬 기준", ["상승률 상위", "하락률 상위", "변동폭 절대값 상위"],
+                                           key="surge_news_dir_filter")
+            with _c2:
+                _period = st.selectbox("기간", ["당일", "최근 3일", "최근 5일"], key="surge_news_period")
+            with _c3:
+                _hide_market_wide = st.checkbox("시황 숨김", value=True, key="surge_news_hide_mw")
+            with _c4:
+                _after_hours_only = st.checkbox("정규장 마감 후 기사만", value=False, key="surge_news_ah_only")
+            _c5, _c6 = st.columns(2)
+            with _c5:
+                _direct_only = st.checkbox("직접 재료만", value=False, key="surge_news_direct_only")
+            with _c6:
+                _include_sector = st.checkbox("업종 뉴스 포함", value=True, key="surge_news_include_sector")
+
+            if _dir_filter == "상승률 상위":
+                _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"], reverse=True)[:10]
+            elif _dir_filter == "하락률 상위":
+                _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"])[:10]
+            else:
+                _surge_top10 = sorted(_surge_rows, key=lambda r: abs(r["chg"]), reverse=True)[:10]
+
+            _period_days = {"당일": 0, "최근 3일": 3, "최근 5일": 5}[_period]
+            _now_kst = datetime.utcnow() + timedelta(hours=9)
+            _period_start = _now_kst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=_period_days)
+
+            _news_cache = st.session_state.setdefault("surge_news_cache", {})
+            _today_key = _now_kst.strftime("%Y%m%d")
+
             for r in _surge_top10:
-                with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
-                    _sec = mw._sector_name(tok, key, sec, r["code"]) or "업종 미확인"
-                    _heads = mw._news_headlines(r["code"], n=3)
-                st.markdown(f"**{r['name']}**({r['code']}) {r['chg']:+.1f}% · 🏷️ {_sec}")
-                if _heads:
-                    for h in _heads:
-                        _meta = " · ".join(x for x in (h.get("date"), h.get("source")) if x)
-                        _line = f"· {h['title']}" + (f" ({_meta})" if _meta else "")
-                        if h.get("market_wide"):
-                            # [지시서 P0-8] 종목 고유 재료가 아니라 전체 시황 기사 — 회색으로 구분해
-                            # "이 종목만의 상승 이유"와 섞여 보이지 않게 함(값 판단엔 안 쓰고 표시만).
-                            st.markdown(f"<span style='color:gray'>{_line} (시황)</span>",
-                                        unsafe_allow_html=True)
-                        else:
-                            st.caption(_line)
+                _ck = (r["code"], _today_key)
+                if _ck not in _news_cache:
+                    with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
+                        _official_sector = mw._sector_name(tok, key, sec, r["code"]) or None
+                        _articles, _diag = mw._stock_news_detail(r["code"], r["name"], n=10)
+                    _news_cache[_ck] = {"sector": _official_sector, "articles": _articles, "diag": _diag}
+                _cached = _news_cache[_ck]
+                _official_sector = _cached["sector"] or "업종 미확인"
+                _all_articles, _diag = _cached["articles"], _cached["diag"]
+                _biz_tags = mw._business_tags(r["name"])
+                _theme_tags = mw._today_theme_tags(_all_articles)
+
+                st.markdown(f"**{r['name']}**({r['code']}) {r['chg']:+.1f}%")
+                _tagline = f"공식 업종: {_official_sector} · 사업 태그: " + (
+                    "·".join(_biz_tags) if _biz_tags else "미확인")
+                if _theme_tags:
+                    _tagline += f" · 당일 연관 테마(뉴스상 연관 테마): {'·'.join(_theme_tags)}"
+                st.caption(_tagline)
+
+                if not _diag.get("ok"):
+                    st.error(f"뉴스 수집 실패 — {_diag.get('error', '원인 미확인')}(이전 조회 결과와 구분 표시)")
+                    continue
+
+                # 필터 적용(화면 표시에만 — 원본 _all_articles는 경고 영역·더보기에서 그대로 사용)
+                _shown = _all_articles
+                if _hide_market_wide:
+                    _shown = [a for a in _shown if a["relevance_type"] != "시황"]
+                if not _include_sector:
+                    _shown = [a for a in _shown if a["relevance_type"] != "업종"]
+                if _direct_only:
+                    _shown = [a for a in _shown if a["relevance_type"] == "직접"]
+                if _after_hours_only:
+                    _shown = [a for a in _shown if a.get("market_session") == "정규장 마감 후"]
+                _shown = [a for a in _shown if not a.get("published_at") or a["published_at"] >= _period_start]
+
+                st.markdown(f"*관련 재료 요약*: {mw._news_relation_summary(_shown or _all_articles, r['name'])}")
+
+                _has_direct = any(a["relevance_type"] == "직접" for a in _all_articles)
+                if not _has_direct:
+                    st.caption("확인된 회사 직접 재료 없음")
+
+                # [지시서 5번] 악재·혼합 재료를 호재 아래로 숨기지 말 것 — 상위 3건 밖에 있어도
+                # 직접 재료 중 부정/혼합 방향은 별도 경고 영역에서 노출.
+                _warn = [a for a in _all_articles if a["relevance_type"] == "직접"
+                        and a["direction"] in ("Negative", "Mixed") and a not in _shown[:3]]
+                if _warn:
+                    st.warning("⚠️ 직접 재료 중 부정/혼합 방향 기사(아래 목록 밖에 있어 놓치기 쉬움)")
+                    for a in _warn:
+                        _render_news_article(a)
+
+                if _shown:
+                    for a in _shown[:3]:
+                        _render_news_article(a)
+                    if len(_shown) > 3:
+                        with st.expander(f"관련 뉴스 더보기 (총 {len(_shown)}건 중 최대 10건)"):
+                            for a in _shown[3:10]:
+                                _render_news_article(a)
+                elif _all_articles:
+                    st.caption("현재 필터 조건에 맞는 기사 없음(필터를 조정해보세요)")
                 else:
-                    st.caption("· 관련 뉴스 헤드라인 확인 안 됨")
+                    st.caption("· 관련 뉴스 확인 안 됨")
+                st.markdown("---")
 
         if st.session_state.get("nxt_live_flow"):
             st.markdown("##### 💰 수급 상위 (이 순간 기준)")

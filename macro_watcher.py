@@ -2854,54 +2854,334 @@ _NEWS_DATE_KEYS = ("datetime", "pubDate", "ptDateTime", "regDt", "writeDate", "d
 _NEWS_SOURCE_KEYS = ("officeName", "office", "press", "source", "provider")
 
 
-def _news_headlines(code, n=3):
-    """[V26.28] 종목 뉴스 N건 — 대시보드 "전일대비 +15%↑ 종목 상승이유" 표시용.
-    _news_grade와 같은 네이버 API를 쓰지만, _news_grade는 S/A/T/none 등급 판정 + 일당 캐시만
-    반환해 실제 헤드라인 텍스트를 못 보여줌 — 사람이 읽을 제목 원문이 필요해 별도 함수로 분리
-    (등급 캐시 로직과 섞이면 "그날 가장 강한 등급"과 "최신 헤드라인"이 서로 다른 시점을 가리킬
-    수 있어 일부러 독립시킴). 실패 시 빈 리스트.
-    [지시서 P0-8] 사용자가 "상승이유" 헤드라인에 기사 날짜·출처가 없어 최신성·신뢰도를 판단하기
-    어렵다고 지적 — 반환 형식을 bare 문자열에서 {"title","date","source","market_wide"} dict로
-    확장. 이 API는 비공식(공식 문서 없음)이라 날짜·출처 필드명이 확정돼 있지 않음 — 흔히 쓰이는
-    후보 키 이름들(_NEWS_DATE_KEYS/_NEWS_SOURCE_KEYS)을 모두 시도해보고, 전부 없으면 None으로
-    그냥 넘어감(헤드라인 자체는 기존처럼 항상 나오고, 날짜·출처만 "확인 안 됨"으로 표시되는 것으로
-    degrade — 필드명 추측이 틀려도 기존 기능이 깨지지 않도록 함). market_wide: 종목 고유 재료가
-    아니라 전체 시황(코스피·환율·금리 등)을 다루는 기사인지 제목 키워드로 판별(_NEWS_MARKET_WIDE_KW)
-    — 대시보드에서 이런 기사는 회색으로 구분 표시해 "이 종목만의 상승 이유"와 섞이지 않게 함."""
-    articles = []
+# ════════════════════════════════════════════════════════════════════════════
+# [V26.54] 7.110 — "등락률 상위 10종목 — 등락 관련 뉴스 · 섹터" 전면 개선(사용자 지시서, 15섹션).
+# _news_headlines(제목/날짜원문/출처/시황이진분류만 반환, URL 없음, 최신 3건 고정)를 대체 —
+# 이 화면 전용이었던 단일 호출부(quant_dashboard.py)만 교체 대상이고, 기존 순위산출·종배추천
+# 로직(check_nxt_premium_pick 등)·다른 뉴스 기능(_news_grade·_gemini_stock_news_verdict·
+# _naver_ranking_news·_rss_news·evening_news)은 전부 미변경.
+#
+# 조사 결과 반영한 설계 제약(추측 금지 원칙 — 확인 안 된 건 확인 안 됐다고 표시):
+#   · 이 비공식 API(m.stock.naver.com)는 제목만 주고 본문을 안 줌 → classification_basis는
+#     항상 "title"(지시서 4번 "본문 확인 불가하면 제목 기준 분류 표시").
+#   · 공식 네이버 뉴스 검색 API(_naver_news, originallink/link 필드 보장)는 이 코드베이스에서
+#     이미 "스코프 막힘(401 영구)"로 판명돼 check_evening_news가 쓰지 않음(macro_watcher.py 2179행
+#     주석) — 되살려 쓰지 않음. 이 비공식 API가 URL 필드를 실제로 주는지는 라이브 미검증이라,
+#     흔히 쓰이는 후보 키들을 시도해보고 못 찾으면 "링크 미확인"으로 degrade(지시서 3번 — URL을
+#     생성·추정하지 말 것. officeId+articleId로 URL을 조립하는 것도 "생성"에 해당하므로 안 함).
+#   · 제목 유사도 기반 사건 그룹핑은 "서로 다른 뉴스를 합치지 말 것"(지시서 8번)과 상충할 위험이
+#     커서 구현 안 함 — URL/officeId+articleId/완전 동일 제목일 때만 같은 사건으로 묶음(보수적).
+
+_NEWS_URL_KEYS = ("originallink", "originalLink", "link", "url", "landingUrl", "articleUrl",
+                  "officeUrl", "mobileUrl", "pcLink", "contentUrl")
+_NEWS_DIGEST_KW = ("다이제스트", "모닝브리프", "공시모음", "오늘의 공시", "한눈에", "데일리 브리핑",
+                   "이 시각 주요뉴스", "마켓인덱스", "오늘의 증시", "주요뉴스 브리핑", "종목뉴스 모음")
+_NEWS_DIRECT_KW = ("공시", "계약", "수주", "낙찰", "인수", "합병", "특허", "승인", "허가", "임상",
+                   "흑자전환", "적자전환", "역대 최대", "역대최대", "잠정실적", "영업이익", "당기순이익",
+                   "전환사채", "유상증자", "무상증자", "자사주", "신규 수주", "공급계약", "양산",
+                   "단독 공급", "투자 유치", "지분 인수")
+_NEWS_SURGE_KW = ("급등", "급락", "강세", "약세", "특징주", "강보합", "약보합", "상한가", "하한가",
+                  "신고가", "단기과열")
+_NEWS_SECTOR_MARK_KW = ("관련주", "수혜주", "테마주", "관련 기업", "관심종목", "밸류체인")
+_NEWS_POSITIVE_KW = ("역대 최대", "역대최대", "흑자전환", "수주", "체결", "공급계약", "승인", "허가",
+                     "출시", "달성", "증가", "확대", "급증", "신고가", "호재", "인수", "낙찰",
+                     "투자 유치")
+_NEWS_NEGATIVE_KW = ("적자", "감소", "하락", "소송", "제재", "리콜", "결함", "유출", "횡령",
+                     "거래정지", "상장폐지", "관리종목", "급락", "부진", "경고", "악재", "불확실",
+                     "과징금", "구속")
+_NEWS_HEDGE_KW = ("검토", "추진", "유력", "기대", "전망", "가능성", "타진", "예정")
+_NEWS_MIXED_MARK_KW = ("전환사채", "유상증자", "무상증자", "CB ", "희석")
+_RELEVANCE_RANK = {"직접": 0, "업종": 2, "등락보도": 3, "시황": 4, "낮은관련성": 5}
+# [9번] 사용자가 지시서에서 직접 예시로 든 종목만 우선 포함(확신 가능한 것만, 종목코드 대신
+# 종목명으로 매칭 — 코드를 잘못 기억해 엉뚱한 종목에 태그가 붙는 위험을 피함). 나머지 전부
+# "사업 태그 미확인"으로 비워둠(모르는 걸 추정해서 채우지 않음 — 목록은 사용자가 종목을 더
+# 지정해줄 때마다 늘림).
+_BUSINESS_TAGS_BY_NAME = {
+    "삼성SDI": ("배터리", "ESS"),
+    "HMM": ("해운", "컨테이너 운임"),
+    "에이피알": ("뷰티", "홈뷰티기기"),
+    "대한제강": ("철강", "철근"),
+    "가온전선": ("전선", "전력 인프라"),
+}
+
+
+def _market_session_tag(dt):
+    """장전/장중/장후 태그 — KST 정규장 09:00~15:30 경계(이 코드베이스 다른 곳(예: _reg =
+    (9*60) <= m <= (15*60+30), macro_watcher.py 여러 곳)와 동일 경계 재사용). dt는 KST
+    naive datetime. 반환: "정규장 전"/"정규장 중"/"정규장 마감 후"."""
+    m = dt.hour * 60 + dt.minute
+    if m < 9 * 60:
+        return "정규장 전"
+    if m <= 15 * 60 + 30:
+        return "정규장 중"
+    return "정규장 마감 후"
+
+
+def _parse_news_dt(raw):
+    """[지시서 7번] 기사 원문 날짜 문자열(포맷 불확정 — 비공식 API) → KST naive datetime.
+    실패 시 None(절대 추측 안 함 — 확인되지 않는 날짜는 호출부가 "게시 시각 미확인"으로 표시).
+    사용자가 실제로 본 "202610141738"(구분자 없는 12자리 yyyyMMddHHMM) 포맷과 14자리(초 포함)
+    버전을 최우선 시도하고, 이어서 흔한 구분자 포맷·ISO8601·RFC822(pubDate)를 순서대로 시도."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.isdigit() and len(s) in (14, 12, 8):
+        _fmt = {14: "%Y%m%d%H%M%S", 12: "%Y%m%d%H%M", 8: "%Y%m%d"}[len(s)]
+        try:
+            return datetime.datetime.strptime(s, _fmt)
+        except ValueError:
+            pass
+    _iso = s[:-1] + "+00:00" if s.endswith("Z") else s
     try:
-        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={n}&page=1",
+        _d = datetime.datetime.fromisoformat(_iso)
+        if _d.tzinfo is not None:
+            _d = _d.astimezone(datetime.timezone(datetime.timedelta(hours=9))).replace(tzinfo=None)
+        return _d
+    except ValueError:
+        pass
+    for _fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.datetime.strptime(s, _fmt)
+        except ValueError:
+            continue
+    try:
+        from email.utils import parsedate_to_datetime as _pdt
+        _d = _pdt(s)
+        if _d is not None:
+            if _d.tzinfo is not None:
+                _d = _d.astimezone(datetime.timezone(datetime.timedelta(hours=9))).replace(tzinfo=None)
+            return _d
+    except Exception:
+        pass
+    return None
+
+
+def _fmt_news_dt(dt):
+    """사람이 읽는 표시 포맷 — "10/14 17:38"(지시서 7번, 원래 "202610141738" 원시 포맷 대체)."""
+    return dt.strftime("%m/%d %H:%M")
+
+
+def _split_news_urls(urls):
+    """[지시서 3번] 수집된 URL 후보들(API가 실제로 준 값 그대로 — 생성·추정 없음)을 네이버
+    도메인 여부로 원문(original_url)/네이버(portal_url) 구분. http/https 스킴만 인정, 그 외
+    (예: javascript:, 상대경로)는 버림. 후보가 전혀 없으면 (None, None) — 호출부가 "링크 미확인"
+    으로 표시."""
+    import urllib.parse as _up
+    original = portal = None
+    for u in urls:
+        if not isinstance(u, str):
+            continue
+        try:
+            _p = _up.urlparse(u)
+        except Exception:
+            continue
+        if _p.scheme not in ("http", "https") or not _p.netloc:
+            continue
+        if "naver.com" in _p.netloc.lower():
+            if portal is None:
+                portal = u
+        else:
+            if original is None:
+                original = u
+    return original, portal
+
+
+def _classify_news_relevance(title, name):
+    """[지시서 4번] 제목 기준 관련성 분류 — 직접(A)/업종(B)/시황(C)/등락보도(D)/낮은관련성(E).
+    본문 접근 불가(비공식 API가 제목만 줌)라 classification_basis는 호출부에서 항상 "title"로
+    고정. 종목명이 제목에 있다는 사실만으로 "직접"을 주지 않음 — 공시·계약·실적 등 실제 '당사자'
+    행위 키워드가 같이 있어야 함(지시서: "종목명 포함만으로 직접을 부여하지 말 것"). 반환:
+    (relevance_type, evidence_text)."""
+    if any(k in title for k in _NEWS_DIGEST_KW):
+        return "낮은관련성", "다이제스트/모음성 기사 패턴 감지"
+    _name_in = bool(name) and name in title
+    _direct_hit = next((k for k in _NEWS_DIRECT_KW if k in title), None)
+    _surge_hit = next((k for k in _NEWS_SURGE_KW if k in title), None)
+    _has_sector_mark = any(k in title for k in _NEWS_SECTOR_MARK_KW)
+    _has_buzz_theme = any(any(kw in title for kw in kws) for kws in _BUZZ_THEMES.values())
+    if _direct_hit and _name_in:
+        _ev = f"직접 재료 키워드('{_direct_hit}') + 종목명 제목 포함"
+        if _surge_hit:
+            _ev += " · 등락 서술 동반"
+        return "직접", _ev
+    if _surge_hit and not _direct_hit:
+        return "등락보도", f"가격 움직임 서술('{_surge_hit}') — 원재료 미언급"
+    if _has_sector_mark or _has_buzz_theme or _direct_hit:
+        return "업종", "업종·테마 그룹 언급(종목 자신이 당사자로 직접 언급되진 않음)"
+    if any(k in title for k in _NEWS_MARKET_WIDE_KW):
+        return "시황", "전체 시장 시황 키워드(코스피/환율/금리 등)"
+    return "낮은관련성", ("종목명 언급은 있으나 직접 재료 키워드 없음" if _name_in else "종목명이 제목에 없음·관련성 약함")
+
+
+def _classify_news_direction(title, relevance_type):
+    """[지시서 6번] 방향(Positive/Negative/Mixed/Neutral/Unknown) — 관련성과 별도 필드.
+    계약체결 등 양성 키워드가 있어도 '검토/추진/유력/기대' 같은 헤지 표현이 같이 있으면 확정
+    재료로 보지 않고 Unknown(미확정)으로 내림. 전환사채·유상증자는 투자재원 확보와 희석 위험이
+    공존하므로 항상 Mixed로 고정(지시서 대주전자재료 CB 예시). 반환: (direction, certainty)
+    — certainty는 "확정"/"미확정"/"불명"(사건이 확정됐는지, 헤지 표현이 섞였는지)."""
+    _has_pos = any(k in title for k in _NEWS_POSITIVE_KW)
+    _has_neg = any(k in title for k in _NEWS_NEGATIVE_KW)
+    _has_hedge = any(k in title for k in _NEWS_HEDGE_KW)
+    _has_mixed = any(k in title for k in _NEWS_MIXED_MARK_KW)
+    if _has_mixed or (_has_pos and _has_neg):
+        return "Mixed", ("미확정" if _has_hedge else "확정")
+    if _has_pos and _has_hedge:
+        return "Unknown", "미확정"
+    if _has_pos:
+        return "Positive", "확정"
+    if _has_neg:
+        return "Negative", ("미확정" if _has_hedge else "확정")
+    if relevance_type in ("직접", "업종") and not _has_hedge:
+        return "Neutral", "확정"
+    return "Unknown", "불명"
+
+
+def _dedup_news_events(articles):
+    """[지시서 8번] 동일 기사/사건 정리 — URL 또는 officeId+articleId(네이버 기사 고유 식별자,
+    받은 그대로 식별용으로만 쓰고 URL 조립에는 쓰지 않음) 또는 완전히 동일한 제목일 때만 같은
+    사건으로 묶음. 제목 유사도(fuzzy) 매칭은 하지 않음 — 본문 없이는 "같은 사건의 다른 보도"와
+    "완전히 다른 사건"을 안전하게 구분할 수 없어서(지시서: "제목 유사도만으로 서로 다른 뉴스를
+    합치지 말 것"), 보수적으로 "정확히 같다고 확인되는 경우만" 묶음. 대표 기사(게시 시각이 가장
+    이른 것, 전부 미확인이면 첫 번째)를 고르고 event_group_id·related_report_count를 부여."""
+    groups = {}
+    order = []
+    for a in articles:
+        if a.get("original_url"):
+            key = f"url:{a['original_url']}"
+        elif a.get("portal_url"):
+            key = f"url:{a['portal_url']}"
+        elif a.get("_office_id") and a.get("_article_id"):
+            key = f"oid:{a['_office_id']}:{a['_article_id']}"
+        else:
+            key = f"title:{a['headline'].strip()}"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(a)
+    out = []
+    for key in order:
+        members = groups[key]
+        _dated = [m for m in members if m.get("published_at")]
+        rep = dict(min(_dated, key=lambda m: m["published_at"]) if _dated else members[0])
+        rep["event_group_id"] = key
+        rep["related_report_count"] = len(members)
+        out.append(rep)
+    return out
+
+
+def _news_sort_key(a):
+    """[지시서 5번] 기본 정렬 — 1)직접(확정) 2)직접(미확정/혼합 등 자금조달·리스크성) 3)업종·테마
+    4)등락 결과 보도 5)시황 6)낮은 관련성. 같은 관련성 안에서는 원문 확인 가능(링크 있음) 우선,
+    최신 게시 시각 우선(지시서: "신뢰할 수 있는 원문·공식 자료 우선 · 최신 게시 시각 우선"). 악재·
+    혼합 재료를 이 정렬로 밀어내리지 않음 — 그건 별도 경고 영역에서 처리(지시서: "숨기지 말 것")."""
+    _base = _RELEVANCE_RANK.get(a["relevance_type"], 5)
+    if a["relevance_type"] == "직접":
+        _base = 0 if a.get("certainty") == "확정" else 1
+    _has_url = 0 if (a.get("original_url") or a.get("portal_url")) else 1
+    _pub = a.get("published_at")
+    _recency = -_pub.timestamp() if _pub else 0.0
+    return (_base, _has_url, _recency)
+
+
+def _today_theme_tags(articles):
+    """[지시서 9번] 당일 연관 테마("뉴스상 연관 테마") — 이 종목의 오늘 수집 기사 제목에서
+    _BUZZ_THEMES(화제성 랭킹에 쓰는 테마 키워드 그룹, _topic_buzz와 동일 딕셔너리 재사용)와
+    겹치는 테마만 추출. 확인된 사업분류가 아니라 '오늘 뉴스 제목에 등장한 테마어'일 뿐이므로
+    라벨은 항상 "뉴스상 연관 테마"로 고정(공식 사업 태그와 혼동 안 되게)."""
+    if not articles:
+        return []
+    _blob = " ".join(a["headline"] for a in articles)
+    return [theme for theme, kws in _BUZZ_THEMES.items() if any(kw in _blob for kw in kws)]
+
+
+def _business_tags(name):
+    """[지시서 9번] 사업·테마 태그(공식 업종과 별도) — 확신 가능한 소수 종목만 수록된 수동 큐레이션
+    표(_BUSINESS_TAGS_BY_NAME). 언론이 특정 테마로 묶었다고 주력사업을 자동 추정하지 않음 — 표에
+    없으면 호출부가 "사업 태그 미확인"으로 표시."""
+    return _BUSINESS_TAGS_BY_NAME.get(name)
+
+
+def _news_relation_summary(articles, name):
+    """[지시서 10번] "관련 재료 요약" — 수집한 기사 범위 안에서만 사실 기반 한 줄 생성(LLM이
+    수치·계약 내용을 창작하지 않음 — 최상위 기사의 헤드라인을 그대로 보여주고, 관련성에 따라
+    "직접 재료 여부 미확인" 같은 사실 기반 단서만 덧붙임). 직접 재료가 없으면 그렇다고 명시."""
+    if not articles:
+        return "확인된 관련 뉴스 없음"
+    top = articles[0]
+    if top["relevance_type"] == "직접":
+        _note = "" if (top.get("original_url") or top.get("portal_url")) else " (원문 링크 미확인)"
+        return top["headline"] + _note
+    if top["relevance_type"] == "업종":
+        return f"{top['headline']} — {name}의 직접 재료 여부는 미확인"
+    return "확인된 직접 재료 없음"
+
+
+def _stock_news_detail(code, name, n=10):
+    """[7.110] "등락률 상위 10종목 — 등락 관련 뉴스 · 섹터" 전용 뉴스 수집·분류·정리 — 기존
+    _news_headlines를 대체(단일 호출부였던 quant_dashboard.py만 썼음, 다른 기능 영향 없음).
+    같은 비공식 API(m.stock.naver.com)를 쓰되: URL 후보 필드를 추가로 찾고(없으면 "링크 미확인"
+    으로 degrade — 생성·추정 안 함), 날짜 원문을 파싱해 사람이 읽는 포맷 전용으로 제공하고,
+    5단계 관련성·방향·사건 그룹을 부여하고, 지시서 5번 우선순위로 정렬해서 반환.
+    반환: (articles, diag) — articles: 지시서 13번 스키마에 맞춘 dict 리스트(사건 단위로 정리된
+    대표 기사들, 최대 n개). diag: {"ok": bool, "error": str|None} — "기사 0건"과 "수집 자체 실패"
+    를 구분하기 위함(지시서 7·14번 — 실패와 '기사 없음'을 같은 문구로 보여주지 말 것)."""
+    now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    raw = []
+    try:
+        r = requests.get(f"https://m.stock.naver.com/api/news/stock/{code}?pageSize={max(n, 20)}&page=1",
                          headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/"},
                          timeout=7)
         _j = r.json()
 
         def _walk(o):
             if isinstance(o, dict):
-                for k, v in o.items():
-                    if k in ("title", "titleText", "aiTitle") and isinstance(v, str) and v:
-                        _date = next((o[dk] for dk in _NEWS_DATE_KEYS
+                _title = next((o[k] for k in ("title", "titleText", "aiTitle")
+                               if isinstance(o.get(k), str) and o.get(k)), None)
+                if _title:
+                    _date_raw = next((o[dk] for dk in _NEWS_DATE_KEYS
                                       if isinstance(o.get(dk), str) and 0 < len(o[dk]) <= 20), None)
-                        _src = next((o[sk] for sk in _NEWS_SOURCE_KEYS
-                                     if isinstance(o.get(sk), str) and 0 < len(o[sk]) <= 20), None)
-                        articles.append({"title": v, "date": _date, "source": _src})
-                    else:
-                        _walk(v)
+                    _src = next((o[sk] for sk in _NEWS_SOURCE_KEYS
+                                if isinstance(o.get(sk), str) and 0 < len(o[sk]) <= 20), None)
+                    _urls = [o[uk] for uk in _NEWS_URL_KEYS if isinstance(o.get(uk), str) and o[uk]]
+                    raw.append({"title": _title, "date_raw": _date_raw, "source": _src, "urls": _urls,
+                               "office_id": o.get("officeId"), "article_id": o.get("articleId")})
+                for v in o.values():
+                    _walk(v)
             elif isinstance(o, list):
                 for it in o:
                     _walk(it)
         _walk(_j)
-    except Exception:
-        return []
-    seen = set()
-    out = []
-    for a in articles:
-        if a["title"] not in seen:
-            seen.add(a["title"])
-            a["market_wide"] = any(kw in a["title"] for kw in _NEWS_MARKET_WIDE_KW)
-            out.append(a)
-        if len(out) >= n:
-            break
-    return out
+    except Exception as e:
+        return [], {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if not raw:
+        return [], {"ok": True, "error": None}
+    seen_titles = set()
+    articles = []
+    for a in raw:
+        if a["title"] in seen_titles:
+            continue
+        seen_titles.add(a["title"])
+        original_url, portal_url = _split_news_urls(a["urls"])
+        pub_dt = _parse_news_dt(a["date_raw"])
+        relevance_type, evidence = _classify_news_relevance(a["title"], name)
+        direction, certainty = _classify_news_direction(a["title"], relevance_type)
+        articles.append({
+            "headline": a["title"], "publisher": a["source"],
+            "original_url": original_url, "portal_url": portal_url,
+            "published_at": pub_dt, "published_at_raw": a["date_raw"], "updated_at": None,
+            "fetched_at": now_kst, "first_seen_at": now_kst, "event_date": None,
+            "market_session": _market_session_tag(pub_dt) if pub_dt else None,
+            "relevance_type": relevance_type, "direction": direction, "certainty": certainty,
+            "classification_basis": "title", "evidence_text": evidence,
+            "confidence": ("high" if relevance_type == "직접" else
+                          "medium" if relevance_type in ("업종", "등락보도") else "low"),
+            "_office_id": a["office_id"], "_article_id": a["article_id"],
+        })
+    grouped = _dedup_news_events(articles)
+    grouped.sort(key=_news_sort_key)
+    return grouped[:n], {"ok": True, "error": None}
 
 
 def _verdict_tag(level, price_bad=False, is_bad=False, quant_basis=False):
