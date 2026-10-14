@@ -1122,7 +1122,7 @@ def render_dolpanty():
                 st.session_state["etf_raw_scan"] = mw.etf_raw_scan(tok, key, sec)
                 st.session_state["etf_agg_cache"] = {}    # 새로 수집했으니 이전 분석 캐시는 폐기
             except Exception as _eoe:
-                st.error(f"ETF 구성종목 수집 실패: {type(_eoe).__name__}")
+                st.error(f"ETF 구성종목 수집 실패: {type(_eoe).__name__}: {_eoe}")
                 st.session_state["etf_raw_scan"] = None
 
     _raw = st.session_state.get("etf_raw_scan")
@@ -1139,7 +1139,7 @@ def render_dolpanty():
                 try:
                     _agg_cache[_topn_val] = mw.etf_overlap_aggregate(_raw, tok, key, sec, top_n=_topn)
                 except Exception as _age:
-                    st.error(f"분석 범위 재계산 실패: {type(_age).__name__}")
+                    st.error(f"분석 범위 재계산 실패: {type(_age).__name__}: {_age}")
                     _agg_cache[_topn_val] = None
         _result = _agg_cache.get(_topn_val)
 
