@@ -1214,25 +1214,40 @@ def render_dolpanty():
     # 1위~10위 정도 보고싶고, 그 종목들 수급현황도 같이 볼 수 있게". 위 "지금 새로고침"과는 별개
     # 버튼으로 둠 — ETF 10종 구성종목 조회(10회) + 겹침 상위 10종 수급 조회(최대 20회)가 추가로
     # 드는데, 위 섹션만 보고 싶은 사람에게 매번 이 비용까지 강제하지 않기 위함.
+    # [V26.45] 실제로 눌러본 사용자 캡처 — 전체 혼합 랭킹으로 뽑으니 코스피200 추종 상품
+    # (KODEX 200·KODEX 레버리지·TIGER 200)이 거래대금 상위를 거의 다 차지해 "코스닥150" 하나
+    # 빼곤 전부 코스피·해외지수·합성형이었고, 겹치는 종목도 사실상 코스피200 상위 종목 재탕이
+    # 되어버림 — 사용자 지적("코스닥/코스피로 나눠야될듯") 반영해 두 계열을 따로 뽑아 각각
+    # 자기 계열 안에서 거래대금 상위 10종 + 겹침을 보여주도록 분리.
     st.subheader("🧩 상위 ETF 구성종목 겹침 분석")
-    st.caption("당일 거래대금 상위 ETF 10종의 구성종목(PDF)을 모아, 여러 ETF가 공통으로 담고 "
-               "있는 종목을 겹치는 ETF 개수 순으로 보여드립니다 — 여러 테마/섹터 ETF의 자금이 "
-               "동시에 들어갈 수 있는 종목이라는 참고용 정리이지, 매수 추천이 아닙니다.")
+    st.caption("당일 거래대금 상위 ETF 10종(코스피·코스닥 계열 각각)의 구성종목(PDF)을 모아, "
+               "여러 ETF가 공통으로 담고 있는 종목을 겹치는 ETF 개수 순으로 보여드립니다 — "
+               "여러 테마/섹터 ETF의 자금이 동시에 들어갈 수 있는 종목이라는 참고용 정리이지, "
+               "매수 추천이 아닙니다.")
     if not tok:
         st.info("KIS 키 없음 — 조회 불가")
     elif st.button("🔄 ETF 겹침 분석 새로고침", key="etf_overlap_refresh_btn"):
-        with st.spinner("거래대금 상위 ETF 10종 구성종목 조회 중... (약 30초~1분 소요)"):
-            try:
-                st.session_state["etf_overlap_result"] = mw.etf_overlap_scan(tok, key, sec)
-            except Exception as _eoe:
-                st.error(f"ETF 겹침 분석 실패: {type(_eoe).__name__}")
-                st.session_state["etf_overlap_result"] = None
+        with st.spinner("코스피·코스닥 거래대금 상위 ETF 10종씩 구성종목 조회 중... (약 1~2분 소요)"):
+            _eo_result = {}
+            for _mk in ("KOSPI", "KOSDAQ"):
+                try:
+                    _eo_result[_mk] = mw.etf_overlap_scan(tok, key, sec, market=_mk)
+                except Exception as _eoe:
+                    st.error(f"ETF 겹침 분석 실패({_mk}): {type(_eoe).__name__}")
+                    _eo_result[_mk] = None
+            st.session_state["etf_overlap_result"] = _eo_result
 
-    _etf_result = st.session_state.get("etf_overlap_result")
-    if _etf_result:
-        _etfs, _overlap = _etf_result.get("etfs") or [], _etf_result.get("overlap") or []
+    _eo_all = st.session_state.get("etf_overlap_result") or {}
+    for _mk, _mk_label in (("KOSPI", "🔵 코스피 계열"), ("KOSDAQ", "🟢 코스닥 계열")):
+        _etf_result = _eo_all.get(_mk)
+        if not _etf_result:
+            continue
+        st.markdown(f"#### {_mk_label}")
+        _etfs = _etf_result.get("etfs") or []
+        _overlap = _etf_result.get("overlap") or []
+        _diag = _etf_result.get("etf_diag") or []
         if _etfs:
-            st.markdown("**거래대금 상위 ETF 10종**")
+            st.markdown(f"**거래대금 상위 {_mk_label} ETF {len(_etfs)}종**")
             _edf = pd.DataFrame(_etfs)
             _edf.insert(0, "순위", range(1, len(_edf) + 1))
             _edf["turnover"] = (_edf["turnover"] / 1e8).round(0)
@@ -1241,7 +1256,7 @@ def render_dolpanty():
             _edf = _edf[[c for c in _ecols if c in _edf.columns]].rename(columns=_ecols)
             st.dataframe(_edf, use_container_width=True, hide_index=True)
         else:
-            st.caption("ETF 랭킹 조회 실패 — 다시 시도해 주세요.")
+            st.caption(f"{_mk_label} ETF 랭킹 조회 실패 또는 해당 없음 — 다시 시도해 주세요.")
         if _overlap:
             st.markdown("**겹치는 종목 TOP + 수급현황**")
             _odf = pd.DataFrame(_overlap)
@@ -1254,13 +1269,24 @@ def render_dolpanty():
                        "inst_eok": "기관순매수(추정)"}
             _odf = _odf[[c for c in _ocols if c in _odf.columns]].rename(columns=_ocols)
             st.dataframe(_odf, use_container_width=True, hide_index=True)
-            st.caption("겹치는ETF수 = 위 거래대금 상위 ETF 10종 중 이 종목을 구성종목으로 담고 "
-                       "있는 ETF 개수(10종 모두와 비교한 것으로, 전체 상장 ETF 기준 아님). "
+            st.caption("겹치는ETF수 = 바로 위 거래대금 상위 ETF 중 이 종목을 구성종목으로 담고 "
+                       "있는 ETF 개수(같은 계열 내에서만 비교, 전체 상장 ETF 기준 아님). "
                        "외인·기관 순매수는 증권사가 장중 주기적으로 갱신하는 당일 추정치로, "
                        "장마감 후 확정되는 수치와 다를 수 있습니다(매도율 표와 같은 종류의 추정치 "
                        "아님 — 투자자매매동향 확정치가 아니라 장중 가집계).")
         else:
             st.caption("겹치는 종목 집계 결과 없음(ETF 구성종목 조회가 전부 실패했을 수 있습니다).")
+        if _diag:
+            # [V26.45] 사용자가 "10종 중 3종만 겹침 집계에 포함됨"을 캡처로 제보 — 원인이
+            # ①인버스·레버리지·합성형처럼 애초에 종목 단위 PDF가 없는 상품 구조인지 ②이 TR의
+            # 레이트리밋 때문인지 구분할 증거를 바로 이 자리에서 보여줌(접어두는 expander로,
+            # 평소엔 안 거슬리고 문제 생기면 바로 펼쳐볼 수 있게).
+            with st.expander(f"🔍 {_mk_label} ETF별 구성종목 조회 상태(진단)"):
+                _ddf = pd.DataFrame(_diag)
+                _dcols = {"name": "ETF명", "code": "코드", "holdings_count": "구성종목 수신 건수",
+                           "reason": "비고(0건일 때만 사유 표시)"}
+                _ddf = _ddf[[c for c in _dcols if c in _ddf.columns]].rename(columns=_dcols)
+                st.dataframe(_ddf, use_container_width=True, hide_index=True)
 
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
