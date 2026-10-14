@@ -821,15 +821,21 @@ def render_dolpanty():
         st.info("KIS 키 없음")
 
     st.subheader("🌒 최근 종배픽 기록")
+    # [사용자 요청] "최근 종배픽 기록에서 종배그림자는 삭제해줘, 기록 안해도 될듯" — 다만
+    # 종배그림자(dolpanty_shadow)는 텔레그램 미발송 대조군으로 실제 기록(pick_history.json)에
+    # 남아 "청산분석"(macro_watcher.py ~1125)·"갭 분석"(~5115) 두 곳에서 승률 검증용으로
+    # 계속 쓰이고 있어, 기록 자체를 끊으면 그 검증 기능들이 대조군을 잃게 됨 — 사용자에게
+    # 확인한 결과 "기록은 유지하고 이 표에서만 안 보이게"로 확정. _KMAP(신호명 매핑)은 다른
+    # 곳(_compute_signal_stats)에서도 dolpanty_shadow를 그대로 써서 안 건드리고, 여기 필터
+    # 목록에서만 dolpanty_shadow를 제외.
     picks = [p for p in all_picks
-             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow", "dolpanty_nxtprem")]
+             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_nxtprem")]
     if not picks:
         st.caption("종배 기록 없음 — 감시를 며칠 돌린 뒤 쌓입니다.")
     else:
         df = pd.DataFrame(picks[-60:][::-1])
         df["신호"] = df["signal"].map(_KMAP).fillna(df["signal"])
         st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
-        st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
 
     render_stock_track_record()
 
