@@ -3398,7 +3398,12 @@ def _extract_advisor_market_sections(messages, sender="백용현 자문역"):
     종목진단/세션종료가 나오면 끊는다"는 단순한 규칙만 씀 — 모닝/마감브리핑을 명시적으로
     구분하려 하지 않음(마감브리핑도 자체 헤더라 여기선 그냥 하나의 구간으로 같이 잡힘 —
     _extract_advisor_closing_briefing이 그 안의 코스피/코스닥 수치를 별도로 더 정확히 뽑음).
-    반환: [{"date","tag","start_time","text"}]."""
+    반환: [{"date","tag","start_time","text"}].
+    [7.114] 헤더 판정 보강 — 콜론이 있어도 "#"에서 20자 넘게 떨어져 있으면(=콜론 앞이
+    문장 일부일 뿐인 경우) 헤더로 보지 않고, 콜론이 아예 없으면 "#" 직후 전체가 12자
+    이하이면서 문장부호가 없을 때만 헤더로 봄 — "#2차전지가 그렇습니다. 오늘 주가는 꽤
+    밀리고 있지만...~^^" 같은 평범한 답장 문장(공백은 있지만 콜론 없고 매우 김)이
+    섹션 헤더로 오인돼 전체 문장이 태그명으로 쓰이던 버그 수정(사용자 스크린샷으로 발견)."""
     out = []
     cur = None
     for m in messages:
@@ -3412,18 +3417,81 @@ def _extract_advisor_market_sections(messages, sender="백용현 자문역"):
                            "text": "\n".join(cur["parts"])})
                 cur = None
             continue
-        _is_section_hdr = _first.startswith("#") and (":" in _first or " " in _first)
+        _colon_pos = _first.find(":")
+        if _colon_pos != -1 and _colon_pos <= 20:
+            _is_section_hdr, _tag = True, _first[1:_colon_pos].strip()
+        elif (_colon_pos == -1 and " " in _first and len(_first) <= 12
+              and not any(ch in _first for ch in ".,!?~…“”\"'")):
+            _is_section_hdr, _tag = True, _first[1:].strip()
+        else:
+            _is_section_hdr = False
         if _is_section_hdr:
             if cur:
                 out.append({"date": cur["date"], "tag": cur["tag"], "start_time": cur["start_time"],
                            "text": "\n".join(cur["parts"])})
-            _tag = _first[1:].split(":", 1)[0].strip()
             cur = {"date": m["date"], "tag": _tag, "start_time": m["time"], "parts": [_text]}
         elif cur and cur["date"] == m["date"]:
             cur["parts"].append(_text)
     if cur:
         out.append({"date": cur["date"], "tag": cur["tag"], "start_time": cur["start_time"],
                    "text": "\n".join(cur["parts"])})
+    return out
+
+
+def _resolve_advisor_mention(token, master):
+    """[7.114] 해시태그 원문 토큰(조사가 바로 붙어 공백 없이 캡처되는 경우가 많음 — 예:
+    "리노공업은", "삼성SDI보다는")에서 KRX 마스터(종목명→코드)에 실제 등록된 종목명과
+    정확히 일치하거나 그 종목명이 토큰의 접두사인 가장 긴 이름을 찾아 (이름, 코드) 반환.
+    못 찾으면 (None, None) — "#반도체"/"#AI가속기"/"#매크로" 같은 섹터·주제 해시태그를
+    하드코딩 블록리스트 없이 자연스럽게 걸러냄(마스터에 그런 이름의 종목이 없으므로)."""
+    if token in master:
+        return token, master[token]
+    best = None
+    for name in master:
+        if len(name) >= 2 and token.startswith(name) and (best is None or len(name) > len(best)):
+            best = name
+    return (best, master[best]) if best else (None, None)
+
+
+def _extract_advisor_stock_mentions(messages, sender="백용현 자문역", master=None):
+    """[7.114] 사용자 피드백("종목을 찾아줘야되는거아냐??") 반영 — 종목진단(#종목명\\n긍정/
+    부정/중립적인 의견입니다)과 별개로, 마감브리핑·시장노트 등 일반 대화 전체에서 "#종목명"
+    형태로 inline 언급된 모든 종목을 찾아 모음(기존엔 날짜별 원문 텍스트로만 묻혀 있어 읽지
+    않으면 어떤 종목이 언급됐는지 알 수 없었음). 두 가지 패턴만 신뢰도 있게 인정:
+    ①"#이름(티커, ±N.NN%)" 또는 "#티커(±N.NN%)" — 국내외 종목 모두, 등락률까지 확정적으로
+    같이 나오는 경우만(예: "#샌디스크(SNDK, +6.82%)", "#RTX(+3.39%)").
+    ②순수 "#한글종목명" — KRX 마스터에 실제 등록된 이름(또는 그 접두사)과 일치할 때만 종목
+    으로 인정(예: "#삼성전자 수익권이시면" → "삼성전자"). 마스터에 없는 "#AI가속기"/"#매크로"
+    같은 주제 해시태그는 자동으로 제외됨 — 별도 블록리스트 불필요.
+    종목진단 헤더 메시지 자체는 이미 _extract_advisor_stock_calls가 다루므로 여기서는 제외
+    (중복 방지). 반환: [{"date","time","stock_name","ticker","pct","code","snippet"}]."""
+    import re as _re
+    _paren_re = _re.compile(r"#([가-힣A-Za-z0-9&·\-]+)\(([A-Za-z0-9]*)[,·]?\s*([+-]\d+\.?\d*)%\)")
+    _hashtag_re = _re.compile(r"#([가-힣A-Za-z0-9&·\-]+)")
+    master = master or {}
+    out = []
+    for m in messages:
+        if m["sender"] != sender or _is_advisor_stock_call_header(m["text"]):
+            continue
+        text = m["text"]
+        spans = []
+        for mt in _paren_re.finditer(text):
+            raw, ticker, pct = mt.group(1), mt.group(2) or None, float(mt.group(3))
+            if not ticker and raw.isupper() and raw.isalnum():
+                ticker = raw
+            out.append({"date": m["date"], "time": m["time"], "stock_name": raw, "ticker": ticker,
+                        "pct": pct, "code": master.get(raw),
+                        "snippet": text[max(0, mt.start() - 10):mt.end() + 60].strip()})
+            spans.append((mt.start(), mt.end()))
+        for mt in _hashtag_re.finditer(text):
+            if any(s <= mt.start() < e for s, e in spans):
+                continue
+            name, code = _resolve_advisor_mention(mt.group(1), master)
+            if not name:
+                continue
+            out.append({"date": m["date"], "time": m["time"], "stock_name": name, "ticker": None,
+                        "pct": None, "code": code,
+                        "snippet": text[max(0, mt.start() - 10):mt.end() + 60].strip()})
     return out
 
 
