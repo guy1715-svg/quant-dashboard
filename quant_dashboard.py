@@ -1596,6 +1596,161 @@ def _fetch_live_scan_cache(_bust):
         return None
 
 
+# ══════════════════════════════════════════
+# [7.113] 백용현 자문역 카카오톡 피드 — _git_save_live_scan/_fetch_live_scan_cache와 동일 패턴
+# (대시보드 자체가 쓰는 'main' 브랜치). 라이브 API가 아니라 사용자가 카카오톡 "대화 내보내기"
+# .txt를 주기적으로 업로드하면 그때만 파싱·병합해서 저장 — 이 파일 자체는 매 조회마다 가볍게
+# 캐시 읽기만 함.
+# ══════════════════════════════════════════
+_ADVISOR_FEED_FILE = "advisor_feed.json"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_advisor_feed(_bust):
+    """[7.113] 저장된 자문역 피드(종목진단·마감브리핑·시장노트) 읽기. 실패/없음 시 None."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/{_ADVISOR_FEED_FILE}",
+                          headers=headers, params={"ref": "main"}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _git_save_advisor_feed(payload):
+    """[7.113] 자문역 피드 저장 — _git_save_live_scan과 동일 패턴(실패해도 이 세션 화면은
+    session_state로 이미 보이므로 경고만 띄우고 넘어감)."""
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 결과는 이 기기(이 세션)에서만 유지됩니다.")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/{_ADVISOR_FEED_FILE}"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(payload, ensure_ascii=False)
+        body = {"message": f"자문역 피드 업데이트(대시보드 자동커밋) {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code not in (200, 201):
+            st.warning(f"⚠️ 저장 실패({p.status_code}) — 이 기기에서는 정상 표시되지만 다른 기기에는 반영되지 않습니다.")
+    except Exception as _e:
+        st.warning(f"⚠️ 저장 실패: {type(_e).__name__} — 이 기기에서는 정상 표시되지만 다른 기기에는 반영되지 않습니다.")
+
+
+def render_advisor_feed():
+    st.subheader("💬 백용현 자문역 피드")
+    st.caption("투자자문 단톡방 카카오톡 대화 내보내기(.txt)를 파싱해 종목진단·시장 브리핑을 "
+               "정리해 보여줍니다. 매수 신호가 아니라 의견·시장흐름 참고 자료입니다 — 본인이 "
+               "\"적합성원칙상 목표가·손절가는 말씀 못 드린다\"고 밝힌 내용 그대로입니다. "
+               "기존 종배픽·대체종배 로직과는 완전히 독립된 별도 화면입니다.")
+
+    import time as _t
+    _saved = _fetch_advisor_feed(_t.time() // 60) or {"calls": [], "closing": [], "sections": []}
+
+    _uploaded = st.file_uploader("카카오톡 대화 내보내기 업로드 (.txt) — 주기적으로 다시 내보내 "
+                                 "올려주시면 새로 추가된 부분만 반영됩니다", type=["txt"])
+    if _uploaded is not None and st.button("📥 파싱해서 반영", key="advisor_feed_import_btn"):
+        with st.spinner("대화 파싱 중..."):
+            _raw = _uploaded.getvalue()
+            try:
+                _text = _raw.decode("utf-8")
+            except UnicodeDecodeError:
+                _text = _raw.decode("cp949", errors="replace")
+            _messages = mw._parse_kakao_export(_text)
+            _new_calls = mw._extract_advisor_stock_calls(_messages)
+            _new_closing = mw._extract_advisor_closing_briefing(_messages)
+            _new_sections = mw._extract_advisor_market_sections(_messages)
+            _master = mw._krx_master_cached()
+            for c in _new_calls:
+                c["code"] = mw._krx_name_to_code(c["stock_name"], _master)
+
+            def _merge(old, new, keyfn):
+                _by_key = {keyfn(r): r for r in old}
+                for r in new:
+                    _by_key[keyfn(r)] = r   # 재업로드 시 같은 키는 최신 내용으로 덮어씀
+                return list(_by_key.values())
+
+            _merged = {
+                "calls": _merge(_saved.get("calls") or [], _new_calls,
+                                lambda r: (r["date"], r["time"], r["stock_name"])),
+                "closing": _merge(_saved.get("closing") or [], _new_closing, lambda r: r["date"]),
+                "sections": _merge(_saved.get("sections") or [], _new_sections,
+                                   lambda r: (r["date"], r["tag"], r["start_time"])),
+            }
+            st.session_state["advisor_feed"] = _merged
+            _git_save_advisor_feed(_merged)
+            _fetch_advisor_feed.clear()
+            st.success(f"반영 완료 — 종목진단 {len(_new_calls)}건·마감브리핑 {len(_new_closing)}건·"
+                      f"시장노트 {len(_new_sections)}건을 이번 파일에서 찾았습니다 "
+                      f"(전체 누적: 종목진단 {len(_merged['calls'])}건).")
+
+    _data = st.session_state.get("advisor_feed") or _saved
+    _calls, _closing, _sections = _data.get("calls") or [], _data.get("closing") or [], _data.get("sections") or []
+    if not _calls and not _closing and not _sections:
+        st.info("아직 업로드된 피드가 없습니다 — 위에서 카카오톡 대화 내보내기(.txt)를 올려주세요.")
+        return
+
+    _dir_label = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Neutral": "⚪ 중립"}
+    st.markdown("##### 📋 종목진단")
+    if _calls:
+        _dates = sorted({c["date"] for c in _calls}, reverse=True)
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _dsel = st.selectbox("날짜", ["전체"] + _dates, key="advisor_call_date")
+        with _c2:
+            _dirsel = st.multiselect("방향", ["Positive", "Negative", "Neutral"],
+                                     default=["Positive", "Negative", "Neutral"],
+                                     format_func=lambda x: _dir_label.get(x, x), key="advisor_call_dir")
+        _shown = [c for c in _calls if (_dsel == "전체" or c["date"] == _dsel) and c["direction"] in _dirsel]
+        _shown.sort(key=lambda c: (c["date"], c["time"]), reverse=True)
+        st.caption(f"{len(_shown)}건 표시 — 코드가 비어있으면 KRX 마스터파일에서 종목명이 "
+                   "정확히 일치하지 않아 \"코드 미확인\"으로 둔 것입니다(추정해서 채우지 않음).")
+        _cdf = pd.DataFrame(_shown)
+        if not _cdf.empty:
+            _cdf["방향"] = _cdf["direction"].map(_dir_label).fillna(_cdf["direction"])
+            _cdf["코드"] = _cdf.get("code", pd.Series(dtype=object)).fillna("코드 미확인")
+            _cols = {"date": "날짜", "time": "시각", "stock_name": "종목명", "코드": "코드",
+                      "방향": "방향", "reasoning": "사유"}
+            _cdf = _cdf[[c for c in _cols if c in _cdf.columns]].rename(columns=_cols)
+            st.dataframe(_cdf, use_container_width=True, hide_index=True)
+    else:
+        st.caption("종목진단 데이터 없음")
+
+    st.markdown("##### 📊 마감브리핑(코스피/코스닥)")
+    if _closing:
+        _cb = sorted(_closing, key=lambda c: c["date"], reverse=True)
+        _cbdf = pd.DataFrame(_cb)
+        _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if x is not None else "미확인")
+        _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if x is not None else "미확인")
+        st.dataframe(_cbdf[["date", "코스피", "코스닥"]].rename(columns={"date": "날짜"}),
+                    use_container_width=True, hide_index=True)
+        st.caption("코스피/코스닥 수치는 원문 표현이 날마다 달라 일부만 자동 추출됩니다(숫자가 "
+                   "없으면 \"미확인\" — 아래 시장노트에서 원문을 직접 확인하세요).")
+    else:
+        st.caption("마감브리핑 데이터 없음")
+
+    st.markdown("##### 🗒️ 시장노트(모닝브리핑 등, 날짜별)")
+    if _sections:
+        _sec_dates = sorted({s["date"] for s in _sections}, reverse=True)
+        _sdsel = st.selectbox("날짜 선택", _sec_dates, key="advisor_section_date")
+        _today_sections = sorted([s for s in _sections if s["date"] == _sdsel], key=lambda s: s["start_time"])
+        for s in _today_sections:
+            with st.expander(f"[{s['tag']}] {s['start_time']}"):
+                st.text(s["text"])
+    else:
+        st.caption("시장노트 데이터 없음")
+
+
 _TRACK_RECORD_MAX_CODES = 150     # 종목 예산 한도(1단계·2단계 공통) — 사용자 제보("너무 느림")
 _TRACK_RECORD_WORKERS = 5         # 동시 KIS 조회 스레드 수 — 감시 프로세스도 같은 앱키로 동시에
                                    # API를 쓸 수 있어, 체감 속도 개선은 충분하면서 KIS 초당 호출
@@ -2046,7 +2201,7 @@ def render_settings():
 # ══════════════════════════════════════════
 tabs = st.tabs(["🏠 오늘 현황", "📊 성과 분석", "🌙 시장 복기", "💼 보유종목",
                 "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너",
-                "🔬 종목 분석기", "📝 분석 저널", "⚙️ 설정·진단"])
+                "🔬 종목 분석기", "💬 자문역 피드", "📝 분석 저널", "⚙️ 설정·진단"])
 
 with tabs[0]:
     render_home()
@@ -2065,8 +2220,10 @@ with tabs[6]:
 with tabs[7]:
     render_stock_analyzer()
 with tabs[8]:
-    render_journal()
+    render_advisor_feed()
 with tabs[9]:
+    render_journal()
+with tabs[10]:
     render_settings()
 
 st.divider()
