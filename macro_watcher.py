@@ -3226,6 +3226,265 @@ def _stock_news_detail(code, name, n=10):
     return grouped[:n], {"ok": True, "error": None}
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# [7.113] 백용현 자문역 카카오톡 피드 — 사용자가 참여 중인 투자자문 단톡방의 대화 내보내기
+# (.txt)를 파싱해 ①종목진단(#종목명 + 긍정/부정/중립적인 의견입니다 + 근거문단) ②모닝브리핑
+# (해외시황, 섹터별 코멘트)·마감브리핑(코스피/코스닥 등락)을 구조화된 데이터로 추출.
+# 라이브 API가 아니라 사용자가 주기적으로 대화를 다시 내보내 대시보드에 올려주는 배치
+# 파이프라인 — 날짜·시각·내용 기준으로 중복 제거해 여러 번 재업로드해도 안전.
+# 실제 대화 원문 확인 결과 본인이 "적합성원칙에 따라 목표가·손절가는 말씀 못 드린다"고 명시
+# 했음(2026-11-03 내보내기 8385줄) — 매수 신호가 아니라 의견/시장흐름 참고 자료로만 다룸.
+# 기존 종배픽·대체종배 로직과는 완전히 독립(사용자 결정 — 당장은 교차 연동 안 함).
+
+_ADVISOR_SENTIMENT_MAP = {"긍정적인 의견입니다": "Positive", "부정적인 의견입니다": "Negative",
+                          "중립적인 의견입니다": "Neutral"}
+_ADVISOR_SESSION_END_KW = ("마치겠습니다", "신청은 마감했어요", "선착순으로 종목진단 신청")
+_KRX_MASTER_URLS = {
+    "코스피": "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
+    "코스닥": "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
+}
+KRX_MASTER_CACHE_FILE = os.path.join(BASE, "krx_master_cache.json")
+
+
+def _parse_kakao_export(text):
+    """[7.113] 카카오톡 "대화 내보내기" .txt 파싱 — 날짜 구분선("--------------- Wednesday,
+    September 16, 2026 ---------------") + "[발신자] [시간] 내용" 메시지 시작줄 + 후속 줄(다음
+    메시지 시작 전까지 같은 메시지의 연속)로 이뤄진 표준 내보내기 포맷. 반환:
+    [{"date":"YYYY-MM-DD","time":"2:06 PM","sender":str,"text":str}, ...] — text는 한
+    논리적 메시지 전체를 줄바꿈으로 이어붙인 것(여러 줄짜리 메시지 지원)."""
+    import re as _re
+    _msg_re = _re.compile(r"^\[([^\]]+)\] \[(\d{1,2}:\d{2} (?:AM|PM))\] (.*)$")
+    _date_re = _re.compile(r"^-{3,}\s*\w+,\s*(\w+)\s+(\d{1,2}),\s*(\d{4})\s*-{3,}$")
+    _month = {"January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
+              "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12}
+    out = []
+    cur_date = None
+    cur = None
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        _dm = _date_re.match(line.strip())
+        if _dm:
+            if cur:
+                out.append(cur)
+                cur = None
+            _mon = _month.get(_dm.group(1))
+            if _mon:
+                cur_date = f"{_dm.group(3)}-{_mon:02d}-{int(_dm.group(2)):02d}"
+            continue
+        _mm = _msg_re.match(line)
+        if _mm:
+            if cur:
+                out.append(cur)
+            cur = {"date": cur_date, "time": _mm.group(2), "sender": _mm.group(1), "text": _mm.group(3)}
+        elif cur is not None:
+            cur["text"] += "\n" + line
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _is_advisor_stock_call_header(text):
+    """[7.113] 메시지 첫 줄이 종목진단 헤더(공백·콜론 없는 "#종목명")이고 둘째 줄(공백 아닌 첫
+    줄)이 긍정/부정/중립적인 의견입니다 중 하나인지 — 모닝브리핑의 "#메모리: ..."(콜론 포함)나
+    "#주요 이슈"(공백 포함) 같은 제목성 해시태그와 자연스럽게 구분됨(둘 다 조건에 안 걸림)."""
+    lines = text.split("\n")
+    _first = lines[0]
+    if not _first.startswith("#") or " " in _first or ":" in _first:
+        return False
+    _rest = [l for l in lines[1:] if l.strip()]
+    return bool(_rest) and _rest[0].strip().rstrip(".~ ") in _ADVISOR_SENTIMENT_MAP
+
+
+def _is_advisor_session_end(text):
+    return any(k in text for k in _ADVISOR_SESSION_END_KW)
+
+
+def _extract_advisor_stock_calls(messages, sender="백용현 자문역"):
+    """[7.113] 종목진단 추출. 반환: [{"date","time","stock_name","direction","reasoning"}]
+    — direction은 Positive/Negative/Neutral(7.110 뉴스 방향 분류와 동일 영문 표기 재사용)."""
+    out = []
+    for m in messages:
+        if m["sender"] != sender or not _is_advisor_stock_call_header(m["text"]):
+            continue
+        lines = m["text"].split("\n")
+        _name = lines[0][1:].strip()
+        if not _name:
+            continue
+        _rest = [l for l in lines[1:] if l.strip()]
+        _direction = _ADVISOR_SENTIMENT_MAP[_rest[0].strip().rstrip(".~ ")]
+        out.append({"date": m["date"], "time": m["time"], "stock_name": _name,
+                    "direction": _direction, "reasoning": "\n".join(_rest[1:]).strip()})
+    return out
+
+
+def _parse_index_pct(text):
+    """[7.113] 마감브리핑 문장에서 코스피/코스닥 등락률(%) 베스트에포트 추출 — 실제 원문
+    표현이 날마다 제각각이라(부호 명시 "-0.04%", "숫자% 상승/하락"이 지수명과 떨어져 있는
+    경우 — "코스닥은 장중 약세를 이겨내고 결국 0.38% 상승으로 마무리했고, 코스피는 0.27%
+    하락" 식 — 지수 레벨 뒤 괄호 안 부호, 아예 %를 안 주는 날 등) 확인되는 패턴만 쓰고
+    나머지는 None(추측 안 함 — 원문 text는 항상 같이 보존되므로 호출부에서 사람이 직접
+    읽을 수 있음). 우선순위:
+    ①"숫자%(상승|하락)"가 나오면 그 앞에서 가장 가까이 등장한 지수명(코스피/코스닥)에 배정
+      (지수명과 숫자 사이에 다른 말이 끼어 있어도 대응 — 두 지수가 반대로 움직인 날도 처리)
+    ②아직 못 찾은 지수는 "지수 레벨(+-N%)" 괄호 패턴("코스피는 5,638.34(+3.09%)" 식)
+    ③아직 못 찾은 지수는 숫자 자체에 부호(+/-)가 이미 있는 경우
+    ④그래도 못 찾았으면, "코스피"/"코스닥"이 실제로 들어있는 문단 안에서만 상승/하락 단어가
+    정확히 한 종류만 등장할 때 두 지수 모두에 적용(전체 본문으로 넓히면 뒷부분 다른 맥락의
+    상승/하락 단어 때문에 거짓 모호성이 생겨 그 문단으로 범위를 좁힘)."""
+    import re as _re
+    _blob = text.replace("\n", " ")
+    # 지수 수치는 보통 헤더("#YYMMDD 마감브리핑") 다음 문단에 나오지, 헤더 자신의 문단(첫
+    # \n\n 조각)에는 없음 — "코스피"가 실제로 들어있는 문단을 찾아 그 범위로만 애매성 체크를
+    # 좁힘(전체 본문으로 넓히면 뒷부분 다른 맥락의 "하락" 같은 단어 때문에 거짓 모호성 발생).
+    _paras = text.split("\n\n")
+    _report_para = next((p.replace("\n", " ") for p in _paras if "코스피" in p or "코스닥" in p), _blob)
+
+    def _nearest_index_before(pos, blob):
+        _k, _q = blob.rfind("코스피", 0, pos), blob.rfind("코스닥", 0, pos)
+        if _k == -1 and _q == -1:
+            return None
+        return "코스피" if _k > _q else "코스닥"
+
+    result = {}
+    for _m in _re.finditer(r"([+-]?[\d.]+)\s*%\s*(상승|하락)", _report_para):
+        _idx = _nearest_index_before(_m.start(), _report_para)
+        if _idx and _idx not in result:
+            _v = abs(float(_m.group(1)))
+            result[_idx] = -_v if _m.group(2) == "하락" else _v
+    for _idx_name in ("코스피", "코스닥"):
+        if _idx_name in result:
+            continue
+        _m = _re.search(_idx_name + r"[는은이가]?\s*[\d,]+\.?\d*\s*\(([+-][\d.]+)%\)", _blob)
+        if _m:
+            result[_idx_name] = float(_m.group(1))
+    for _idx_name in ("코스피", "코스닥"):
+        if _idx_name in result:
+            continue
+        _m = _re.search(_idx_name + r"[는은이가]?\s*([+-][\d.]+)\s*%", _blob)
+        if _m:
+            result[_idx_name] = float(_m.group(1))
+    if "코스피" not in result or "코스닥" not in result:
+        _dirs = set(_re.findall(r"상승|하락", _report_para))
+        if len(_dirs) == 1:
+            _sign = -1 if "하락" in _dirs else 1
+            for _idx_name in ("코스피", "코스닥"):
+                if _idx_name in result:
+                    continue
+                _m = _re.search(_idx_name + r"[는은이가]?\s*([+-]?[\d.]+)\s*%", _report_para)
+                if _m:
+                    result[_idx_name] = _sign * abs(float(_m.group(1)))
+    return result.get("코스피"), result.get("코스닥")
+
+
+def _extract_advisor_closing_briefing(messages, sender="백용현 자문역"):
+    """[7.113] "#YYMMDD 마감브리핑" 헤더 메시지(코스피/코스닥 등락률 + 섹터 코멘트 전체)를
+    구조화. 반환: [{"date","kospi_pct","kosdaq_pct","text"}]."""
+    import re as _re
+    _hdr_re = _re.compile(r"^#(\d{6}) 마감브리핑")
+    out = []
+    for m in messages:
+        if m["sender"] != sender or not _hdr_re.match(m["text"]):
+            continue
+        kospi, kosdaq = _parse_index_pct(m["text"])
+        out.append({"date": m["date"], "kospi_pct": kospi, "kosdaq_pct": kosdaq, "text": m["text"]})
+    return out
+
+
+def _extract_advisor_market_sections(messages, sender="백용현 자문역"):
+    """[7.113] 모닝브리핑(해외시황)의 섹터/주제별 구간 추출 — "#구분: 설명"(예: "#메모리: ...")
+    또는 "#주요 이슈"/"#특징 섹터" 같은 제목성 bare 해시태그(종목진단 헤더가 아닌 것)를 새
+    구간 시작으로 보고, 다음 구간 헤더·종목진단 헤더·세션 종료 멘트가 나오기 전까지 그 뒤
+    메시지들(같은 날짜)을 이어붙임. 완벽한 세션 경계 판정 대신 "구간 헤더가 나오면 새로 시작,
+    종목진단/세션종료가 나오면 끊는다"는 단순한 규칙만 씀 — 모닝/마감브리핑을 명시적으로
+    구분하려 하지 않음(마감브리핑도 자체 헤더라 여기선 그냥 하나의 구간으로 같이 잡힘 —
+    _extract_advisor_closing_briefing이 그 안의 코스피/코스닥 수치를 별도로 더 정확히 뽑음).
+    반환: [{"date","tag","start_time","text"}]."""
+    out = []
+    cur = None
+    for m in messages:
+        if m["sender"] != sender:
+            continue
+        _text = m["text"]
+        _first = _text.split("\n", 1)[0]
+        if _is_advisor_stock_call_header(_text) or _is_advisor_session_end(_text):
+            if cur:
+                out.append({"date": cur["date"], "tag": cur["tag"], "start_time": cur["start_time"],
+                           "text": "\n".join(cur["parts"])})
+                cur = None
+            continue
+        _is_section_hdr = _first.startswith("#") and (":" in _first or " " in _first)
+        if _is_section_hdr:
+            if cur:
+                out.append({"date": cur["date"], "tag": cur["tag"], "start_time": cur["start_time"],
+                           "text": "\n".join(cur["parts"])})
+            _tag = _first[1:].split(":", 1)[0].strip()
+            cur = {"date": m["date"], "tag": _tag, "start_time": m["time"], "parts": [_text]}
+        elif cur and cur["date"] == m["date"]:
+            cur["parts"].append(_text)
+    if cur:
+        out.append({"date": cur["date"], "tag": cur["tag"], "start_time": cur["start_time"],
+                   "text": "\n".join(cur["parts"])})
+    return out
+
+
+def _krx_master_download():
+    """[7.113] KOSPI/KOSDAQ 전체 상장종목 마스터파일(종목명↔코드) — 한국투자증권 공식 공개
+    URL(인증 불필요, KIS 공식 예제 저장소 backtester/scripts/download_master.py와 동일 출처·
+    형식). ZIP 안 EUC-KR 고정폭 텍스트: 앞 9바이트가 단축코드(뒤 6자리가 실제 종목코드),
+    21~61바이트가 한글종목명. 종목명 → 코드 딕셔너리로 반환(동명이인 있으면 먼저 찾은 것
+    유지). 실패 시 {} — LLM 추측으로 채우지 않고 호출부가 "코드 미확인"으로 표시하게 함."""
+    import zipfile
+    from io import BytesIO
+    out = {}
+    for _mkt, _url in _KRX_MASTER_URLS.items():
+        try:
+            r = requests.get(_url, timeout=20)
+            if r.status_code != 200:
+                continue
+            try:
+                with zipfile.ZipFile(BytesIO(r.content)) as zf:
+                    content = zf.read(zf.namelist()[0])
+            except zipfile.BadZipFile:
+                content = r.content
+            for line in content.split(b"\n"):
+                if len(line) < 61:
+                    continue
+                code = line[0:9].decode("euc-kr", errors="ignore").strip()
+                name = line[21:61].decode("euc-kr", errors="ignore").strip()
+                if len(code) > 6:
+                    code = code[-6:]
+                if code.isdigit() and name and name not in out:
+                    out[name] = code
+        except Exception as e:
+            print(f"[자문역피드] KRX 마스터파일({_mkt}) 다운로드 실패: {type(e).__name__}: {e}")
+    return out
+
+
+def _krx_master_cached():
+    """[7.113] KRX 마스터파일을 매번 새로 받지 않도록 로컬에 캐시(7일 유효 — 상장폐지 등
+    드문 변경까지 실시간 반영할 필요는 없는 용도). 캐시 실패·다운로드 실패 시 {}."""
+    try:
+        with open(KRX_MASTER_CACHE_FILE, encoding="utf-8") as f:
+            _c = json.load(f)
+        if time.time() - _c.get("ts", 0) < 7 * 24 * 3600 and _c.get("map"):
+            return _c["map"]
+    except Exception:
+        pass
+    _m = _krx_master_download()
+    if _m:
+        try:
+            _atomic_write_json(KRX_MASTER_CACHE_FILE, {"ts": time.time(), "map": _m})
+        except Exception:
+            pass
+    return _m
+
+
+def _krx_name_to_code(name, master):
+    """[7.113] 종목명 → 코드 — 정확히 일치하는 경우만 인정(추측 매칭 안 함). 못 찾으면 None
+    → 호출부가 "코드 미확인"으로 표시(틀린 코드를 자신 있게 붙이는 것보다 안전)."""
+    return master.get(name.strip()) if name else None
+
+
 def _verdict_tag(level, price_bad=False, is_bad=False, quant_basis=False):
     """[V26.1] 사용자 학습 프레임(사건→전이경로→기업→가격, 재료 직접성 + 가격 자리로 A~D 판정) 반영 —
     텔레그램 신호 메시지에 한 글자 판정을 붙여 대시보드 분석저널의 '판정' 필드와 바로 대조 가능하게 함.
