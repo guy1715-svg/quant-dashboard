@@ -933,8 +933,8 @@ def render_dolpanty():
             _pkdf["쌍끌이"] = _pkdf.apply(
                 lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
                 axis=1)
-            _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
-            _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if x else None)
+            _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if pd.notna(x) and x else "—")
+            _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if pd.notna(x) and x else None)
             # [V26.39] 매도율(참고용 표시만, 점수 미반영) — 1단계.
             # [V26.40~41에서 정규장(KRX)·NXT를 분리해서 보여주려 했으나, V26.42에서 사용자가
             # 실제 캡처로 "두 컬럼이 완전히 동일한 수치"임을 확인해줌 — 원인 조사 결과
@@ -950,7 +950,7 @@ def render_dolpanty():
             # [V26.44] "매수우세%"라는 이름이 실제 매수세 우위(체결 데이터)처럼 오해될 수 있다는
             # 지적 반영 — 금융권에서 이 계산(종가의 당일 고가·저가 범위 내 위치, 0~100%)을 부르는
             # 표준 용어인 "가격위치(CLV, Close Location Value)"로 이름 변경. 값·공식은 그대로.
-            _pkdf["NXT가격위치"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if x is not None else "—")
+            _pkdf["NXT가격위치"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if pd.notna(x) else "—")
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
@@ -1009,7 +1009,7 @@ def render_dolpanty():
             _cdf["쌍끌이"] = _cdf.apply(
                 lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
                 axis=1)
-            _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
+            _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if pd.notna(x) and x else "—")
             _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
             _cdf["매도율"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
                                                                    r.get("sell_ratio_orgn")), axis=1)
@@ -1267,10 +1267,10 @@ def render_dolpanty():
                 st.markdown(f"**{label}**")
                 _df = pd.DataFrame(rows)
                 _df.insert(0, "순위", range(1, len(_df) + 1))
-                _df["foreign_eok"] = _df["foreign_eok"].map(lambda x: f"{x:+.0f}억" if x is not None else "—")
-                _df["inst_eok"] = _df["inst_eok"].map(lambda x: f"{x:+.0f}억" if x is not None else "—")
-                _df["avg_weight"] = _df["avg_weight"].map(lambda x: f"{x:.2f}%" if x is not None else "—")
-                _df["max_weight"] = _df["max_weight"].map(lambda x: f"{x:.2f}%" if x is not None else "—")
+                _df["foreign_eok"] = _df["foreign_eok"].map(lambda x: f"{x:+.0f}억" if pd.notna(x) else "—")
+                _df["inst_eok"] = _df["inst_eok"].map(lambda x: f"{x:+.0f}억" if pd.notna(x) else "—")
+                _df["avg_weight"] = _df["avg_weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
+                _df["max_weight"] = _df["max_weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
                 _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "count": "상위 10종목 기준 겹침(ETF수)",
                           "best_rank": "최고 편입순위", "avg_rank": "평균 편입순위",
                           "avg_weight": "평균 원본비중", "max_weight": "최대 원본비중",
@@ -1296,7 +1296,7 @@ def render_dolpanty():
                 if _sel:
                     _members = _opts[_sel].get("members") or []
                     _mdf = pd.DataFrame(_members)
-                    _mdf["weight"] = _mdf["weight"].map(lambda x: f"{x:.2f}%" if x is not None else "비중 미제공")
+                    _mdf["weight"] = _mdf["weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "비중 미제공")
                     _mdf["etf_selected_sum_pct"] = _mdf["etf_selected_sum_pct"].map(lambda x: f"{x:.2f}%")
                     _mdf["테마·전략"] = _mdf["etf_name"]     # ETF 상품명 그대로(임의 분류 없음)
                     _mdf["기준일"] = datetime.now().strftime("%Y-%m-%d") + "(조회 시점)"
@@ -1655,7 +1655,7 @@ def render_advisor_feed():
                "기존 종배픽·대체종배 로직과는 완전히 독립된 별도 화면입니다.")
 
     import time as _t
-    _saved = _fetch_advisor_feed(_t.time() // 60) or {"calls": [], "closing": [], "sections": []}
+    _saved = _fetch_advisor_feed(_t.time() // 60) or {"calls": [], "closing": [], "sections": [], "mentions": []}
 
     _uploaded = st.file_uploader("카카오톡 대화 내보내기 업로드 (.txt) — 주기적으로 다시 내보내 "
                                  "올려주시면 새로 추가된 부분만 반영됩니다", type=["txt"])
@@ -1673,6 +1673,7 @@ def render_advisor_feed():
             _master = mw._krx_master_cached()
             for c in _new_calls:
                 c["code"] = mw._krx_name_to_code(c["stock_name"], _master)
+            _new_mentions = mw._extract_advisor_stock_mentions(_messages, master=_master)
 
             def _merge(old, new, keyfn):
                 _by_key = {keyfn(r): r for r in old}
@@ -1686,19 +1687,51 @@ def render_advisor_feed():
                 "closing": _merge(_saved.get("closing") or [], _new_closing, lambda r: r["date"]),
                 "sections": _merge(_saved.get("sections") or [], _new_sections,
                                    lambda r: (r["date"], r["tag"], r["start_time"])),
+                "mentions": _merge(_saved.get("mentions") or [], _new_mentions,
+                                   lambda r: (r["date"], r["time"], r["stock_name"])),
             }
             st.session_state["advisor_feed"] = _merged
             _git_save_advisor_feed(_merged)
             _fetch_advisor_feed.clear()
             st.success(f"반영 완료 — 종목진단 {len(_new_calls)}건·마감브리핑 {len(_new_closing)}건·"
-                      f"시장노트 {len(_new_sections)}건을 이번 파일에서 찾았습니다 "
-                      f"(전체 누적: 종목진단 {len(_merged['calls'])}건).")
+                      f"시장노트 {len(_new_sections)}건·종목 언급 {len(_new_mentions)}건을 이번 "
+                      f"파일에서 찾았습니다 (전체 누적: 종목진단 {len(_merged['calls'])}건·"
+                      f"종목 언급 {len(_merged['mentions'])}건).")
 
     _data = st.session_state.get("advisor_feed") or _saved
     _calls, _closing, _sections = _data.get("calls") or [], _data.get("closing") or [], _data.get("sections") or []
+    _mentions = _data.get("mentions") or []
     if not _calls and not _closing and not _sections:
         st.info("아직 업로드된 피드가 없습니다 — 위에서 카카오톡 대화 내보내기(.txt)를 올려주세요.")
         return
+
+    st.markdown("##### 🔎 전체 언급 종목 모아보기")
+    st.caption("종목진단뿐 아니라 마감브리핑·시장노트 등 대화 전체에서 \"#종목명\" 형태로 "
+               "언급된 모든 종목을 모아 언급 횟수 순으로 보여줍니다 — 매번 원문을 다 읽지 않아도 "
+               "자문역이 어떤 종목을 많이/최근에 언급했는지 한눈에 찾을 수 있습니다.")
+    if _mentions:
+        from collections import defaultdict as _dd
+        _mention_dates = sorted({_mn["date"] for _mn in _mentions}, reverse=True)
+        _mdsel = st.selectbox("기간", ["전체"] + _mention_dates, key="advisor_mention_date")
+        _pool = _mentions if _mdsel == "전체" else [m for m in _mentions if m["date"] == _mdsel]
+        _by_name = _dd(list)
+        for _mn in _pool:
+            _by_name[_mn["stock_name"]].append(_mn)
+        _rows = []
+        for _name, _ms in _by_name.items():
+            _ms.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
+            _latest = _ms[0]
+            _rows.append({
+                "종목명": _name, "코드": _latest.get("code") or "코드 미확인",
+                "언급횟수": len(_ms), "최근 언급일": _latest["date"],
+                "최근 등락률": f"{_latest['pct']:+.2f}%" if _latest.get("pct") is not None else "-",
+                "최근 맥락": _latest.get("snippet", ""),
+            })
+        _rows.sort(key=lambda r: (r["언급횟수"], r["최근 언급일"]), reverse=True)
+        st.caption(f"{len(_rows)}개 종목 표시 ({_mdsel} 기준 언급 {len(_pool)}건)")
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("종목 언급 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
 
     _dir_label = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Neutral": "⚪ 중립"}
     st.markdown("##### 📋 종목진단")
@@ -1730,8 +1763,8 @@ def render_advisor_feed():
     if _closing:
         _cb = sorted(_closing, key=lambda c: c["date"], reverse=True)
         _cbdf = pd.DataFrame(_cb)
-        _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if x is not None else "미확인")
-        _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if x is not None else "미확인")
+        _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
+        _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
         st.dataframe(_cbdf[["date", "코스피", "코스닥"]].rename(columns={"date": "날짜"}),
                     use_container_width=True, hide_index=True)
         st.caption("코스피/코스닥 수치는 원문 표현이 날마다 달라 일부만 자동 추출됩니다(숫자가 "
