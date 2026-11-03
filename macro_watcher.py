@@ -862,7 +862,14 @@ def _scorecard_append(now_kst, kind, code, name, px):
 
 
 _DAYTRADE_KINDS = ("시가저격", "진입", "조기포착", "급증진입", "돌파초입", "공시발굴", "거래량급증", "15분봉", "눌림타점", "레인지매매", "과매도낙주", "재료투매반등", "시간외단일가", "시가배팅", "윌리엄스바닥")
-_OVERNIGHT_KINDS = ("종배픽", "브리핑")
+# [7.112] 사용자가 아침 갭상승 역분석에서 "어제 브리핑/종배 적중 0/3종"을 보고 제보 — 코드 점검
+# 중 발견. "대체종배"(check_nxt_premium_pick)도 브리핑·종배픽과 동일하게 "장마감 후 예측해서
+# 익일 결과를 보는" 오버나이트 픽인데, 이 상수가 만들어진 뒤 대체종배가 추가되면서 여기
+# 갱신을 놓쳤음 — _scorecard_report(📋 추천 성적표)·check_gap_analysis(🌅 갭상승 역분석)·
+# check_premarket(조기감지 유니버스) 세 곳 전부 이 상수(또는 복제한 동일 튜플)를 써서 "어제
+# 예측했었나" 판정을 하는데, 대체종배가 지금은 가장 자주 도는 저녁 예측인데도 세 곳 다
+# 누락돼 있었음 — 적중 종목을 "놓침"으로 잘못 세는 과소집계 버그.
+_OVERNIGHT_KINDS = ("종배픽", "브리핑", "대체종배")
 
 
 def _prev_trading_day_str(now_kst, fmt="%Y-%m-%d"):
@@ -5248,7 +5255,9 @@ def check_pair_trade(token, key, secret, now_kst, state, token_tg, chat_id, sev=
 
 def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, gemini_key=None):
     """[V24.0] 아침 갭상승 원인 역분석(09:03~09:12, 당일 1회) — 오늘 실제 갭상승 종목을 역추적.
-    ①어제 브리핑/종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습)."""
+    ①어제 브리핑/종배픽/대체종배 예측 적중 여부(검증) ②Gemini로 공통 원인(테마·뉴스·미국장) 분석(학습).
+    [7.112] 적중 판정 기준을 _OVERNIGHT_KINDS로 교체 — 전엔 "브리핑"·"종배픽"만 봐서, 더 자주
+    도는 대체종배가 전날 저녁에 이미 잡은 종목도 "미예측(놓침)"으로 과소집계되고 있었음."""
     m = now_kst.hour * 60 + now_kst.minute
     if not ((9 * 60 + 3) <= m <= (9 * 60 + 12)):
         return
@@ -5267,7 +5276,7 @@ def check_gap_analysis(token, key, secret, now_kst, state, token_tg, chat_id, ge
     try:
         with open(SCORECARD_FILE, encoding="utf-8") as f:
             _sc = json.load(f)
-        _pred = {r["code"] for r in _sc if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽")}
+        _pred = {r["code"] for r in _sc if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS}
     except Exception:
         pass
     _lines, _hit_n = [], 0
@@ -7211,7 +7220,7 @@ def check_premarket(token, key, secret, now_kst, state, token_tg, chat_id, lineu
         with open(SCORECARD_FILE, encoding="utf-8") as f:
             _sc = json.load(f)
         for r in _sc:
-            if r.get("date") == yday and r.get("kind") in ("브리핑", "종배픽") and r.get("code") not in _seen:
+            if r.get("date") == yday and r.get("kind") in _OVERNIGHT_KINDS and r.get("code") not in _seen:
                 _univ.append((r["code"], r.get("name", r["code"]), "어제예측")); _seen.add(r["code"])
     except Exception:
         pass
