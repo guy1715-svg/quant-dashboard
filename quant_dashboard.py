@@ -1655,7 +1655,8 @@ def render_advisor_feed():
                "기존 종배픽·대체종배 로직과는 완전히 독립된 별도 화면입니다.")
 
     import time as _t
-    _saved = _fetch_advisor_feed(_t.time() // 60) or {"calls": [], "closing": [], "sections": [], "mentions": []}
+    _saved = (_fetch_advisor_feed(_t.time() // 60)
+              or {"calls": [], "closing": [], "sections": [], "mentions": [], "view_stocks": []})
 
     _uploaded = st.file_uploader("카카오톡 대화 내보내기 업로드 (.txt) — 주기적으로 다시 내보내 "
                                  "올려주시면 새로 추가된 부분만 반영됩니다", type=["txt"])
@@ -1674,6 +1675,7 @@ def render_advisor_feed():
             for c in _new_calls:
                 c["code"] = mw._krx_name_to_code(c["stock_name"], _master)
             _new_mentions = mw._extract_advisor_stock_mentions(_messages, master=_master)
+            _new_view_stocks = mw._extract_advisor_view_theme_stocks(_new_sections, master=_master)
 
             def _merge(old, new, keyfn):
                 _by_key = {keyfn(r): r for r in old}
@@ -1689,99 +1691,145 @@ def render_advisor_feed():
                                    lambda r: (r["date"], r["tag"], r["start_time"])),
                 "mentions": _merge(_saved.get("mentions") or [], _new_mentions,
                                    lambda r: (r["date"], r["time"], r["stock_name"])),
+                "view_stocks": _merge(_saved.get("view_stocks") or [], _new_view_stocks,
+                                      lambda r: (r["date"], r["stock_name"])),
             }
             st.session_state["advisor_feed"] = _merged
             _git_save_advisor_feed(_merged)
             _fetch_advisor_feed.clear()
             st.success(f"반영 완료 — 종목진단 {len(_new_calls)}건·마감브리핑 {len(_new_closing)}건·"
-                      f"시장노트 {len(_new_sections)}건·종목 언급 {len(_new_mentions)}건을 이번 "
-                      f"파일에서 찾았습니다 (전체 누적: 종목진단 {len(_merged['calls'])}건·"
-                      f"종목 언급 {len(_merged['mentions'])}건).")
+                      f"시장노트 {len(_new_sections)}건·용view 테마종목 {len(_new_view_stocks)}건을 "
+                      f"이번 파일에서 찾았습니다 (전체 누적: 종목진단 {len(_merged['calls'])}건·"
+                      f"용view 테마종목 {len(_merged['view_stocks'])}건).")
 
     _data = st.session_state.get("advisor_feed") or _saved
     _calls, _closing, _sections = _data.get("calls") or [], _data.get("closing") or [], _data.get("sections") or []
     _mentions = _data.get("mentions") or []
+    _view_stocks = _data.get("view_stocks") or []
     if not _calls and not _closing and not _sections:
         st.info("아직 업로드된 피드가 없습니다 — 위에서 카카오톡 대화 내보내기(.txt)를 올려주세요.")
         return
 
-    st.markdown("##### 🔎 전체 언급 종목 모아보기")
-    st.caption("종목진단뿐 아니라 마감브리핑·시장노트 등 대화 전체에서 \"#종목명\" 형태로 "
-               "언급된 모든 종목을 모아 언급 횟수 순으로 보여줍니다 — 매번 원문을 다 읽지 않아도 "
-               "자문역이 어떤 종목을 많이/최근에 언급했는지 한눈에 찾을 수 있습니다.")
-    if _mentions:
-        from collections import defaultdict as _dd
-        _mention_dates = sorted({_mn["date"] for _mn in _mentions}, reverse=True)
-        _mdsel = st.selectbox("기간", ["전체"] + _mention_dates, key="advisor_mention_date")
-        _pool = _mentions if _mdsel == "전체" else [m for m in _mentions if m["date"] == _mdsel]
-        _by_name = _dd(list)
-        for _mn in _pool:
-            _by_name[_mn["stock_name"]].append(_mn)
-        _rows = []
-        for _name, _ms in _by_name.items():
-            _ms.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
-            _latest = _ms[0]
-            _rows.append({
-                "종목명": _name, "코드": _latest.get("code") or "코드 미확인",
-                "언급횟수": len(_ms), "최근 언급일": _latest["date"],
-                "최근 등락률": f"{_latest['pct']:+.2f}%" if _latest.get("pct") is not None else "-",
-                "최근 맥락": _latest.get("snippet", ""),
-            })
-        _rows.sort(key=lambda r: (r["언급횟수"], r["최근 언급일"]), reverse=True)
-        st.caption(f"{len(_rows)}개 종목 표시 ({_mdsel} 기준 언급 {len(_pool)}건)")
-        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
-    else:
-        st.caption("종목 언급 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
+    def _recent_dates(dates, n=5):
+        return sorted(set(dates), reverse=True)[:n]
 
-    _dir_label = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Neutral": "⚪ 중립"}
-    st.markdown("##### 📋 종목진단")
-    if _calls:
-        _dates = sorted({c["date"] for c in _calls}, reverse=True)
-        _c1, _c2 = st.columns(2)
-        with _c1:
-            _dsel = st.selectbox("날짜", ["전체"] + _dates, key="advisor_call_date")
-        with _c2:
-            _dirsel = st.multiselect("방향", ["Positive", "Negative", "Neutral"],
-                                     default=["Positive", "Negative", "Neutral"],
-                                     format_func=lambda x: _dir_label.get(x, x), key="advisor_call_dir")
-        _shown = [c for c in _calls if (_dsel == "전체" or c["date"] == _dsel) and c["direction"] in _dirsel]
-        _shown.sort(key=lambda c: (c["date"], c["time"]), reverse=True)
-        st.caption(f"{len(_shown)}건 표시 — 코드가 비어있으면 KRX 마스터파일에서 종목명이 "
-                   "정확히 일치하지 않아 \"코드 미확인\"으로 둔 것입니다(추정해서 채우지 않음).")
-        _cdf = pd.DataFrame(_shown)
-        if not _cdf.empty:
-            _cdf["방향"] = _cdf["direction"].map(_dir_label).fillna(_cdf["direction"])
-            _cdf["코드"] = _cdf.get("code", pd.Series(dtype=object)).fillna("코드 미확인")
-            _cols = {"date": "날짜", "time": "시각", "stock_name": "종목명", "코드": "코드",
-                      "방향": "방향", "reasoning": "사유"}
-            _cdf = _cdf[[c for c in _cols if c in _cdf.columns]].rename(columns=_cols)
-            st.dataframe(_cdf, use_container_width=True, hide_index=True)
+    st.markdown("##### 🎓 용view 테마 종목 정리")
+    st.caption("자문역이 매일 진행하는 \"용view\"(테마 교육 콘텐츠)에서 직접 짚어준 종목만 "
+               "모았습니다 — 그때그때의 가격 반응 멘트가 아니라 \"이 테마에서 이 회사가 어떤 "
+               "역할을 하는지\" 설명한 종목이라, 찾아볼 종목 후보로 가장 쓸모 있는 목록입니다.")
+    if _view_stocks:
+        _view_dates_all = sorted({v["date"] for v in _view_stocks}, reverse=True)
+        _show_all_view = st.checkbox(f"전체 {len(_view_dates_all)}일 다 보기(기본: 최근 5일)",
+                                     key="advisor_view_show_all")
+        _view_dates = _view_dates_all if _show_all_view else _recent_dates(_view_dates_all, 5)
+        for d in _view_dates:
+            _day_rows = sorted([v for v in _view_stocks if v["date"] == d], key=lambda v: v["stock_name"])
+            st.markdown(f"**📅 {d}** · {len(_day_rows)}종목")
+            for v in _day_rows:
+                _code_txt = v.get("code") or "코드 미확인"
+                st.markdown(f"- **{v['stock_name']}**({_code_txt}) — {v['sentence']}")
     else:
-        st.caption("종목진단 데이터 없음")
+        st.caption("용view 테마 종목 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
 
-    st.markdown("##### 📊 마감브리핑(코스피/코스닥)")
-    if _closing:
-        _cb = sorted(_closing, key=lambda c: c["date"], reverse=True)
-        _cbdf = pd.DataFrame(_cb)
-        _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
-        _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
-        st.dataframe(_cbdf[["date", "코스피", "코스닥"]].rename(columns={"date": "날짜"}),
-                    use_container_width=True, hide_index=True)
-        st.caption("코스피/코스닥 수치는 원문 표현이 날마다 달라 일부만 자동 추출됩니다(숫자가 "
-                   "없으면 \"미확인\" — 아래 시장노트에서 원문을 직접 확인하세요).")
-    else:
-        st.caption("마감브리핑 데이터 없음")
+    with st.expander("📂 상세 데이터 더 보기 (종목진단·마감브리핑·시장노트·전체 언급 종목)"):
+        _dir_label = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Neutral": "⚪ 중립"}
+        st.markdown("##### 📋 종목진단")
+        if _calls:
+            _dates = sorted({c["date"] for c in _calls}, reverse=True)
+            _recent5 = set(_recent_dates(_dates, 5))
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _dsel = st.selectbox("날짜", ["최근 5일", "전체"] + _dates, key="advisor_call_date")
+            with _c2:
+                _dirsel = st.multiselect("방향", ["Positive", "Negative", "Neutral"],
+                                         default=["Positive", "Negative", "Neutral"],
+                                         format_func=lambda x: _dir_label.get(x, x), key="advisor_call_dir")
+            if _dsel == "최근 5일":
+                _date_ok = lambda d: d in _recent5
+            elif _dsel == "전체":
+                _date_ok = lambda d: True
+            else:
+                _date_ok = lambda d: d == _dsel
+            _shown = [c for c in _calls if _date_ok(c["date"]) and c["direction"] in _dirsel]
+            _shown.sort(key=lambda c: (c["date"], c["time"]), reverse=True)
+            st.caption(f"{len(_shown)}건 표시 — 코드가 비어있으면 KRX 마스터파일에서 종목명이 "
+                       "정확히 일치하지 않아 \"코드 미확인\"으로 둔 것입니다(추정해서 채우지 않음).")
+            _cdf = pd.DataFrame(_shown)
+            if not _cdf.empty:
+                _cdf["방향"] = _cdf["direction"].map(_dir_label).fillna(_cdf["direction"])
+                _cdf["코드"] = _cdf.get("code", pd.Series(dtype=object)).fillna("코드 미확인")
+                _cols = {"date": "날짜", "time": "시각", "stock_name": "종목명", "코드": "코드",
+                          "방향": "방향", "reasoning": "사유"}
+                _cdf = _cdf[[c for c in _cols if c in _cdf.columns]].rename(columns=_cols)
+                st.dataframe(_cdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("종목진단 데이터 없음")
 
-    st.markdown("##### 🗒️ 시장노트(모닝브리핑 등, 날짜별)")
-    if _sections:
-        _sec_dates = sorted({s["date"] for s in _sections}, reverse=True)
-        _sdsel = st.selectbox("날짜 선택", _sec_dates, key="advisor_section_date")
-        _today_sections = sorted([s for s in _sections if s["date"] == _sdsel], key=lambda s: s["start_time"])
-        for s in _today_sections:
-            with st.expander(f"[{s['tag']}] {s['start_time']}"):
-                st.text(s["text"])
-    else:
-        st.caption("시장노트 데이터 없음")
+        st.markdown("##### 📊 마감브리핑(코스피/코스닥)")
+        if _closing:
+            _cb_dates = sorted({c["date"] for c in _closing}, reverse=True)
+            _show_all_cb = st.checkbox(f"전체 {len(_cb_dates)}일 다 보기(기본: 최근 5일)",
+                                       key="advisor_closing_show_all")
+            _cb_pool = _closing if _show_all_cb else [c for c in _closing
+                                                       if c["date"] in set(_recent_dates(_cb_dates, 5))]
+            _cb = sorted(_cb_pool, key=lambda c: c["date"], reverse=True)
+            _cbdf = pd.DataFrame(_cb)
+            _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
+            _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
+            st.dataframe(_cbdf[["date", "코스피", "코스닥"]].rename(columns={"date": "날짜"}),
+                        use_container_width=True, hide_index=True)
+            st.caption("코스피/코스닥 수치는 원문 표현이 날마다 달라 일부만 자동 추출됩니다(숫자가 "
+                       "없으면 \"미확인\" — 아래 시장노트에서 원문을 직접 확인하세요).")
+        else:
+            st.caption("마감브리핑 데이터 없음")
+
+        st.markdown("##### 🗒️ 시장노트(모닝브리핑 등, 날짜별)")
+        if _sections:
+            _sec_dates_all = sorted({s["date"] for s in _sections}, reverse=True)
+            _show_all_sec = st.checkbox(f"전체 {len(_sec_dates_all)}일 중에서 선택(기본: 최근 5일)",
+                                        key="advisor_section_show_all")
+            _sec_dates = _sec_dates_all if _show_all_sec else _recent_dates(_sec_dates_all, 5)
+            _sdsel = st.selectbox("날짜 선택", _sec_dates, key="advisor_section_date")
+            _today_sections = sorted([s for s in _sections if s["date"] == _sdsel], key=lambda s: s["start_time"])
+            for s in _today_sections:
+                with st.expander(f"[{s['tag']}] {s['start_time']}"):
+                    st.text(s["text"])
+        else:
+            st.caption("시장노트 데이터 없음")
+
+        st.markdown("##### 🔎 전체 언급 종목 모아보기")
+        st.caption("종목진단뿐 아니라 마감브리핑·시장노트 등 대화 전체에서 \"#종목명\" 형태로 "
+                   "언급된 모든 종목(가격 반응 멘트 포함)을 모아 언급 횟수 순으로 보여줍니다 — "
+                   "위 \"용view 테마 종목 정리\"와 달리 테마 설명 여부와 무관하게 전부 모읍니다.")
+        if _mentions:
+            from collections import defaultdict as _dd
+            _mention_dates_all = sorted({_mn["date"] for _mn in _mentions}, reverse=True)
+            _mdsel = st.selectbox("기간", ["최근 5일", "전체"] + _mention_dates_all, key="advisor_mention_date")
+            if _mdsel == "최근 5일":
+                _recent5_mn = set(_recent_dates(_mention_dates_all, 5))
+                _pool = [m for m in _mentions if m["date"] in _recent5_mn]
+            elif _mdsel == "전체":
+                _pool = _mentions
+            else:
+                _pool = [m for m in _mentions if m["date"] == _mdsel]
+            _by_name = _dd(list)
+            for _mn in _pool:
+                _by_name[_mn["stock_name"]].append(_mn)
+            _rows = []
+            for _name, _ms in _by_name.items():
+                _ms.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
+                _latest = _ms[0]
+                _rows.append({
+                    "종목명": _name, "코드": _latest.get("code") or "코드 미확인",
+                    "언급횟수": len(_ms), "최근 언급일": _latest["date"],
+                    "최근 등락률": f"{_latest['pct']:+.2f}%" if _latest.get("pct") is not None else "-",
+                    "최근 맥락": _latest.get("snippet", ""),
+                })
+            _rows.sort(key=lambda r: (r["언급횟수"], r["최근 언급일"]), reverse=True)
+            st.caption(f"{len(_rows)}개 종목 표시 ({_mdsel} 기준 언급 {len(_pool)}건)")
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("종목 언급 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
 
 
 _TRACK_RECORD_MAX_CODES = 150     # 종목 예산 한도(1단계·2단계 공통) — 사용자 제보("너무 느림")
