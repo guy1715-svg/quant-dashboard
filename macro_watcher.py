@@ -3495,6 +3495,52 @@ def _extract_advisor_stock_mentions(messages, sender="백용현 자문역", mast
     return out
 
 
+def _extract_advisor_view_theme_stocks(sections, master=None):
+    """[7.115] 사용자 피드백("용뷰에서 나온 내용으로 종목을 서치해보자는 거잖아") 반영 —
+    "#용view N/5"로 이어지는 교육 콘텐츠 구간(이미 _extract_advisor_market_sections가
+    태그 "용view N/5"로 묶어둠)에서만 "#종목명 ... 설명" 형태로 언급된 종목을 뽑는다.
+    가격 반응성 멘트(예: "#애플(AAPL,-1.9%) 하락")와 달리, 용view는 "이 테마에서 이
+    회사가 어떤 역할을 하는지"를 차분히 설명하는 콘텐츠라 테마별 "찾아볼 후보" 성격에
+    더 가깝다는 지적 반영 — 전체 언급 종목(_extract_advisor_stock_mentions)과는 분리된
+    별도 추출기로 둠(서로 다른 목적의 리스트를 섞으면 다시 "복잡하다" 문제로 돌아감).
+    반환: [{"date","session_tag","stock_name","code","sentence"}] — sentence는 그 종목이
+    처음 언급된 문장 전체(설명 맥락 보존). 같은 날짜에 같은 종목이 또 나오면 처음 것만
+    유지(추측 안 함 — _krx_name_to_code류와 동일 원칙: 모르면 비워둔다)."""
+    import re as _re
+    master = master or {}
+    _tag_re = _re.compile(r"^용view\s*\d+/\d+$")
+    _paren_re = _re.compile(r"#([가-힣A-Za-z0-9&·\-]+)\(([A-Za-z0-9]*)[,·]?\s*([+-]\d+\.?\d*)%\)")
+    _hashtag_re = _re.compile(r"#([가-힣A-Za-z0-9&·\-]+)")
+    out = []
+    seen = set()
+    for s in sections:
+        if not _tag_re.match(s["tag"]):
+            continue
+        for sent in _re.split(r"(?<=[.!?~])\s+|\n+", s["text"]):
+            if "#" not in sent:
+                continue
+            spans = []
+            for mt in _paren_re.finditer(sent):
+                name = mt.group(1)
+                key = (s["date"], name)
+                if key not in seen:
+                    seen.add(key)
+                    out.append({"date": s["date"], "session_tag": s["tag"], "stock_name": name,
+                                "code": master.get(name), "sentence": sent.strip()})
+                spans.append((mt.start(), mt.end()))
+            for mt in _hashtag_re.finditer(sent):
+                if any(a <= mt.start() < b for a, b in spans):
+                    continue
+                name, code = _resolve_advisor_mention(mt.group(1), master)
+                key = (s["date"], name)
+                if not name or key in seen:
+                    continue
+                seen.add(key)
+                out.append({"date": s["date"], "session_tag": s["tag"], "stock_name": name,
+                            "code": code, "sentence": sent.strip()})
+    return out
+
+
 def _krx_master_download():
     """[7.113] KOSPI/KOSDAQ 전체 상장종목 마스터파일(종목명↔코드) — 한국투자증권 공식 공개
     URL(인증 불필요, KIS 공식 예제 저장소 backtester/scripts/download_master.py와 동일 출처·
