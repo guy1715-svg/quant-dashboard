@@ -2804,6 +2804,26 @@ _NEWS_MARKET_WIDE_KW = ("코스피", "코스닥", "다우", "나스닥", "S&P", 
 _NEWS_GRADE_CACHE = {}   # [V25.23] {code_YYYYMMDD: (grade, is_bad)} — 일당 캐시로 판정 안정화
 
 
+def _classify_catalyst_titles(titles):
+    """[7.116] _news_grade의 핵심 키워드 판정부만 분리 — 제목 리스트 → (grade, is_bad).
+    grade: 'S'/'A'/'T'/'none'. _news_grade(종목코드별 일당 캐시·강등방지 포함)와, 실시간
+    속보감시(check_breaking_news, 캐시 없이 기사 하나하나 즉시 판정) 양쪽이 같은 로직을
+    공유하기 위해 떼어냄 — 분리 자체는 동작을 전혀 바꾸지 않음(로직 100% 그대로 이동)."""
+    _res = ("none", False)
+    for t in titles:
+        if any(n in t for n in _NEWS_NEG_KW):
+            _res = ("none", True); break                      # 제목 하나라도 악재 → 악재 판정
+    else:
+        blob = " ".join(titles)
+        if any(k in blob for k in _NEWS_S_KW):
+            _res = ("S", False)
+        elif any(k in blob for k in _NEWS_A_KW):
+            _res = ("A", False)
+        elif any(k in blob for k in _NEWS_T_KW):
+            _res = ("T", False)
+    return _res
+
+
 def _news_grade(code):
     """종목 뉴스 재료 등급 — 네이버 모바일 뉴스 제목 키워드. 반환 (grade, is_bad).
     grade: 'S'/'A'/'T'/'none'(S/A=직접 계약·실적 확정 재료, T=테마·정책 재부각 — 확정 재료보단 약하지만
@@ -2832,18 +2852,7 @@ def _news_grade(code):
         return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 조회 실패 → 그날 캐시 재사용(판정 안정)
     if not titles:
         return _NEWS_GRADE_CACHE.get(_key, ("none", False))   # 빈응답(일시적) → 캐시 우선
-    _res = ("none", False)
-    for t in titles:
-        if any(n in t for n in _NEWS_NEG_KW):
-            _res = ("none", True); break                      # 제목 하나라도 악재 → 악재 판정
-    else:
-        blob = " ".join(titles)
-        if any(k in blob for k in _NEWS_S_KW):
-            _res = ("S", False)
-        elif any(k in blob for k in _NEWS_A_KW):
-            _res = ("A", False)
-        elif any(k in blob for k in _NEWS_T_KW):
-            _res = ("T", False)
+    _res = _classify_catalyst_titles(titles)
     # [V25.47] 등급 안정화 — 뉴스 피드가 하루 종일 갱신돼 등급이 S/A→none으로 튀던 문제(삼성전자 none→A→S 널뛰기).
     #   그날 이미 잡힌 등급은 '강등' 안 함(재료는 사라지지 않음). 업그레이드(none→A→S)만 허용. 악재는 sticky(하루 유지).
     _prev = _NEWS_GRADE_CACHE.get(_key)
@@ -2855,6 +2864,168 @@ def _news_grade(code):
             _res = _prev
     _NEWS_GRADE_CACHE[_key] = _res                            # 최강 등급 유지(강등 차단·업그레이드 허용)
     return _res
+
+
+def _naver_latest_news(top=30):
+    """[7.116] 사용자 요청("네이버에 새로운 뉴스가 뜨면 확인 하는 방식이면 좋겠네")대로 네이버
+    금융 '최신뉴스' 목록 스크랩 — _naver_ranking_news(인기 랭킹, mode=RANK)와 같은 페이지
+    템플릿을 그대로 재사용하되 mode만 다르게 줌(LSS2D=최신순으로 추정 — 네이버가 공식 문서를
+    안 주는 비공식 페이지라 모드 값 자체를 100% 확신 못 함).
+    ⚠️ 확인 못한 부분: 이 mode/파라미터 조합은 샌드박스가 finance.naver.com 접속 자체를 막고
+    있어(KRX 마스터파일 때와 동일한 네트워크 제약) 라이브 검증 불가 — 사용자 실제 환경에서
+    0건이 계속 나오면 모드 값 재확인 필요. 그래도 check_breaking_news는 이 함수가 0건이어도
+    _rss_news(기존에 이미 검증된 경로)를 같이 쓰므로 기능 자체가 멈추지는 않음.
+    반환 [{"title","link"}], 실패·파싱 0건이면 []."""
+    import re as _re
+    import html as _html_mod
+    _hdr = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Referer": "https://finance.naver.com/news/", "Accept-Language": "ko-KR,ko;q=0.9"}
+    try:
+        _r = requests.get("https://finance.naver.com/news/news_list.naver"
+                          "?mode=LSS2D&section_id=101&section_id2=258",
+                          headers=_hdr, timeout=8)
+        _r.encoding = "euc-kr"
+        _html = _r.text
+    except Exception as _e:
+        print(f"[속보감시 진단] 네이버 최신뉴스 요청 실패: {type(_e).__name__}: {_e}")
+        return []
+    _cands = _re.findall(r'<a[^>]+href="([^"]*news_read\.naver\?[^"]*)"[^>]*>(.*?)</a>', _html, _re.S)
+    if not _cands:
+        _cands = _re.findall(r'<a[^>]+href="([^"]*/news/read\.naver\?[^"]*)"[^>]*>(.*?)</a>', _html, _re.S)
+    out, seen = [], set()
+    for _href, _t in _cands:
+        _t = _re.sub(r"<[^>]+>", "", _t)
+        _t = _html_mod.unescape(_t)
+        _t = _re.sub(r"\s+", " ", _t).strip()
+        if len(_t) < 6 or _t in seen:
+            continue
+        seen.add(_t)
+        _link = _href if _href.startswith("http") else "https://finance.naver.com" + _href
+        out.append({"title": _t, "link": _link})
+        if len(out) >= top:
+            break
+    if not out:
+        print(f"[속보감시 진단] 네이버 최신뉴스 파싱 0건 — 페이지 구조/모드 확인 필요(응답 {len(_html)}자)")
+    return out
+
+
+def _find_stock_in_title(title, sorted_names, master):
+    """[7.116] 기사 제목 안에 KRX 마스터(7.113에서 구축) 등록 종목명이 실제로 등장하는지
+    역방향 매칭(_krx_name_to_code는 '이름→코드 정확매칭'인데, 여기선 '긴 텍스트 안에서
+    이름을 찾기'라 반대 방향). 짧은 종목명이 더 긴 다른 단어 안에 우연히 끼어 있는 오탐
+    (예: "현대성장" 안의 "대성")을 줄이려고: ①긴 이름부터 먼저 매칭(sorted_names는 호출부가
+    길이 내림차순으로 미리 정렬해 넘김 — 기사마다 매번 다시 정렬하는 비용 방지) ②이미 매칭된
+    구간과 겹치면 스킵 ③매칭 구간 바로 앞뒤가 한글 음절로 이어지면(=더 큰 단어의 일부일
+    가능성) 제외. 그래도 완벽하진 않음 — 호출부가 재료 키워드 동시 등장까지 같이 요구해
+    오탐 가능성을 한 번 더 줄임. 반환 [(name, code), ...]."""
+    import re as _re
+    _spans = []
+    _hits = []
+    for name in sorted_names:
+        _start = 0
+        while True:
+            _i = title.find(name, _start)
+            if _i == -1:
+                break
+            _end = _i + len(name)
+            _start = _end
+            if any(s <= _i < e or s < _end <= e for s, e in _spans):
+                continue
+            _before = title[_i - 1] if _i > 0 else ""
+            _after = title[_end] if _end < len(title) else ""
+            if _re.match(r"[가-힣]", _before) or _re.match(r"[가-힣]", _after):
+                continue
+            _spans.append((_i, _end))
+            _hits.append((name, master[name]))
+    return _hits
+
+
+_BREAKING_NEWS_COOLDOWN_SEC = 3600   # [7.116] 종목당 쿨다운(1시간) — 같은 기사 재알림(제목 기준
+                                      # 당일 캐시)과는 별개로, 같은 종목에 짧은 시간 안에 여러 매체가
+                                      # 비슷한 기사를 쏟아낼 때 알림이 연달아 터지는 것만 억제. 하루
+                                      # 1회만 허용하는 _claim_daily_signal과 달리 — 아침 재료와 오후
+                                      # 재료는 서로 '다른 뉴스'라 둘 다 알려야 하므로 날짜 단위가
+                                      # 아니라 시간 단위 쿨다운을 새로 둠.
+
+
+def check_breaking_news(now_kst, state, token_tg, chat_id):
+    """[7.116] 실시간 재료 뉴스 속보 — 사용자 요청("뉴스가 있는 재료가 있는 종목을 선별해서
+    실시간으로 메세지 오게 하고싶어. 공시만으로 부족한거 같아... 네이버 뉴스를 1분마다 확인
+    하게 하던지") 반영. check_dart_disclosures(공시)·check_evening_news(저녁 1회 다이제스트)
+    사이의 빈틈이었던 "장중에 뜨는 개별 종목 재료 뉴스 실시간 알림"을 메인 루프 틱(장중
+    ~60초)마다 감시. 네이버 금융 최신뉴스(_naver_latest_news, 1차·사용자 요청대로) + 기존
+    _rss_news(연합/한경/이데일리 증권, 2차·안전망 — 네이버 쪽이 깨져도 기능은 안 죽게) 두
+    소스를 합쳐서 스캔.
+    전체 상장종목을 하나하나 조회하는 대신(KIS 호출 예산 문제 — 다른 모든 스캐너가 거래대금
+    상위 40종목으로 좁히는 것과 같은 이유), 기사 '제목'에 KRX 마스터 종목명이 등장하는지
+    로컬 문자열 매칭만으로 먼저 거르고(API 호출 전혀 없음 — 순수 문자열 연산), 매칭된
+    종목만 기존 S/A/T/악재 키워드(_classify_catalyst_titles — _news_grade와 동일 로직 재사용,
+    새 키워드 테이블 안 만듦)로 재료 여부를 재판정. 'none'(재료 키워드도 악재 키워드도 없음)
+    은 조용히 버림 — 다른 신호들과 같은 "재료 미확인=노이즈" 철학.
+    같은 기사 중복 알림 방지는 제목 텍스트 기준 당일 캐시, 같은 종목 알림 폭주 방지는 종목당
+    1시간 쿨다운(_BREAKING_NEWS_COOLDOWN_SEC — 하루 1회만 막는 _claim_daily_signal과는 다른
+    목적이라 그걸 그대로 못 씀. 위 상수 주석 참고)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not ((7 * 60) <= m <= (20 * 60)):     # DART 감시와 동일 창 — 마감후 재료도 NXT/익일 대응 가치 있음
+        return
+    today = now_kst.strftime("%Y%m%d")
+    seen = state.get("news_catalyst_seen", {})
+    if seen.get("_day") != today:
+        seen = {"_day": today, "titles": []}
+    _seen_set = set(seen.get("titles") or [])
+    last_alert = state.get("news_catalyst_last", {})
+    if last_alert.get("_day") != today:
+        last_alert = {"_day": today}
+
+    arts = []
+    try:
+        arts += _naver_latest_news(30)
+    except Exception as _e:
+        print(f"[속보감시] 네이버 최신뉴스 조회 실패: {type(_e).__name__}")
+    try:
+        arts += _rss_news(40, 1)          # 최근 1시간만(피드별 최대 40건) — 1분 안팎 틱에 맞춘 좁은 창
+    except Exception as _e:
+        print(f"[속보감시] RSS 조회 실패: {type(_e).__name__}")
+    if not arts:
+        return
+
+    master = _krx_master_cached()
+    if not master:
+        return                             # 마스터 없으면 종목명 역매칭 불가 — 추측 안 하고 조용히 skip
+    _sorted_names = sorted(master.keys(), key=len, reverse=True)
+
+    _alerted = 0
+    for a in arts:
+        _t = (a.get("title") or "").strip()
+        if not _t or _t in _seen_set:
+            continue
+        _seen_set.add(_t)
+        _hits = _find_stock_in_title(_t, _sorted_names, master)
+        if not _hits:
+            continue
+        _grade, _bad = _classify_catalyst_titles([_t])
+        if _grade == "none" and not _bad:
+            continue
+        _tag = "🔴 악재" if _bad else {"S": "🔥 확정재료", "A": "🟢 실적·호재",
+                                       "T": "🟡 테마·정책"}.get(_grade, "")
+        _sig = SIG_CAUTION if _bad else SIG_WATCH
+        _link = a.get("link")
+        for _name, _code in _hits:
+            _last_ts = last_alert.get(_code)
+            if _last_ts and (now_kst.timestamp() - _last_ts) < _BREAKING_NEWS_COOLDOWN_SEC:
+                continue
+            _msg = f"{_sig}\n📰 [속보] {_name}({_code}) {_tag}\n{_t}"
+            if _link:
+                _msg += f"\n{_link}"
+            send_telegram(token_tg, chat_id, _msg)
+            last_alert[_code] = now_kst.timestamp()
+            _alerted += 1
+    seen["titles"] = list(_seen_set)[-500:]   # 무한 증식 방지(최근 500건만 유지)
+    state["news_catalyst_seen"] = seen
+    state["news_catalyst_last"] = last_alert
+    if _alerted:
+        print(f"[속보감시] {_alerted}건 발송 (수집 {len(arts)}건)")
 
 
 _NEWS_DATE_KEYS = ("datetime", "pubDate", "ptDateTime", "regDt", "writeDate", "date", "dt")
@@ -9089,6 +9260,13 @@ def main():
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
             except Exception as _dqe:
                 print("DART 공시 감시 오류:", _dqe)
+            # 📰 [7.116] 실시간 재료 뉴스 속보 감시(07:00~20:00, 매 틱) — 사용자 요청("공시만으론
+            # 부족하다, 네이버 뉴스를 실시간으로 확인해달라") 반영. DART(공시)와 겹치지 않는
+            # 순수 뉴스발 재료를 커버.
+            try:
+                check_breaking_news(now, st, token_tg, chat_id)
+            except Exception as _bne:
+                print("속보감시 오류:", _bne)
             # 🌙 [V21.4] 저녁 뉴스 시황 스캐너(17:00~22:00, 당일 1회) — 내일 주목 테마·대장주 브리핑
             try:
                 check_evening_news(now, st, token_tg, chat_id, naver_id, naver_secret, gemini_key,
