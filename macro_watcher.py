@@ -9241,6 +9241,9 @@ def main():
                     help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
     ap.add_argument("--weekly-review", dest="weekly_review", action="store_true",
                     help="주간 메타복기 강제 실행 — market_review.md 최근 7일 재분석(패턴·먹힌신호·규칙후보) 텔레그램·종료")
+    ap.add_argument("--youtube-digest", dest="youtube_digest", action="store_true",
+                    help="[7.122] 한국경제TV 유튜브 정리본 — 시간창 무시하고 지금 즉시 최근 24시간 "
+                         "하이라이트 영상 자막 요약 1회 발송 후 종료(GUI 버튼용)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -9262,6 +9265,26 @@ def main():
         # [피드백 반영] state를 저장 안 해서 "이번 주는 이미 만듦" 표시가 디스크에 안 남았고,
         # 버튼을 여러 번 누르면 market_review.md에 같은 주 요약이 계속 중복 저장됐음(실사용에서 확인됨).
         save_state(_wst)
+        sys.exit(0)
+
+    if args.youtube_digest:                       # [7.122] 한국경제TV 정리본 수동 실행(GUI 버튼)
+        _ytk, _gk = read_youtube_key(), read_gemini_key()
+        if not (_ytk and _gk):
+            print("⚠️ YouTube/Gemini 키 없음 — 정리본 생성 불가"); sys.exit(1)
+        _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24)
+        if _rows is None:
+            print("⚠️ 채널 정보를 확인하지 못했습니다"); sys.exit(1)
+        if not _rows:
+            print("[유튜브정리] 최근 24시간 내 업로드된 영상이 없습니다"); sys.exit(0)
+        if not _parts:
+            print("[유튜브정리] 영상은 찾았지만 자막을 하나도 가져오지 못했습니다"); sys.exit(0)
+        _summary = _gemini_generate(_gk, _youtube_digest_prompt(_parts, "조회 시점 기준"))
+        if not _summary:
+            print("⚠️ Gemini 요약 실패"); sys.exit(1)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_INFO}\n📺 [한국경제TV 정리본·수동 실행]\n"
+                      f"최근 24시간 하이라이트 {len(_parts)}건 요약\n\n{_summary}")
+        print(f"[유튜브정리] 발송 완료 — 하이라이트 {len(_parts)}건 요약")
         sys.exit(0)
 
     if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
