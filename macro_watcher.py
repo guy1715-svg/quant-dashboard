@@ -2304,6 +2304,40 @@ def _youtube_transcript(video_id):
     return _re.sub(r"\s+", " ", _text).strip()
 
 
+def _youtube_fetch_highlights(youtube_key, hours=24):
+    """[7.121] check_youtube_digest(예약 실행)와 대시보드 "지금 정리하기" 버튼(수동 실행)이
+    같은 수집 로직을 공유하도록 분리 — 채널ID 확인 → 최근 영상 목록(공식 API) → 영상별 자막
+    (비공식 경로, 실패한 영상은 건너뜀) 수집까지 한 번에 처리. 반환 (video_rows, parts):
+    video_rows=[{"title","video_id","published_at","transcript_ok"}, ...](화면 표시용,
+    자막 추출 성공 여부 포함), parts=["[제목]\\n자막...", ...](Gemini 프롬프트용, 자막
+    확보한 것만). 채널ID 확인 실패 시 (None, [])."""
+    _cid = _youtube_resolve_channel_id(_YOUTUBE_CHANNEL_HANDLE)
+    if not _cid:
+        return None, []
+    _vids = _youtube_recent_videos(youtube_key, _cid, hours=hours)
+    video_rows, parts = [], []
+    for v in _vids[:_YOUTUBE_MAX_VIDEOS]:
+        _tr = _youtube_transcript(v["video_id"])
+        video_rows.append({"title": v["title"], "video_id": v["video_id"],
+                           "published_at": v.get("published_at", ""), "transcript_ok": bool(_tr)})
+        if _tr:
+            parts.append(f"[{v['title']}]\n{_tr[:_YOUTUBE_TRANSCRIPT_CHARS_CAP]}")
+    return video_rows, parts
+
+
+def _youtube_digest_prompt(parts, slot_label):
+    """[7.121] 한국경제TV 하이라이트 자막 모음(parts) + 시점 라벨 → Gemini 프롬프트 문자열.
+    check_youtube_digest·대시보드 버튼 공용(문구 중복 방지)."""
+    return (
+        f"다음은 한국경제TV 유튜브 채널에 최근 24시간 내 올라온 증권 방송 하이라이트 영상들의 "
+        f"자막(음성을 텍스트로 변환한 것이라 오탈자가 있을 수 있음)입니다. {slot_label} 기준으로 "
+        f"한국 개인 투자자가 참고할 만한 핵심 내용만 간결하게 정리해주세요.\n"
+        f"- 언급된 종목명·테마가 있으면 반드시 포함\n"
+        f"- 전문가가 제시한 전망·근거를 요약(단정적 매수/매도 권유가 아니라 참고 의견으로 표현)\n"
+        f"- 영상별로 나누지 말고 주제별로 통합해 5~8줄 이내로\n\n" + "\n\n".join(parts)[:30000]
+    )
+
+
 def check_youtube_digest(now_kst, state, token_tg, chat_id, youtube_key, gemini_key):
     """[7.120] 한국경제TV 유튜브 채널 하이라이트 정리본 — 사용자 요청("한국경제TV 유튜브
     에 나오는 정보가 괜찮아서 정리본을 받아보고 싶다")·확정된 운영 방식("최신 시간 기준으로
@@ -2311,7 +2345,9 @@ def check_youtube_digest(now_kst, state, token_tg, chat_id, youtube_key, gemini_
     모아 자막을 Gemini로 요약해, 미장 마감 후 아침(07:00~08:35, check_morning_lineup_finalize
     와 동일 창)과 국장 마감 후 저녁(17:00~22:00, check_evening_news와 동일 창) 하루 2번 발송
     (각 창마다 당일 1회). 영상 목록은 공식 YouTube Data API, 자막은 비공식 경로
-    (_youtube_transcript 독스트링 참고 — 공식 API는 제3자 영상 자막을 못 가져옴)."""
+    (_youtube_transcript 독스트링 참고 — 공식 API는 제3자 영상 자막을 못 가져옴).
+    [7.121] 수집·프롬프트 로직은 _youtube_fetch_highlights·_youtube_digest_prompt로 분리해
+    대시보드 "지금 정리하기" 버튼과 공유(이 함수 자체 동작은 분리 전과 동일)."""
     if not (youtube_key and gemini_key):
         return
     m = now_kst.hour * 60 + now_kst.minute
@@ -2324,33 +2360,19 @@ def check_youtube_digest(now_kst, state, token_tg, chat_id, youtube_key, gemini_
     _done_key = f"yt_digest_{_slot}_day"
     if state.get(_done_key) == today:
         return
-    _cid = _youtube_resolve_channel_id(_YOUTUBE_CHANNEL_HANDLE)
-    if not _cid:
-        return
-    _vids = _youtube_recent_videos(youtube_key, _cid, hours=24)
-    if not _vids:
+    _rows, _parts = _youtube_fetch_highlights(youtube_key, hours=24)
+    if _rows is None:
+        return                                    # 채널ID 확인 실패 — 이번 틱만 조용히 재시도 대기
+    if not _rows:
         print("[유튜브정리] 최근 24시간 내 업로드 영상 없음")
         state[_done_key] = today
         return
-    _parts = []
-    for v in _vids[:_YOUTUBE_MAX_VIDEOS]:
-        _tr = _youtube_transcript(v["video_id"])
-        if _tr:
-            _parts.append(f"[{v['title']}]\n{_tr[:_YOUTUBE_TRANSCRIPT_CHARS_CAP]}")
     if not _parts:
         print("[유튜브정리] 자막 추출 전부 실패 — 건너뜀")
         state[_done_key] = today
         return
     _slot_label = "아침(미장 마감 후)" if _morning else "저녁(국장 마감 후)"
-    _prompt = (
-        f"다음은 한국경제TV 유튜브 채널에 최근 24시간 내 올라온 증권 방송 하이라이트 영상들의 "
-        f"자막(음성을 텍스트로 변환한 것이라 오탈자가 있을 수 있음)입니다. {_slot_label} 기준으로 "
-        f"한국 개인 투자자가 참고할 만한 핵심 내용만 간결하게 정리해주세요.\n"
-        f"- 언급된 종목명·테마가 있으면 반드시 포함\n"
-        f"- 전문가가 제시한 전망·근거를 요약(단정적 매수/매도 권유가 아니라 참고 의견으로 표현)\n"
-        f"- 영상별로 나누지 말고 주제별로 통합해 5~8줄 이내로\n\n" + "\n\n".join(_parts)[:30000]
-    )
-    _summary = _gemini_generate(gemini_key, _prompt)
+    _summary = _gemini_generate(gemini_key, _youtube_digest_prompt(_parts, _slot_label))
     if not _summary:
         state[_done_key] = today
         return
