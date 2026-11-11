@@ -124,6 +124,20 @@ SECTORS = {
 }
 
 
+def _sector_companions(code):
+    """[7.119] 사용자 요청("특정 종목 속보가 뜨면 같은 테마의 다른 종목들도 같이 알려줌") —
+    SECTORS(6대 거시테마, KIS 호출 없는 정적 목록)에서 이 종목이 속한 테마와 같은 테마의
+    동반종목을 찾는다. 새 테마·키워드 매핑을 만들지 않고 이미 있는 SECTORS 그대로 재사용
+    (HANDOFF "대장주 갭업 시 세부테마 2등주 자동추적"은 MLCC급 세부 매핑이 필요해 과최적화
+    위험으로 보류해둔 항목이지만, 이건 그보다 훨씬 거친 수준 — 기존 6대 거시테마 멤버십만
+    보여주는 것이라 새로 끼워맞추는 게 없음). 반환 (테마명, [(code,name),...]) — 속하는
+    테마가 없으면 (None, [])."""
+    for _theme, _stocks in SECTORS.items():
+        if code in {c for c, _n in _stocks}:
+            return _theme, [(c, n) for c, n in _stocks if c != code]
+    return None, []
+
+
 # ── 유틸 ────────────────────────────────────────────────────────────────────
 def _to_int(v, d=0):
     try:
@@ -3029,6 +3043,9 @@ def check_breaking_news(now_kst, state, token_tg, chat_id):
             _msg = f"{_sig}\n📰 [속보] {_name}({_code}) {_tag}\n{_t}"
             if _link:
                 _msg += f"\n{_link}"
+            _theme, _comp = _sector_companions(_code)
+            if _theme and _comp:
+                _msg += f"\n🧩 같은 테마({_theme}): {', '.join(n for _c, n in _comp)}"
             send_telegram(token_tg, chat_id, _msg)
             last_alert[_code] = now_kst.timestamp()
             _alerted += 1
