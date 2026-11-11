@@ -118,6 +118,55 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.127 신규 보강 — entry_status 상태머신 도입(지시서 섹션8, 전체 도입 선택)
+
+**배경**: 7.125/7.126에 이어 사용자가 지시서의 남은 큰 항목 중 "entry_status 상태머신 전체
+도입"을 선택. 지시서 섹션8은 `DATA_BLOCKED > MARKET_BLOCKED > INVALIDATED >
+MATERIAL_PENDING > (가격·유동성·위험계획 전부 충족해야 ELIGIBLE, 아니면 WATCH)` 우선순위의
+상태머신을 요구함. 다만 이 저장소는 이미 `check_dolpanty_pick`에 AI뉴스판정·수급·장세·재료등급·
+이벤트리스크를 종합한 "강등(관망) 조건"이 실전에서 검증된 형태로 존재했고(SK스퀘어 실패
+케이스로 만들어진 규칙 등), `check_nxt_premium_pick`(대체종배)엔 재료등급 필터만 있고
+가격조건 게이트가 아예 없었음(7.125에서 괴리율을 표시만 했지 상태로 분류하진 않았음).
+**새 트레이딩 규칙을 만드는 작업이 아니라, 이미 있는 판단 신호를 공식 상태값으로 재표현하는
+작업**으로 범위를 좁혀 진행(지시서가 요구하는 임계값·데이터 구조를 새로 발명하지 않음).
+
+**수정**: 공용 순수함수 `_entry_status_classify(...)`(macro_watcher.py, `_verdict_tag` 옆)를
+추가 — 지시서 의사코드를 그대로 코드화, 새 데이터 소스 없이 호출부가 넘기는 불리언만으로
+상태 1개 + reason_codes(복수)를 반환.
+- `check_dolpanty_pick`: 기존 `if _ai_bad or _supply_neg or _regime_block or _nograde_block
+  or _event_risk:` 강등 조건을 `_entry_status_classify(market_blocked=_regime_block,
+  material_negative=_ai_bad, material_pending=_nograde_block, liquidity_ok=not _supply_neg,
+  risk_plan_ok=not _event_risk)`로 교체 — **행동 보존적 리팩터**(아래 검증 참고, 실제 발송
+  여부는 전혀 안 바뀜). 확정픽 텔레그램 헤더에 `[...·ELIGIBLE]` 태그 추가, 강등 메시지엔
+  `[...·관망·{entry_status}]`로 실제 상태명 노출. `state['dolpanty_pick_info']`와 `_log_pick`
+  기록에도 entry_status 저장(`_log_pick`에 `entry_status`/`reason_codes` 선택적 파라미터 추가
+  — 기존 호출부는 전부 영향 없음, None이면 null로 기록).
+- `check_nxt_premium_pick`(대체종배): 후보 전체가 `out`에 포함되고 텔레그램에 발송되는 기존
+  동작은 그대로 두고(필터링 추가 아님), 재료등급(ng not in S/A → MATERIAL_PENDING)과 7.125의
+  premium_pct(음수 → 가격조건 미충족)로 각 후보에 entry_status(ELIGIBLE/MATERIAL_PENDING/
+  WATCH) + reason_codes를 붙임. 텔레그램 메시지 각 줄에 `[상태]` 태그 추가.
+- 대시보드: "오늘의 추천 픽" 표에 "진입상태" 컬럼(✅/🟡/⚪ + 사유) + 설명 캡션 추가, "최근
+  종배픽 기록" 표에도 entry_status 컬럼 추가(옛 기록은 "—"로 표시).
+
+**검증**: `py_compile` 통과.
+- `test_entry_status.py`(6건) — `_entry_status_classify`의 우선순위(DATA_BLOCKED>
+  MARKET_BLOCKED>INVALIDATED>MATERIAL_PENDING) 확인 + **가장 중요한 테스트**: check_dolpanty_pick
+  에 실제로 들어간 호출 패턴이 지워진 기존 OR조건과 32가지(2^5) 불리언 조합 전수에서 동치인지
+  검증 — 전부 일치(행동 변화 없음을 수학적으로 확인, 추측 아님).
+- `test_entry_status_nxt_prem.py`(4건) — check_nxt_premium_pick 모의 실행으로 3가지 케이스
+  (재료S+종가밑→WATCH/가온전선류, 재료T(미확인)+종가위→MATERIAL_PENDING, 재료A+종가위→
+  ELIGIBLE) 분류 확인.
+- 7.125/7.126 기존 테스트(`test_premium_pct_ai_verdict.py`, `test_nxt_premium_reconfirm.py`)
+  재실행해 회귀 없음 확인.
+**확인 못한 부분**: ①실제 운영 환경에서 이 변경 이후 실제 텔레그램 메시지 포맷(새 태그)이
+어떻게 보이는지 미확인. ②check_dolpanty_pick의 data_blocked·market_blocked 매핑은 기존
+신호(_regime_block 등)를 그대로 재사용한 근사치이지, 지시서가 요구하는 "시장 전체 지수
+데이터 유무로 판정하는 전용 MARKET_BLOCKED 게이트"를 새로 만든 건 아님 — 의미상 가장 가까운
+기존 신호에 매핑한 것. ③check_nxt_premium_pick엔 risk_plan(손절가·손실금액 계획)·liquidity
+게이트가 아직 없음(이 함수엔 애초에 그런 계획 개념이 없었음) — 추가하려면 새 로직(지시서
+섹션11)이 필요해 이번 범위 밖으로 남김. ④재료 구조화(certainty/directness/발표시각 필드),
+분봉 연속 추적, 포지션사이징 계산기, 백테스트 인프라는 여전히 범위 밖.
+
 ### 7.126 신규 보강 — 대체종배 확정픽이 사실은 "막판"이 아니라 18시 직후 가격으로 확정되던 문제
 
 **배경**: 7.125에 이어 사용자가 "나머지도 이어서 진행해줘"라고 요청 — 지시서의 가장 큰 미해결
