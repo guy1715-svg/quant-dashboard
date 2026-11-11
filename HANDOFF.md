@@ -118,6 +118,30 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.122 수정 — "한국경제TV 정리하기" 버튼이 엉뚱한 도구에 가 있었음(tools_gui.py로 이동)
+
+**배경**: 7.121에서 `quant_dashboard.py`(Streamlit 웹 대시보드)에 버튼을 만들었는데, 사용자가
+스크린샷과 함께 "없는데?"라고 지적 — 사용자가 "퀀트 트레이딩 도구"라고 부르는 건 그게
+아니라 **`tools_gui.py`(Tkinter 데스크톱 GUI)**였음. 이 GUI는 각 버튼이 `macro_watcher.py`를
+`--force-pick`/`--test-news`/`--report` 같은 **일회성 CLI 플래그**로 서브프로세스 실행하는
+구조라, 웹 대시보드에 버튼을 만든 건 애초에 사용자가 본 적도 없는 화면이었던 것.
+
+**수정**: `macro_watcher.py`에 `--youtube-digest` 일회성 CLI 플래그 신규 추가 — 시간창 무시,
+7.121의 공유 헬퍼(`_youtube_fetch_highlights`·`_youtube_digest_prompt`) 그대로 재사용해
+즉시 조회·요약·텔레그램 발송 후 종료(기존 `--weekly-review` 등과 동일한 "일회성 실행→
+텔레그램→종료" 관례). `tools_gui.py`의 버튼 목록(`_specs`)에 "📺 한국경제TV 정리본" 추가
+(`_run(["--youtube-digest"], "유튜브정리")` — 다른 버튼들과 완전히 동일한 패턴, 새 GUI
+로직 없음). 7.121에서 만든 웹 대시보드 쪽 버튼은 그대로 남겨둠(쓸모없는 건 아니고, 웹
+대시보드를 쓸 때도 바로 조회할 수 있어 나쁠 것 없음 — 단지 사용자가 1순위로 원한 건
+이쪽이 아니었던 것뿐).
+
+**검증**: py_compile 양쪽 파일 통과. 신규 테스트 2개(`test_youtube_cli.py`) — 플래그가
+argparse에 실제 등록됐는지(소스 검사), `macro_watcher.py --help`를 실제 서브프로세스로
+실행해 `--youtube-digest`가 도움말에 나오는지(실제 CLI 동작 확인, 모의 아님). 기존
+`test_youtube_digest.py`·`test_sector_companions.py`·`test_perf_neg_fix.py`·
+`test_breaking_news.py`·`test_supply_turn_mywatch.py` 재실행 통과(회귀 없음).
+**확인 못한 부분**: 7.120/7.121과 동일 — 실제 유튜브·Gemini 키로 눌러봐야 최종 확인 가능.
+
 ### 7.121 신규 기능 — 대시보드에 "한국경제TV 지금 정리하기" 버튼 추가
 
 **배경**: 7.120(예약 발송, 하루 2번) 직후 사용자가 "퀀트 트레이딩 도구에 버튼 만들어줘.
