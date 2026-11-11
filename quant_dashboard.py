@@ -835,7 +835,14 @@ def render_dolpanty():
     else:
         df = pd.DataFrame(picks[-60:][::-1])
         df["신호"] = df["signal"].map(_KMAP).fillna(df["signal"])
-        st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
+        # [지시서 반영] entry_status(ELIGIBLE/MATERIAL_PENDING/WATCH) — 옛 기록(7.127 이전)엔
+        # 없을 수 있어 없으면 "—"로 표시. "종배픽"(dolpanty류)은 통과한 것만 여기 보이므로 항상
+        # ELIGIBLE이지만, "대체종배"(dolpanty_nxtprem)는 후보 전체가 찍혀 실제로 섞여 나옴.
+        _cols = ["date", "name", "code", "px", "score", "신호"]
+        if "entry_status" in df.columns:
+            df["진입상태"] = df["entry_status"].fillna("—")
+            _cols.append("진입상태")
+        st.dataframe(df[_cols], use_container_width=True, hide_index=True)
 
     render_stock_track_record()
 
@@ -960,13 +967,26 @@ def render_dolpanty():
             # 있었음 — "S등급이어도 그 근거가 뭔지 화면에서 확인할 수 있어야 한다"는 지적 반영.
             _pkdf["AI재료검증"] = _pkdf.get("ai_verdict", pd.Series(dtype=str)).fillna("").astype(str).str.replace(
                 "\n🤖 AI뉴스: ", "", regex=False).replace("", "—")
+            # [지시서 반영] entry_status 상태머신 — 재료등급·종가대비를 종합해 "ELIGIBLE/
+            # MATERIAL_PENDING/WATCH" 한 눈에 보여줌(순위·점수와는 별개 레이어). 새 필터링은
+            # 아님 — 표에 나온 후보는 그대로 다 보임, 상태만 추가로 보여줌.
+            if "entry_status" in _pkdf.columns:
+                _pkdf["진입상태"] = _pkdf.apply(
+                    lambda r: (("✅" if r.get("entry_status") == "ELIGIBLE" else
+                                "🟡" if r.get("entry_status") == "MATERIAL_PENDING" else "⚪")
+                               + str(r.get("entry_status") or "")
+                               + (f" ({'·'.join(r['reason_codes'])})" if r.get("reason_codes") else "")),
+                    axis=1)
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "종가대비": "종가대비", "재료등급": "재료등급",
-                       "AI재료검증": "AI재료검증", "쌍끌이": "쌍끌이",
+                       "진입상태": "진입상태", "AI재료검증": "AI재료검증", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
                        "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+            st.caption("진입상태 = ELIGIBLE(재료·가격 조건 충족) / MATERIAL_PENDING(재료 미확인) / "
+                       "WATCH(재료는 있으나 가격조건 미충족, 예: 종가대비 음수) — 매수 추천이나 "
+                       "주문 실행이 아니라 설정된 조건을 충족했다는 뜻일 뿐입니다.")
             st.caption("종가대비 = NXT가가 당일 KRX 정규장 확정종가 대비 몇 % 위/아래인지입니다 — "
                        "음수(⚠️종가밑)면 가격위치(CLV)가 높게 나와도 아직 당일 종가를 회복하지 "
                        "못한 상태라는 뜻이니 CLV만 보고 판단하지 마세요.")
