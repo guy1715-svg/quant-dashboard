@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
 import requests
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="퀀트 관제탑", page_icon="📊", layout="wide",
                     initial_sidebar_state="auto")
@@ -62,145 +64,145 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 import macro_watcher as mw  # noqa: E402  (신호 로직의 유일한 출처 — 재구현하지 않고 그대로 재사용)
+import indicators as ind  # noqa: E402  (RSI·이평선 등 지표 계산 — 추천픽 차트 표시용)
 
 
-# ══════════════════════════════════════════
-# 🔐 다중 사용자 인증 (기존 그대로 유지)
-#
-# secrets.toml 설정 예시:
-#   [users.guy]
-#   password = "내비밀번호"
-# ※ 구버전 호환: [auth] password = "..." 도 계속 지원(단일 사용자 "default")
-# ══════════════════════════════════════════
-
-def _get_user_db() -> dict:
-    try:
-        _users_cfg = dict(st.secrets.get("users", {}))
-        if _users_cfg:
-            return {u: dict(v).get("password", "") for u, v in _users_cfg.items()}
-    except Exception:
-        pass
-    try:
-        _pw = st.secrets.get("auth", {}).get("password", "")
-        if _pw:
-            return {"default": _pw}
-    except Exception:
-        pass
-    return {}
-
-
-_AUTH_TOKEN_DAYS = 14
-
-
-def _make_auth_token(uid: str, pw: str) -> str:
-    import hmac, hashlib, base64, time
-    _exp = int(time.time()) + _AUTH_TOKEN_DAYS * 86400
-    _msg = f"{uid}.{_exp}"
-    _sig = hmac.new(pw.encode(), _msg.encode(), hashlib.sha256).hexdigest()[:32]
-    return base64.urlsafe_b64encode(f"{_msg}.{_sig}".encode()).decode()
+# [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 대시보드에 차트 표시 기능.
+# 다른 AI가 보여준 예시(장황한 "매수 근거" 서술형 분석)처럼 "강력한 상승 랠리 기대" 같은 결론을
+# 내리는 문구는 일부러 넣지 않음 — 이 저장소 전체의 기존 원칙("매수 추천이 아니라 참고용")과
+# 어긋나고, 특정 수치 몇 개만 보고 확정적 매매 결론을 내리는 건 과도한 확신이라 판단. 가격·거래량·
+# 이평선 배열 같은 객관적 사실만 차트+캡션으로 보여주고, 판단은 사용자 몫으로 남김.
+def _find_support_resistance(df, window=3):
+    """[V26.30] 스윙 고점/저점(피벗) 기준 저항·지지 — 좌우 window봉보다 고가가 높으면 스윙고점,
+    저가가 낮으면 스윙저점으로 본다. 현재가 위쪽 스윙고점 중 가장 가까운 걸 저항, 아래쪽
+    스윙저점 중 가장 가까운 걸 지지로 삼는다(해당하는 스윙이 없으면 전체 구간 고가/저가로 대체).
+    "산업방향성·실적" 같은 정성적 판단까지는 자동화 범위 밖이라, 가격 구조만으로 계산 가능한
+    이 부분만 우선 구현 — 기관마다 그리는 방식이 다를 수 있는 '참고용 한 가지 해석'일 뿐임."""
+    highs = df["고가"].values
+    lows = df["저가"].values
+    n = len(df)
+    swing_highs, swing_lows = [], []
+    for i in range(window, n - window):
+        if highs[i] == max(highs[i - window:i + window + 1]):
+            swing_highs.append(highs[i])
+        if lows[i] == min(lows[i - window:i + window + 1]):
+            swing_lows.append(lows[i])
+    cur = df["종가"].iloc[-1]
+    _above = [h for h in swing_highs if h > cur]
+    _below = [l for l in swing_lows if l < cur]
+    resistance = min(_above) if _above else (max(highs) if n else None)
+    support = max(_below) if _below else (min(lows) if n else None)
+    return resistance, support
 
 
-def _verify_auth_token(token: str, user_db: dict):
-    import hmac, hashlib, base64, time
-    try:
-        _raw = base64.urlsafe_b64decode(token.encode()).decode()
-        _uid, _exp, _sig = _raw.rsplit(".", 2)
-        if int(_exp) < int(time.time()):
-            return None
-        _pw = user_db.get(_uid, "")
-        if not _pw:
-            return None
-        _expect = hmac.new(_pw.encode(), f"{_uid}.{_exp}".encode(), hashlib.sha256).hexdigest()[:32]
-        if hmac.compare_digest(_sig, _expect):
-            return _uid
-    except Exception:
-        pass
-    return None
+def _render_pick_chart(token, key, secret, code, name):
+    """추천픽 종목 선택 시 일봉 캔들차트(이평선+저항/지지 오버레이)+거래량 차트를 그려 보여준다.
+    [V26.33] 사용자 UI 피드백 반영 — ① 차트 안 title과 범례가 겹쳐서 안 보이던 것 → title은
+    차트 밖 st.markdown으로 빼고 범례만 차트 상단에 깔끔히 배치 ② x축에 날짜가 전혀 안 보이던
+    것 → 실제 영업일자를 범주형 x축으로 표시(주말·공휴일 빈칸 없이, 눈금은 과밀 방지로 일부만)
+    ③ 저항·지지 글자가 초반 캔들과 겹치던 것 → 주석을 오른쪽으로 옮기고 텍스트를 짧게 ④ 왼쪽에
+    보이던 정체불명의 빨간 세로선 → plotly 숫자축 기본 zeroline이 idx=0 자리에 그려지던 것이라
+    명시적으로 꺼서 제거 ⑤ 이동평균선 범례를 한글(5일선/20일선/60일선/120일선)로 표기."""
+    oh, _reason = mw._daily_ohlcv(token, key, secret, code, _diag=True)
+    if not oh:
+        st.warning(f"{name}({code}) 일봉 데이터를 가져오지 못했습니다 — {_reason or '원인 미상'}")
+        return
+    df = pd.DataFrame({"종가": oh["close"], "고가": oh["high"], "저가": oh["low"],
+                       "시가": oh["open"], "거래량": oh["volume"]})
+    df = ind.calc_indicators(df)
+    df["idx"] = range(len(df))
+    # 영업일자(YYYYMMDD) → "MM/DD" 표기. 날짜 정보가 없으면(구버전 데이터 등) idx로 대체.
+    _dates = oh.get("date") or []
+    if len(_dates) == len(df) and all(_dates):
+        df["날짜"] = [f"{d[4:6]}/{d[6:8]}" for d in _dates]
+    else:
+        df["날짜"] = df["idx"].astype(str)
+    _cur_px = df["종가"].iloc[-1]
+    _resist, _support = _find_support_resistance(df)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+                         vertical_spacing=0.03)
+    # 한국 관행: 양봉=빨강(상승), 음봉=파랑(하락) — 거래량 막대도 같은 색 규칙으로 통일
+    fig.add_trace(go.Candlestick(
+        x=df["날짜"], open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
+        increasing_line_color="#d93025", increasing_fillcolor="#d93025",
+        decreasing_line_color="#1a73e8", decreasing_fillcolor="#1a73e8", name="일봉"),
+        row=1, col=1)
+    for _ma, _label, _color in [("MA5", "5일선", "#f2a900"), ("MA10", "10일선", "#e05ec4"),
+                                 ("MA20", "20일선", "#6b7280"), ("MA30", "30일선", "#2563eb"),
+                                 ("MA60", "60일선", "#1a9850"), ("MA120", "120일선", "#9333ea")]:
+        if _ma in df.columns:
+            fig.add_trace(go.Scatter(x=df["날짜"], y=df[_ma], mode="lines", name=_label,
+                                      line=dict(width=1.3, color=_color)), row=1, col=1)
+    # 저항(위)·지지(아래) — 가격 방향(빨강/파랑)과 안 헷갈리게 점선+주황/청록, 글자는 오른쪽으로
+    # 빼서 캔들과 안 겹치게(자세한 가격·%는 아래 캡션에 이미 있어 차트엔 짧게만 표기)
+    if _resist is not None:
+        fig.add_hline(y=_resist, line_dash="dot", line_color="#c2410c", line_width=1.5,
+                      annotation_text="저항", annotation_position="top right",
+                      annotation_font_color="#c2410c", row=1, col=1)
+    if _support is not None:
+        fig.add_hline(y=_support, line_dash="dot", line_color="#0d9488", line_width=1.5,
+                      annotation_text="지지", annotation_position="bottom right",
+                      annotation_font_color="#0d9488", row=1, col=1)
+    # [V26.34] 사용자 요청 — "거래량은 매수매도 게이지 나오게 해줘". 틱 단위 실제 체결(매수/매도)
+    # 데이터는 없어서(일봉만 조회), CMF와 같은 공식(Money Flow Multiplier)으로 그날 종가가
+    # 고가/저가 범위 중 어디에 있었는지를 근거로 그날 거래량을 상승압력/하락압력으로 비율 분할한
+    # "추정치"임 — 실제 체결 매수·매도 구분이 아니라는 걸 캡션에도 명시.
+    # [V26.44] "매수추정/매도추정"이라는 이름이 실제 체결 매수·매도 데이터처럼 오해될 수 있다는
+    # 지적 반영 — 데이터 출처(종가 위치 기반 추정)가 드러나는 이름으로 변경. 공식·값은 그대로,
+    # 표시 라벨만 수정.
+    _rng = (df["고가"] - df["저가"]).replace(0, pd.NA)
+    _mfm = (((df["종가"] - df["저가"]) - (df["고가"] - df["종가"])) / _rng).fillna(0.0)
+    _buy_ratio = (_mfm + 1) / 2                 # -1~+1 → 0~1 (고가=상승압력100%, 저가=하락압력100%)
+    _buy_vol = df["거래량"] * _buy_ratio
+    _sell_vol = df["거래량"] * (1 - _buy_ratio)
+    fig.add_trace(go.Bar(x=df["날짜"], y=_buy_vol, marker_color="#d93025", name="상승압력(추정)"),
+                  row=2, col=1)
+    fig.add_trace(go.Bar(x=df["날짜"], y=_sell_vol, marker_color="#1a73e8", name="하락압력(추정)"),
+                  row=2, col=1)
+    fig.update_layout(height=520, margin=dict(l=10, r=10, t=40, b=10),
+                       xaxis_rangeslider_visible=False, barmode="stack",
+                       legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0))
+    # idx(숫자) 대신 날짜(범주형) 축을 쓰므로 0 지점에 그려지던 기본 zeroline이 더 이상 안 생기지만,
+    # 혹시 모를 테마별 차이를 대비해 명시적으로 꺼둠
+    fig.update_xaxes(type="category", zeroline=False, row=1, col=1,
+                      showticklabels=False)
+    fig.update_xaxes(type="category", zeroline=False, row=2, col=1,
+                      tickangle=0, nticks=8)
+    st.markdown(f"**{name}({code}) 일봉**")
+    st.plotly_chart(fig, use_container_width=True)
+
+    _last = df.iloc[-1]
+    _vol_avg20 = df["거래량"].iloc[-21:-1].mean() if len(df) > 21 else None
+    _vol_x = (_last["거래량"] / _vol_avg20) if _vol_avg20 else None
+    _ma20_disp = (_last["종가"] / _last["MA20"] - 1) * 100 if pd.notna(_last.get("MA20")) else None
+    _facts = [f"종가 {int(_last['종가']):,}원"]
+    if pd.notna(_last.get("RSI")):
+        _facts.append(f"RSI {_last['RSI']:.0f}")
+    if _ma20_disp is not None:
+        _facts.append(f"20일선 대비 {_ma20_disp:+.1f}%")
+    if _vol_x:
+        _facts.append(f"거래량 20일평균 대비 {_vol_x:.1f}배")
+    if _resist is not None:
+        _facts.append(f"저항 {_resist:,.0f}원({(_resist/_cur_px-1)*100:+.1f}%)")
+    if _support is not None:
+        _facts.append(f"지지 {_support:,.0f}원({(_support/_cur_px-1)*100:+.1f}%)")
+    st.caption(" · ".join(_facts) + " — 객관적 수치 참고용(매수·매도 판단 아님)")
+    st.caption("저항·지지는 최근 스윙 고점/저점 기준 산출(기관·사용자마다 긋는 방식이 다를 수 "
+               "있는 참고용 해석 중 하나입니다). 산업·시장 방향성, 실적, 수급 연속성 같은 "
+               "정성적 판단은 자동화 범위 밖이라 직접 확인하셔야 합니다.")
+    st.caption("거래량의 상승압력(빨강)·하락압력(파랑) 분할은 실제 체결 주체별 매수·매도 데이터가 "
+               "아니라, 그날 종가가 고가·저가 범위 중 어디에 위치했는지(OHLC)로 추정한 근사치입니다 "
+               "(일봉만 조회 가능해 틱 단위 매수·매도 체결량은 확인할 수 없습니다).")
 
 
+# [V26.47] 사용자 요청 — 로그인(아이디·비번) 기능 전체 삭제. 이 대시보드 URL을 아는 사람은
+# 누구나 접근 가능해짐(계좌·API 키 자체는 노출 안 되지만 종배픽·실시간 스캔 결과 등은 누구나
+# 볼 수 있음 — 사용자가 이 영향을 확인하고 명시적으로 선택). 기존 로그인 인프라(_check_auth·
+# _get_user_db·토큰 발급/검증·Firebase 연동)를 통째로 제거. _current_username()만 다른 곳
+# (분석 저널 작성자 태그 등)에서 계속 참조해서 남겨둠 — 로그인이 없으니 항상 "default" 반환.
 def _current_username() -> str:
     return st.session_state.get("_username", "default") or "default"
-
-
-def _check_auth() -> bool:
-    if st.session_state.get("_auth_ok"):
-        return True
-    _user_db = _get_user_db()
-    if not _user_db:
-        st.session_state["_auth_ok"] = True
-        st.session_state["_username"] = "default"
-        return True
-    try:
-        _tok = st.query_params.get("t", "")
-    except Exception:
-        _tok = ""
-    if _tok:
-        _uid_ok = _verify_auth_token(_tok, _user_db)
-        if _uid_ok:
-            st.session_state["_auth_ok"] = True
-            st.session_state["_username"] = _uid_ok
-            return True
-    _is_multi = len(_user_db) > 1
-    st.markdown(
-        "<div style='text-align:center;margin:40px 0 8px'>"
-        "<div style='font-size:48px;margin-bottom:12px'>📊</div>"
-        "<div style='font-size:24px;font-weight:900;margin-bottom:6px'>퀀트 관제탑</div>"
-        "<div style='font-size:13px;color:#64748b;margin-bottom:20px'>접근 권한이 필요합니다</div>"
-        "</div>", unsafe_allow_html=True)
-    if _is_multi:
-        _inp_user = st.text_input("사용자 ID", placeholder="아이디를 입력하세요",
-                                   label_visibility="collapsed", key="_auth_user_input")
-    else:
-        _inp_user = list(_user_db.keys())[0]
-    _inp_pw = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요",
-                             label_visibility="collapsed", key="_auth_pw_input")
-    if st.button("🔓 입장", use_container_width=True, type="primary", key="_auth_login_btn"):
-        _uid = _inp_user.strip().lower() if _inp_user else ""
-        _expected_pw = _user_db.get(_uid, "")
-        if _uid and _expected_pw and _inp_pw == _expected_pw:
-            st.session_state["_auth_ok"] = True
-            st.session_state["_username"] = _uid
-            try:
-                st.query_params["t"] = _make_auth_token(_uid, _expected_pw)
-            except Exception:
-                pass
-            st.rerun()
-        elif not _uid:
-            st.error("❌ 사용자 ID를 입력하세요.")
-        else:
-            st.error("❌ ID 또는 비밀번호가 틀렸습니다.")
-    st.stop()
-    return False
-
-
-_check_auth()
-
-
-# ══════════════════════════════════════════
-# Firebase (로그인 인프라 유지 — 그 외 용도는 사용 안 함)
-# ══════════════════════════════════════════
-try:
-    import firebase_admin
-    from firebase_admin import credentials as fb_credentials
-except Exception:
-    firebase_admin = None
-
-
-@st.cache_resource(show_spinner=False)
-def _get_firebase_app():
-    if firebase_admin is None:
-        return None
-    try:
-        if not firebase_admin._apps:
-            _fb_cfg = st.secrets.get("firebase")
-            _fb_conf = st.secrets.get("firebase_config")
-            if not _fb_cfg or not _fb_conf or not (_fb_conf.get("database_url") if hasattr(_fb_conf, "get") else None):
-                return None
-            firebase_admin.initialize_app(fb_credentials.Certificate(dict(_fb_cfg)),
-                                           {"databaseURL": _fb_conf["database_url"]})
-        return firebase_admin.get_app()
-    except Exception:
-        return None
 
 
 # ══════════════════════════════════════════
@@ -245,6 +247,18 @@ def _pct_color(x):
     if x is None:
         return "gray"
     return "#e74c3c" if x < 0 else ("#2ecc71" if x > 0 else "#888")
+
+
+def _sell_ratio_label(frgn, orgn):
+    """[V26.39] 매도율(사용자 제보 — 유튜브 수급 강의 개념) 표시용 포맷터. mw.check_nxt_premium_pick이
+    이미 계산해준 sell_ratio_frgn/orgn(%, None 가능)을 "외38%·기52%" 식 한 줄로 합침 — 둘 다
+    없으면 "—". 1단계: 표시용일 뿐 점수·정렬에는 쓰지 않음."""
+    parts = []
+    if frgn is not None:
+        parts.append(f"외{frgn:.0f}%")
+    if orgn is not None:
+        parts.append(f"기{orgn:.0f}%")
+    return "·".join(parts) if parts else "—"
 
 
 # ══════════════════════════════════════════
@@ -374,15 +388,6 @@ with st.sidebar:
                 st.caption(f"외인 {_frn*_px/1e8:+.0f}억 · 기관 {_org*_px/1e8:+.0f}억 {_icon}")
     else:
         st.caption("KIS 키 없음 — 수급 조회 불가")
-    st.divider()
-    st.caption(f"👤 {_current_username()}")
-    if st.button("로그아웃", use_container_width=True):
-        st.session_state.clear()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
 
 
 st.title("📊 퀀트 관제탑")
@@ -816,15 +821,23 @@ def render_dolpanty():
         st.info("KIS 키 없음")
 
     st.subheader("🌒 최근 종배픽 기록")
+    # [사용자 요청] "최근 종배픽 기록에서 종배그림자는 삭제해줘, 기록 안해도 될듯" — 다만
+    # 종배그림자(dolpanty_shadow)는 텔레그램 미발송 대조군으로 실제 기록(pick_history.json)에
+    # 남아 "청산분석"(macro_watcher.py ~1125)·"갭 분석"(~5115) 두 곳에서 승률 검증용으로
+    # 계속 쓰이고 있어, 기록 자체를 끊으면 그 검증 기능들이 대조군을 잃게 됨 — 사용자에게
+    # 확인한 결과 "기록은 유지하고 이 표에서만 안 보이게"로 확정. _KMAP(신호명 매핑)은 다른
+    # 곳(_compute_signal_stats)에서도 dolpanty_shadow를 그대로 써서 안 건드리고, 여기 필터
+    # 목록에서만 dolpanty_shadow를 제외.
     picks = [p for p in all_picks
-             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_shadow", "dolpanty_nxtprem")]
+             if p.get("signal") in ("dolpanty", "dolpanty_nonxt", "dolpanty_div", "dolpanty_nxtprem")]
     if not picks:
         st.caption("종배 기록 없음 — 감시를 며칠 돌린 뒤 쌓입니다.")
     else:
         df = pd.DataFrame(picks[-60:][::-1])
         df["신호"] = df["signal"].map(_KMAP).fillna(df["signal"])
         st.dataframe(df[["date", "name", "code", "px", "score", "신호"]], use_container_width=True, hide_index=True)
-        st.caption("종배그림자 = 텔레그램 미발송 대조군(뽑힐 뻔한 후보) — 실제 추천이 아닙니다.")
+
+    render_stock_track_record()
 
     # [V26.17] 사용자 요청 — "내가 보고싶은 시간때 기준으로 거래대금+괴리율+수급을 확인이 되어
     # 종목선정시 가이드를 삼으려고" 하는 온디맨드 새로고침. 아래 "날짜별 전체 스캔" 표는 감시
@@ -832,25 +845,38 @@ def render_dolpanty():
     # 아님 — 이 버튼은 누르는 그 순간 KIS를 직접 조회해 최신 데이터로 1~30위를 보여줌.
     # notify=False로 호출해 텔레그램 발송·성적표(pick_history/signal_scorecard) 기록은 생략 —
     # 장중 미확정가 기준 미리보기가 저녁 확정픽 승률 통계에 섞이지 않게 함.
-    st.subheader("⏱️ 지금 이 순간 새로고침 — 거래대금×괴리율×수급 통합")
+    st.subheader("⏱️ 지금 이 순간 새로고침 — 거래대금×거래량비율×수급 통합")
     st.caption(
         "버튼을 누른 순간 KIS를 직접 조회해 1~30위를 보여줍니다(텔레그램 발송·성적표 기록 없음, "
         "순수 미리보기). ⚠️ **'KRX정규장종가' 관련 주의**: 정규장 중(09:00~15:30)에 누르면 KRX가는 "
         "그 순간의 장중 실시간가이고, 15:30 장마감 이후(특히 평소 스캔 시간대인 18:00~19:50)에 누르면 "
-        "KRX가는 당일 정규장 최종 종가로 고정됩니다 — MTS 괴리율 화면의 'KRX정규장종가'와 같은 의미가 "
-        "되는 건 장마감 후뿐입니다. 장중에 눌러보는 괴리율·거래량비율은 그 순간 기준 스냅샷이라 "
-        "시시각각 바뀔 수 있습니다."
+        "KRX가는 당일 정규장 최종 종가로 고정됩니다. 장중에 눌러보는 거래량비율은 그 순간 기준 "
+        "스냅샷이라 시시각각 바뀔 수 있습니다."
     )
+    # [V26.51] 사용자 지적 — "우리는 거래대금괴리율이 필요한게 아니야 거래량비율이 필요한거야".
+    # 선정 기준은 원래부터 거래량비율 하나뿐이었고 거래대금괴리율은 순위에 전혀 안 쓰이는 참고용
+    # 컬럼이었는데, 그 비교 설명 캡션이 오히려 "괴리율도 같이 봐야 하나?"로 오해를 키운 것으로
+    # 판단 — 거래대금괴리율(%) 컬럼 자체를 삭제(아래 _lcols에서도 제거)하고, 이 캡션도 거래량비율
+    # 선정 기준만 간단히 설명하도록 정리.
     st.caption(
-        "**현재 1위 선정 기준**: NXT거래량 ÷ 당일 KRX(정규장) 거래량 비율 내림차순입니다(괴리율·거래대금 "
-        "절대 크기순이 아닙니다). 이 기준은 소형주일수록 쉽게 커지는 착시가 있어, '평소(최근 20일평균) "
-        "정규장거래대금 대비 NXT거래대금 비율' 컬럼을 보조지표로 같이 보여드립니다. 사용자가 평소 보던 "
-        "방식(괴리율·거래대금이 **둘 다** 크게 터진 종목을 고르는 방식)과 지금 시스템의 거래량비율 "
-        "1위가 항상 일치하진 않습니다 — 거래량비율 1위가 괴리율·거래대금은 평범할 수 있고, 반대로 "
-        "괴리율·거래대금이 둘 다 큰 종목이 거래량비율로는 중위권에 머물 수 있습니다. 아래 표에서 거래량비율 "
-        "순위만 보지 마시고 괴리율(%)·NXT거래대금(억) 두 컬럼을 같이 봐 주시면, 사용자 방식과 현재 시스템 "
-        "기준을 동시에 확인하실 수 있습니다."
+        "**현재 1위 선정 기준**: NXT거래량 ÷ 당일 KRX(정규장) 거래량 비율 내림차순입니다. 이 기준은 "
+        "소형주일수록 쉽게 커지는 착시가 있어, '평소(최근 20일평균) 정규장거래대금 대비 NXT거래대금 "
+        "비율' 컬럼을 보조지표로 같이 보여드립니다."
     )
+    # [사용자 요청] "새로고침하면 너무 시간 오래 걸리니까 저장기능이라고 보면 될듯" + "조회눌러서
+    # 나온 차트가 계속 유지가 되는거지" + "필요시 새로고침으로 최신화를 시키는거지" — 이 세션이
+    # 아직 한 번도 새로고침을 안 눌렀으면(즉 집·회사 등 다른 기기를 방금 새로 열었으면), 다른
+    # 기기에서 마지막으로 눌러 GitHub에 저장해둔 결과가 있는지 먼저 확인해서 보여줌 — 매번 1~2분
+    # 걸리는 조회를 다시 기다리지 않아도, 누군가 최근에 눌러둔 결과를 기기 상관없이 바로 봄.
+    if "nxt_live_full" not in st.session_state:
+        _cached_scan = _fetch_live_scan_cache(_t.time() // 60)
+        if _cached_scan:
+            st.session_state["nxt_live_full"] = _cached_scan.get("full") or []
+            st.session_state["nxt_live_out"] = _cached_scan.get("out") or []
+            st.session_state["nxt_live_flow"] = _cached_scan.get("flow") or []
+            st.session_state["nxt_live_time"] = _cached_scan.get("time", "")
+            st.session_state["nxt_live_from_cache"] = True
+
     if not tok:
         st.info("KIS 키 없음 — 새로고침 불가")
     elif st.button("🔄 지금 새로고침", key="nxt_live_refresh_btn"):
@@ -870,10 +896,20 @@ def render_dolpanty():
             except Exception as _lfe:
                 st.error(f"수급 조회 실패: {type(_lfe).__name__}")
                 _live_flow = []
+            _live_time = _now_live.strftime("%Y-%m-%d %H:%M:%S")
             st.session_state["nxt_live_full"] = _full_out
             st.session_state["nxt_live_out"] = _live_out
             st.session_state["nxt_live_flow"] = _live_flow
-            st.session_state["nxt_live_time"] = _now_live.strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state["nxt_live_time"] = _live_time
+            st.session_state["nxt_live_from_cache"] = False
+            st.session_state.pop("surge_news_cache", None)   # [7.110] 가격 새로고침 시 뉴스도 재조회
+            _git_save_live_scan({"time": _live_time, "full": _full_out,
+                                 "out": _live_out, "flow": _live_flow})
+
+    if st.session_state.get("nxt_live_time"):
+        _src_note = "다른 기기에서 저장된 결과" if st.session_state.get("nxt_live_from_cache") else "이 기기에서 방금 조회"
+        st.caption(f"🕒 {st.session_state['nxt_live_time']} 기준({_src_note}) — 더 최신으로 보려면 "
+                   "위 '🔄 지금 새로고침'을 다시 누르세요.")
 
     # [V26.22] 사용자 요청 — "직관적인 추천 픽을 표현해달라" + "기존 표들과 겹치는건 삭제".
     # 아래 1~30위 전체(_ldf)·수급 상위(_fdf) 원시 표는 새로고침 즉시 nxt_scan_log.json/
@@ -882,38 +918,63 @@ def render_dolpanty():
     # 그래서 그 두 표는 여기서 제거하고(완전 중복), 대신 한눈에 들어오는 "오늘의 추천 픽" 카드와
     # 거래량비율 1위 기준에 가려지는 종목을 잡아주는 "평소 대비 급증" 표를 새로 추가함.
     if st.session_state.get("nxt_live_full"):
-        st.caption(f"⏱️ {st.session_state.get('nxt_live_time', '')} 기준(이 순간의 미리보기)")
         _live_candidates = st.session_state.get("nxt_live_out") or []
 
         if _live_candidates:
             st.markdown("##### 🏆 오늘의 추천 픽")
-            st.caption("점수(거래량비율+재료등급 종합) 상위 3종 — 매수 추천이 아니라 1차 후보 압축용입니다. "
+            st.caption("점수(거래량비율+재료등급 종합) 내림차순 — 매수 추천이 아니라 1차 후보 압축용입니다. "
                        "진입은 개별 검토 후 결정하세요.")
-            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)[:3]
-            _pick_cols = st.columns(len(_top_picks))
-            for _col, _p in zip(_pick_cols, _top_picks):
-                with _col:
-                    with st.container(border=True):
-                        _mat = {"S": "🔥재료S", "A": "🟢재료A", "T": "🟡테마"}.get(_p.get("news"), "⚪미확인")
-                        if _p.get("ssangkkuli_3d"):
-                            _ss = "🧲쌍끌이 3일연속"
-                        elif _p.get("ssangkkuli_2w"):
-                            _ss = "🧲쌍끌이 2주내 1회"
-                        else:
-                            _ss = "쌍끌이 없음"
-                        st.markdown(f"**{_p['rank']}위 · {_p['name']}**")
-                        st.metric("점수", f"{_p.get('score', 0)}점",
-                                 f"거래량비율 {_p.get('ratio', 0):.1f}배")
-                        st.caption(f"{_mat} · {_ss}")
-                        _vx = _p.get("vol_trend_x")
-                        _avr = _p.get("avg_turn_ratio")
-                        _detail = []
-                        if _vx:
-                            _detail.append(f"거래량 {_vx:.1f}배(5일평균)")
-                        if _avr:
-                            _detail.append(f"평소대비 {_avr*100:.0f}%")
-                        if _detail:
-                            st.caption(" · ".join(_detail))
+            # [V26.25] 사용자 피드백 — 카드 10장을 한 화면에 늘어놓으니 "너무 정신사나움". 표
+            # 한 장으로 정리(카드형 레이아웃 폐기).
+            _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)
+            _pkdf = pd.DataFrame(_top_picks)
+            _pkdf.insert(0, "추천순위", range(1, len(_pkdf) + 1))
+            _pkdf["재료등급"] = _pkdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
+            _pkdf["쌍끌이"] = _pkdf.apply(
+                lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
+                axis=1)
+            _pkdf["거래량추세"] = _pkdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if pd.notna(x) and x else "—")
+            _pkdf["평소대비(%)"] = _pkdf["avg_turn_ratio"].map(lambda x: round(x * 100) if pd.notna(x) and x else None)
+            # [V26.39] 매도율(참고용 표시만, 점수 미반영) — 1단계.
+            # [V26.40~41에서 정규장(KRX)·NXT를 분리해서 보여주려 했으나, V26.42에서 사용자가
+            # 실제 캡처로 "두 컬럼이 완전히 동일한 수치"임을 확인해줌 — 원인 조사 결과
+            # 외국인/기관/개인 투자자 분류는 체결 거래소(KRX/NXT)와 무관한 개념이라 이 TR
+            # 자체가 거래소별로 쪼개서 주지 않는다는 게 KIS 실측으로 확인됨(macro_watcher.py
+            # _investor_daily 독스트링 참고). 그래서 원래대로 단일 컬럼으로 되돌림.]
+            _pkdf["매도율"] = _pkdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                     r.get("sell_ratio_orgn")), axis=1)
+            # [V26.43] 사용자 요청 — "외국인/기관 구분 없이는 (NXT 매수/매도 추정) 가능하냐" →
+            # 투자자 분류 없이 그 세션 고가·저가·현재가로 매수/매도 압력만 근사(Money Flow
+            # Multiplier, _render_pick_chart의 거래량 게이지와 동일 아이디어). 실제 체결
+            # 매수/매도 데이터가 아니라 가격 위치 기반 추정치임을 캡션에 명시.
+            # [V26.44] "매수우세%"라는 이름이 실제 매수세 우위(체결 데이터)처럼 오해될 수 있다는
+            # 지적 반영 — 금융권에서 이 계산(종가의 당일 고가·저가 범위 내 위치, 0~100%)을 부르는
+            # 표준 용어인 "가격위치(CLV, Close Location Value)"로 이름 변경. 값·공식은 그대로.
+            _pkdf["NXT가격위치"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if pd.notna(x) else "—")
+            _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
+                       "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
+                       "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
+                       "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
+            _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
+            st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
+                       "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
+                       "외국인·기관 투자자 분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. "
+                       "1단계: 관찰·기록용으로만 표시 — 아직 점수·필터에는 반영하지 않습니다.")
+            st.caption("NXT 가격위치(CLV) = 투자자 구분·실제 체결 주체별 매수·매도 데이터가 아니라, "
+                       "NXT 세션 고가·저가 범위 중 현재가 위치(OHLC 기반)로 추정한 지표입니다 — "
+                       "50%보다 높을수록 고가 쪽(상승압력), 낮을수록 저가 쪽(하락압력)에 가깝다는 "
+                       "뜻으로만 해석하세요. 참고용 추정치입니다.")
+
+            # [V26.29] 사용자 요청 — "추천픽에 나온 종목들 차트분석하고싶은데" → 종목 선택 시
+            # 일봉 차트(이평선+거래량)를 바로 보여줌.
+            _pick_opts = {f"{p['name']}({p['code']})": p["code"] for p in _top_picks}
+            _pick_sel = st.selectbox("📈 차트 볼 종목 선택", list(_pick_opts.keys()),
+                                      key="nxt_pick_chart_sel")
+            if _pick_sel:
+                with st.spinner(f"{_pick_sel} 일봉 데이터 조회 중..."):
+                    _render_pick_chart(tok, key, sec, _pick_opts[_pick_sel],
+                                        _pick_sel.split("(")[0])
 
         st.markdown("##### 📈 평소 대비 거래대금 급증 TOP5")
         st.caption("거래량비율 1위 기준만 보면 대형주처럼 평소 대비 거래대금이 폭증했는데도 순위에서 "
@@ -927,7 +988,13 @@ def render_dolpanty():
             _sgdf["avg_turn_ratio"] = (_sgdf["avg_turn_ratio"] * 100).round(0)
             _sgdf["nxt_turn"] = (_sgdf["nxt_turn"] / 1e8).round(1)
             _sgdf["기준충족"] = _sgdf["pass"].map({True: "✅", False: "—"})
-            _sgcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "avg_turn_ratio": "평소대비(%)",
+            # [지시서 P0-8] 거래대금이 터진 게 상승 때문인지 하락 때문인지 표만 봐선 구분이 안 된다는
+            # 지적 반영 — 등락률(chg) 부호로 방향 태그 추가(거래대금 급증 자체의 좋고 나쁨 판단 아님).
+            if "chg" in _sgdf.columns:
+                _sgdf["방향"] = _sgdf["chg"].map(
+                    lambda x: "🔺상승급증" if (x or 0) > 0 else ("🔻하락급증" if (x or 0) < 0 else "보합"))
+            _sgcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "방향": "방향",
+                       "avg_turn_ratio": "평소대비(%)",
                        "nxt_turn": "NXT거래대금(억)", "ratio": "거래량비율", "기준충족": "기준충족"}
             _sgdf = _sgdf[[c for c in _sgcols if c in _sgdf.columns]].rename(columns=_sgcols)
             st.dataframe(_sgdf, use_container_width=True, hide_index=True)
@@ -942,17 +1009,326 @@ def render_dolpanty():
             _cdf["쌍끌이"] = _cdf.apply(
                 lambda r: "🧲3일연속" if r.get("ssangkkuli_3d") else ("🧲2주내1회" if r.get("ssangkkuli_2w") else "—"),
                 axis=1)
-            _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if x else "—")
+            _cdf["거래량추세"] = _cdf["vol_trend_x"].map(lambda x: f"{x:.1f}배" if pd.notna(x) and x else "—")
             _cdf["재료등급"] = _cdf["news"].map({"S": "🔥S", "A": "🟢A", "T": "🟡테마"}).fillna("⚪")
+            _cdf["매도율"] = _cdf.apply(lambda r: _sell_ratio_label(r.get("sell_ratio_frgn"),
+                                                                   r.get("sell_ratio_orgn")), axis=1)
             _ccols = {"rank": "순위", "name": "종목명", "code": "종목코드", "ratio": "거래량비율",
                        "nxt_turn_eok": "NXT거래대금(억)", "쌍끌이": "쌍끌이",
-                       "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수"}
+                       "거래량추세": "거래량추세(5일평균대비)", "재료등급": "재료등급", "score": "점수",
+                       "매도율": "매도율(참고용)"}
             _cdf = _cdf[[c for c in _ccols if c in _cdf.columns]].rename(columns=_ccols)
             st.dataframe(_cdf, use_container_width=True, hide_index=True)
+            st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
+                       "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석. 외국인·기관 투자자 "
+                       "분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. 1단계 관찰·기록용, "
+                       "점수·필터 미반영.")
+
+        # [V26.24] 사용자 제보 — "거래대금×괴리율×수급 통합 차트가 사라졌다". 지난 PR에서 이 1~30위
+        # 전체 표·수급 상위 미니표를 "바로 아래 날짜별 섹션에서 '오늘'이 자동 선택되니 중복"이라고
+        # 판단해 지웠는데 잘못된 가정이었음 — 아래 "날짜별 전체 스캔"/"수급 상위" 섹션은 GitHub
+        # 'data' 브랜치(macro_watcher.py가 PC에서 돌 때만 올림)를 먼저 보고, 그게 성공하면 로컬
+        # 데이터는 아예 안 씀. 즉 대시보드의 "지금 새로고침"은 클라우드 서버 로컬에만 저장되고
+        # GitHub엔 안 올라가서, PC 쪽 저녁 스캔이 그날 아직 GitHub에 안 올렸으면 "오늘"이 날짜
+        # 선택지에 뜨지도 않음 — 그러면 방금 조회한 이 순간 데이터를 볼 곳이 없어져 버렸던 것.
+        # 복구.
+        st.markdown("##### 📋 거래대금×거래량비율×수급 통합 — 1~30위 전체")
+        # [V26.51] 사용자 지적 — "우리는 거래대금괴리율이 필요한게 아니야 거래량비율이 필요한거야".
+        # 선정 기준(거래량비율) 외에 참고용으로만 보여주던 거래대금괴리율(%) 컬럼이 혼란만 줘서
+        # 완전히 삭제(_lcols에서도 제거) — KRX거래대금(억)은 NXT거래대금(억)과 나란히 비교해볼
+        # 수 있는 원시 수치라 그대로 유지.
+        _ldf = pd.DataFrame(st.session_state["nxt_live_full"])
+        _ldf.insert(0, "순위", range(1, len(_ldf) + 1))
+        _ldf["nxt_turn"] = (_ldf["nxt_turn"] / 1e8).round(1)
+        if "krx_turn" in _ldf.columns:
+            _ldf["krx_turn"] = (_ldf["krx_turn"] / 1e8).round(1)
+        _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
+        if "avg_turn_ratio" in _ldf.columns:
+            _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
+        _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "chg": "등락률(%)",
+                   "krx_px": "KRX가", "nxt_px": "NXT가", "krx_turn": "KRX거래대금(억)",
+                   "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+                   "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
+                   "ratio": "거래량비율", "기준충족": "기준충족"}
+        _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
+        st.dataframe(_ldf, use_container_width=True, hide_index=True)
+
+        # [V26.54] 7.110 지시서 전면 재설계 — "등락률 상위 10종목 — 등락 관련 뉴스 · 섹터".
+        # 기존(V26.28)은 "상위 10종목(상승만, 하락 없음) + 최신 3건 고정 + 시황/일반 이진분류 +
+        # URL 없음 + 날짜 원문 그대로"였음. 지시서 요구: 원문 링크·5단계 관련성·방향(별도 필드)·
+        # 장전/장중/장후 태그·사람이 읽는 날짜·필터·상승/하락 분리·종목카드 UI. 데이터 소스
+        # (nxt_live_full, check_nxt_premium_pick 결과)는 그대로 재사용 — 순위산출 로직 자체는
+        # 변경하지 않음(지시서 14번: "뉴스 수집·분류·표시 기능만 분리 개선").
+        _REL_LABEL = {"직접": "[직접]", "업종": "[업종]", "시황": "[시황]",
+                      "등락보도": "[등락 보도]", "낮은관련성": "[낮은 관련성]"}
+        _DIR_LABEL = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Mixed": "🟠 혼합",
+                      "Neutral": "⚪ 중립", "Unknown": "⚪ 판단 불가"}
+
+        def _render_news_article(a):
+            import html as _html
+            _title_esc = _html.escape(a["headline"])
+            _link = a.get("original_url") or a.get("portal_url")
+            if _link:
+                _title_html = (f'<a href="{_html.escape(_link, quote=True)}" target="_blank" '
+                               f'rel="noopener noreferrer">{_title_esc}</a> ↗')
+            else:
+                _title_html = _title_esc
+            st.markdown(f"{_REL_LABEL.get(a['relevance_type'], a['relevance_type'])} {_title_html}",
+                       unsafe_allow_html=True)
+            _dt_txt = mw._fmt_news_dt(a["published_at"]) if a.get("published_at") else "게시 시각 미확인"
+            _parts = [_dt_txt]
+            if a.get("publisher"):
+                _parts.append(a["publisher"])
+            if a.get("market_session"):
+                _parts.append(a["market_session"])
+            if a.get("original_url") and a.get("portal_url"):
+                _parts.append("원문 / 네이버")
+            elif a.get("original_url"):
+                _parts.append("원문")
+            elif a.get("portal_url"):
+                _parts.append("네이버")
+            else:
+                _parts.append("링크 미확인")
+            if (a.get("related_report_count") or 1) > 1:
+                _parts.append(f"관련 보도 {a['related_report_count']}건")
+            st.caption(" · ".join(_parts) + f" · {_DIR_LABEL.get(a['direction'], a['direction'])} · "
+                      f"신뢰도 {a.get('confidence', '?')}(제목 기준)")
+
+        st.markdown("##### 🔥 등락률 상위 10종목 — 등락 관련 뉴스 · 섹터")
+        st.caption("종목·업종 관련 뉴스를 정리한 참고 화면입니다. 등락 원인은 확정하지 않습니다.")
+        _surge_rows = [r for r in (st.session_state.get("nxt_live_full") or []) if r.get("chg") is not None]
+        if _surge_rows:
+            # [지시서 11번] 가격·모집단 기준 명시 — "전일 종가 대비 등락률"이 KRX 정규장 기준이고,
+            # 전체 시장이 아니라 거래대금+NXT비율 상위 약 200종 중 30종으로 미리 추려진 스캐너
+            # 후보군 안에서의 순위라는 사실을 숨기지 않고 그대로 밝힘.
+            _src_txt = ("다른 기기에서 저장된 결과" if st.session_state.get("nxt_live_from_cache")
+                       else "이 기기에서 방금 조회")
+            st.caption(f"**선정 기준**: KRX 정규장 등락률(전일 종가 대비) · 스캐너 후보군(거래대금+NXT "
+                      f"거래량비율 상위 약 200종 중 선별된 최대 30종) 내 순위 — 전체 시장 전수 스캔 "
+                      f"아님 · 조회 시각 {st.session_state.get('nxt_live_time', '미확인')}({_src_txt})")
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            with _c1:
+                _dir_filter = st.selectbox("정렬 기준", ["상승률 상위", "하락률 상위", "변동폭 절대값 상위"],
+                                           key="surge_news_dir_filter")
+            with _c2:
+                _period = st.selectbox("기간", ["당일", "최근 3일", "최근 5일"], key="surge_news_period")
+            with _c3:
+                _hide_market_wide = st.checkbox("시황 숨김", value=True, key="surge_news_hide_mw")
+            with _c4:
+                _after_hours_only = st.checkbox("정규장 마감 후 기사만", value=False, key="surge_news_ah_only")
+            _c5, _c6 = st.columns(2)
+            with _c5:
+                _direct_only = st.checkbox("직접 재료만", value=False, key="surge_news_direct_only")
+            with _c6:
+                _include_sector = st.checkbox("업종 뉴스 포함", value=True, key="surge_news_include_sector")
+
+            if _dir_filter == "상승률 상위":
+                _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"], reverse=True)[:10]
+            elif _dir_filter == "하락률 상위":
+                _surge_top10 = sorted(_surge_rows, key=lambda r: r["chg"])[:10]
+            else:
+                _surge_top10 = sorted(_surge_rows, key=lambda r: abs(r["chg"]), reverse=True)[:10]
+
+            _period_days = {"당일": 0, "최근 3일": 3, "최근 5일": 5}[_period]
+            _now_kst = datetime.utcnow() + timedelta(hours=9)
+            _period_start = _now_kst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=_period_days)
+
+            _news_cache = st.session_state.setdefault("surge_news_cache", {})
+            _today_key = _now_kst.strftime("%Y%m%d")
+
+            for r in _surge_top10:
+                _ck = (r["code"], _today_key)
+                if _ck not in _news_cache:
+                    with st.spinner(f"{r['name']} 섹터·뉴스 조회 중..."):
+                        _official_sector = mw._sector_name(tok, key, sec, r["code"]) or None
+                        _articles, _diag = mw._stock_news_detail(r["code"], r["name"], n=10)
+                    _news_cache[_ck] = {"sector": _official_sector, "articles": _articles, "diag": _diag}
+                _cached = _news_cache[_ck]
+                _official_sector = _cached["sector"] or "업종 미확인"
+                _all_articles, _diag = _cached["articles"], _cached["diag"]
+                _biz_tags = mw._business_tags(r["name"])
+                _theme_tags = mw._today_theme_tags(_all_articles)
+
+                st.markdown(f"**{r['name']}**({r['code']}) {r['chg']:+.1f}%")
+                _tagline = f"공식 업종: {_official_sector} · 사업 태그: " + (
+                    "·".join(_biz_tags) if _biz_tags else "미확인")
+                if _theme_tags:
+                    _tagline += f" · 당일 연관 테마(뉴스상 연관 테마): {'·'.join(_theme_tags)}"
+                st.caption(_tagline)
+
+                if not _diag.get("ok"):
+                    st.error(f"뉴스 수집 실패 — {_diag.get('error', '원인 미확인')}(이전 조회 결과와 구분 표시)")
+                    continue
+
+                # 필터 적용(화면 표시에만 — 원본 _all_articles는 경고 영역·더보기에서 그대로 사용)
+                _shown = _all_articles
+                if _hide_market_wide:
+                    _shown = [a for a in _shown if a["relevance_type"] != "시황"]
+                if not _include_sector:
+                    _shown = [a for a in _shown if a["relevance_type"] != "업종"]
+                if _direct_only:
+                    _shown = [a for a in _shown if a["relevance_type"] == "직접"]
+                if _after_hours_only:
+                    _shown = [a for a in _shown if a.get("market_session") == "정규장 마감 후"]
+                _shown = [a for a in _shown if not a.get("published_at") or a["published_at"] >= _period_start]
+
+                st.markdown(f"*관련 재료 요약*: {mw._news_relation_summary(_shown or _all_articles, r['name'])}")
+
+                _has_direct = any(a["relevance_type"] == "직접" for a in _all_articles)
+                if not _has_direct:
+                    st.caption("확인된 회사 직접 재료 없음")
+
+                # [지시서 5번] 악재·혼합 재료를 호재 아래로 숨기지 말 것 — 상위 3건 밖에 있어도
+                # 직접 재료 중 부정/혼합 방향은 별도 경고 영역에서 노출.
+                _warn = [a for a in _all_articles if a["relevance_type"] == "직접"
+                        and a["direction"] in ("Negative", "Mixed") and a not in _shown[:3]]
+                if _warn:
+                    st.warning("⚠️ 직접 재료 중 부정/혼합 방향 기사(아래 목록 밖에 있어 놓치기 쉬움)")
+                    for a in _warn:
+                        _render_news_article(a)
+
+                if _shown:
+                    for a in _shown[:3]:
+                        _render_news_article(a)
+                    if len(_shown) > 3:
+                        with st.expander(f"관련 뉴스 더보기 (총 {len(_shown)}건 중 최대 10건)"):
+                            for a in _shown[3:10]:
+                                _render_news_article(a)
+                elif _all_articles:
+                    st.caption("현재 필터 조건에 맞는 기사 없음(필터를 조정해보세요)")
+                else:
+                    st.caption("· 관련 뉴스 확인 안 됨")
+                st.markdown("---")
+
+        if st.session_state.get("nxt_live_flow"):
+            st.markdown("##### 💰 수급 상위 (이 순간 기준)")
+            _lfdf = pd.DataFrame(st.session_state["nxt_live_flow"])
+            _lfdf.insert(0, "순위", range(1, len(_lfdf) + 1))
+            _lfdf["turnover"] = (_lfdf["turnover"] / 1e8).round(0)
+            _lfcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "px": "현재가", "chg": "등락률(%)",
+                        "turnover": "거래대금(억)", "foreign_eok": "외인순매수(억)", "inst_eok": "기관순매수(억)",
+                        "total_eok": "합산순매수(억)"}
+            _lfdf = _lfdf[[c for c in _lfcols if c in _lfdf.columns]].rename(columns=_lfcols)
+            st.dataframe(_lfdf, use_container_width=True, hide_index=True)
 
         st.caption("※ 위 결과는 미리보기용 — 텔레그램 발송·신호별 성적표(승률 통계)에는 반영되지 않습니다. "
-                   "1~30위 전체 표·수급 상위 상세는 바로 아래 '날짜별 전체 스캔'·'수급 상위' 섹션에서 "
-                   "확인하세요(새로고침 직후엔 '오늘'이 자동으로 선택되어 있습니다).")
+                   "아래 '날짜별 전체 스캔'·'수급 상위' 섹션은 PC 감시 프로그램이 GitHub에 올린 과거 "
+                   "기록이라, 오늘 PC 쪽 저녁 스캔이 아직 안 돌았으면 '오늘'이 안 뜰 수 있습니다 — "
+                   "그럴 땐 위 표가 지금 보는 유일한 최신 데이터입니다.")
+
+    # [V26.52 지시서 전면 재설계] "ETF 상위 편입종목 중복" — ETF 구성종목이 많은 상품의 소액
+    # 편입 종목까지 중복 집계되는 문제를 줄이기 위해, 분석 단위를 "ETF 전체 구성종목"에서
+    # "각 ETF의 편입 비중 상위 N종목"으로 바꿈. 수집(ETF 구성종목 전체, etf_raw_scan)과
+    # 분석(상위 N 선택·집계·시장분리, etf_overlap_aggregate)을 분리해, '분석 범위' 선택지를
+    # 바꿔도 ETF 구성종목을 다시 받아오지 않고 즉시 재계산함(지시서 1·4번). ETF 선정 자체는
+    # 코스피/코스닥 구분 없는 단일 풀(지시서 "중요" — 코스피10+코스닥10 각각 추출 금지)이고,
+    # 시장 분리는 집계가 끝난 뒤 종목 자신의 상장시장 기준으로만 수행.
+    st.subheader("🧩 ETF 상위 편입종목 중복")
+    st.caption("각 ETF의 편입 비중 상위 10종목을 기준으로 집계합니다. "
+               "ETF 전체 구성종목의 중복률이나 실제 자금 유입을 의미하지 않습니다.")
+    if not tok:
+        st.info("KIS 키 없음 — 조회 불가")
+    elif st.button("🔄 ETF 상위 편입종목 중복 새로고침", key="etf_overlap_refresh_btn"):
+        with st.spinner("거래대금 상위 ETF 구성종목 수집 중... (약 1~2분 소요)"):
+            try:
+                st.session_state["etf_raw_scan"] = mw.etf_raw_scan(tok, key, sec)
+                st.session_state["etf_agg_cache"] = {}    # 새로 수집했으니 이전 분석 캐시는 폐기
+            except Exception as _eoe:
+                st.error(f"ETF 구성종목 수집 실패: {type(_eoe).__name__}: {_eoe}")
+                st.session_state["etf_raw_scan"] = None
+
+    _raw = st.session_state.get("etf_raw_scan")
+    if _raw:
+        _topn_label = {5: "상위 5개", 10: "상위 10개(기본값)", 20: "상위 20개", "전체": "전체 구성종목"}
+        _topn_sel_label = st.selectbox("분석 범위(각 ETF에서 몇 종목까지 볼지)",
+                                        list(_topn_label.values()),
+                                        index=1, key="etf_topn_select")
+        _topn_val = {v: k for k, v in _topn_label.items()}[_topn_sel_label]
+        _topn = None if _topn_val == "전체" else _topn_val
+        _agg_cache = st.session_state.setdefault("etf_agg_cache", {})
+        if _topn_val not in _agg_cache:
+            with st.spinner("선택한 분석 범위로 재계산 중... (겹치는 종목의 시장·수급만 다시 조회)"):
+                try:
+                    _agg_cache[_topn_val] = mw.etf_overlap_aggregate(_raw, tok, key, sec, top_n=_topn)
+                except Exception as _age:
+                    st.error(f"분석 범위 재계산 실패: {type(_age).__name__}: {_age}")
+                    _agg_cache[_topn_val] = None
+        _result = _agg_cache.get(_topn_val)
+
+        if _result:
+            st.caption(f"분석 대상 ETF {_result.get('etf_count', 0)}종 · "
+                       f"비중 미제공으로 제외 {_result.get('excluded_count', 0)}종 · "
+                       f"{_topn_sel_label} 기준 겹침")
+
+            def _render_overlap_table(rows, label):
+                if not rows:
+                    st.caption(f"{label}: 겹치는 종목 없음(최소 2개 ETF 조건 미충족 또는 데이터 없음)")
+                    return
+                st.markdown(f"**{label}**")
+                _df = pd.DataFrame(rows)
+                _df.insert(0, "순위", range(1, len(_df) + 1))
+                _df["foreign_eok"] = _df["foreign_eok"].map(lambda x: f"{x:+.0f}억" if pd.notna(x) else "—")
+                _df["inst_eok"] = _df["inst_eok"].map(lambda x: f"{x:+.0f}억" if pd.notna(x) else "—")
+                _df["avg_weight"] = _df["avg_weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
+                _df["max_weight"] = _df["max_weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
+                _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "count": "상위 10종목 기준 겹침(ETF수)",
+                          "best_rank": "최고 편입순위", "avg_rank": "평균 편입순위",
+                          "avg_weight": "평균 원본비중", "max_weight": "최대 원본비중",
+                          "px": "현재가", "foreign_eok": "외인순매수(추정)", "inst_eok": "기관순매수(추정)"}
+                _df = _df[[c for c in _cols if c in _df.columns]].rename(columns=_cols)
+                st.dataframe(_df, use_container_width=True, hide_index=True)
+
+            _render_overlap_table(_result.get("overlap_kospi"), "🔵 코스피 상장 종목")
+            _render_overlap_table(_result.get("overlap_kosdaq"), "🟢 코스닥 상장 종목")
+            st.caption("'상위 10종목 기준 겹침'은 선택한 분석 범위(위 드롭다운) 안에 든 고유 ETF "
+                       "개수입니다 — ETF 전체 겹침률이 아닙니다. 외인·기관 순매수는 증권사가 "
+                       "장중 주기적으로 갱신하는 당일 추정치로, 장마감 후 확정되는 수치와 다를 "
+                       "수 있습니다.")
+
+            # [지시서 6번] 종목 상세표 — 선택한 종목이 어느 ETF들의 상위 몇 위에 어떤 비중으로
+            # 들어있는지 펼쳐서 봄. 테마·전략은 KIS에 분류 데이터가 없어 ETF 상품명을 그대로
+            # 사용(임의 분류 추측 안 함 — 사용자 확인됨). 기준일은 이 TR이 날짜를 안 줘서
+            # "조회 시점" 기준으로 표시.
+            _all_rows = (_result.get("overlap_kospi") or []) + (_result.get("overlap_kosdaq") or [])
+            if _all_rows:
+                _opts = {f"{r['name']}({r['code']})": r for r in _all_rows}
+                _sel = st.selectbox("종목 상세 — ETF별 편입 내역", list(_opts.keys()), key="etf_overlap_detail_sel")
+                if _sel:
+                    _members = _opts[_sel].get("members") or []
+                    _mdf = pd.DataFrame(_members)
+                    _mdf["weight"] = _mdf["weight"].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "비중 미제공")
+                    _mdf["etf_selected_sum_pct"] = _mdf["etf_selected_sum_pct"].map(lambda x: f"{x:.2f}%")
+                    _mdf["테마·전략"] = _mdf["etf_name"]     # ETF 상품명 그대로(임의 분류 없음)
+                    _mdf["기준일"] = datetime.now().strftime("%Y-%m-%d") + "(조회 시점)"
+                    _mdf["데이터 상태"] = "정상"
+                    _mcols = {"etf_name": "ETF명", "etf_code": "ETF코드", "operator": "운용사",
+                               "테마·전략": "테마·전략", "rank": "편입순위", "weight": "원본 편입비중(%)",
+                               "etf_total_domestic": "ETF 전체 국내주식 구성종목 수",
+                               "etf_selected_sum_pct": f"상위 {_topn_sel_label} 비중합계(%)",
+                               "기준일": "기준일", "데이터 상태": "데이터 상태"}
+                    _mdf = _mdf[[c for c in _mcols if c in _mdf.columns]].rename(columns=_mcols)
+                    st.dataframe(_mdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("집계 결과 없음(ETF 수집이 실패했을 수 있습니다 — 새로고침을 다시 눌러보세요).")
+
+        # [지시서 9번] 완료 검증 — 분석 대상·제외 ETF 수가 표시되는지, 비중 미제공 ETF가 어떤
+        # 것들인지 한눈에 보이게 진단 expander.
+        _diag = _raw.get("etf_diag") or []
+        _excluded = (_result or {}).get("excluded_no_weight") or []
+        if _diag or _excluded:
+            with st.expander("🔍 ETF별 구성종목 조회 상태(진단) — 비중 미제공 ETF 포함"):
+                if _excluded:
+                    st.markdown("**비중 미제공으로 제외된 ETF**")
+                    st.dataframe(pd.DataFrame(_excluded).rename(
+                        columns={"name": "ETF명", "code": "코드", "reason": "사유"}),
+                        use_container_width=True, hide_index=True)
+                if _diag:
+                    st.markdown("**전체 ETF 조회 상태**")
+                    _ddf = pd.DataFrame(_diag)
+                    _dcols = {"name": "ETF명", "code": "코드", "holdings_count": "구성종목 수신 건수",
+                               "has_weight": "비중 제공", "reason": "비고(0건일 때만 사유 표시)"}
+                    _ddf = _ddf[[c for c in _dcols if c in _ddf.columns]].rename(columns=_dcols)
+                    st.dataframe(_ddf, use_container_width=True, hide_index=True)
 
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
@@ -976,21 +1352,28 @@ def render_dolpanty():
     _sdf = pd.DataFrame(_entry["rows"])
     _sdf.insert(0, "순위", range(1, len(_sdf) + 1))
     _sdf["nxt_turn"] = (_sdf["nxt_turn"] / 1e8).round(1)
+    if "krx_turn" in _sdf.columns:
+        _sdf["krx_turn"] = (_sdf["krx_turn"] / 1e8).round(1)
     _sdf["기준충족"] = _sdf["pass"].map({True: "✅", False: "—"})
     # [V26.14] 사용자 제안 반영 — 거래량비율만 보면 소형주가 유리하고, 삼성전기처럼 절대 거래대금이
     # 큰데 거래량비율은 낮은 종목이 묻힘. NXT거래대금이 그 종목 평소(20일평균) 정규장 거래대금 대비
     # 몇 %인지 같이 보여줌(옛 스캔 기록엔 이 필드가 없을 수 있어 없으면 빈 칸으로 표시).
     if "avg_turn_ratio" in _sdf.columns:
         _sdf["avg_turn_ratio"] = (_sdf["avg_turn_ratio"] * 100).round(0)
+    # [V26.51] 사용자 지적 — "우리는 거래대금괴리율이 필요한게 아니야 거래량비율이 필요한거야" —
+    # 참고용으로만 쓰이던 거래대금괴리율(%) 컬럼 삭제(선정 기준인 거래량비율과는 무관한 값이라
+    # 오히려 혼란만 줬음). krx_turn(KRX거래대금)은 NXT거래대금과 나란히 비교하는 원시 수치라 유지.
     _cols = {"순위": "순위", "name": "종목명", "code": "종목코드", "krx_px": "KRX가", "nxt_px": "NXT가",
-              "disparity_pct": "괴리율(%)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
+              "krx_turn": "KRX거래대금(억)", "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
               "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
               "ratio": "거래량비율", "기준충족": "기준충족"}
     _sdf = _sdf[[c for c in _cols if c in _sdf.columns]].rename(columns=_cols)
     st.dataframe(_sdf, use_container_width=True, hide_index=True)
-    st.caption(f"{_entry.get('time', '')} 기준 스캔 · 괴리율=(NXT가/KRX가-1)×100 · "
+    st.caption(f"{_entry.get('time', '')} 기준 스캔 · "
                "거래량비율=NXT거래량/KRX거래량(정규장 당일) · 1.0 이상이면 대체종배 후보 자격 · "
                "평소대비(%)=NXT거래대금÷최근20일평균 정규장거래대금(소형주 거래량비율 착시·대형주 절대금액 착시 보정용)")
+
+    render_scan_track_record()
 
     # [V26.13] 사용자 요청 — 수급(외인/기관/개인)·뉴스재료·시황 체크리스트를 이 표에서도 보고 싶다는
     # 요청. 후보 전체(최대 50종)에 미리 계산해두면 API 호출이 매 스캔마다 크게 늘어나므로, 사용자와
@@ -1156,6 +1539,539 @@ def _fetch_nxt_scan_log(_bust):
         return d if isinstance(d, list) else None
     except Exception:
         return None
+
+
+_LIVE_SCAN_CACHE_FILE = "nxt_live_cache.json"
+
+
+def _git_save_live_scan(payload):
+    """[사용자 요청] "새로고침하면 너무 시간이 오래걸리고 하니까 저장기능이라고 보면 될듯" —
+    "⏱️ 지금 이 순간 새로고침"(약 1~2분 소요) 결과를 이 세션(session_state)에만 담아두면,
+    집에서 조회해도 회사 노트북 등 다른 기기·브라우저로 열면 다시 텅 비어있어 매번 또
+    1~2분을 기다려야 했음. _git_sync_journal(분석저널 자동커밋)과 동일 패턴으로 GitHub
+    'main' 브랜치에도 같이 저장해, 조회 버튼을 누르는 사람이 다를 때마다 최신화하고(= 필요할
+    때만 새로고침) 그 결과는 기기와 상관없이 계속 보이게 함. 저장 실패해도 누른 화면 자체는
+    이미 session_state로 정상 표시되니 경고만 띄우고 넘어감."""
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 조회 결과는 이 기기(이 세션)에서만 유지됩니다.")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/{_LIVE_SCAN_CACHE_FILE}"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(payload, ensure_ascii=False)
+        body = {"message": f"라이브 새로고침 결과 저장(대시보드 자동커밋) {payload.get('time', '')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code not in (200, 201):
+            st.warning(f"⚠️ 결과 저장 실패({p.status_code}) — 이 기기에서는 정상 표시되지만 "
+                       "다른 기기에는 반영되지 않습니다.")
+    except Exception as _e:
+        st.warning(f"⚠️ 결과 저장 실패: {type(_e).__name__} — 이 기기에서는 정상 표시되지만 "
+                   "다른 기기에는 반영되지 않습니다.")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_live_scan_cache(_bust):
+    """[사용자 요청] 다른 기기·세션을 열었을 때도 마지막으로 누군가 저장해둔 "지금 새로고침"
+    결과를 바로 볼 수 있게, _git_save_live_scan이 'main' 브랜치에 올려둔 파일을 읽어옴
+    (_fetch_pick_history와 동일 패턴, 다만 그쪽은 'data' 브랜치·이쪽은 대시보드 자체가 쓰는
+    'main' 브랜치). 실패 시 None(호출부가 "아직 저장된 결과 없음"으로 처리 — 크래시 없음)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/{_LIVE_SCAN_CACHE_FILE}",
+                          headers=headers, params={"ref": "main"}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+# ══════════════════════════════════════════
+# [7.113] 백용현 자문역 카카오톡 피드 — _git_save_live_scan/_fetch_live_scan_cache와 동일 패턴
+# (대시보드 자체가 쓰는 'main' 브랜치). 라이브 API가 아니라 사용자가 카카오톡 "대화 내보내기"
+# .txt를 주기적으로 업로드하면 그때만 파싱·병합해서 저장 — 이 파일 자체는 매 조회마다 가볍게
+# 캐시 읽기만 함.
+# ══════════════════════════════════════════
+_ADVISOR_FEED_FILE = "advisor_feed.json"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_advisor_feed(_bust):
+    """[7.113] 저장된 자문역 피드(종목진단·마감브리핑·시장노트) 읽기. 실패/없음 시 None."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/{_ADVISOR_FEED_FILE}",
+                          headers=headers, params={"ref": "main"}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _git_save_advisor_feed(payload):
+    """[7.113] 자문역 피드 저장 — _git_save_live_scan과 동일 패턴(실패해도 이 세션 화면은
+    session_state로 이미 보이므로 경고만 띄우고 넘어감)."""
+    token = _gh_token()
+    if not token:
+        st.caption("ℹ️ GitHub 토큰 미설정 — 이 결과는 이 기기(이 세션)에서만 유지됩니다.")
+        return
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{_GH_REPO}/contents/{_ADVISOR_FEED_FILE}"
+    try:
+        g = requests.get(api, headers=headers, timeout=8)
+        sha = g.json().get("sha") if g.status_code == 200 else None
+        content = json.dumps(payload, ensure_ascii=False)
+        body = {"message": f"자문역 피드 업데이트(대시보드 자동커밋) {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": "main"}
+        if sha:
+            body["sha"] = sha
+        p = requests.put(api, headers=headers, json=body, timeout=10)
+        if p.status_code not in (200, 201):
+            st.warning(f"⚠️ 저장 실패({p.status_code}) — 이 기기에서는 정상 표시되지만 다른 기기에는 반영되지 않습니다.")
+    except Exception as _e:
+        st.warning(f"⚠️ 저장 실패: {type(_e).__name__} — 이 기기에서는 정상 표시되지만 다른 기기에는 반영되지 않습니다.")
+
+
+def render_advisor_feed():
+    st.subheader("💬 백용현 자문역 피드")
+    st.caption("투자자문 단톡방 카카오톡 대화 내보내기(.txt)를 파싱해 종목진단·시장 브리핑을 "
+               "정리해 보여줍니다. 매수 신호가 아니라 의견·시장흐름 참고 자료입니다 — 본인이 "
+               "\"적합성원칙상 목표가·손절가는 말씀 못 드린다\"고 밝힌 내용 그대로입니다. "
+               "기존 종배픽·대체종배 로직과는 완전히 독립된 별도 화면입니다.")
+
+    import time as _t
+    _saved = (_fetch_advisor_feed(_t.time() // 60)
+              or {"calls": [], "closing": [], "sections": [], "mentions": [], "view_stocks": []})
+
+    _uploaded = st.file_uploader("카카오톡 대화 내보내기 업로드 (.txt) — 주기적으로 다시 내보내 "
+                                 "올려주시면 새로 추가된 부분만 반영됩니다", type=["txt"])
+    if _uploaded is not None and st.button("📥 파싱해서 반영", key="advisor_feed_import_btn"):
+        with st.spinner("대화 파싱 중..."):
+            _raw = _uploaded.getvalue()
+            try:
+                _text = _raw.decode("utf-8")
+            except UnicodeDecodeError:
+                _text = _raw.decode("cp949", errors="replace")
+            _messages = mw._parse_kakao_export(_text)
+            _new_calls = mw._extract_advisor_stock_calls(_messages)
+            _new_closing = mw._extract_advisor_closing_briefing(_messages)
+            _new_sections = mw._extract_advisor_market_sections(_messages)
+            _master = mw._krx_master_cached()
+            for c in _new_calls:
+                c["code"] = mw._krx_name_to_code(c["stock_name"], _master)
+            _new_mentions = mw._extract_advisor_stock_mentions(_messages, master=_master)
+            _new_view_stocks = mw._extract_advisor_view_theme_stocks(_new_sections, master=_master)
+
+            def _merge(old, new, keyfn):
+                _by_key = {keyfn(r): r for r in old}
+                for r in new:
+                    _by_key[keyfn(r)] = r   # 재업로드 시 같은 키는 최신 내용으로 덮어씀
+                return list(_by_key.values())
+
+            _merged = {
+                "calls": _merge(_saved.get("calls") or [], _new_calls,
+                                lambda r: (r["date"], r["time"], r["stock_name"])),
+                "closing": _merge(_saved.get("closing") or [], _new_closing, lambda r: r["date"]),
+                "sections": _merge(_saved.get("sections") or [], _new_sections,
+                                   lambda r: (r["date"], r["tag"], r["start_time"])),
+                "mentions": _merge(_saved.get("mentions") or [], _new_mentions,
+                                   lambda r: (r["date"], r["time"], r["stock_name"])),
+                "view_stocks": _merge(_saved.get("view_stocks") or [], _new_view_stocks,
+                                      lambda r: (r["date"], r["stock_name"])),
+            }
+            st.session_state["advisor_feed"] = _merged
+            _git_save_advisor_feed(_merged)
+            _fetch_advisor_feed.clear()
+            st.success(f"반영 완료 — 종목진단 {len(_new_calls)}건·마감브리핑 {len(_new_closing)}건·"
+                      f"시장노트 {len(_new_sections)}건·용view 테마종목 {len(_new_view_stocks)}건을 "
+                      f"이번 파일에서 찾았습니다 (전체 누적: 종목진단 {len(_merged['calls'])}건·"
+                      f"용view 테마종목 {len(_merged['view_stocks'])}건).")
+
+    _data = st.session_state.get("advisor_feed") or _saved
+    _calls, _closing, _sections = _data.get("calls") or [], _data.get("closing") or [], _data.get("sections") or []
+    _mentions = _data.get("mentions") or []
+    _view_stocks = _data.get("view_stocks") or []
+    if not _calls and not _closing and not _sections:
+        st.info("아직 업로드된 피드가 없습니다 — 위에서 카카오톡 대화 내보내기(.txt)를 올려주세요.")
+        return
+
+    def _recent_dates(dates, n=5):
+        return sorted(set(dates), reverse=True)[:n]
+
+    st.markdown("##### 🎓 용view 테마 종목 정리")
+    st.caption("자문역이 매일 진행하는 \"용view\"(테마 교육 콘텐츠)에서 직접 짚어준 종목만 "
+               "모았습니다 — 그때그때의 가격 반응 멘트가 아니라 \"이 테마에서 이 회사가 어떤 "
+               "역할을 하는지\" 설명한 종목이라, 찾아볼 종목 후보로 가장 쓸모 있는 목록입니다.")
+    if _view_stocks:
+        _view_dates_all = sorted({v["date"] for v in _view_stocks}, reverse=True)
+        _show_all_view = st.checkbox(f"전체 {len(_view_dates_all)}일 다 보기(기본: 최근 5일)",
+                                     key="advisor_view_show_all")
+        _view_dates = _view_dates_all if _show_all_view else _recent_dates(_view_dates_all, 5)
+        for d in _view_dates:
+            _day_rows = sorted([v for v in _view_stocks if v["date"] == d], key=lambda v: v["stock_name"])
+            st.markdown(f"**📅 {d}** · {len(_day_rows)}종목")
+            for v in _day_rows:
+                _code_txt = v.get("code") or "코드 미확인"
+                st.markdown(f"- **{v['stock_name']}**({_code_txt}) — {v['sentence']}")
+    else:
+        st.caption("용view 테마 종목 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
+
+    with st.expander("📂 상세 데이터 더 보기 (종목진단·마감브리핑·시장노트·전체 언급 종목)"):
+        _dir_label = {"Positive": "🟢 긍정", "Negative": "🔴 부정", "Neutral": "⚪ 중립"}
+        st.markdown("##### 📋 종목진단")
+        if _calls:
+            _dates = sorted({c["date"] for c in _calls}, reverse=True)
+            _recent5 = set(_recent_dates(_dates, 5))
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _dsel = st.selectbox("날짜", ["최근 5일", "전체"] + _dates, key="advisor_call_date")
+            with _c2:
+                _dirsel = st.multiselect("방향", ["Positive", "Negative", "Neutral"],
+                                         default=["Positive", "Negative", "Neutral"],
+                                         format_func=lambda x: _dir_label.get(x, x), key="advisor_call_dir")
+            if _dsel == "최근 5일":
+                _date_ok = lambda d: d in _recent5
+            elif _dsel == "전체":
+                _date_ok = lambda d: True
+            else:
+                _date_ok = lambda d: d == _dsel
+            _shown = [c for c in _calls if _date_ok(c["date"]) and c["direction"] in _dirsel]
+            _shown.sort(key=lambda c: (c["date"], c["time"]), reverse=True)
+            st.caption(f"{len(_shown)}건 표시 — 코드가 비어있으면 KRX 마스터파일에서 종목명이 "
+                       "정확히 일치하지 않아 \"코드 미확인\"으로 둔 것입니다(추정해서 채우지 않음).")
+            _cdf = pd.DataFrame(_shown)
+            if not _cdf.empty:
+                _cdf["방향"] = _cdf["direction"].map(_dir_label).fillna(_cdf["direction"])
+                _cdf["코드"] = _cdf.get("code", pd.Series(dtype=object)).fillna("코드 미확인")
+                _cols = {"date": "날짜", "time": "시각", "stock_name": "종목명", "코드": "코드",
+                          "방향": "방향", "reasoning": "사유"}
+                _cdf = _cdf[[c for c in _cols if c in _cdf.columns]].rename(columns=_cols)
+                st.dataframe(_cdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("종목진단 데이터 없음")
+
+        st.markdown("##### 📊 마감브리핑(코스피/코스닥)")
+        if _closing:
+            _cb_dates = sorted({c["date"] for c in _closing}, reverse=True)
+            _show_all_cb = st.checkbox(f"전체 {len(_cb_dates)}일 다 보기(기본: 최근 5일)",
+                                       key="advisor_closing_show_all")
+            _cb_pool = _closing if _show_all_cb else [c for c in _closing
+                                                       if c["date"] in set(_recent_dates(_cb_dates, 5))]
+            _cb = sorted(_cb_pool, key=lambda c: c["date"], reverse=True)
+            _cbdf = pd.DataFrame(_cb)
+            _cbdf["코스피"] = _cbdf["kospi_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
+            _cbdf["코스닥"] = _cbdf["kosdaq_pct"].map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "미확인")
+            st.dataframe(_cbdf[["date", "코스피", "코스닥"]].rename(columns={"date": "날짜"}),
+                        use_container_width=True, hide_index=True)
+            st.caption("코스피/코스닥 수치는 원문 표현이 날마다 달라 일부만 자동 추출됩니다(숫자가 "
+                       "없으면 \"미확인\" — 아래 시장노트에서 원문을 직접 확인하세요).")
+        else:
+            st.caption("마감브리핑 데이터 없음")
+
+        st.markdown("##### 🗒️ 시장노트(모닝브리핑 등, 날짜별)")
+        if _sections:
+            _sec_dates_all = sorted({s["date"] for s in _sections}, reverse=True)
+            _show_all_sec = st.checkbox(f"전체 {len(_sec_dates_all)}일 중에서 선택(기본: 최근 5일)",
+                                        key="advisor_section_show_all")
+            _sec_dates = _sec_dates_all if _show_all_sec else _recent_dates(_sec_dates_all, 5)
+            _sdsel = st.selectbox("날짜 선택", _sec_dates, key="advisor_section_date")
+            _today_sections = sorted([s for s in _sections if s["date"] == _sdsel], key=lambda s: s["start_time"])
+            for s in _today_sections:
+                with st.expander(f"[{s['tag']}] {s['start_time']}"):
+                    st.text(s["text"])
+        else:
+            st.caption("시장노트 데이터 없음")
+
+        st.markdown("##### 🔎 전체 언급 종목 모아보기")
+        st.caption("종목진단뿐 아니라 마감브리핑·시장노트 등 대화 전체에서 \"#종목명\" 형태로 "
+                   "언급된 모든 종목(가격 반응 멘트 포함)을 모아 언급 횟수 순으로 보여줍니다 — "
+                   "위 \"용view 테마 종목 정리\"와 달리 테마 설명 여부와 무관하게 전부 모읍니다.")
+        if _mentions:
+            from collections import defaultdict as _dd
+            _mention_dates_all = sorted({_mn["date"] for _mn in _mentions}, reverse=True)
+            _mdsel = st.selectbox("기간", ["최근 5일", "전체"] + _mention_dates_all, key="advisor_mention_date")
+            if _mdsel == "최근 5일":
+                _recent5_mn = set(_recent_dates(_mention_dates_all, 5))
+                _pool = [m for m in _mentions if m["date"] in _recent5_mn]
+            elif _mdsel == "전체":
+                _pool = _mentions
+            else:
+                _pool = [m for m in _mentions if m["date"] == _mdsel]
+            _by_name = _dd(list)
+            for _mn in _pool:
+                _by_name[_mn["stock_name"]].append(_mn)
+            _rows = []
+            for _name, _ms in _by_name.items():
+                _ms.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
+                _latest = _ms[0]
+                _rows.append({
+                    "종목명": _name, "코드": _latest.get("code") or "코드 미확인",
+                    "언급횟수": len(_ms), "최근 언급일": _latest["date"],
+                    "최근 등락률": f"{_latest['pct']:+.2f}%" if _latest.get("pct") is not None else "-",
+                    "최근 맥락": _latest.get("snippet", ""),
+                })
+            _rows.sort(key=lambda r: (r["언급횟수"], r["최근 언급일"]), reverse=True)
+            st.caption(f"{len(_rows)}개 종목 표시 ({_mdsel} 기준 언급 {len(_pool)}건)")
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("종목 언급 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
+
+
+_TRACK_RECORD_MAX_CODES = 150     # 종목 예산 한도(1단계·2단계 공통) — 사용자 제보("너무 느림")
+_TRACK_RECORD_WORKERS = 5         # 동시 KIS 조회 스레드 수 — 감시 프로세스도 같은 앱키로 동시에
+                                   # API를 쓸 수 있어, 체감 속도 개선은 충분하면서 KIS 초당 호출
+                                   # 제한(EGW00201)에 걸릴 위험은 낮게 보수적으로 설정
+
+
+def _fetch_closes_parallel(tok, key, sec, codes):
+    """[V26.38] 사용자 제보 — "종목별 적중 이력" 조회가 너무 느림. 원인: 종목마다
+    mw._daily_closes(KIS API 1회)를 순서대로 하나씩 호출(완전 블로킹)했던 게 느려진 핵심 원인 —
+    네트워크 I/O 대기라 파이썬 GIL이 풀리는 구간이라 스레드풀로 동시 호출해도 안전함. 종목별
+    조회는 서로 완전히 독립적(공유 상태 없음)이라 병렬화에 경쟁조건 위험 없음. codes는 이미
+    중복제거·예산한도 적용된 뒤 들어온다고 가정(이 함수 자체는 호출 수만 신경씀)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out = {}
+    if not codes:
+        return out
+    with ThreadPoolExecutor(max_workers=min(_TRACK_RECORD_WORKERS, len(codes))) as ex:
+        futs = {ex.submit(mw._daily_closes, tok, key, sec, c): c for c in codes}
+        for fut in as_completed(futs):
+            c = futs[fut]
+            try:
+                out[c] = fut.result()
+            except Exception:
+                out[c] = {}
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...(병렬 조회)")
+def _compute_stock_track_record(_bust):
+    """[V26.35] 사용자 요청 — "오늘의 추천 픽/쌍끌이 후보에 뜬 종목들이 실제로 어떤 결과를
+    가져왔는지, 어떤 종목이 승률이 좋았는지 보고 싶다"는 1단계 구현. "오늘의 추천 픽"과
+    "쌍끌이·거래량추세 포함 후보 전체"는 사실 같은 데이터(대체종배, signal="dolpanty_nxtprem")를
+    다르게 정렬/표시만 다르게 한 것이라 pick_history.json 하나만 보면 됨 — _compute_signal_stats
+    (신호 종류별 집계)와 같은 "익일 종가 대비 수익률을 그때그때 라이브로 계산" 방식을 그대로
+    재사용하되, 종류(kind)가 아니라 종목(code) 단위로 묶는다는 점만 다름.
+    signal_scorecard.json(r1/r3)은 일부러 안 씀 — 클라우드 배포는 로컬 파일에 직접 접근
+    못 하는데(render_journal 주석 참고) 이 파일은 아직 GitHub data 브랜치 업로드가 안 돼 있어서
+    클라우드에서 비어 보일 위험이 있음. pick_history.json은 이미 _fetch_pick_history로 클라우드
+    대응이 돼 있어 그걸로 충분.
+    [V26.38] 속도 개선 — 종목별 KIS 조회를 순차 → 병렬(_fetch_closes_parallel)로 바꾸고, 그동안
+    없었던 고유종목 예산 한도(150개, 2단계와 동일 기준)를 추가해 pick_history가 누적될수록
+    무한정 느려지던 것도 같이 막음(최신 등장분 우선)."""
+    tok, key, sec = _kis()
+    if not tok:
+        return None, "KIS 키 없음"
+    rows = _fetch_pick_history(_bust)
+    if rows is None:
+        rows = mw._pick_read()
+    rows = [r for r in (rows or []) if r.get("signal") == "dolpanty_nxtprem"]
+    if not rows:
+        return None, "대체종배 추천픽 기록 없음"
+    valid = []
+    for r in rows[-500:]:
+        code = str(r.get("code", "")).zfill(6)
+        date, px, name = r.get("date", ""), r.get("px"), r.get("name", "")
+        if code.isdigit() and px and date:
+            valid.append((code, name, date, px))
+    if not valid:
+        return None, "대체종배 추천픽 기록 없음"
+    allowed = set()
+    for code, *_ in reversed(valid):                    # 최신 등장분 우선으로 예산 소진
+        if len(allowed) >= _TRACK_RECORD_MAX_CODES:
+            break
+        allowed.add(code)
+    closes = _fetch_closes_parallel(tok, key, sec, allowed)
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    for code, name, date, px in valid:
+        if code not in allowed:
+            continue
+        cl = closes.get(code) or {}
+        ymd = date.replace("-", "")
+        later = sorted(d for d in cl if d > ymd)
+        if later:
+            by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
+    if not by_stock:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    out = []
+    for (code, name), items in by_stock.items():
+        rets = [x for _, x in items]
+        wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+        out.append({"종목명": name, "종목코드": code, "등장횟수": len(rets),
+                    "승률%": round(wr, 0), "평균수익%": round(sum(rets) / len(rets), 2),
+                    "최근등장일": max(d for d, _ in items), "표본작음": len(rets) < 3})
+    df = pd.DataFrame(out).sort_values(["승률%", "등장횟수"], ascending=[False, False])
+    return df.reset_index(drop=True), None
+
+
+def render_stock_track_record():
+    # [V26.37] 사용자 제보 — "오늘의 추천픽/급증TOP5/쌍끌이/통합 표가 다 사라졌다". 원인:
+    # 이 함수가 무조건(버튼 클릭 여부 무관) _compute_stock_track_record를 호출했는데, 그 안에서
+    # pick_history.json 최근 500건의 '고유 종목마다' mw._daily_closes로 KIS를 블로킹 호출함 —
+    # 종목 수가 많으면 render_dolpanty() 안에서 이 호출(line 958, 아래 모든 섹션보다 먼저 실행)이
+    # 끝날 때까지 그 아래 "오늘의 추천 픽"·"지금 새로고침" 버튼 등 나머지 전체가 렌더링 자체가
+    # 안 됨(Streamlit은 스크립트를 위에서부터 순서대로 실행하므로, 여기서 멈추거나 느려지면 아래는
+    # 아예 그려지지 않음) — 느린 게 아니라 "먼저 눌러야 계산하는" 다른 온디맨드 섹션들(예:
+    # "🔍 종목별 수급·AI뉴스·관심기준 조회")과 똑같이 버튼을 눌러야만 계산하도록 수정, 혹시 모를
+    # 예외도 try/except로 격리해 이 섹션 하나가 터져도 나머지 탭 전체는 항상 그려지게 함.
+    import time as _t
+    st.markdown("##### 📊 대체종배 추천픽 — 종목별 적중 이력")
+    st.caption("오늘의 추천 픽·쌍끌이 후보 전체에 떴던 종목들이 실제로 익일 종가 기준 몇 번이나 "
+               "올랐는지 집계한 것입니다(승률 높은 순). 같은 종목이 여러 날 반복해서 뜬 경우를 "
+               "모아 집계한 것이라, 당일 1회성 추천 순위와는 다른 관점입니다.")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        _go = st.button("🔍 조회(종목 수에 따라 시간이 걸릴 수 있음)", key="track_calc_btn")
+    with col2:
+        if st.button("🔄 새로고침", key="track_refresh"):
+            _compute_stock_track_record.clear()
+            st.session_state["track_record_shown"] = True
+            _go = True
+    if _go:
+        st.session_state["track_record_shown"] = True
+    if not st.session_state.get("track_record_shown"):
+        st.caption("버튼을 눌러야 계산합니다(종목별로 KIS 조회가 필요해 자동 실행하지 않습니다).")
+        return
+    try:
+        df, err = _compute_stock_track_record(_t.time() // 1800)
+    except Exception as _e:
+        st.error(f"계산 중 오류 발생: {type(_e).__name__}")
+        return
+    if err:
+        st.info(err)
+        return
+    _show = df[["종목명", "종목코드", "등장횟수", "승률%", "평균수익%", "최근등장일"]]
+    st.dataframe(
+        _show.style.apply(lambda r: [f"background-color:{_pct_color(r['평균수익%'])}22"] * len(r), axis=1),
+        use_container_width=True, hide_index=True)
+    if df["표본작음"].any():
+        st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
+
+
+@st.cache_data(ttl=1800, show_spinner="종목별 적중 이력 계산 중...(병렬 조회)")
+def _compute_scan_track_record(_bust, top5_only):
+    """[V26.36] 7.89(1단계)의 이어서 2단계 — "거래대금×괴리율×수급통합 1~30위 전체"·"평소 대비
+    거래대금 급증 TOP5"는 대체종배 필터(ratio>=기준)를 통과 못 한 종목도 포함하는 더 넓은 모집단
+    (nxt_scan_log.json, check_nxt_premium_pick의 full_rows — pass 여부 무관하게 날짜별 최대
+    50종 기록)이라 pick_history.json(1단계, dolpanty_nxtprem만)으로는 커버 안 됨. 같은
+    "익일 종가 대비 라이브 계산" 방식을 재사용하되 이 넓은 모집단에 적용.
+    급증TOP5 기준(top5_only=True)은 날짜별로 avg_turn_ratio 상위 5종만 추려 같은 방식으로 집계
+    — "평소 대비 거래대금 급증 TOP5"가 실제로 다음날 어떻게 됐는지를 보여줌.
+    진입가는 pick_history와 동일하게 nxt_px(스캔 시점 NXT 애프터마켓가) 사용 — 1단계와 같은 기준.
+    API 호출(mw._daily_closes, 종목당 1회)이 날짜별 중복 종목까지 더하면 많아질 수 있어(최대
+    30일×50종) 최근 날짜부터 우선 처리하고 고유종목 150개 한도로 끊음(그 이후 신규 종목은
+    스킵 — 예전 날짜에만 나온 종목이 누락될 수 있다는 뜻, 참고용이라 허용).
+    [V26.38] 속도 개선 — 종목별 KIS 조회를 순차 → 병렬(_fetch_closes_parallel, 1단계와 공용)로
+    변경."""
+    tok, key, sec = _kis()
+    if not tok:
+        return None, "KIS 키 없음"
+    scan_log = _fetch_nxt_scan_log(_bust)
+    if scan_log is None:
+        scan_log = mw._nxt_scan_log_read()
+    if not scan_log:
+        return None, "날짜별 전체 스캔 기록 없음"
+    valid = []
+    for entry in sorted(scan_log, key=lambda e: e.get("date", ""), reverse=True):
+        date = entry.get("date", "")
+        rows = entry.get("rows") or []
+        if top5_only:
+            rows = sorted([r for r in rows if r.get("avg_turn_ratio")],
+                          key=lambda r: r["avg_turn_ratio"], reverse=True)[:5]
+        for r in rows:
+            code = str(r.get("code", "")).zfill(6)
+            name, px = r.get("name", ""), r.get("nxt_px")
+            if code.isdigit() and px and date:
+                valid.append((code, name, date, px))
+    if not valid:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    allowed = set()
+    for code, *_ in valid:                              # 이미 최신 날짜 우선 순서로 쌓여 있음
+        if len(allowed) >= _TRACK_RECORD_MAX_CODES:
+            break
+        allowed.add(code)
+    closes = _fetch_closes_parallel(tok, key, sec, allowed)
+    from collections import defaultdict
+    by_stock = defaultdict(list)
+    for code, name, date, px in valid:
+        if code not in allowed:
+            continue
+        cl = closes.get(code) or {}
+        ymd = date.replace("-", "")
+        later = sorted(d for d in cl if d > ymd)
+        if later:
+            by_stock[(code, name)].append((date, (cl[later[0]] / px - 1) * 100))
+    if not by_stock:
+        return None, "익일 결과 대조 가능한 기록 없음"
+    out = []
+    for (code, name), items in by_stock.items():
+        rets = [x for _, x in items]
+        wr = sum(1 for x in rets if x > 0) / len(rets) * 100
+        out.append({"종목명": name, "종목코드": code, "등장횟수": len(rets),
+                    "승률%": round(wr, 0), "평균수익%": round(sum(rets) / len(rets), 2),
+                    "최근등장일": max(d for d, _ in items), "표본작음": len(rets) < 3})
+    df = pd.DataFrame(out).sort_values(["승률%", "등장횟수"], ascending=[False, False])
+    return df.reset_index(drop=True), None
+
+
+def render_scan_track_record():
+    # [V26.37] 7.90(2단계)에도 같은 결함 있었음 — render_stock_track_record 수정 사유(V26.37
+    # 주석) 참고. 여기는 "전체 스캔" 모드가 최대 150종 KIS 조회라 더 심각(사용자가 보고한
+    # "다 사라짐"의 더 큰 원인일 가능성이 높음) — 동일하게 버튼 클릭 전엔 계산 안 하도록 수정.
+    import time as _t
+    st.markdown("##### 📊 전체 스캔 · 급증 TOP5 — 종목별 적중 이력")
+    st.caption("대체종배 기준 미달 종목까지 포함한 '전체 스캔' 기준, 또는 '평소 대비 거래대금 급증 "
+               "TOP5' 기준으로 그날 뜬 종목들이 익일 종가 기준 몇 번이나 올랐는지 집계합니다.")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        _mode = st.radio("집계 기준", ["전체 스캔(1~30위 전체)", "평소대비 급증 TOP5만"],
+                          key="scan_track_mode", horizontal=True)
+    with col2:
+        _go = st.button("🔍 조회(전체 스캔은 특히 오래 걸릴 수 있음)", key="scan_track_calc_btn")
+        if st.button("🔄 새로고침", key="scan_track_refresh"):
+            _compute_scan_track_record.clear()
+            st.session_state["scan_track_shown"] = True
+            _go = True
+    if _go:
+        st.session_state["scan_track_shown"] = True
+    if not st.session_state.get("scan_track_shown"):
+        st.caption("버튼을 눌러야 계산합니다(종목별로 KIS 조회가 필요해 자동 실행하지 않습니다 — "
+                   "'전체 스캔' 기준은 최대 150개 종목을 순서대로 조회해 특히 오래 걸릴 수 있습니다).")
+        return
+    _top5_only = _mode.startswith("평소대비")
+    try:
+        df, err = _compute_scan_track_record(_t.time() // 1800, _top5_only)
+    except Exception as _e:
+        st.error(f"계산 중 오류 발생: {type(_e).__name__}")
+        return
+    if err:
+        st.info(err)
+        return
+    _show = df[["종목명", "종목코드", "등장횟수", "승률%", "평균수익%", "최근등장일"]]
+    st.dataframe(
+        _show.style.apply(lambda r: [f"background-color:{_pct_color(r['평균수익%'])}22"] * len(r), axis=1),
+        use_container_width=True, hide_index=True)
+    if df["표본작음"].any():
+        st.caption("⚠️ 등장 3회 미만 종목은 표본이 작아 승률이 쉽게 왜곡될 수 있습니다.")
+    st.caption("진입가는 스캔 시점 NXT 애프터마켓가 기준(위 '종목별 적중 이력'과 동일 산출 방식) — "
+               "최근 날짜 우선으로 최대 150개 종목까지만 조회합니다(API 부담 제한, 오래된 날짜에만 "
+               "나온 종목은 누락될 수 있음).")
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -1360,23 +2276,13 @@ def render_settings():
                     "GITHUB_TOKEN(로컬 run_gui.bat)·[github] token(클라우드 secrets) 설정이 안 되어 "
                     "있을 수 있습니다.")
 
-    st.subheader("👤 계정")
-    st.markdown(f"로그인: **{_current_username()}**")
-    if st.button("로그아웃", key="settings_logout"):
-        st.session_state.clear()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
-
 
 # ══════════════════════════════════════════
 # 렌더
 # ══════════════════════════════════════════
 tabs = st.tabs(["🏠 오늘 현황", "📊 성과 분석", "🌙 시장 복기", "💼 보유종목",
                 "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너",
-                "🔬 종목 분석기", "📝 분석 저널", "⚙️ 설정·진단"])
+                "🔬 종목 분석기", "💬 자문역 피드", "📝 분석 저널", "⚙️ 설정·진단"])
 
 with tabs[0]:
     render_home()
@@ -1395,9 +2301,17 @@ with tabs[6]:
 with tabs[7]:
     render_stock_analyzer()
 with tabs[8]:
-    render_journal()
+    render_advisor_feed()
 with tabs[9]:
+    render_journal()
+with tabs[10]:
     render_settings()
 
 st.divider()
-st.caption("📊 퀀트 관제탑 · macro_watcher.py 신호를 그대로 보여주는 뷰어(자체 판단 로직 없음)")
+# [지시서 P0-8] "자체 판단 로직 없음"이 "🔄 지금 새로고침" 버튼 기능과는 안 맞는 설명이었음 —
+# 그 버튼은 macro_watcher.py가 미리 계산해둔 신호를 그대로 보여주는 게 아니라, 누른 그 순간 KIS를
+# 직접 조회해서 대시보드 자체에서 점수·매도율·NXT 지표 등을 새로 계산함(다만 그 결과는 텔레그램
+# 발송도, pick_history 등 기록도 되지 않는 1회성 화면 표시일 뿐). 두 동작을 구분해서 명시.
+st.caption("📊 퀀트 관제탑 · 기본은 macro_watcher.py가 계산해둔 신호를 그대로 보여주는 뷰어입니다. "
+           "단, '🔄 지금 새로고침'은 그 순간 KIS 조회 후 대시보드에서 직접 계산한 결과이며, "
+           "텔레그램 발송·기록(로그) 없이 화면에만 표시됩니다.")
