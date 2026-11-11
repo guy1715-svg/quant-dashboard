@@ -951,12 +951,29 @@ def render_dolpanty():
             # 지적 반영 — 금융권에서 이 계산(종가의 당일 고가·저가 범위 내 위치, 0~100%)을 부르는
             # 표준 용어인 "가격위치(CLV, Close Location Value)"로 이름 변경. 값·공식은 그대로.
             _pkdf["NXT가격위치"] = _pkdf["nxt_buy_pct"].map(lambda x: f"{x:.0f}%" if pd.notna(x) else "—")
+            # [지시서 반영] 사용자가 퍼플렉시티에 이 탭 내용을 분석시킨 결과 — "NXT 가격위치(CLV)가
+            # 높아도 당일 KRX 정규장 확정종가보다 낮을 수 있는데 그게 표에 안 보인다"는 지적.
+            # check_nxt_premium_pick이 이미 조회해둔 krx_px·nxt_px로 괴리율을 계산해 표시.
+            _pkdf["종가대비"] = _pkdf.get("premium_pct", pd.Series(dtype=float)).map(
+                lambda x: (f"{x:+.2f}%" + ("⚠️종가밑" if x < 0 else "")) if pd.notna(x) else "—")
+            # [지시서 반영] Gemini AI뉴스판정은 원래도 매번 계산되고 있었으나 대시보드 표엔 버려지고
+            # 있었음 — "S등급이어도 그 근거가 뭔지 화면에서 확인할 수 있어야 한다"는 지적 반영.
+            _pkdf["AI재료검증"] = _pkdf.get("ai_verdict", pd.Series(dtype=str)).fillna("").astype(str).str.replace(
+                "\n🤖 AI뉴스: ", "", regex=False).replace("", "—")
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
-                       "ratio": "거래량비율", "재료등급": "재료등급", "쌍끌이": "쌍끌이",
+                       "ratio": "거래량비율", "종가대비": "종가대비", "재료등급": "재료등급",
+                       "AI재료검증": "AI재료검증", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
                        "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+            st.caption("종가대비 = NXT가가 당일 KRX 정규장 확정종가 대비 몇 % 위/아래인지입니다 — "
+                       "음수(⚠️종가밑)면 가격위치(CLV)가 높게 나와도 아직 당일 종가를 회복하지 "
+                       "못한 상태라는 뜻이니 CLV만 보고 판단하지 마세요.")
+            st.caption("AI재료검증 = 최근 뉴스 '제목'만 Gemini가 읽고 오버나이트 적합성을 판정한 "
+                       "한 줄입니다 — 공시·기사 본문을 직접 확인한 결과가 아니라 제목 기반 참고 "
+                       "의견이니, 재료등급(S/A)의 실제 근거(계약 상대방·금액·확정 여부 등)는 "
+                       "원문을 직접 확인하세요.")
             st.caption("매도율(참고용) = 매도거래량÷매수거래량×100(외인·기관 각각, 장마감 후 확정치) — "
                        "낮을수록 저항 없이 깨끗하게 매수세가 들어왔다는 해석(유튜브 수급 강의 개념). "
                        "외국인·기관 투자자 분류는 거래소(KRX/NXT) 구분이 없는 전체 기준입니다. "
@@ -1045,8 +1062,15 @@ def render_dolpanty():
         _ldf["기준충족"] = _ldf["pass"].map({True: "✅", False: "—"})
         if "avg_turn_ratio" in _ldf.columns:
             _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
+        # [지시서 반영] V26.51에서 지운 "거래대금괴리율(%)"은 NXT·KRX 거래대금(금액) 비교였고
+        # 이건 가격(KRX 정규장 확정종가 대비 NXT가) 비교라 다른 지표 — 종가 밑에서 노는 종목을
+        # 거래량비율만으로는 못 잡는다는 지적 반영.
+        if "premium_pct" in _ldf.columns:
+            _ldf["종가대비"] = _ldf["premium_pct"].map(
+                lambda x: (f"{x:+.2f}%" + ("⚠️종가밑" if x < 0 else "")) if pd.notna(x) else "—")
         _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "chg": "등락률(%)",
-                   "krx_px": "KRX가", "nxt_px": "NXT가", "krx_turn": "KRX거래대금(억)",
+                   "krx_px": "KRX가", "nxt_px": "NXT가", "종가대비": "종가대비",
+                   "krx_turn": "KRX거래대금(억)",
                    "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
                    "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
                    "ratio": "거래량비율", "기준충족": "기준충족"}
