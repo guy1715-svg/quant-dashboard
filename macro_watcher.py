@@ -7138,6 +7138,16 @@ _NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프�
 _NXT_PREM_MIN_RATIO = 1.0    # NXT거래량이 당일 정규장 거래량을 이미 넘어선(비율>1) 종목만
 _NXT_PREM_ENRICH_N = 10      # [V26.18] 수급·AI뉴스·관심기준 풀체크를 붙일 상위 종목 수 —
                               # 사용자 재요청으로 3 → 10(=표시 후보 전체)으로 확대
+# [지시서 반영] 사용자가 이 탭 내용을 퍼플렉시티에 분석시킨 결과 — 코드를 직접 추적해보니
+# check_nxt_premium_pick은 당일 첫 루프틱(보통 18:00 직후, "nxt_prem_pick_day" 당일락) 가격으로
+# 확정픽을 보내고 그날은 다시 안 돎. 즉 실제로는 "넥장 후반(막판)" 흐름을 전혀 못 본 채 창(window)
+# 시작 시점 스냅샷만으로 끝남 — 퍼플렉시티가 지적한 "19:20~19:50 흐름 확인 없이 판단" 문제의
+# 실제 코드상 원인. 분봉 단위 추적 전체를 새로 만드는 대신(이번 범위 밖), 픽 당시 가격을 저장해뒀다가
+# 막판 창(19:20~19:50)에 한 번 더 조회해 종가대비·픽 대비 가격이 유지됐는지만 재확인하는 가벼운
+# 보강을 추가(check_nxt_premium_reconfirm).
+_NXT_PREM_RECONFIRM_START, _NXT_PREM_RECONFIRM_END = 19 * 60 + 20, 19 * 60 + 50
+_NXT_PREM_RECONFIRM_PULLBACK_WARN = -1.5    # 픽 대비 이 이상(%) 밀리면 "되밀림" 경고
+_NXT_PREM_RECONFIRM_MAX_ITEMS = 5           # 재확인 추적 상한(API 절약 — 상위 5종만)
 
 
 def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
@@ -7387,14 +7397,101 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _line_parts.append(_base)
     _lines = "\n".join(_line_parts)
     if notify:
-        send_telegram(token_tg, chat_id,
+        _sent_ok = send_telegram(token_tg, chat_id,
                       f"{SIG_INFO}\n🌙📊 대체종배 후보 — NXT 거래량이 당일 정규장을 압도한 종목 (총 {len(out)}종)\n"
                       f"{_lines}\n"
                       f"※ 확정픽 아님 — 뉴스만 확인된 후보 목록. 진입은 개별 검토 후 결정 · 신규 신호(표본 적음)")
         print(f"[대체종배] {len(out)}종 후보 발송")
+        # [지시서 반영] 위 발송 시점(당일 첫 루프틱) 가격을 저장 — check_nxt_premium_reconfirm이
+        # 19:20~19:50에 다시 조회해 종가대비·픽 대비 변동률을 재확인하는 데 씀.
+        if _sent_ok:
+            state["nxt_prem_pick_snapshot"] = {
+                "date": now_kst.strftime("%Y-%m-%d"), "picked_at": now_kst.strftime("%H:%M"),
+                "items": [{"code": o["code"], "name": o["name"], "nxt_px": o["nxt_px"],
+                           "krx_px": o.get("krx_px"), "premium_pct": o.get("premium_pct")}
+                          for o in out[:_NXT_PREM_RECONFIRM_MAX_ITEMS]],
+            }
     else:
         print(f"[대체종배] {len(out)}종 후보 확인(온디맨드 미리보기 — 텔레그램 발송·성적표 기록 생략)")
     return out
+
+
+NXT_PREM_RECONFIRM_LOG_FILE = os.path.join(BASE, "nxt_prem_reconfirm_log.json")
+
+
+def _nxt_prem_reconfirm_log_read():
+    try:
+        with open(NXT_PREM_RECONFIRM_LOG_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _nxt_prem_reconfirm_log_append(now_kst, rows):
+    """[지시서 반영] 대체종배 막판 재확인 결과 — pick_history.json(_log_pick)과는 분리된 별도
+    로그. _log_pick은 (날짜,종목코드) 1행 유일성을 전제로 승률 검증에 쓰이는데, 재확인 가격으로
+    같은 키에 _log_pick을 다시 부르면 이미 쌓인 확정픽 기록(진입가 기준)이 재확인 가격으로
+    덮어써져 성적표가 틀어질 위험이 있음 — 그래서 nxt_scan_log.json과 같은 날짜별 append 방식의
+    새 파일로 분리."""
+    data = _nxt_prem_reconfirm_log_read()
+    data.append({"date": now_kst.strftime("%Y-%m-%d"), "time": now_kst.strftime("%H:%M"), "rows": rows})
+    data = data[-60:]
+    try:
+        with open(NXT_PREM_RECONFIRM_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("[대체종배 재확인] 로그 저장 오류:", e)
+
+
+def check_nxt_premium_reconfirm(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[지시서 반영] check_nxt_premium_pick은 당일 첫 루프틱(보통 18:00 직후) 가격으로 확정픽을
+    보내고 그날은 다시 안 돎 — 퍼플렉시티가 지적한 "19:20~19:50 막판 흐름을 안 보고 판단" 문제의
+    실제 원인. 19:20~19:50 윈도에 당일 1회, 픽 당시 저장해둔 스냅샷의 종목들 NXT가를 다시 조회해
+    종가대비·픽 대비 변동률을 재확인, 텔레그램으로 알려줌(새 매수신호 아님 — 관찰·기록용)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_NXT_PREM_RECONFIRM_START <= m <= _NXT_PREM_RECONFIRM_END):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("nxt_prem_reconfirm_day") == today:
+        return
+    _snap = state.get("nxt_prem_pick_snapshot") or {}
+    if _snap.get("date") != now_kst.strftime("%Y-%m-%d"):
+        state["nxt_prem_reconfirm_day"] = today     # 오늘 확정픽 자체가 없었던 날(관망 등) — 조용히 스킵
+        return
+    _items = _snap.get("items") or []
+    if not _items:
+        state["nxt_prem_reconfirm_day"] = today
+        return
+    _rows, _msg_lines = [], []
+    for it in _items:
+        _npx, _nchg, _nturn = _price_and_turnover(token, key, secret, it["code"], mrkt="NX")
+        _krx_px = it.get("krx_px")
+        if not _npx:
+            _msg_lines.append(f"• {it['name']} — ⚠️재조회 실패(종가/거래 미확인)")
+            _rows.append({**it, "reconfirm_px": None, "status": "조회실패"})
+            continue
+        _prem_now = round((_npx / _krx_px - 1) * 100, 2) if _krx_px else None
+        _chg_since_pick = round((_npx / it["nxt_px"] - 1) * 100, 2) if it.get("nxt_px") else None
+        if _prem_now is not None and _prem_now < 0:
+            _status = "🔻종가이탈"
+        elif _chg_since_pick is not None and _chg_since_pick <= _NXT_PREM_RECONFIRM_PULLBACK_WARN:
+            _status = f"⚠️되밀림({_chg_since_pick:+.1f}%)"
+        else:
+            _status = "✅유지"
+        _prem_txt = f"{_prem_now:+.2f}%" if _prem_now is not None else "미확인"
+        _chg_txt = f"{_chg_since_pick:+.1f}%" if _chg_since_pick is not None else "미확인"
+        _msg_lines.append(f"• {it['name']} — 픽 {it['nxt_px']:,} → 지금 {_npx:,}({_chg_txt}) "
+                          f"· 종가대비 {_prem_txt} · {_status}")
+        _rows.append({**it, "reconfirm_px": _npx, "premium_pct_now": _prem_now,
+                      "chg_since_pick": _chg_since_pick, "status": _status})
+    send_telegram(token_tg, chat_id,
+                  f"{SIG_INFO}\n🌙⏱️ 대체종배 막판 재확인({_snap.get('picked_at', '')} 픽 → "
+                  f"{now_kst.strftime('%H:%M')} 재조회)\n" + "\n".join(_msg_lines) +
+                  "\n※ 새 매수신호 아님 — 픽 당시 가격이 막판까지 유지됐는지 참고용 확인")
+    _nxt_prem_reconfirm_log_append(now_kst, _rows)
+    state["nxt_prem_reconfirm_day"] = today
+    print(f"[대체종배 재확인] {len(_rows)}종 재확인 발송")
 
 
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
@@ -9932,6 +10029,10 @@ def main():
                                                      if _npp_cache.get("date") == _today_str else [])
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
+                    try:
+                        check_nxt_premium_reconfirm(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _npre:
+                        print("대체종배 재확인 오류:", _npre)
                     # [사용자 요청] 실전속보에 ETF 겹침 분석(상위 ETF들의 편입비중 상위종목 교집합)도
                     # 같이 보여달라는 요청. [V26.52] 지시서 재설계로 코스피/코스닥을 ETF 선정
                     # 단계에서 나누지 않고 단일 풀(etf_n=30)로 한 번만 스캔 — ETF 구성종목은
@@ -10035,6 +10136,13 @@ def main():
                                      filename="nxt_scan_log.json")
             except Exception as _nse:
                 print("대체종배 스캔로그 업로드 오류:", _nse)
+            # [지시서 반영] 대체종배 막판 재확인 로그도 같은 방식으로 업로드 — 대시보드가
+            # "초기픽 vs 막판 재확인" 비교를 보려면 클라우드 배포본도 이 파일을 읽어야 함.
+            try:
+                push_snapshot_github(json.dumps(_nxt_prem_reconfirm_log_read(), ensure_ascii=False),
+                                     filename="nxt_prem_reconfirm_log.json")
+            except Exception as _nre2:
+                print("대체종배 재확인로그 업로드 오류:", _nre2)
             # [V26.15] 수급상위(investor_flow_log.json)도 같은 방식으로 업로드
             try:
                 push_snapshot_github(json.dumps(_investor_flow_log_read(), ensure_ascii=False),
