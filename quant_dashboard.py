@@ -1354,6 +1354,33 @@ def render_dolpanty():
                     _ddf = _ddf[[c for c in _dcols if c in _ddf.columns]].rename(columns=_dcols)
                     st.dataframe(_ddf, use_container_width=True, hide_index=True)
 
+    # [지시서 반영] 대체종배 확정픽은 당일 첫 루프틱(보통 18:00 직후) 가격으로 확정되고 그날은
+    # 다시 안 돌아 "막판(19:20~19:50) 흐름을 못 보고 판단"된다는 퍼플렉시티 지적 — 픽 당시 저장한
+    # 스냅샷을 막판에 재조회한 결과(check_nxt_premium_reconfirm)를 여기서 날짜별로 보여줌.
+    st.subheader("⏱️ 대체종배 막판 재확인 — 픽 당시 vs 19:20~19:50")
+    st.caption("대체종배 확정픽은 보통 18시 직후 가격으로 발송되고 그날은 다시 계산 안 됩니다 — "
+               "픽 당시 가격이 막판(19:20~19:50)까지 KRX 정규장 종가 위에서 유지됐는지 재조회한 "
+               "결과입니다. 새 매수신호가 아니라 관찰·기록용입니다.")
+    _rc_log = _fetch_nxt_prem_reconfirm_log(_t.time() // 60)
+    if _rc_log is None:
+        _rc_log = mw._nxt_prem_reconfirm_log_read()
+    if not _rc_log:
+        st.caption("재확인 기록 없음 — 대체종배 확정픽이 있었던 날 19:20~19:50에 쌓입니다.")
+    else:
+        _rc_dates = sorted({e.get("date") for e in _rc_log if e.get("date")}, reverse=True)
+        _rc_sel = st.selectbox("날짜 선택", _rc_dates, key="nxt_prem_reconfirm_date")
+        _rc_entry = next((e for e in _rc_log if e.get("date") == _rc_sel), None)
+        if not _rc_entry or not _rc_entry.get("rows"):
+            st.caption("해당 날짜 데이터 없음")
+        else:
+            _rcdf = pd.DataFrame(_rc_entry["rows"])
+            _rccols = {"name": "종목명", "code": "종목코드", "nxt_px": "픽 당시가",
+                       "reconfirm_px": "재확인가", "chg_since_pick": "픽 대비(%)",
+                       "premium_pct_now": "종가대비(재확인시점,%)", "status": "상태"}
+            _rcdf = _rcdf[[c for c in _rccols if c in _rcdf.columns]].rename(columns=_rccols)
+            st.dataframe(_rcdf, use_container_width=True, hide_index=True)
+            st.caption(f"재확인 시각: {_rc_entry.get('time', '')}")
+
     # [V26.11] 사용자가 예전에 준 9/23 엑셀("괴리율 순위"+"애프터마켓 거래대금")과 같은 걸 날짜마다
     # 보고 싶다는 요청 — 대체종배가 매 스캔 때 계산하는 괴리율(NXT가/KRX가)·거래량비율·NXT거래대금을
     # 후보 전체(비율 1.0 미달 포함, 최대 50종)로 날짜별 기록해두고 여기서 날짜 골라 보여줌.
@@ -1556,6 +1583,26 @@ def _fetch_nxt_scan_log(_bust):
         headers["Authorization"] = f"Bearer {token}"
     try:
         r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/nxt_scan_log.json",
+                          headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
+        if r.status_code != 200:
+            return None
+        d = json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+        return d if isinstance(d, list) else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_nxt_prem_reconfirm_log(_bust):
+    """[지시서 반영] nxt_prem_reconfirm_log.json(대체종배 막판 재확인 결과, macro_watcher가
+    매 루프 GitHub 'data' 브랜치에 올림) — _fetch_nxt_scan_log와 동일 패턴. 실패 시 None
+    (호출부가 로컬 mw._nxt_prem_reconfirm_log_read()로 폴백)."""
+    token = _gh_token()
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(f"https://api.github.com/repos/{_GH_REPO}/contents/nxt_prem_reconfirm_log.json",
                           headers=headers, params={"ref": _GH_DATA_BRANCH}, timeout=8)
         if r.status_code != 200:
             return None
