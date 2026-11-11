@@ -7171,12 +7171,11 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
             _lines.append(f"   📊 매도율(참고용·낮을수록 매수세 깨끗): {' · '.join(_parts)}")
     except Exception:
         pass
-    try:
-        _ai = _gemini_stock_news_verdict(gemini_key, o["code"], o["name"])
-        if _ai:
-            _lines.append("   " + _ai.strip())
-    except Exception:
-        pass
+    # [지시서 반영] check_nxt_premium_pick의 out 생성 루프에서 이미 계산해둔 값을 재사용 —
+    # 여기서 다시 _gemini_stock_news_verdict를 부르면 같은 종목에 Gemini 호출이 중복됨.
+    _ai = o.get("ai_verdict") or ""
+    if _ai:
+        _lines.append("   " + _ai.strip())
     try:
         _wlp = _watchlist_check(token, key, secret, o["code"], o["nxt_px"], 0.0, o["nxt_turn"], o.get("news"))
         if _wlp:
@@ -7258,10 +7257,16 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _ds = _daily_setup(token, key, secret, s["code"], krx_px)
         _turnavg = (_ds or {}).get("turnavg") or 0
         _avg_turn_ratio = round(nxt_turn / _turnavg, 3) if _turnavg else None
+        # [지시서 반영] 사용자가 퍼플렉시티에 종배픽 표를 분석시켰더니 "CLV(가격위치)가 높아도
+        # 정규장 종가 아래일 수 있는데 그게 화면에 안 보인다"고 지적 — krx_px·nxt_px를 이미
+        # 조회해놓고도 괴리율을 계산도 표시도 안 하고 있었음(V26.51에서 참고용 괴리율 컬럼을
+        # 지운 적은 있으나 그건 거래대금 기준이었고, 이건 종가 대비 가격 기준으로 별개 지표).
+        _premium_pct = round((nxt_px / krx_px - 1) * 100, 2) if krx_px else None
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
                           "krx_turn": _kturn, "krx_vol": krx_vol,
                           "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
                           "avg_turn_ratio": _avg_turn_ratio, "chg": _kchg,
+                          "premium_pct": _premium_pct,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
     full_rows.sort(key=lambda r: r["ratio"], reverse=True)
@@ -7307,7 +7312,17 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _nxt_px2, _nxt_chg2, _nxt_open, _nxt_high, _nxt_low = _price_full(token, key, secret, r["code"], mrkt="NX")
         _nxt_buy_pct = (_buy_pressure_pct(_nxt_high, _nxt_low, _nxt_px2)
                         if all(v is not None for v in (_nxt_high, _nxt_low, _nxt_px2)) else None)
+        # [지시서 반영] AI뉴스판정(Gemini)은 원래도 매번 계산되고 있었으나(아래 _nxt_prem_enrich_block
+        # 호출용) out에 안 담겨 대시보드(notify=False 호출)에선 그 결과가 버려지고 있었음 — 여기서
+        # 미리 계산해 out에 저장하고, _nxt_prem_enrich_block에는 이 값을 그대로 넘겨 중복 호출 방지.
+        _ai_verdict = ""
+        if (len(out) + 1) <= _NXT_PREM_ENRICH_N or _ss3d:
+            try:
+                _ai_verdict = _gemini_stock_news_verdict(gemini_key, r["code"], r["name"])
+            except Exception:
+                pass
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
+                    "krx_px": r.get("krx_px"), "premium_pct": r.get("premium_pct"),
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
                     "avg_turn_ratio": r.get("avg_turn_ratio"),
@@ -7315,7 +7330,7 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
                     "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
-                    "nxt_buy_pct": _nxt_buy_pct})
+                    "nxt_buy_pct": _nxt_buy_pct, "ai_verdict": _ai_verdict})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
@@ -7349,8 +7364,17 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
             _ss_tag = ""
         _vx = o.get("vol_trend_x")
         _vol_tag = f" · 거래량 5일평균대비 {_vx:.1f}배" if _vx else ""
+        # [지시서 반영] 종가대비 괴리율 — 음수면 NXT가가 아직 당일 KRX 정규장 확정종가를 못 밑돈
+        # 상태(가격위치(CLV)가 높아도 종가를 회복 못했을 수 있음)라 경고 태그를 붙임.
+        _prem = o.get("premium_pct")
+        if _prem is None:
+            _prem_tag = ""
+        elif _prem < 0:
+            _prem_tag = f" · 종가대비 {_prem:+.2f}%⚠️종가밑"
+        else:
+            _prem_tag = f" · 종가대비 {_prem:+.2f}%"
         _base = (f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
-                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}"
+                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}{_prem_tag}"
                  f"{_ss_tag}{_vol_tag} "
                  f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
         # [V26.18] _NXT_PREM_ENRICH_N(10) == 후보 상한(10)이라 사실상 전체 후보에 뉴스·근거이유
