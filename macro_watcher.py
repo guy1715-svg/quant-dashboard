@@ -9270,7 +9270,8 @@ def main():
     if args.youtube_digest:                       # [7.122] 한국경제TV 정리본 수동 실행(GUI 버튼)
         _ytk, _gk = read_youtube_key(), read_gemini_key()
         if not (_ytk and _gk):
-            print("⚠️ YouTube/Gemini 키 없음 — 정리본 생성 불가"); sys.exit(1)
+            _missing = " · ".join(n for n, k in (("YouTube API 키", _ytk), ("Gemini API 키", _gk)) if not k)
+            print(f"⚠️ {_missing} 없음 — 정리본 생성 불가"); sys.exit(1)
         _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24)
         if _rows is None:
             print("⚠️ 채널 정보를 확인하지 못했습니다"); sys.exit(1)

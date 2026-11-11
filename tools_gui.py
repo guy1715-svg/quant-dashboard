@@ -173,6 +173,19 @@ def _resolve_stock(query):
         return []
 
 
+def _run_result_message(label, returncode):
+    """[7.124] 사용자 제보 — "텔레그램 메세지가 안왔는데????": 유튜브정리 버튼이 키 없음으로
+    sys.exit(1) 했는데도 _run()이 무조건 "완료(텔레그램 확인)"이라고 찍어서, 실제로는
+    아무것도 안 보냈는데 사용자가 텔레그램을 괜히 확인하러 가게 만들었음(같은 문제가
+    다른 버튼들 — 예: Gemini 키 없이 "과거복기 학습" 눌렀을 때도 똑같이 있었음, 이 버튼
+    하나만의 버그가 아니라 _run() 공용 로직의 결함). 종료코드가 0일 때만 "완료" 단정,
+    0이 아니면 "텔레그램이 실제로 갔는지 위 로그로 확인하라"고 솔직하게 알림(GUI 의존 없는
+    순수 함수로 분리 — 모의 테스트 가능하게)."""
+    if returncode == 0:
+        return f"✔ {label} 완료 (텔레그램 확인)\n"
+    return f"⚠️ {label} 비정상 종료(코드 {returncode}) — 위 로그 확인(텔레그램 안 왔을 수 있음)\n"
+
+
 def _run(args, label):
     """일회성 명령 실행 → 출력을 로그창에 표시(백그라운드 스레드)."""
     def _worker():
@@ -184,7 +197,7 @@ def _run(args, label):
             for line in p.stdout:
                 _log(line)
             p.wait()
-            _log(f"✔ {label} 완료 (텔레그램 확인)\n")
+            _log(_run_result_message(label, p.returncode))
         except Exception as e:
             _log(f"✖ 오류: {e}\n")
     threading.Thread(target=_worker, daemon=True).start()
