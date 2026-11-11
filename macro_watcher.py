@@ -7197,18 +7197,15 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
     """[V26.13] 대체종배 상위 후보용 수급(외인/기관/개인추정)·AI뉴스·관심기준 — 확정픽
     (check_dolpanty_pick)이 쓰는 함수를 그대로 재사용. 개인 순매수는 KIS가 별도로 안 주므로
     외인+기관 합산의 반대부호로 근사(추정치임을 표기). 예외는 개별 항목만 조용히 생략."""
+    # [지시서 반영] check_nxt_premium_pick의 out 생성 루프에서 이미 계산해둔 값을 재사용 —
+    # 여기서 다시 _investor_est를 부르면 같은 종목에 API 호출이 중복됨(ai_verdict와 동일 패턴).
     _lines = []
-    try:
-        _f, _o = _investor_est(token, key, secret, o["code"], distinguish_fail=True)
-        if _f is None or _o is None:
-            _lines.append("   💰 수급: ⚠️미확인(조회 실패)")
-        else:
-            _fa, _oa = _f * o["nxt_px"] / 1e8, _o * o["nxt_px"] / 1e8
-            _ind = -(_fa + _oa)
-            _lines.append(f"   💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억 · 개인(추정) {_ind:+.0f}억"
-                          + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
-    except Exception:
-        pass
+    _fa, _oa, _ind = o.get("supply_frgn_eok"), o.get("supply_orgn_eok"), o.get("supply_indiv_eok")
+    if _fa is None or _oa is None:
+        _lines.append("   💰 수급: ⚠️미확인(조회 실패)")
+    else:
+        _lines.append(f"   💰 수급: 외인 {_fa:+.1f}억 · 기관 {_oa:+.1f}억 · 개인(추정) {_ind:+.1f}억"
+                      + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
     # [V26.39] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미 계산해
     # o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수 미반영.
     # [V26.40~41에서 NXT 쪽도 따로 보여주려 했으나 V26.42에서 실측 결과 이 TR은 거래소 구분이
@@ -7374,6 +7371,21 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                 _ai_verdict = _gemini_stock_news_verdict(gemini_key, r["code"], r["name"])
             except Exception:
                 pass
+        # [사용자 요청] "추천 픽 종목에 대한 수급이 보였으면 좋겠다(개인/외국인/기관)" — 이것도
+        # ai_verdict와 똑같은 패턴의 버그였음: _nxt_prem_enrich_block이 이미 외인/기관(+개인은
+        # KIS가 안 주니 외인+기관 합산의 반대부호로 근사)을 계산하고 있었는데 텔레그램 메시지
+        # 텍스트로만 쓰이고 out엔 안 담겨 대시보드(notify=False 호출)에선 버려지고 있었음.
+        # API 1번(investor-trend-estimate)으로 외인·기관이 같이 나와 "복잡"하지 않음.
+        _supply_frgn_eok = _supply_orgn_eok = _supply_indiv_eok = None
+        if (len(out) + 1) <= _NXT_PREM_ENRICH_N or _ss3d:
+            try:
+                _sf, _so = _investor_est(token, key, secret, r["code"], distinguish_fail=True)
+                if _sf is not None and _so is not None:
+                    _supply_frgn_eok = round(_sf * r["nxt_px"] / 1e8, 1)
+                    _supply_orgn_eok = round(_so * r["nxt_px"] / 1e8, 1)
+                    _supply_indiv_eok = round(-(_supply_frgn_eok + _supply_orgn_eok), 1)
+            except Exception:
+                pass
         # [지시서 반영] entry_status — 이 함수는 원래 재료등급(S/A/T/미확인)만 알파벳으로 보여주고
         # 실제 "진입해도 되는 상태인가"는 안 보여줬음(nbad 악재만 걸러내는 이진 필터뿐). 새 데이터는
         # 안 만들고 이미 계산된 ng(재료등급)·premium_pct(7.125)만으로 재표현 — 후보가 out에 포함되고
@@ -7400,7 +7412,9 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
                     "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
                     "nxt_buy_pct": _nxt_buy_pct, "ai_verdict": _ai_verdict,
-                    "entry_status": _entry_status, "reason_codes": _reason_codes})
+                    "entry_status": _entry_status, "reason_codes": _reason_codes,
+                    "supply_frgn_eok": _supply_frgn_eok, "supply_orgn_eok": _supply_orgn_eok,
+                    "supply_indiv_eok": _supply_indiv_eok})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",

@@ -977,9 +977,21 @@ def render_dolpanty():
                                + str(r.get("entry_status") or "")
                                + (f" ({'·'.join(r['reason_codes'])})" if r.get("reason_codes") else "")),
                     axis=1)
+            # [사용자 요청] "추천 픽 종목에 대한 수급이 보였으면 좋겠다 — 개인/외국인/기관"
+            # (너무 복잡한가 질문도 함께) — 데이터는 이미 다 계산돼 있던 걸 노출만 안 했던 것뿐이라
+            # 복잡하지 않음. 컬럼 3개로 쪼개면 표가 넓어지니, 한 눈에 보게 한 컬럼에 압축.
+            if "supply_frgn_eok" in _pkdf.columns:
+                def _supply_label(r):
+                    _fa, _oa, _ind = r.get("supply_frgn_eok"), r.get("supply_orgn_eok"), r.get("supply_indiv_eok")
+                    if pd.isna(_fa) or pd.isna(_oa):
+                        return "⚠️미확인"
+                    _icon = "✅" if (_fa + _oa) > 0 else "⚠️"
+                    return f"외인{_fa:+.1f}·기관{_oa:+.1f}·개인{_ind:+.1f}(억){_icon}"
+                _pkdf["수급"] = _pkdf.apply(_supply_label, axis=1)
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
                        "ratio": "거래량비율", "종가대비": "종가대비", "재료등급": "재료등급",
-                       "진입상태": "진입상태", "AI재료검증": "AI재료검증", "쌍끌이": "쌍끌이",
+                       "진입상태": "진입상태", "수급": "수급(외인·기관·개인추정)",
+                       "AI재료검증": "AI재료검증", "쌍끌이": "쌍끌이",
                        "거래량추세": "거래량추세(5일평균대비)", "평소대비(%)": "평소대비(%)",
                        "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
@@ -987,6 +999,9 @@ def render_dolpanty():
             st.caption("진입상태 = ELIGIBLE(재료·가격 조건 충족) / MATERIAL_PENDING(재료 미확인) / "
                        "WATCH(재료는 있으나 가격조건 미충족, 예: 종가대비 음수) — 매수 추천이나 "
                        "주문 실행이 아니라 설정된 조건을 충족했다는 뜻일 뿐입니다.")
+            st.caption("수급(억원) = 외인·기관은 장중 추정치(investor-trend-estimate), 개인은 KIS가 "
+                       "따로 안 줘서 외인+기관 합산의 반대부호로 근사한 값입니다 — 세 수치를 더하면 "
+                       "항상 0에 가깝습니다(근사치 특성). ✅는 외인+기관 합산이 순매수(+)라는 뜻.")
             st.caption("종가대비 = NXT가가 당일 KRX 정규장 확정종가 대비 몇 % 위/아래인지입니다 — "
                        "음수(⚠️종가밑)면 가격위치(CLV)가 높게 나와도 아직 당일 종가를 회복하지 "
                        "못한 상태라는 뜻이니 CLV만 보고 판단하지 마세요.")
