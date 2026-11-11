@@ -118,6 +118,34 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.121 신규 기능 — 대시보드에 "한국경제TV 지금 정리하기" 버튼 추가
+
+**배경**: 7.120(예약 발송, 하루 2번) 직후 사용자가 "퀀트 트레이딩 도구에 버튼 만들어줘.
+그리고 누르면 누른시간으로 실시간으로 가져오면될거같은데?"라고 요청 — 대시보드에서
+시간창 제약 없이 그때그때 즉시 조회하고 싶다는 것. 기존 "⏱️ 지금 이 순간 새로고침"류
+버튼(캐시 없이 클릭 시에만 계산)과 같은 패턴.
+
+**구현**:
+  - `macro_watcher.py` — `check_youtube_digest`의 수집·프롬프트 로직을
+    `_youtube_fetch_highlights(youtube_key, hours=24)`(채널ID 확인→영상목록→영상별 자막,
+    반환 (video_rows, parts))와 `_youtube_digest_prompt(parts, slot_label)`로 분리(로직
+    변경 없음 — `check_youtube_digest` 자체 동작은 100% 동일, 회귀 테스트로 확인). 대시보드
+    버튼과 예약 발송이 같은 수집 로직을 공유하게 함(중복 구현 방지).
+  - `quant_dashboard.py` — 신규 탭 "📺 한국경제TV"(`render_youtube_digest`): "🔄 지금
+    정리하기" 버튼 클릭 시 `_youtube_fetch_highlights`+`_gemini_generate`를 그 자리에서
+    호출해 화면에 요약과 조회한 영상 목록(제목·업로드시각·자막 추출 성공 여부)을 표시.
+    시간창 제약 없음(언제 눌러도 "최근 24시간" 기준으로 동작) — 슬롯 라벨은 "조회 시점
+    기준"으로 아침/저녁 구분 없이 통일.
+
+**검증**: py_compile 양쪽 파일 통과, Streamlit 헤드리스 기동 스모크 테스트(HTTP 200)
+통과. 신규 모의 테스트 4개 추가(`test_youtube_digest.py`에 합류 — 분리된 두 헬퍼 함수
+단위 테스트, 채널ID 실패 시 당일 완료 표시 안 함 확인) — 전체 21개 통과. 기존
+`test_sector_companions.py`·`test_perf_neg_fix.py`·`test_breaking_news.py`·
+`test_supply_turn_mywatch.py` 재실행 통과(회귀 없음).
+**확인 못한 부분**: 7.120과 동일 — youtube.com 접속 자체가 이 샌드박스에서 막혀있어
+라이브 검증 불가, 전부 모의 응답 기준. 사용자가 실제 YouTube API 키 설정 후 버튼을
+눌러봐야 실제 동작 확인 가능.
+
 ### 7.120 신규 기능 — 한국경제TV 유튜브 채널 정리본(하루 2번)
 
 **배경**: 사용자가 "한국경제TV 라고 있는데 거의 하루종일 방송을 하거든 여기 나오는 정보가
