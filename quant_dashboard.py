@@ -1832,6 +1832,61 @@ def render_advisor_feed():
             st.caption("종목 언급 데이터 없음 — 재업로드하면 기존 대화에서도 다시 찾아냅니다.")
 
 
+def render_youtube_digest():
+    """[7.121] 사용자 요청 — "퀀트 트레이딩 도구에 버튼 만들어줘. 누르면 누른시간으로
+    실시간으로 가져오면될거같은데?" 7.120(macro_watcher.py의 예약 발송, 아침/저녁 하루 2번)과
+    같은 수집·요약 로직(_youtube_fetch_highlights·_youtube_digest_prompt)을 그대로 재사용
+    하되, 시간창 제약 없이 버튼을 누른 그 순간 바로 조회·요약(지금 이 순간 새로고침 패턴과
+    동일 — 캐시 없이 클릭 시에만 계산)."""
+    st.subheader("📺 한국경제TV 정리본")
+    st.caption("버튼을 누르면 그 순간 최근 24시간 내 올라온 하이라이트 영상들을 모아 실시간으로 "
+               "요약합니다(클릭 전엔 조회 안 함 — macro_watcher.py가 매일 아침·저녁에 자동으로 "
+               "보내드리는 것과 같은 로직을 지금 바로 한 번 돌리는 것).")
+    _yk = mw.read_youtube_key()
+    _gk = mw.read_gemini_key()
+    if not _yk:
+        st.warning("YouTube API 키가 설정되어 있지 않습니다 — secrets.toml에 youtube_api_key를 "
+                   "추가해주세요(구글 클라우드 콘솔에서 YouTube Data API v3 키 발급).")
+        return
+    if not _gk:
+        st.warning("Gemini API 키가 설정되어 있지 않습니다 — 자막을 요약하는 데 필요합니다.")
+        return
+    if st.button("🔄 지금 정리하기", key="youtube_digest_refresh_btn"):
+        with st.spinner("최근 영상 목록 조회 · 자막 추출 · 요약 중... (영상이 많으면 1분 이상 걸릴 수 있어요)"):
+            _rows, _parts = mw._youtube_fetch_highlights(_yk, hours=24)
+            if _rows is None:
+                st.error("채널 정보를 확인하지 못했습니다 — 잠시 후 다시 시도해주세요.")
+                return
+            if not _rows:
+                st.info("최근 24시간 내 업로드된 영상이 없습니다.")
+                st.session_state.pop("youtube_digest_result", None)
+                return
+            if not _parts:
+                st.warning("영상은 찾았지만 자막을 하나도 가져오지 못했습니다(아래 목록 참고).")
+                st.session_state["youtube_digest_result"] = {"summary": None, "rows": _rows, "parts": 0}
+                return
+            _summary = mw._gemini_generate(_gk, mw._youtube_digest_prompt(_parts, "조회 시점 기준"))
+        if not _summary:
+            st.error("Gemini 요약 생성에 실패했습니다 — 콘솔 로그의 [Gemini 진단] 내용을 확인해주세요.")
+            return
+        st.session_state["youtube_digest_result"] = {
+            "summary": _summary, "rows": _rows, "parts": len(_parts),
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+    _res = st.session_state.get("youtube_digest_result")
+    if _res:
+        if _res.get("summary"):
+            st.success(f"{_res['ts']} 조회 · 하이라이트 {_res['parts']}건 요약")
+            st.markdown(_res["summary"])
+        with st.expander(f"조회한 영상 목록({len(_res['rows'])}건)"):
+            _vdf = pd.DataFrame(_res["rows"])
+            if not _vdf.empty:
+                _vdf["자막"] = _vdf["transcript_ok"].map({True: "✅ 추출됨", False: "❌ 실패"})
+                _cols = {"title": "제목", "published_at": "업로드", "자막": "자막"}
+                _vdf = _vdf[[c for c in _cols if c in _vdf.columns]].rename(columns=_cols)
+                st.dataframe(_vdf, use_container_width=True, hide_index=True)
+
+
 _TRACK_RECORD_MAX_CODES = 150     # 종목 예산 한도(1단계·2단계 공통) — 사용자 제보("너무 느림")
 _TRACK_RECORD_WORKERS = 5         # 동시 KIS 조회 스레드 수 — 감시 프로세스도 같은 앱키로 동시에
                                    # API를 쓸 수 있어, 체감 속도 개선은 충분하면서 KIS 초당 호출
@@ -2282,7 +2337,7 @@ def render_settings():
 # ══════════════════════════════════════════
 tabs = st.tabs(["🏠 오늘 현황", "📊 성과 분석", "🌙 시장 복기", "💼 보유종목",
                 "🎯 종배픽·재료등급", "🔍 관심종목", "🔎 라이브 스캐너",
-                "🔬 종목 분석기", "💬 자문역 피드", "📝 분석 저널", "⚙️ 설정·진단"])
+                "🔬 종목 분석기", "💬 자문역 피드", "📺 한국경제TV", "📝 분석 저널", "⚙️ 설정·진단"])
 
 with tabs[0]:
     render_home()
@@ -2303,8 +2358,10 @@ with tabs[7]:
 with tabs[8]:
     render_advisor_feed()
 with tabs[9]:
-    render_journal()
+    render_youtube_digest()
 with tabs[10]:
+    render_journal()
+with tabs[11]:
     render_settings()
 
 st.divider()

@@ -124,6 +124,20 @@ SECTORS = {
 }
 
 
+def _sector_companions(code):
+    """[7.119] 사용자 요청("특정 종목 속보가 뜨면 같은 테마의 다른 종목들도 같이 알려줌") —
+    SECTORS(6대 거시테마, KIS 호출 없는 정적 목록)에서 이 종목이 속한 테마와 같은 테마의
+    동반종목을 찾는다. 새 테마·키워드 매핑을 만들지 않고 이미 있는 SECTORS 그대로 재사용
+    (HANDOFF "대장주 갭업 시 세부테마 2등주 자동추적"은 MLCC급 세부 매핑이 필요해 과최적화
+    위험으로 보류해둔 항목이지만, 이건 그보다 훨씬 거친 수준 — 기존 6대 거시테마 멤버십만
+    보여주는 것이라 새로 끼워맞추는 게 없음). 반환 (테마명, [(code,name),...]) — 속하는
+    테마가 없으면 (None, [])."""
+    for _theme, _stocks in SECTORS.items():
+        if code in {c for c, _n in _stocks}:
+            return _theme, [(c, n) for c, n in _stocks if c != code]
+    return None, []
+
+
 # ── 유틸 ────────────────────────────────────────────────────────────────────
 def _to_int(v, d=0):
     try:
@@ -1539,6 +1553,17 @@ def read_gemini_key():
     return _read_secret_alias({"gemini_api_key", "google_api_key", "gemini_key", "gemini"})
 
 
+def read_youtube_key():
+    """[7.120] YouTube Data API 키 — 환경변수 → secrets.toml. 없으면 None(유튜브 정리본 OFF).
+    GOOGLE_API_KEY도 후보에 포함 — 구글 클라우드 콘솔에서 키 하나에 여러 API(Gemini·YouTube
+    Data API)를 같이 활성화해 쓰는 경우가 흔해서, Gemini용으로 이미 받은 키를 그대로 재사용해도
+    되게 함."""
+    for _n in ("YOUTUBE_API_KEY", "YOUTUBE_KEY", "GOOGLE_API_KEY"):
+        if os.environ.get(_n):
+            return os.environ[_n].strip()
+    return _read_secret_alias({"youtube_api_key", "youtube_key", "youtube"})
+
+
 def _factcheck_avoid_codes(report, fc):
     """[V25.44] 팩트체크 '🚫강등/제외' 종목의 코드 추출 — 종배가 회피하도록. 반환 코드 리스트.
     이름→코드 맵은 브리핑 본문의 '이름(123456)' 패턴에서 만든다. 실패 시 []."""
@@ -2168,6 +2193,193 @@ def _verify_news_picks(token, key, secret, report):
     if not _lines:
         return ""
     return "\n🔍 뉴스픽 차트검증(오늘 종가 기준)\n" + "\n".join(_lines)
+
+
+_YOUTUBE_CHANNEL_HANDLE = "hkwowtv"      # [7.120] 사용자 지정 — 한국경제TV 공식 유튜브
+_YOUTUBE_CHANNEL_ID_CACHE_FILE = os.path.join(BASE, "youtube_channel_id_cache.json")
+_YOUTUBE_MAX_VIDEOS = 12          # 한 번에 요약할 영상 수 상한(Gemini 토큰·처리시간 보호)
+_YOUTUBE_TRANSCRIPT_CHARS_CAP = 4000   # 영상당 자막 글자수 상한(장시간 라이브 하이라이트 대비)
+
+
+def _youtube_resolve_channel_id(handle):
+    """[7.120] 유튜브 채널 핸들(@hkwowtv) → 채널ID(UC...) 변환. 공식 API의 channels.list가
+    최근엔 forHandle 파라미터도 지원하지만, 이 코드가 호출하는 시점에 그 기능이 확실히
+    동작한다고 보장 못 해서(추측 안 함) 대신 채널 페이지 HTML에 항상 박혀있는
+    "channelId":"UC..." 값을 직접 추출(네이버 스크래핑과 같은 성격 — 비공식이지만 구조가
+    단순해 안정적). 채널ID는 한번 정해지면 안 바뀌므로 성공하면 영구 캐시(TTL 없음 —
+    KRX 마스터처럼 주기적으로 다시 받을 필요가 없음). 실패 시 None."""
+    try:
+        with open(_YOUTUBE_CHANNEL_ID_CACHE_FILE, encoding="utf-8") as f:
+            _c = json.load(f)
+        if _c.get("handle") == handle and _c.get("channel_id"):
+            return _c["channel_id"]
+    except Exception:
+        pass
+    import re as _re
+    try:
+        r = requests.get(f"https://www.youtube.com/@{handle}",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        _m = _re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', r.text)
+    except Exception as _e:
+        print(f"[유튜브정리] 채널ID 조회 실패: {type(_e).__name__}")
+        return None
+    if not _m:
+        print("[유튜브정리] 채널ID 파싱 0건 — 페이지 구조 확인 필요")
+        return None
+    _cid = _m.group(1)
+    try:
+        _atomic_write_json(_YOUTUBE_CHANNEL_ID_CACHE_FILE, {"handle": handle, "channel_id": _cid})
+    except Exception:
+        pass
+    return _cid
+
+
+def _youtube_recent_videos(api_key, channel_id, hours=24):
+    """[7.120] 공식 YouTube Data API(search.list)로 최근 hours시간 내 업로드 영상 목록
+    (제목·video_id·업로드시각) 조회 — 공식 API라 안정적. 자막(실제 발언 내용)은 이 API로
+    못 가져옴(제3자 영상은 OAuth 없이 captions.download 불가 — 구글 공식 정책, 아래
+    _youtube_transcript 독스트링 참고) — 그래서 영상 목록만 이 함수로, 자막은 따로. 실패 시 []."""
+    _since = (datetime.datetime.utcnow() - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/search",
+                         params={"key": api_key, "channelId": channel_id, "part": "snippet",
+                                 "order": "date", "type": "video", "maxResults": 50,
+                                 "publishedAfter": _since}, timeout=10)
+        j = r.json()
+    except Exception as _e:
+        print(f"[유튜브정리] 영상 목록 조회 실패: {type(_e).__name__}")
+        return []
+    if "error" in j:
+        print(f"[유튜브정리] API 오류: {str(j['error'].get('message', ''))[:100]}")
+        return []
+    out = []
+    for it in j.get("items", []):
+        _vid = (it.get("id") or {}).get("videoId")
+        _sn = it.get("snippet") or {}
+        if _vid:
+            out.append({"video_id": _vid, "title": _sn.get("title", ""),
+                       "published_at": _sn.get("publishedAt", "")})
+    return out
+
+
+def _youtube_transcript(video_id):
+    """[7.120] 비공식 자막 추출 — 영상 시청 페이지 HTML에 박혀있는 captionTracks 목록에서
+    한국어(사람이 올린 자막 우선, 없으면 자동생성) 트랙의 baseUrl을 찾아 자막 텍스트를 가져옴.
+    공식 API(captions.download)는 제3자(채널 소유자 아닌) 영상에는 OAuth 없이 쓸 수 없음
+    (구글 공식 문서 — "Your request must be authorized using OAuth 2.0", API 키만으론 403) —
+    그래서 영상 목록은 공식 API로, 자막만 어쩔 수 없이 비공식 경로로(네이버 스크래핑과 같은
+    성격 — 페이지 구조가 바뀌면 깨질 수 있음, 그때그때 영상 하나만 건너뛰고 나머지는 계속
+    처리). 실패 시 빈 문자열."""
+    import re as _re
+    import html as _html_mod
+    try:
+        r = requests.get(f"https://www.youtube.com/watch?v={video_id}",
+                         headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"},
+                         timeout=10)
+        _html = r.text
+    except Exception:
+        return ""
+    _m = _re.search(r'"captionTracks":(\[.*?\])', _html)
+    if not _m:
+        return ""
+    try:
+        _tracks = json.loads(_m.group(1))
+    except Exception:
+        return ""
+    if not _tracks:
+        return ""
+    _track = (next((t for t in _tracks if t.get("languageCode") == "ko" and t.get("kind") != "asr"), None)
+             or next((t for t in _tracks if t.get("languageCode") == "ko"), None)
+             or _tracks[0])
+    _base = _track.get("baseUrl")
+    if not _base:
+        return ""
+    try:
+        _tr = requests.get(_base.replace("\\u0026", "&"), headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        _xml = _tr.text
+    except Exception:
+        return ""
+    _lines = _re.findall(r"<text[^>]*>(.*?)</text>", _xml, _re.S)
+    _text = " ".join(_html_mod.unescape(_re.sub(r"<[^>]+>", "", l)) for l in _lines)
+    return _re.sub(r"\s+", " ", _text).strip()
+
+
+def _youtube_fetch_highlights(youtube_key, hours=24):
+    """[7.121] check_youtube_digest(예약 실행)와 대시보드 "지금 정리하기" 버튼(수동 실행)이
+    같은 수집 로직을 공유하도록 분리 — 채널ID 확인 → 최근 영상 목록(공식 API) → 영상별 자막
+    (비공식 경로, 실패한 영상은 건너뜀) 수집까지 한 번에 처리. 반환 (video_rows, parts):
+    video_rows=[{"title","video_id","published_at","transcript_ok"}, ...](화면 표시용,
+    자막 추출 성공 여부 포함), parts=["[제목]\\n자막...", ...](Gemini 프롬프트용, 자막
+    확보한 것만). 채널ID 확인 실패 시 (None, [])."""
+    _cid = _youtube_resolve_channel_id(_YOUTUBE_CHANNEL_HANDLE)
+    if not _cid:
+        return None, []
+    _vids = _youtube_recent_videos(youtube_key, _cid, hours=hours)
+    video_rows, parts = [], []
+    for v in _vids[:_YOUTUBE_MAX_VIDEOS]:
+        _tr = _youtube_transcript(v["video_id"])
+        video_rows.append({"title": v["title"], "video_id": v["video_id"],
+                           "published_at": v.get("published_at", ""), "transcript_ok": bool(_tr)})
+        if _tr:
+            parts.append(f"[{v['title']}]\n{_tr[:_YOUTUBE_TRANSCRIPT_CHARS_CAP]}")
+    return video_rows, parts
+
+
+def _youtube_digest_prompt(parts, slot_label):
+    """[7.121] 한국경제TV 하이라이트 자막 모음(parts) + 시점 라벨 → Gemini 프롬프트 문자열.
+    check_youtube_digest·대시보드 버튼 공용(문구 중복 방지)."""
+    return (
+        f"다음은 한국경제TV 유튜브 채널에 최근 24시간 내 올라온 증권 방송 하이라이트 영상들의 "
+        f"자막(음성을 텍스트로 변환한 것이라 오탈자가 있을 수 있음)입니다. {slot_label} 기준으로 "
+        f"한국 개인 투자자가 참고할 만한 핵심 내용만 간결하게 정리해주세요.\n"
+        f"- 언급된 종목명·테마가 있으면 반드시 포함\n"
+        f"- 전문가가 제시한 전망·근거를 요약(단정적 매수/매도 권유가 아니라 참고 의견으로 표현)\n"
+        f"- 영상별로 나누지 말고 주제별로 통합해 5~8줄 이내로\n\n" + "\n\n".join(parts)[:30000]
+    )
+
+
+def check_youtube_digest(now_kst, state, token_tg, chat_id, youtube_key, gemini_key):
+    """[7.120] 한국경제TV 유튜브 채널 하이라이트 정리본 — 사용자 요청("한국경제TV 유튜브
+    에 나오는 정보가 괜찮아서 정리본을 받아보고 싶다")·확정된 운영 방식("최신 시간 기준으로
+    정리, 24시간 넘어가는건 패스, 미장/국장 기준 하루 2번"). 최근 24시간 내 업로드된 영상을
+    모아 자막을 Gemini로 요약해, 미장 마감 후 아침(07:00~08:35, check_morning_lineup_finalize
+    와 동일 창)과 국장 마감 후 저녁(17:00~22:00, check_evening_news와 동일 창) 하루 2번 발송
+    (각 창마다 당일 1회). 영상 목록은 공식 YouTube Data API, 자막은 비공식 경로
+    (_youtube_transcript 독스트링 참고 — 공식 API는 제3자 영상 자막을 못 가져옴).
+    [7.121] 수집·프롬프트 로직은 _youtube_fetch_highlights·_youtube_digest_prompt로 분리해
+    대시보드 "지금 정리하기" 버튼과 공유(이 함수 자체 동작은 분리 전과 동일)."""
+    if not (youtube_key and gemini_key):
+        return
+    m = now_kst.hour * 60 + now_kst.minute
+    _morning = (7 * 60) <= m <= (8 * 60 + 35)
+    _evening = (17 * 60) <= m <= (22 * 60)
+    if not (_morning or _evening):
+        return
+    _slot = "morning" if _morning else "evening"
+    today = now_kst.strftime("%Y%m%d")
+    _done_key = f"yt_digest_{_slot}_day"
+    if state.get(_done_key) == today:
+        return
+    _rows, _parts = _youtube_fetch_highlights(youtube_key, hours=24)
+    if _rows is None:
+        return                                    # 채널ID 확인 실패 — 이번 틱만 조용히 재시도 대기
+    if not _rows:
+        print("[유튜브정리] 최근 24시간 내 업로드 영상 없음")
+        state[_done_key] = today
+        return
+    if not _parts:
+        print("[유튜브정리] 자막 추출 전부 실패 — 건너뜀")
+        state[_done_key] = today
+        return
+    _slot_label = "아침(미장 마감 후)" if _morning else "저녁(국장 마감 후)"
+    _summary = _gemini_generate(gemini_key, _youtube_digest_prompt(_parts, _slot_label))
+    if not _summary:
+        state[_done_key] = today
+        return
+    send_telegram(token_tg, chat_id,
+                  f"{SIG_INFO}\n📺 [한국경제TV 정리본·{_slot_label}]\n"
+                  f"최근 24시간 하이라이트 {len(_parts)}건 요약\n\n{_summary}")
+    state[_done_key] = today
 
 
 def check_evening_news(now_kst, state, token_tg, chat_id, naver_id, naver_secret, gemini_key,
@@ -2808,10 +3020,21 @@ def _classify_catalyst_titles(titles):
     """[7.116] _news_grade의 핵심 키워드 판정부만 분리 — 제목 리스트 → (grade, is_bad).
     grade: 'S'/'A'/'T'/'none'. _news_grade(종목코드별 일당 캐시·강등방지 포함)와, 실시간
     속보감시(check_breaking_news, 캐시 없이 기사 하나하나 즉시 판정) 양쪽이 같은 로직을
-    공유하기 위해 떼어냄 — 분리 자체는 동작을 전혀 바꾸지 않음(로직 100% 그대로 이동)."""
+    공유하기 위해 떼어냄 — 분리 자체는 동작을 전혀 바꾸지 않음(로직 100% 그대로 이동).
+    [7.118] 실전 사용 중 발견된 오분류 버그 수정 — "시프트업, 3분기 영업이익 급감에 장초반
+    8%대↓", "네오위즈, 신작 공백에 3분기 영업이익 63.7%↓" 같은 '실적 악화' 기사가 _NEWS_A_KW의
+    "영업이익"/"실적" 키워드만 보고 그대로 "🟢 실적·호재"로 잘못 표시되던 문제(check_breaking_news
+    가 등급을 사용자에게 직접 보여주면서 드러남 — _news_grade는 원래 내부 게이트용이라 눈에 덜
+    띄었을 뿐, 같은 버그가 이미 있었음). "영업이익/순이익/매출/실적" 뒤 20자 안에 "급감/감소/
+    하락/쇼크/부진/적자" 또는 "숫자%↓" 패턴이 붙으면(실적 '증가'가 아니라 '악화'로 보고하는
+    기사) 악재로 분류 — _NEWS_NEG_KW와 별개로 '실적 수치가 나쁜 방향'인 경우만 추가로 잡음
+    (무관한 "거래량 급감" 같은 기사까지 악재로 오판하지 않도록 실적 단어와의 동시 등장을 요구)."""
+    import re as _re
+    _perf_neg_re = _re.compile(
+        r"(영업이익|순이익|매출)[^.\n]{0,20}(급감|감소|하락|쇼크|부진|적자|\d+(?:\.\d+)?\s*%\s*[↓↘])")
     _res = ("none", False)
     for t in titles:
-        if any(n in t for n in _NEWS_NEG_KW):
+        if any(n in t for n in _NEWS_NEG_KW) or _perf_neg_re.search(t):
             _res = ("none", True); break                      # 제목 하나라도 악재 → 악재 판정
     else:
         blob = " ".join(titles)
@@ -3018,6 +3241,9 @@ def check_breaking_news(now_kst, state, token_tg, chat_id):
             _msg = f"{_sig}\n📰 [속보] {_name}({_code}) {_tag}\n{_t}"
             if _link:
                 _msg += f"\n{_link}"
+            _theme, _comp = _sector_companions(_code)
+            if _theme and _comp:
+                _msg += f"\n🧩 같은 테마({_theme}): {', '.join(n for _c, n in _comp)}"
             send_telegram(token_tg, chat_id, _msg)
             last_alert[_code] = now_kst.timestamp()
             _alerted += 1
@@ -9015,6 +9241,9 @@ def main():
                     help="자사주 반전 신호 테스트 — 오늘 자기주식 공시 스캔·조건충족 여부 텔레그램·종료")
     ap.add_argument("--weekly-review", dest="weekly_review", action="store_true",
                     help="주간 메타복기 강제 실행 — market_review.md 최근 7일 재분석(패턴·먹힌신호·규칙후보) 텔레그램·종료")
+    ap.add_argument("--youtube-digest", dest="youtube_digest", action="store_true",
+                    help="[7.122] 한국경제TV 유튜브 정리본 — 시간창 무시하고 지금 즉시 최근 24시간 "
+                         "하이라이트 영상 자막 요약 1회 발송 후 종료(GUI 버튼용)")
     args = ap.parse_args()
     token_tg = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -9036,6 +9265,26 @@ def main():
         # [피드백 반영] state를 저장 안 해서 "이번 주는 이미 만듦" 표시가 디스크에 안 남았고,
         # 버튼을 여러 번 누르면 market_review.md에 같은 주 요약이 계속 중복 저장됐음(실사용에서 확인됨).
         save_state(_wst)
+        sys.exit(0)
+
+    if args.youtube_digest:                       # [7.122] 한국경제TV 정리본 수동 실행(GUI 버튼)
+        _ytk, _gk = read_youtube_key(), read_gemini_key()
+        if not (_ytk and _gk):
+            print("⚠️ YouTube/Gemini 키 없음 — 정리본 생성 불가"); sys.exit(1)
+        _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24)
+        if _rows is None:
+            print("⚠️ 채널 정보를 확인하지 못했습니다"); sys.exit(1)
+        if not _rows:
+            print("[유튜브정리] 최근 24시간 내 업로드된 영상이 없습니다"); sys.exit(0)
+        if not _parts:
+            print("[유튜브정리] 영상은 찾았지만 자막을 하나도 가져오지 못했습니다"); sys.exit(0)
+        _summary = _gemini_generate(_gk, _youtube_digest_prompt(_parts, "조회 시점 기준"))
+        if not _summary:
+            print("⚠️ Gemini 요약 실패"); sys.exit(1)
+        send_telegram(token_tg, chat_id,
+                      f"{SIG_INFO}\n📺 [한국경제TV 정리본·수동 실행]\n"
+                      f"최근 24시간 하이라이트 {len(_parts)}건 요약\n\n{_summary}")
+        print(f"[유튜브정리] 발송 완료 — 하이라이트 {len(_parts)}건 요약")
         sys.exit(0)
 
     if args.backfill_review is not None:          # [V25.52] 과거 시장 복기 미리학습 → market_review.md
@@ -9186,10 +9435,12 @@ def main():
     dart_key = read_dart_key()                    # [V18.4] DART 공시 감시 키(없으면 자동 OFF)
     naver_id, naver_secret = read_naver_keys()    # [V21.4] 네이버 뉴스 검색(없으면 저녁 뉴스 OFF)
     gemini_key = read_gemini_key()                # [V21.4] Gemini 판정(없으면 헤드라인만)
+    youtube_key = read_youtube_key()              # [7.120] 한국경제TV 유튜브 정리본(없으면 자동 OFF)
     print(f"📡 감시 시작 — {args.interval}초 · 매크로 ON · 수급 {'ON' if kis_on else 'OFF'} · "
           f"DART공시 {'ON' if dart_key else 'OFF(키없음)'} · "
           f"저녁뉴스 {'ON' if (naver_id and naver_secret) else 'OFF(네이버키없음)'}"
-          f"{'·AI' if gemini_key else '·헤드라인만'}")
+          f"{'·AI' if gemini_key else '·헤드라인만'} · "
+          f"유튜브정리본 {'ON' if (youtube_key and gemini_key) else 'OFF(키없음)'}")
     # [V26.2] 감시 중복 실행 방지 — 사용자 제보("메시지가 두 번씩 온다") 반영. GUI에서 이미 켜진 걸
     # 모르고 또 켜거나, 콘솔 직접 실행 + GUI 둘 다 켜진 경우를 차단(같은 알림을 두 프로세스가 각자 보냄).
     if not _acquire_watch_lock():
@@ -9298,6 +9549,11 @@ def main():
                 check_morning_lineup_finalize(now, st, token_tg, chat_id, gemini_key, kis_key, kis_secret)
             except Exception as _mlfe:
                 print("아침 라인업 최종화 오류:", _mlfe)
+            # 📺 [7.120] 한국경제TV 유튜브 정리본(07:00~08:35 아침·17:00~22:00 저녁, 각 창 당일 1회)
+            try:
+                check_youtube_digest(now, st, token_tg, chat_id, youtube_key, gemini_key)
+            except Exception as _yte:
+                print("유튜브 정리본 오류:", _yte)
             # 📢 [V18.4] DART 실시간 공시 감시(07:00~17:00) — 호재 공시를 우리 엔진으로 교차검증해 진입후보 선정
             try:
                 check_dart_disclosures(now, st, token_tg, chat_id, dart_key, kis_key, kis_secret, sev)
