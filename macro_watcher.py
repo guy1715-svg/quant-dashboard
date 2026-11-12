@@ -4013,6 +4013,35 @@ def _verdict_tag(level, price_bad=False, is_bad=False, quant_basis=False):
     return "C" if quant_basis else "D"
 
 
+# [지시서 반영] 사용자가 퍼플렉시티에 종배픽 분석을 맡긴 뒤 요청한 "entry_status 상태머신"
+# (지시서 섹션8 의사코드를 그대로 코드화). DATA_BLOCKED > MARKET_BLOCKED > INVALIDATED >
+# MATERIAL_PENDING 순으로 우선순위 고정, 그 아래서 가격·유동성·위험계획이 전부 충족돼야
+# ELIGIBLE, 아니면 WATCH. 새 데이터 소스나 새 임계값을 만들지 않고, 호출부가 이미 계산해둔
+# 불리언 신호만 받아 상태 하나(entry_status)와 reason_codes(복수, 한글 설명)로 재표현하는
+# 순수 함수 — check_dolpanty_pick·check_nxt_premium_pick 양쪽에서 재사용.
+_ENTRY_STATUS_RANK = {"DATA_BLOCKED": 0, "MARKET_BLOCKED": 1, "INVALIDATED": 2,
+                      "MATERIAL_PENDING": 3, "WATCH": 4, "ELIGIBLE": 5}
+
+
+def _entry_status_classify(data_blocked=False, market_blocked=False, material_negative=False,
+                            material_pending=False, price_ok=True, liquidity_ok=True,
+                            risk_plan_ok=True, reasons=None):
+    """entry_status 하나 + reason_codes(리스트)를 반환. "ELIGIBLE"은 매수 권유·수익 보장이
+    아니라 설정된 조건을 충족했다는 뜻(지시서 명시 요구사항)."""
+    reasons = list(reasons or [])
+    if data_blocked:
+        return "DATA_BLOCKED", reasons
+    if market_blocked:
+        return "MARKET_BLOCKED", reasons
+    if material_negative:
+        return "INVALIDATED", reasons
+    if material_pending:
+        return "MATERIAL_PENDING", reasons
+    if price_ok and liquidity_ok and risk_plan_ok:
+        return "ELIGIBLE", reasons
+    return "WATCH", reasons
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # [V18.7] 조기 포착·급증진입을 watcher로 이관 — 대시보드 없이 상시 텔레그램(초입 신호).
 #   거래대금 랭킹 → 일봉 셋업(기준선·5일선·이격·급증배수) → 조기포착/급증진입 판정 + 뉴스.
@@ -6183,7 +6212,7 @@ def _pick_write(rows):
 
 
 def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
-              sell_ratio_frgn=None, sell_ratio_orgn=None):
+              sell_ratio_frgn=None, sell_ratio_orgn=None, entry_status=None, reason_codes=None):
     """대시보드 log_dolpanty_pick와 동일 포맷으로 당일 종목별 1회 기록(백필·명중률 공유).
     [V26.12] 사용자 제보 로그 검토 중 발견 — 기존엔 (날짜,종목코드)가 이미 있으면 무조건
     조용히 무시했음. 문제: ①그림자(_shadow)로 먼저 찍힌 종목이 같은 날 나중에 진짜 확정픽이
@@ -6198,7 +6227,9 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
     [V26.40~41에서 sell_ratio_{frgn,orgn}_nxt를 추가했다가, V26.42에서 실측 확인 후 제거함
     — 투자자 분류(외국인/기관/개인)는 체결 거래소(KRX/NXT)와 무관한 개념이라 이 TR은 mrkt
     값과 무관하게 항상 같은 데이터를 반환함(_investor_daily 독스트링 참고). "NXT 전용 수급"은
-    이 API로는 확인 불가능하다는 결론.]"""
+    이 API로는 확인 불가능하다는 결론.]
+    [지시서 반영] entry_status/reason_codes(_entry_status_classify 결과) 선택적 기록 추가 —
+    None이면(옛 호출부) null로 기록돼 기존 구조와 호환."""
     if not code or not score:
         return
     today = now_kst.strftime("%Y-%m-%d")          # 대시보드와 동일한 날짜 포맷
@@ -6215,7 +6246,8 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                      "regime": "", "signal": signal,
                      "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                      "open_next": None, "gap": None,
-                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn}
+                     "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn,
+                     "entry_status": entry_status, "reason_codes": reason_codes}
         _pick_write(rows)
         return
     rows.append({"date": today, "code": str(code), "name": name or "",
@@ -6223,6 +6255,7 @@ def _log_pick(now_kst, code, name, score, px, nq=None, signal="dolpanty",
                  "regime": "", "signal": signal,
                  "nq": (round(float(nq), 2) if isinstance(nq, (int, float)) else None),
                  "open_next": None, "gap": None,
+                 "entry_status": entry_status, "reason_codes": reason_codes,
                  "sell_ratio_frgn": sell_ratio_frgn, "sell_ratio_orgn": sell_ratio_orgn})
     _pick_write(rows)
 
@@ -6881,28 +6914,36 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # [V25.62] 사용자 요청 — 밤사이 FOMC·CPI 등 핵심 이벤트 예정이면 오버나이트 확정픽 자체를 만들지 않는다
     # (재료가 아무리 좋아도 밤사이 방향이 이벤트에 뒤집힐 수 있음 → 확정픽 대신 관찰목록/그림자로만 전환).
     _event_risk, _event_detail = _overnight_event_risk(gemini_key, now_kst)
-    if _ai_bad or _supply_neg or _regime_block or _nograde_block or _event_risk:
-        _why = []
-        if _ai_bad:
-            _why.append("AI 부적합/악재")
-        if _supply_neg:
-            _why.append("수급 이탈")
-        if _regime_block:
-            _why.append("저갭 장세+무재료(갭 근거 없음)")
-        if _nograde_block:
-            _why.append("재료 미확인(오버나이트 근거 약함)")
-        if _event_risk:
-            _why.append(f"밤사이 핵심이벤트({_event_detail})")
+    # [지시서 반영] 위 5개 불리언(기존 로직 그대로, 새로 추가한 신호 없음)을 entry_status
+    # 상태머신에 넣어 재표현 — "ELIGIBLE이 아니면 강등"은 기존 `if _ai_bad or ... :`과
+    # 완전히 동일한 조건(모의테스트로 동치 검증)이라 실제 발송 여부는 바뀌지 않음.
+    _reasons = []
+    if _ai_bad:
+        _reasons.append("AI 부적합/악재")
+    if _supply_neg:
+        _reasons.append("수급 이탈")
+    if _regime_block:
+        _reasons.append("저갭 장세+무재료(갭 근거 없음)")
+    if _nograde_block:
+        _reasons.append("재료 미확인(오버나이트 근거 약함)")
+    if _event_risk:
+        _reasons.append(f"밤사이 핵심이벤트({_event_detail})")
+    _entry_status, _reason_codes = _entry_status_classify(
+        market_blocked=_regime_block, material_negative=_ai_bad, material_pending=_nograde_block,
+        liquidity_ok=not _supply_neg, risk_plan_ok=not _event_risk, reasons=_reasons)
+    if _entry_status != "ELIGIBLE":
+        _why = _reason_codes
         send_telegram(token_tg, chat_id,
-                      f"{SIG_WATCH}\n🌒[종배·관망] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
+                      f"{SIG_WATCH}\n🌒[종배·관망·{_entry_status}] {pick['name']} {pick['px']:,} — 확정픽 강등\n"
                       f"점수 {pick['score']:.0f}이나 {'·'.join(_why)}로 오버나이트 부적합 → 매수 보류(관망).{_ai_news}{_sup}\n"
                       + (f"⚠️ 밤사이 이벤트 리스크 — 후보로만 저장, 익일 개장 후 재확인 권장\n" if _event_risk else "")
                       + f"※ 기술적 셋업은 있으나 " + ("이벤트 리스크" if _event_risk and not (_ai_bad or _supply_neg) else "뉴스/수급이 반대")
                       + " — 종배는 쉬는 게 정답")
         _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})   # 강등돼도 검증 데이터는 남김
-        _log_pick(now_kst, pick["code"], pick["name"], 30.0, pick["px"], nq, "dolpanty_shadow")  # 강등=그림자
+        _log_pick(now_kst, pick["code"], pick["name"], 30.0, pick["px"], nq, "dolpanty_shadow",
+                  entry_status=_entry_status, reason_codes=_reason_codes)  # 강등=그림자
         state["dolpanty_pick_day"] = today
-        print(f"[종배픽] 확정픽 강등(관망) — {pick['name']}: {'·'.join(_why)}")
+        print(f"[종배픽] 확정픽 강등(관망·{_entry_status}) — {pick['name']}: {'·'.join(_why)}")
         return
     # [V25.17] NXT 거래 여부 판별 → 태그·청산 가이드. 로깅 시 NXT/미거래 분리(--analyze 비교용).
     def _nxt_label(_st):
@@ -6914,7 +6955,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     _pick_nxt = _nxt_tradable(token, key, secret, pick["code"])
     _pick_sig = "dolpanty_nonxt" if _pick_nxt is False else "dolpanty"    # 미확인/거래=dolpanty
     # 통과 — 확정픽 로깅(NXT 여부별 분리 저장)
-    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, _pick_sig)
+    _log_pick(now_kst, pick["code"], pick["name"], pick["score"], pick["px"], nq, _pick_sig,
+              entry_status="ELIGIBLE")
     for c in div:
         _log_pick(now_kst, c["code"], c["name"], c["score"], c["px"], nq, "dolpanty_div")
     _log_shadow(exclude={pick["code"], *[c["code"] for c in div]})
@@ -6956,7 +6998,7 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
     # 후보 스코어링 자체가 '비과열(이격<7)'을 요구하므로 price_bad=False.
     _v = _verdict_tag(pick.get("ng"), price_bad=False)
     if send_telegram(token_tg, chat_id,
-                     f"{SIG_BUY}\n🌒[종배·오버나이트·판정{_v}] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
+                     f"{SIG_BUY}\n🌒[종배·오버나이트·판정{_v}·ELIGIBLE] 확정픽 {_psec_txt}{pick['name']}{_prank}{_brief_tag}{_elite_j} {_ntag} "
                      f"{pick['px']:,}({pick['chg']:+.1f}%) · {_pbasis}\n"
                      f"{_mat} · 20MA 이격 {pick['disp']:+.0f}% · 점수 {pick['score']:.0f}"
                      + (f" · {pick['xtag']}" if pick.get("xtag") else "")
@@ -6972,7 +7014,8 @@ def check_dolpanty_pick(token, key, secret, now_kst, state, token_tg, chat_id, s
         _log_signal(state, now_kst, "종배픽", pick["name"], pick["code"], pick["px"])
         state["dolpanty_pick_info"] = {"day": today, "code": pick["code"], "name": pick["name"],
                                        "px": pick["px"], "stop": _stop, "t1": _t1, "reminded": False,
-                                       "ng": pick.get("ng"), "brief": bool(pick.get("brief"))}  # [V25.19] 홀딩판정용
+                                       "ng": pick.get("ng"), "brief": bool(pick.get("brief")),
+                                       "entry_status": "ELIGIBLE"}  # [V25.19] 홀딩판정용
     # [V25.17] 비교 종배픽 — 원톱과 '반대 NXT 유형' 최고 후보 1종 추가(둘 다 선정·검증 비교용).
     #   NXT거래 vs 미거래 어느 쪽 종배가 이기나 --analyze로 대조. 소액 실험.
     _used = {pick["code"], *[c["code"] for c in div]}
@@ -7138,24 +7181,31 @@ _NXT_PREM_START, _NXT_PREM_END = 18 * 60, 19 * 60 + 50   # 넥장 후반(애프�
 _NXT_PREM_MIN_RATIO = 1.0    # NXT거래량이 당일 정규장 거래량을 이미 넘어선(비율>1) 종목만
 _NXT_PREM_ENRICH_N = 10      # [V26.18] 수급·AI뉴스·관심기준 풀체크를 붙일 상위 종목 수 —
                               # 사용자 재요청으로 3 → 10(=표시 후보 전체)으로 확대
+# [지시서 반영] 사용자가 이 탭 내용을 퍼플렉시티에 분석시킨 결과 — 코드를 직접 추적해보니
+# check_nxt_premium_pick은 당일 첫 루프틱(보통 18:00 직후, "nxt_prem_pick_day" 당일락) 가격으로
+# 확정픽을 보내고 그날은 다시 안 돎. 즉 실제로는 "넥장 후반(막판)" 흐름을 전혀 못 본 채 창(window)
+# 시작 시점 스냅샷만으로 끝남 — 퍼플렉시티가 지적한 "19:20~19:50 흐름 확인 없이 판단" 문제의
+# 실제 코드상 원인. 분봉 단위 추적 전체를 새로 만드는 대신(이번 범위 밖), 픽 당시 가격을 저장해뒀다가
+# 막판 창(19:20~19:50)에 한 번 더 조회해 종가대비·픽 대비 가격이 유지됐는지만 재확인하는 가벼운
+# 보강을 추가(check_nxt_premium_reconfirm).
+_NXT_PREM_RECONFIRM_START, _NXT_PREM_RECONFIRM_END = 19 * 60 + 20, 19 * 60 + 50
+_NXT_PREM_RECONFIRM_PULLBACK_WARN = -1.5    # 픽 대비 이 이상(%) 밀리면 "되밀림" 경고
+_NXT_PREM_RECONFIRM_MAX_ITEMS = 5           # 재확인 추적 상한(API 절약 — 상위 5종만)
 
 
 def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
     """[V26.13] 대체종배 상위 후보용 수급(외인/기관/개인추정)·AI뉴스·관심기준 — 확정픽
     (check_dolpanty_pick)이 쓰는 함수를 그대로 재사용. 개인 순매수는 KIS가 별도로 안 주므로
     외인+기관 합산의 반대부호로 근사(추정치임을 표기). 예외는 개별 항목만 조용히 생략."""
+    # [지시서 반영] check_nxt_premium_pick의 out 생성 루프에서 이미 계산해둔 값을 재사용 —
+    # 여기서 다시 _investor_est를 부르면 같은 종목에 API 호출이 중복됨(ai_verdict와 동일 패턴).
     _lines = []
-    try:
-        _f, _o = _investor_est(token, key, secret, o["code"], distinguish_fail=True)
-        if _f is None or _o is None:
-            _lines.append("   💰 수급: ⚠️미확인(조회 실패)")
-        else:
-            _fa, _oa = _f * o["nxt_px"] / 1e8, _o * o["nxt_px"] / 1e8
-            _ind = -(_fa + _oa)
-            _lines.append(f"   💰 수급: 외인 {_fa:+.0f}억 · 기관 {_oa:+.0f}억 · 개인(추정) {_ind:+.0f}억"
-                          + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
-    except Exception:
-        pass
+    _fa, _oa, _ind = o.get("supply_frgn_eok"), o.get("supply_orgn_eok"), o.get("supply_indiv_eok")
+    if _fa is None or _oa is None:
+        _lines.append("   💰 수급: ⚠️미확인(조회 실패)")
+    else:
+        _lines.append(f"   💰 수급: 외인 {_fa:+.1f}억 · 기관 {_oa:+.1f}억 · 개인(추정) {_ind:+.1f}억"
+                      + (" ✅유입" if (_fa + _oa) > 0 else " ⚠️이탈"))
     # [V26.39] 매도율(사용자 제보 — 유튜브 수급 강의) — check_nxt_premium_pick에서 이미 계산해
     # o에 담아준 값을 그대로 표시만 함(추가 API 호출 없음). 1단계: 참고용 표시만, 점수 미반영.
     # [V26.40~41에서 NXT 쪽도 따로 보여주려 했으나 V26.42에서 실측 결과 이 TR은 거래소 구분이
@@ -7171,12 +7221,11 @@ def _nxt_prem_enrich_block(token, key, secret, gemini_key, o):
             _lines.append(f"   📊 매도율(참고용·낮을수록 매수세 깨끗): {' · '.join(_parts)}")
     except Exception:
         pass
-    try:
-        _ai = _gemini_stock_news_verdict(gemini_key, o["code"], o["name"])
-        if _ai:
-            _lines.append("   " + _ai.strip())
-    except Exception:
-        pass
+    # [지시서 반영] check_nxt_premium_pick의 out 생성 루프에서 이미 계산해둔 값을 재사용 —
+    # 여기서 다시 _gemini_stock_news_verdict를 부르면 같은 종목에 Gemini 호출이 중복됨.
+    _ai = o.get("ai_verdict") or ""
+    if _ai:
+        _lines.append("   " + _ai.strip())
     try:
         _wlp = _watchlist_check(token, key, secret, o["code"], o["nxt_px"], 0.0, o["nxt_turn"], o.get("news"))
         if _wlp:
@@ -7258,10 +7307,16 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _ds = _daily_setup(token, key, secret, s["code"], krx_px)
         _turnavg = (_ds or {}).get("turnavg") or 0
         _avg_turn_ratio = round(nxt_turn / _turnavg, 3) if _turnavg else None
+        # [지시서 반영] 사용자가 퍼플렉시티에 종배픽 표를 분석시켰더니 "CLV(가격위치)가 높아도
+        # 정규장 종가 아래일 수 있는데 그게 화면에 안 보인다"고 지적 — krx_px·nxt_px를 이미
+        # 조회해놓고도 괴리율을 계산도 표시도 안 하고 있었음(V26.51에서 참고용 괴리율 컬럼을
+        # 지운 적은 있으나 그건 거래대금 기준이었고, 이건 종가 대비 가격 기준으로 별개 지표).
+        _premium_pct = round((nxt_px / krx_px - 1) * 100, 2) if krx_px else None
         full_rows.append({"code": s["code"], "name": s["name"], "krx_px": krx_px, "nxt_px": nxt_px,
                           "krx_turn": _kturn, "krx_vol": krx_vol,
                           "nxt_vol": nxt_vol, "nxt_turn": nxt_turn, "ratio": round(_ratio, 3),
                           "avg_turn_ratio": _avg_turn_ratio, "chg": _kchg,
+                          "premium_pct": _premium_pct,
                           "pass": _ratio >= _NXT_PREM_MIN_RATIO})
     state["nxt_prem_pick_day"] = today
     full_rows.sort(key=lambda r: r["ratio"], reverse=True)
@@ -7307,7 +7362,48 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _nxt_px2, _nxt_chg2, _nxt_open, _nxt_high, _nxt_low = _price_full(token, key, secret, r["code"], mrkt="NX")
         _nxt_buy_pct = (_buy_pressure_pct(_nxt_high, _nxt_low, _nxt_px2)
                         if all(v is not None for v in (_nxt_high, _nxt_low, _nxt_px2)) else None)
+        # [지시서 반영] AI뉴스판정(Gemini)은 원래도 매번 계산되고 있었으나(아래 _nxt_prem_enrich_block
+        # 호출용) out에 안 담겨 대시보드(notify=False 호출)에선 그 결과가 버려지고 있었음 — 여기서
+        # 미리 계산해 out에 저장하고, _nxt_prem_enrich_block에는 이 값을 그대로 넘겨 중복 호출 방지.
+        _ai_verdict = ""
+        if (len(out) + 1) <= _NXT_PREM_ENRICH_N or _ss3d:
+            try:
+                _ai_verdict = _gemini_stock_news_verdict(gemini_key, r["code"], r["name"])
+            except Exception:
+                pass
+        # [사용자 요청] "추천 픽 종목에 대한 수급이 보였으면 좋겠다(개인/외국인/기관)" — 이것도
+        # ai_verdict와 똑같은 패턴의 버그였음: _nxt_prem_enrich_block이 이미 외인/기관(+개인은
+        # KIS가 안 주니 외인+기관 합산의 반대부호로 근사)을 계산하고 있었는데 텔레그램 메시지
+        # 텍스트로만 쓰이고 out엔 안 담겨 대시보드(notify=False 호출)에선 버려지고 있었음.
+        # API 1번(investor-trend-estimate)으로 외인·기관이 같이 나와 "복잡"하지 않음.
+        _supply_frgn_eok = _supply_orgn_eok = _supply_indiv_eok = None
+        if (len(out) + 1) <= _NXT_PREM_ENRICH_N or _ss3d:
+            try:
+                _sf, _so = _investor_est(token, key, secret, r["code"], distinguish_fail=True)
+                if _sf is not None and _so is not None:
+                    _supply_frgn_eok = round(_sf * r["nxt_px"] / 1e8, 1)
+                    _supply_orgn_eok = round(_so * r["nxt_px"] / 1e8, 1)
+                    _supply_indiv_eok = round(-(_supply_frgn_eok + _supply_orgn_eok), 1)
+            except Exception:
+                pass
+        # [지시서 반영] entry_status — 이 함수는 원래 재료등급(S/A/T/미확인)만 알파벳으로 보여주고
+        # 실제 "진입해도 되는 상태인가"는 안 보여줬음(nbad 악재만 걸러내는 이진 필터뿐). 새 데이터는
+        # 안 만들고 이미 계산된 ng(재료등급)·premium_pct(7.125)만으로 재표현 — 후보가 out에 포함되고
+        # 텔레그램에 발송되는지(아래 notify 분기) 자체는 그대로, ✅ELIGIBLE이 "매수하라"는 뜻은 아님
+        # (기존에도 메시지 말미에 "확정픽 아님 — 진입은 개별 검토 후 결정"이라고 명시돼 있었음).
+        _material_pending = ng not in ("S", "A")
+        _premium_pct = r.get("premium_pct")
+        _price_ok = _premium_pct is not None and _premium_pct >= 0
+        _reason_codes = []
+        if _material_pending:
+            _reason_codes.append("재료 미확인(S/A 아님)")
+        if not _price_ok:
+            _reason_codes.append("종가대비 음수(정규장 종가 아래)" if _premium_pct is not None
+                                 else "종가대비 미확인")
+        _entry_status, _reason_codes = _entry_status_classify(
+            material_pending=_material_pending, price_ok=_price_ok, reasons=_reason_codes)
         out.append({"rank": len(out) + 1, "code": r["code"], "name": r["name"], "nxt_px": r["nxt_px"],
+                    "krx_px": r.get("krx_px"), "premium_pct": r.get("premium_pct"),
                     "krx_vol": r["krx_vol"], "nxt_vol": r["nxt_vol"], "nxt_turn": r["nxt_turn"],
                     "nxt_turn_eok": round(r["nxt_turn"] / 1e8, 0), "ratio": round(r["ratio"], 2),
                     "avg_turn_ratio": r.get("avg_turn_ratio"),
@@ -7315,11 +7411,15 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
                     "ssangkkuli_2w": _ss2w, "ssangkkuli_3d": _ss3d,
                     "vol_trend_x": round(_vr5[2], 2) if _vr5 else None,
                     "sell_ratio_frgn": _sr_frgn, "sell_ratio_orgn": _sr_orgn,
-                    "nxt_buy_pct": _nxt_buy_pct})
+                    "nxt_buy_pct": _nxt_buy_pct, "ai_verdict": _ai_verdict,
+                    "entry_status": _entry_status, "reason_codes": _reason_codes,
+                    "supply_frgn_eok": _supply_frgn_eok, "supply_orgn_eok": _supply_orgn_eok,
+                    "supply_indiv_eok": _supply_indiv_eok})
         if notify:        # [V26.17] 온디맨드 미리보기(notify=False)는 성적표에 안 남김 — 장중
                           # 미확정가 미리보기가 저녁 확정픽 승률 통계와 섞이는 걸 방지
             _log_pick(now_kst, r["code"], r["name"], _score, r["nxt_px"], signal="dolpanty_nxtprem",
-                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn)
+                      sell_ratio_frgn=_sr_frgn, sell_ratio_orgn=_sr_orgn,
+                      entry_status=_entry_status, reason_codes=_reason_codes)
             _log_signal(state, now_kst, "대체종배", r["name"], r["code"], r["nxt_px"])  # 대시보드 "오늘 신호" 타임라인 반영
     if not out:
         print(f"[대체종배] 조건 충족 {len(rows)}종 있었으나 전부 악재 뉴스로 제외됨")
@@ -7349,10 +7449,20 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
             _ss_tag = ""
         _vx = o.get("vol_trend_x")
         _vol_tag = f" · 거래량 5일평균대비 {_vx:.1f}배" if _vx else ""
+        # [지시서 반영] 종가대비 괴리율 — 음수면 NXT가가 아직 당일 KRX 정규장 확정종가를 못 밑돈
+        # 상태(가격위치(CLV)가 높아도 종가를 회복 못했을 수 있음)라 경고 태그를 붙임.
+        _prem = o.get("premium_pct")
+        if _prem is None:
+            _prem_tag = ""
+        elif _prem < 0:
+            _prem_tag = f" · 종가대비 {_prem:+.2f}%⚠️종가밑"
+        else:
+            _prem_tag = f" · 종가대비 {_prem:+.2f}%"
         _base = (f"{o['rank']}. {o['name']} · NXT거래량이 당일 정규장의 {o['ratio']:.1f}배"
-                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}"
+                 f"({o['nxt_vol']:,}주 vs {o['krx_vol']:,}주) · NXT거래대금 {o['nxt_turn_eok']:,.0f}억{_avr_tag}{_prem_tag}"
                  f"{_ss_tag}{_vol_tag} "
-                 f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}")
+                 f"· {('🔥재료S' if o['news']=='S' else '🟢재료A' if o['news']=='A' else '🟡테마' if o['news']=='T' else '⚪미확인')}"
+                 f" · [{o.get('entry_status', '')}]")
         # [V26.18] _NXT_PREM_ENRICH_N(10) == 후보 상한(10)이라 사실상 전체 후보에 뉴스·근거이유
         # 풀체크가 붙음(사용자 재요청). ssangkkuli_3d 조건은 N을 다시 줄이게 되더라도 쌍끌이
         # 3일연속 종목만큼은 계속 풀체크되도록 남겨둠.
@@ -7363,14 +7473,101 @@ def check_nxt_premium_pick(token, key, secret, now_kst, state, token_tg, chat_id
         _line_parts.append(_base)
     _lines = "\n".join(_line_parts)
     if notify:
-        send_telegram(token_tg, chat_id,
+        _sent_ok = send_telegram(token_tg, chat_id,
                       f"{SIG_INFO}\n🌙📊 대체종배 후보 — NXT 거래량이 당일 정규장을 압도한 종목 (총 {len(out)}종)\n"
                       f"{_lines}\n"
                       f"※ 확정픽 아님 — 뉴스만 확인된 후보 목록. 진입은 개별 검토 후 결정 · 신규 신호(표본 적음)")
         print(f"[대체종배] {len(out)}종 후보 발송")
+        # [지시서 반영] 위 발송 시점(당일 첫 루프틱) 가격을 저장 — check_nxt_premium_reconfirm이
+        # 19:20~19:50에 다시 조회해 종가대비·픽 대비 변동률을 재확인하는 데 씀.
+        if _sent_ok:
+            state["nxt_prem_pick_snapshot"] = {
+                "date": now_kst.strftime("%Y-%m-%d"), "picked_at": now_kst.strftime("%H:%M"),
+                "items": [{"code": o["code"], "name": o["name"], "nxt_px": o["nxt_px"],
+                           "krx_px": o.get("krx_px"), "premium_pct": o.get("premium_pct")}
+                          for o in out[:_NXT_PREM_RECONFIRM_MAX_ITEMS]],
+            }
     else:
         print(f"[대체종배] {len(out)}종 후보 확인(온디맨드 미리보기 — 텔레그램 발송·성적표 기록 생략)")
     return out
+
+
+NXT_PREM_RECONFIRM_LOG_FILE = os.path.join(BASE, "nxt_prem_reconfirm_log.json")
+
+
+def _nxt_prem_reconfirm_log_read():
+    try:
+        with open(NXT_PREM_RECONFIRM_LOG_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _nxt_prem_reconfirm_log_append(now_kst, rows):
+    """[지시서 반영] 대체종배 막판 재확인 결과 — pick_history.json(_log_pick)과는 분리된 별도
+    로그. _log_pick은 (날짜,종목코드) 1행 유일성을 전제로 승률 검증에 쓰이는데, 재확인 가격으로
+    같은 키에 _log_pick을 다시 부르면 이미 쌓인 확정픽 기록(진입가 기준)이 재확인 가격으로
+    덮어써져 성적표가 틀어질 위험이 있음 — 그래서 nxt_scan_log.json과 같은 날짜별 append 방식의
+    새 파일로 분리."""
+    data = _nxt_prem_reconfirm_log_read()
+    data.append({"date": now_kst.strftime("%Y-%m-%d"), "time": now_kst.strftime("%H:%M"), "rows": rows})
+    data = data[-60:]
+    try:
+        with open(NXT_PREM_RECONFIRM_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("[대체종배 재확인] 로그 저장 오류:", e)
+
+
+def check_nxt_premium_reconfirm(token, key, secret, now_kst, state, token_tg, chat_id):
+    """[지시서 반영] check_nxt_premium_pick은 당일 첫 루프틱(보통 18:00 직후) 가격으로 확정픽을
+    보내고 그날은 다시 안 돎 — 퍼플렉시티가 지적한 "19:20~19:50 막판 흐름을 안 보고 판단" 문제의
+    실제 원인. 19:20~19:50 윈도에 당일 1회, 픽 당시 저장해둔 스냅샷의 종목들 NXT가를 다시 조회해
+    종가대비·픽 대비 변동률을 재확인, 텔레그램으로 알려줌(새 매수신호 아님 — 관찰·기록용)."""
+    m = now_kst.hour * 60 + now_kst.minute
+    if not (_NXT_PREM_RECONFIRM_START <= m <= _NXT_PREM_RECONFIRM_END):
+        return
+    today = now_kst.strftime("%Y%m%d")
+    if state.get("nxt_prem_reconfirm_day") == today:
+        return
+    _snap = state.get("nxt_prem_pick_snapshot") or {}
+    if _snap.get("date") != now_kst.strftime("%Y-%m-%d"):
+        state["nxt_prem_reconfirm_day"] = today     # 오늘 확정픽 자체가 없었던 날(관망 등) — 조용히 스킵
+        return
+    _items = _snap.get("items") or []
+    if not _items:
+        state["nxt_prem_reconfirm_day"] = today
+        return
+    _rows, _msg_lines = [], []
+    for it in _items:
+        _npx, _nchg, _nturn = _price_and_turnover(token, key, secret, it["code"], mrkt="NX")
+        _krx_px = it.get("krx_px")
+        if not _npx:
+            _msg_lines.append(f"• {it['name']} — ⚠️재조회 실패(종가/거래 미확인)")
+            _rows.append({**it, "reconfirm_px": None, "status": "조회실패"})
+            continue
+        _prem_now = round((_npx / _krx_px - 1) * 100, 2) if _krx_px else None
+        _chg_since_pick = round((_npx / it["nxt_px"] - 1) * 100, 2) if it.get("nxt_px") else None
+        if _prem_now is not None and _prem_now < 0:
+            _status = "🔻종가이탈"
+        elif _chg_since_pick is not None and _chg_since_pick <= _NXT_PREM_RECONFIRM_PULLBACK_WARN:
+            _status = f"⚠️되밀림({_chg_since_pick:+.1f}%)"
+        else:
+            _status = "✅유지"
+        _prem_txt = f"{_prem_now:+.2f}%" if _prem_now is not None else "미확인"
+        _chg_txt = f"{_chg_since_pick:+.1f}%" if _chg_since_pick is not None else "미확인"
+        _msg_lines.append(f"• {it['name']} — 픽 {it['nxt_px']:,} → 지금 {_npx:,}({_chg_txt}) "
+                          f"· 종가대비 {_prem_txt} · {_status}")
+        _rows.append({**it, "reconfirm_px": _npx, "premium_pct_now": _prem_now,
+                      "chg_since_pick": _chg_since_pick, "status": _status})
+    send_telegram(token_tg, chat_id,
+                  f"{SIG_INFO}\n🌙⏱️ 대체종배 막판 재확인({_snap.get('picked_at', '')} 픽 → "
+                  f"{now_kst.strftime('%H:%M')} 재조회)\n" + "\n".join(_msg_lines) +
+                  "\n※ 새 매수신호 아님 — 픽 당시 가격이 막판까지 유지됐는지 참고용 확인")
+    _nxt_prem_reconfirm_log_append(now_kst, _rows)
+    state["nxt_prem_reconfirm_day"] = today
+    print(f"[대체종배 재확인] {len(_rows)}종 재확인 발송")
 
 
 def check_snipers(token, key, secret, now_kst, state, token_tg, chat_id, lineup, sev=1):
@@ -9270,7 +9467,8 @@ def main():
     if args.youtube_digest:                       # [7.122] 한국경제TV 정리본 수동 실행(GUI 버튼)
         _ytk, _gk = read_youtube_key(), read_gemini_key()
         if not (_ytk and _gk):
-            print("⚠️ YouTube/Gemini 키 없음 — 정리본 생성 불가"); sys.exit(1)
+            _missing = " · ".join(n for n, k in (("YouTube API 키", _ytk), ("Gemini API 키", _gk)) if not k)
+            print(f"⚠️ {_missing} 없음 — 정리본 생성 불가"); sys.exit(1)
         _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24)
         if _rows is None:
             print("⚠️ 채널 정보를 확인하지 못했습니다"); sys.exit(1)
@@ -9907,6 +10105,10 @@ def main():
                                                      if _npp_cache.get("date") == _today_str else [])
                     except Exception as _npe:
                         print("대체종배 체크 오류:", _npe)
+                    try:
+                        check_nxt_premium_reconfirm(tok, kis_key, kis_secret, now, st, token_tg, chat_id)
+                    except Exception as _npre:
+                        print("대체종배 재확인 오류:", _npre)
                     # [사용자 요청] 실전속보에 ETF 겹침 분석(상위 ETF들의 편입비중 상위종목 교집합)도
                     # 같이 보여달라는 요청. [V26.52] 지시서 재설계로 코스피/코스닥을 ETF 선정
                     # 단계에서 나누지 않고 단일 풀(etf_n=30)로 한 번만 스캔 — ETF 구성종목은
@@ -10010,6 +10212,13 @@ def main():
                                      filename="nxt_scan_log.json")
             except Exception as _nse:
                 print("대체종배 스캔로그 업로드 오류:", _nse)
+            # [지시서 반영] 대체종배 막판 재확인 로그도 같은 방식으로 업로드 — 대시보드가
+            # "초기픽 vs 막판 재확인" 비교를 보려면 클라우드 배포본도 이 파일을 읽어야 함.
+            try:
+                push_snapshot_github(json.dumps(_nxt_prem_reconfirm_log_read(), ensure_ascii=False),
+                                     filename="nxt_prem_reconfirm_log.json")
+            except Exception as _nre2:
+                print("대체종배 재확인로그 업로드 오류:", _nre2)
             # [V26.15] 수급상위(investor_flow_log.json)도 같은 방식으로 업로드
             try:
                 push_snapshot_github(json.dumps(_investor_flow_log_read(), ensure_ascii=False),
