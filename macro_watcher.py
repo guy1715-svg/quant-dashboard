@@ -2207,7 +2207,13 @@ def _youtube_resolve_channel_id(handle):
     동작한다고 보장 못 해서(추측 안 함) 대신 채널 페이지 HTML에 항상 박혀있는
     "channelId":"UC..." 값을 직접 추출(네이버 스크래핑과 같은 성격 — 비공식이지만 구조가
     단순해 안정적). 채널ID는 한번 정해지면 안 바뀌므로 성공하면 영구 캐시(TTL 없음 —
-    KRX 마스터처럼 주기적으로 다시 받을 필요가 없음). 실패 시 None."""
+    KRX 마스터처럼 주기적으로 다시 받을 필요가 없음). 실패 시 None.
+    [7.129] 사용자 실사용 중 "채널ID 파싱 0건" 확인 — 이 샌드박스는 youtube.com 자체가
+    네트워크 정책상 막혀있어 실제 페이지 구조를 직접 들여다보고 원인을 못 박진 못했음(추측 안
+    함). 대신 YouTube 채널 페이지에 "channelId" 외에도 흔히 같이 박혀있는 필드
+    (canonical 링크의 /channel/UC..., "externalId", "browseId")까지 순서대로 시도해 견고성을
+    높이고, 전부 실패하면 다음 재현 때 바로 원인을 알 수 있게 상태코드·최종 URL·페이지
+    길이를 로그에 남김(이전엔 "0건"이라고만 찍혀 사용자가 직접 페이지소스를 열어봐야 했음)."""
     try:
         with open(_YOUTUBE_CHANNEL_ID_CACHE_FILE, encoding="utf-8") as f:
             _c = json.load(f)
@@ -2219,12 +2225,16 @@ def _youtube_resolve_channel_id(handle):
     try:
         r = requests.get(f"https://www.youtube.com/@{handle}",
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        _m = _re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', r.text)
     except Exception as _e:
         print(f"[유튜브정리] 채널ID 조회 실패: {type(_e).__name__}")
         return None
+    _m = (_re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', r.text)
+          or _re.search(r'rel="canonical" href="https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"', r.text)
+          or _re.search(r'"externalId":"(UC[a-zA-Z0-9_-]{22})"', r.text)
+          or _re.search(r'"browseId":"(UC[a-zA-Z0-9_-]{22})"', r.text))
     if not _m:
-        print("[유튜브정리] 채널ID 파싱 0건 — 페이지 구조 확인 필요")
+        print(f"[유튜브정리] 채널ID 파싱 0건 — status={r.status_code} 최종URL={r.url} "
+              f"응답길이={len(r.text)}자 (페이지 구조 확인 필요)")
         return None
     _cid = _m.group(1)
     try:
