@@ -118,6 +118,35 @@
   탭은 7.61에서 같은 문제를 해결했음(pick_history.json을 GitHub data 브랜치에 별도 업로드) —
   `📊 성과 분석` 탭이 쓰는 `signal_scorecard.json` 쪽은 같은 방식을 아직 적용 안 함(다음 후보).
 
+### 7.132 신규 기능 — 공식 자막 없는 영상(막 올라온 영상)도 Gemini 영상이해로 정리본 생성
+
+**배경**: 7.131 검증으로 "자막 없음"이 버그가 아니라 실제 현상(업로드 직후엔 YouTube 자동자막이
+아직 안 만들어짐)임을 확인한 뒤, 사용자가 "막 올라온 영상도 어떻게 안되나?"라고 요청. Gemini
+API가 유튜브 영상 URL을 직접 받아(`file_data.file_uri`) 음성·화면을 이해하는 공식 기능이
+있음을 확인 — 공식 자막 유무와 무관하게 영상 내용을 텍스트로 받을 수 있는 대안.
+
+**구현**: 새 함수 `_gemini_youtube_video_text(gkey, video_url)` 추가 — `_gemini_generate`와
+같은 모델 순차 시도·진단 패턴으로, `genai.GenerativeModel(모델).generate_content([{"file_data":
+{"file_uri": video_url}}, 프롬프트])` 호출. `_youtube_fetch_highlights`에 `gemini_key=None`
+파라미터를 추가해, 자막 스크래핑(`_youtube_transcript`)이 빈 결과일 때만 이 폴백을 호출 —
+자막이 이미 있는 영상엔 추가 Gemini 호출을 하지 않아(비용 통제) 기존 동작과 100% 동일.
+`video_rows`에 `source`("captions"/"gemini_video") 필드 추가해 어느 경로로 받았는지 투명하게
+기록. 3개 호출부(check_youtube_digest·CLI `--youtube-digest`·대시보드 "지금 정리하기" 버튼)
+모두 이미 gemini_key를 쥐고 있어 호출 한 줄씩만 수정. 대시보드 영상 목록 표에 "출처" 컬럼 추가.
+
+**검증**: `py_compile` 통과. `test_youtube_gemini_video_fallback.py`(4건) — 자막 있는
+영상에는 Gemini 영상이해 호출이 **절대 안 일어나는지**(비용 통제 핵심 검증), 자막 없는
+영상에만 정확히 1회 호출되는지, `source` 필드가 맞게 기록되는지, `gemini_key` 없으면 폴백
+자체가 생략돼 기존 동작과 동일한지, 전 모델 실패 시 None 반환하는지 확인.
+`test_gemini_video_payload_shape.py`(1건) — 모의 SDK로 실제 `generate_content` 호출 인자를
+캡처해 `[{"file_data":{"file_uri":url}}, 프롬프트문자열]` 형태가 정확히 만들어지는지, API 키·
+타임아웃(90초) 전달까지 확인. 7.129~7.131 기존 테스트 재실행해 회귀 없음 확인.
+**확인 못한 부분**: `google.generativeai`(레거시 SDK) 버전에서 유튜브 URL `file_data` 기능이
+실제로 동작하는지는 이 샌드박스에서 라이브 호출로 검증 불가(Gemini API 키 없음 + youtube.com
+네트워크 차단 이중 제약) — 사용자 PC에서 "막 올라온 영상"으로 실제 테스트해봐야 최종 확인됨.
+안 되면(예: 이 SDK 버전이 file_uri를 지원 안 함) 에러 메시지가 진단 로그에 모델별로 찍히니
+그걸 보고 다음 조치(SDK 업그레이드 등) 판단 가능.
+
 ### 7.131 보강 — 7.130 적용 후에도 자막 전수 실패 재현, 마지막 단계(<text> 태그 추출) 진단 로그 추가
 
 **배경**: 사용자가 7.130을 받고(git push/pull 꼬임 — `git log`가 "ahead by 9 commits"였음을

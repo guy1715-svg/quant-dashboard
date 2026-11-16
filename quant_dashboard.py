@@ -1959,7 +1959,7 @@ def render_youtube_digest():
         return
     if st.button("🔄 지금 정리하기", key="youtube_digest_refresh_btn"):
         with st.spinner("최근 영상 목록 조회 · 자막 추출 · 요약 중... (영상이 많으면 1분 이상 걸릴 수 있어요)"):
-            _rows, _parts = mw._youtube_fetch_highlights(_yk, hours=24)
+            _rows, _parts = mw._youtube_fetch_highlights(_yk, hours=24, gemini_key=_gk)
             if _rows is None:
                 st.error("채널 정보를 확인하지 못했습니다 — 잠시 후 다시 시도해주세요.")
                 return
@@ -1988,7 +1988,12 @@ def render_youtube_digest():
             _vdf = pd.DataFrame(_res["rows"])
             if not _vdf.empty:
                 _vdf["자막"] = _vdf["transcript_ok"].map({True: "✅ 추출됨", False: "❌ 실패"})
-                _cols = {"title": "제목", "published_at": "업로드", "자막": "자막"}
+                # [7.132] 사용자 요청 — 막 올라온 영상(공식 자막 미생성)은 Gemini가 영상을
+                # 직접 보고 요약하는 폴백으로 대신 받아옴. 어느 경로로 받았는지 투명하게 표시.
+                if "source" in _vdf.columns:
+                    _vdf["출처"] = _vdf["source"].map(
+                        {"captions": "공식 자막", "gemini_video": "Gemini 영상이해(자막 없음)"}).fillna("—")
+                _cols = {"title": "제목", "published_at": "업로드", "자막": "자막", "출처": "출처"}
                 _vdf = _vdf[[c for c in _cols if c in _vdf.columns]].rename(columns=_cols)
                 st.dataframe(_vdf, use_container_width=True, hide_index=True)
 
