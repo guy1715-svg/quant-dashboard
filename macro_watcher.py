@@ -2272,6 +2272,44 @@ def _youtube_recent_videos(api_key, channel_id, hours=24):
     return out
 
 
+def _extract_balanced_json_array(html, key):
+    """[7.130] "key":[ 뒤에 오는 JSON 배열을 괄호 깊이 추적으로 정확히 추출.
+    사용자 실사용 중 "영상은 찾았지만 자막을 하나도 가져오지 못함"이 전수(全) 영상에서
+    재현돼 비탐욕 정규식 (\\[.*?\\])을 재검증한 결과 확인된 버그 — captionTracks 원소의
+    "name" 필드가 {"simpleText":...} 대신 {"runs":[...]} 형식(둘 다 YouTube가 실제 쓰는
+    형식)이면 중첩 대괄호 때문에 정규식이 그 배열의 첫 ']'에서 끊겨 불완전한 JSON이 되고
+    json.loads가 실패함(실제 재현 확인) — 그래서 자막 유무와 무관하게 거의 모든 영상에서
+    조용히 실패했을 가능성이 큼. 문자열 리터럴 안의 대괄호는 깊이 계산에서 제외. 못 찾으면
+    None."""
+    _marker = f'"{key}":['
+    _start = html.find(_marker)
+    if _start == -1:
+        return None
+    _i = _start + len(_marker) - 1    # '[' 위치
+    _depth = 0
+    _in_str = False
+    _esc = False
+    for _j in range(_i, len(html)):
+        _c = html[_j]
+        if _in_str:
+            if _esc:
+                _esc = False
+            elif _c == "\\":
+                _esc = True
+            elif _c == '"':
+                _in_str = False
+            continue
+        if _c == '"':
+            _in_str = True
+        elif _c == "[":
+            _depth += 1
+        elif _c == "]":
+            _depth -= 1
+            if _depth == 0:
+                return html[_i:_j + 1]
+    return None
+
+
 def _youtube_transcript(video_id):
     """[7.120] 비공식 자막 추출 — 영상 시청 페이지 HTML에 박혀있는 captionTracks 목록에서
     한국어(사람이 올린 자막 우선, 없으면 자동생성) 트랙의 baseUrl을 찾아 자막 텍스트를 가져옴.
@@ -2279,7 +2317,10 @@ def _youtube_transcript(video_id):
     (구글 공식 문서 — "Your request must be authorized using OAuth 2.0", API 키만으론 403) —
     그래서 영상 목록은 공식 API로, 자막만 어쩔 수 없이 비공식 경로로(네이버 스크래핑과 같은
     성격 — 페이지 구조가 바뀌면 깨질 수 있음, 그때그때 영상 하나만 건너뛰고 나머지는 계속
-    처리). 실패 시 빈 문자열."""
+    처리). 실패 시 빈 문자열.
+    [7.130] captionTracks 배열 추출을 비탐욕 정규식에서 괄호 깊이 추적(_extract_balanced_
+    json_array)으로 교체(아래 그 함수 독스트링 참고 — 실제 확인된 파싱 버그). 각 실패
+    지점에 진단 로그 추가 — 이전엔 어느 단계에서 왜 실패했는지 전혀 안 보였음."""
     import re as _re
     import html as _html_mod
     try:
@@ -2287,14 +2328,18 @@ def _youtube_transcript(video_id):
                          headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"},
                          timeout=10)
         _html = r.text
-    except Exception:
+    except Exception as _e:
+        print(f"[유튜브정리] {video_id} 시청페이지 조회 실패: {type(_e).__name__}")
         return ""
-    _m = _re.search(r'"captionTracks":(\[.*?\])', _html)
-    if not _m:
+    _arr = _extract_balanced_json_array(_html, "captionTracks")
+    if _arr is None:
+        print(f"[유튜브정리] {video_id} captionTracks 없음(자막 미제공 영상이거나 "
+              f"페이지 구조 변경 — status={r.status_code} 응답길이={len(_html)}자)")
         return ""
     try:
-        _tracks = json.loads(_m.group(1))
-    except Exception:
+        _tracks = json.loads(_arr)
+    except Exception as _e:
+        print(f"[유튜브정리] {video_id} captionTracks JSON 파싱 실패: {type(_e).__name__}")
         return ""
     if not _tracks:
         return ""
@@ -2303,11 +2348,13 @@ def _youtube_transcript(video_id):
              or _tracks[0])
     _base = _track.get("baseUrl")
     if not _base:
+        print(f"[유튜브정리] {video_id} 자막 트랙은 찾았으나 baseUrl 없음")
         return ""
     try:
         _tr = requests.get(_base.replace("\\u0026", "&"), headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         _xml = _tr.text
-    except Exception:
+    except Exception as _e:
+        print(f"[유튜브정리] {video_id} 자막 다운로드 실패: {type(_e).__name__}")
         return ""
     _lines = _re.findall(r"<text[^>]*>(.*?)</text>", _xml, _re.S)
     _text = " ".join(_html_mod.unescape(_re.sub(r"<[^>]+>", "", l)) for l in _lines)
