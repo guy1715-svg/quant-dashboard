@@ -2372,13 +2372,53 @@ def _youtube_transcript(video_id):
     return _re.sub(r"\s+", " ", _text).strip()
 
 
-def _youtube_fetch_highlights(youtube_key, hours=24):
+def _gemini_youtube_video_text(gkey, video_url):
+    """[7.132] 사용자 제보 — 막 올라온(업로드 수십분 이내) 영상은 YouTube 자동자막이 아직
+    생성되지 않아 _youtube_transcript(공식 자막 스크래핑)가 항상 빈 문자열을 반환함(실제
+    확인됨 — 실패한 영상을 사용자가 직접 열어 CC 버튼에 자막 자체가 없었음을 확인). Gemini
+    API가 유튜브 영상 URL을 직접 받아(file_data.file_uri) 음성·화면을 이해하는 공식 기능을
+    이용해, 공식 자막 유무와 무관하게 영상 내용을 텍스트로 받아오는 폴백. 자막 스크래핑보다
+    비용(Gemini 호출)이 들어 _youtube_fetch_highlights에서 자막이 없을 때만 보조적으로 호출.
+    실패 시 None(호출부가 "그래도 못 가져옴"으로 처리)."""
+    try:
+        import google.generativeai as genai
+    except Exception as _ie:
+        print(f"[유튜브정리] Gemini 영상이해 폴백 — 라이브러리 미설치: {_ie}")
+        return None
+    try:
+        genai.configure(api_key=gkey)
+    except Exception as _ce:
+        print(f"[유튜브정리] Gemini 영상이해 폴백 — 설정 오류: {_ce}")
+        return None
+    _prompt = ("이 유튜브 영상에서 사람이 말하는 내용을 핵심 위주로 한국어 텍스트로 정리해줘 "
+               "(자막 대용 — 전부 받아적을 필요는 없고 언급된 종목·테마·전망·근거 중심으로).")
+    _errs = []
+    for _mn in _GEMINI_MODELS:
+        try:
+            _resp = genai.GenerativeModel(_mn).generate_content(
+                [{"file_data": {"file_uri": video_url}}, _prompt],
+                request_options={"timeout": 90})   # 영상 처리라 텍스트 전용보다 넉넉히
+            _txt = getattr(_resp, "text", None)
+            if _txt:
+                return _txt.strip()
+            _errs.append(f"{_mn}:빈응답")
+        except Exception as _ge:
+            _errs.append(f"{_mn}:{type(_ge).__name__}")
+    print(f"[유튜브정리] Gemini 영상이해 폴백 전 모델 실패 — {' / '.join(_errs)[:250]}")
+    return None
+
+
+def _youtube_fetch_highlights(youtube_key, hours=24, gemini_key=None):
     """[7.121] check_youtube_digest(예약 실행)와 대시보드 "지금 정리하기" 버튼(수동 실행)이
     같은 수집 로직을 공유하도록 분리 — 채널ID 확인 → 최근 영상 목록(공식 API) → 영상별 자막
     (비공식 경로, 실패한 영상은 건너뜀) 수집까지 한 번에 처리. 반환 (video_rows, parts):
-    video_rows=[{"title","video_id","published_at","transcript_ok"}, ...](화면 표시용,
-    자막 추출 성공 여부 포함), parts=["[제목]\\n자막...", ...](Gemini 프롬프트용, 자막
-    확보한 것만). 채널ID 확인 실패 시 (None, [])."""
+    video_rows=[{"title","video_id","published_at","transcript_ok","source"}, ...](화면
+    표시용, 자막 추출 성공 여부 + 출처 포함), parts=["[제목]\\n자막...", ...](Gemini
+    프롬프트용, 자막 확보한 것만). 채널ID 확인 실패 시 (None, []).
+    [7.132] gemini_key가 있으면, 자막 스크래핑이 빈 결과일 때(주로 업로드 직후라 YouTube
+    자동자막이 아직 안 만들어진 경우) _gemini_youtube_video_text로 한 번 더 시도 — 자막이
+    있는 영상엔 추가 호출을 하지 않아(스크래핑 성공 시 바로 패스) 비용이 불필요하게 늘지
+    않음."""
     _cid = _youtube_resolve_channel_id(_YOUTUBE_CHANNEL_HANDLE)
     if not _cid:
         return None, []
@@ -2386,8 +2426,13 @@ def _youtube_fetch_highlights(youtube_key, hours=24):
     video_rows, parts = [], []
     for v in _vids[:_YOUTUBE_MAX_VIDEOS]:
         _tr = _youtube_transcript(v["video_id"])
+        _source = "captions" if _tr else None
+        if not _tr and gemini_key:
+            _tr = _gemini_youtube_video_text(gemini_key, f"https://www.youtube.com/watch?v={v['video_id']}")
+            _source = "gemini_video" if _tr else None
         video_rows.append({"title": v["title"], "video_id": v["video_id"],
-                           "published_at": v.get("published_at", ""), "transcript_ok": bool(_tr)})
+                           "published_at": v.get("published_at", ""), "transcript_ok": bool(_tr),
+                           "source": _source})
         if _tr:
             parts.append(f"[{v['title']}]\n{_tr[:_YOUTUBE_TRANSCRIPT_CHARS_CAP]}")
     return video_rows, parts
@@ -2428,7 +2473,7 @@ def check_youtube_digest(now_kst, state, token_tg, chat_id, youtube_key, gemini_
     _done_key = f"yt_digest_{_slot}_day"
     if state.get(_done_key) == today:
         return
-    _rows, _parts = _youtube_fetch_highlights(youtube_key, hours=24)
+    _rows, _parts = _youtube_fetch_highlights(youtube_key, hours=24, gemini_key=gemini_key)
     if _rows is None:
         return                                    # 채널ID 확인 실패 — 이번 틱만 조용히 재시도 대기
     if not _rows:
@@ -9537,7 +9582,7 @@ def main():
         if not (_ytk and _gk):
             _missing = " · ".join(n for n, k in (("YouTube API 키", _ytk), ("Gemini API 키", _gk)) if not k)
             print(f"⚠️ {_missing} 없음 — 정리본 생성 불가"); sys.exit(1)
-        _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24)
+        _rows, _parts = _youtube_fetch_highlights(_ytk, hours=24, gemini_key=_gk)
         if _rows is None:
             print("⚠️ 채널 정보를 확인하지 못했습니다"); sys.exit(1)
         if not _rows:
