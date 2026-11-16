@@ -2342,6 +2342,7 @@ def _youtube_transcript(video_id):
         print(f"[유튜브정리] {video_id} captionTracks JSON 파싱 실패: {type(_e).__name__}")
         return ""
     if not _tracks:
+        print(f"[유튜브정리] {video_id} captionTracks 배열은 찾았으나 원소 0개(자막 미제공)")
         return ""
     _track = (next((t for t in _tracks if t.get("languageCode") == "ko" and t.get("kind") != "asr"), None)
              or next((t for t in _tracks if t.get("languageCode") == "ko"), None)
@@ -2356,7 +2357,17 @@ def _youtube_transcript(video_id):
     except Exception as _e:
         print(f"[유튜브정리] {video_id} 자막 다운로드 실패: {type(_e).__name__}")
         return ""
+    # [7.131] 7.130으로 captionTracks 파싱은 고쳤는데도 사용자 재현에서 여전히 "자막을 하나도
+    # 못 가져옴" — 7.130 진단 로그가 하나도 안 찍힌 걸 보면 이 지점(baseUrl까지는 정상 도달,
+    # 그런데 XML에서 <text> 태그를 못 찾음)에서 조용히 비어있는 문자열이 나가고 있었을 가능성이
+    # 큼. baseUrl 기본 포맷이 TTML이 아닐 수 있어(예: WebVTT 등 다른 포맷) 이 정규식과 안 맞을
+    # 수 있음 — 추측 대신 실제 응답 상태코드·길이·앞부분을 로그에 남겨 다음 재현 때 바로 확인.
     _lines = _re.findall(r"<text[^>]*>(.*?)</text>", _xml, _re.S)
+    if not _lines:
+        print(f"[유튜브정리] {video_id} 자막 XML에서 <text> 태그 0개 — "
+              f"status={_tr.status_code} 응답길이={len(_xml)}자 "
+              f"앞부분={_xml[:150]!r}")
+        return ""
     _text = " ".join(_html_mod.unescape(_re.sub(r"<[^>]+>", "", l)) for l in _lines)
     return _re.sub(r"\s+", " ", _text).strip()
 
