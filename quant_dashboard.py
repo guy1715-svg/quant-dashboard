@@ -986,13 +986,24 @@ def render_dolpanty():
             # 실제 근거가 뭔지 안 보여서 이 컬럼이 따로 필요하다는 것으로 확인.
             _pkdf["AI재료검증"] = _pkdf.get("ai_verdict", pd.Series(dtype=str)).fillna("").astype(str).str.replace(
                 "\n🤖 AI뉴스: ", "", regex=False).replace("", "—")
+            # [7.138] 사용자 재요청 — "KRX가-NXT가 가격 차이, 종배종목선정시 중요한거아닌가?".
+            # 이 괴리율(premium_pct)은 실제로 _entry_status_classify의 price_ok 판정(종가대비
+            # 음수면 제외 사유로 잡힘, macro_watcher.py check_nxt_premium_pick ~7567)에 지금도
+            # 쓰이고 있었는데 화면엔 숫자로 안 보였음 — 7.134에서 "종가대비" 컬럼명으로 뺐던 걸
+            # 복원(계산은 바뀐 적 없이 그대로 보존돼 있었음).
+            _pkdf["괴리율(%)"] = _pkdf.get("premium_pct", pd.Series(dtype=float)).map(
+                lambda x: f"{x:+.1f}%" if pd.notna(x) else "—")
             _pkcols = {"추천순위": "추천순위", "name": "종목명", "code": "종목코드", "score": "점수",
-                       "ratio": "거래량비율", "재료등급": "재료등급", "AI재료검증": "AI재료검증",
+                       "ratio": "거래량비율", "괴리율(%)": "괴리율(종가대비,%)",
+                       "재료등급": "재료등급", "AI재료검증": "AI재료검증",
                        "쌍끌이": "쌍끌이", "거래량추세": "거래량추세(5일평균대비)",
                        "평소대비(%)": "평소대비(%)",
                        "매도율": "매도율(참고용)", "NXT가격위치": "NXT 가격위치(CLV)"}
             _pkdf = _pkdf[[c for c in _pkcols if c in _pkdf.columns]].rename(columns=_pkcols)
             st.dataframe(_pkdf, use_container_width=True, hide_index=True)
+            st.caption("괴리율(종가대비,%) = (NXT가÷KRX 정규장 종가−1)×100. 양수면 NXT가가 종가보다 "
+                       "높게(프리미엄), 음수면 낮게(할인) 거래 중이라는 뜻 — 음수인 종목은 진입상태 "
+                       "판정에서 이미 감점/제외 사유로 반영됩니다.")
             st.caption("AI재료검증 = 최근 뉴스 '제목'만 Gemini가 읽고 오버나이트 적합성을 판정한 "
                        "한 줄입니다 — 공시·기사 본문을 직접 확인한 결과가 아니라 제목 기반 참고 "
                        "의견이니, 재료등급(S/A)의 실제 근거(계약 상대방·금액·확정 여부 등)는 "
@@ -1087,14 +1098,19 @@ def render_dolpanty():
             _ldf["avg_turn_ratio"] = (_ldf["avg_turn_ratio"] * 100).round(0)
         # [사용자 요청] 지시서 반영분(종가대비 컬럼)이 표를 복잡하게 만든다는 피드백 — 대시보드
         # 표시는 원래 형태로 되돌림(premium_pct 계산 자체는 macro_watcher.py에 그대로 보존).
+        # [7.138] 사용자 재요청 — "KRX가-NXT가 가격 차이, 종배종목선정시 중요한거아닌가?".
+        # 복원: premium_pct(괴리율)를 KRX가/NXT가 바로 옆에 숫자로 보여줌. 이 표의 선정 기준
+        # (기준충족)은 여전히 거래량비율 하나뿐이라 순위엔 영향 없음 — 참고용 컬럼.
         _lcols = {"순위": "순위", "name": "종목명", "code": "종목코드", "chg": "등락률(%)",
-                   "krx_px": "KRX가", "nxt_px": "NXT가",
+                   "krx_px": "KRX가", "nxt_px": "NXT가", "premium_pct": "괴리율(%)",
                    "krx_turn": "KRX거래대금(억)",
                    "krx_vol": "KRX거래량", "nxt_vol": "NXT거래량",
                    "nxt_turn": "NXT거래대금(억)", "avg_turn_ratio": "평소대비(%)",
                    "ratio": "거래량비율", "기준충족": "기준충족"}
         _ldf = _ldf[[c for c in _lcols if c in _ldf.columns]].rename(columns=_lcols)
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
+        st.caption("괴리율(%) = (NXT가÷KRX가−1)×100(참고용, 이 표의 선정 기준인 거래량비율과는 "
+                   "무관합니다).")
 
         # [V26.54] 7.110 지시서 전면 재설계 — "등락률 상위 10종목 — 등락 관련 뉴스 · 섹터".
         # 기존(V26.28)은 "상위 10종목(상승만, 하락 없음) + 최신 3건 고정 + 시황/일반 이진분류 +
