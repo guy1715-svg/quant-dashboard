@@ -6565,6 +6565,49 @@ def _regime_detect(token, key, secret, now_kst, lookback_days=21, min_n=6, picks
             "text": f"🟡 중립 장세 — 최근 종배 익일 시가갭(중앙값) {avg:+.1f}% (n={n})", "tag": "🟡중립장세"}
 
 
+_NXT_PREM_GAP_FLAT_BAND = 0.3   # 익일 시가 갭 ±이 범위 안이면 "보합"으로 분류
+
+
+def _nxt_prem_gap_stats(token, key, secret, now_kst, lookback_days=30, picks=None, min_n=8):
+    """[사용자 요청] "오늘의 추천 픽에 내일 갭상승/갭하락 확률 같은 예측 시나리오가 있으면
+    좋겠다"는 요청 — 종목별로 다른 예측을 만들 근거는 없음(매번 같은 신호 유형이 똑같은
+    방식으로 판단되는 것뿐이라 '이 종목은 특별히 더 오른다'고 말할 근거가 없음). 대신
+    _regime_detect(장세 판독기)가 이미 쓰는 "익일 시가 갭"(종배 실제 청산가) 계산을 재사용해,
+    대체종배(dolpanty_nxtprem) 신호 전체의 과거 실제 결과를 갭상승/보합/갭하락 비율로 집계 —
+    이 종목이 아니라 '이 신호 유형'의 과거 실적이라는 걸 명확히 함(추측·예측 아님, 실측 통계).
+    반환 {n, up_pct, flat_pct, down_pct, avg, text}. 표본 부족 시 n<min_n, text에 안내만."""
+    from datetime import timedelta
+    _cut = (now_kst - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    gaps, _cache = [], {}
+    for p in (picks if picks is not None else _pick_read()):
+        if p.get("signal") != "dolpanty_nxtprem":
+            continue
+        if str(p.get("date", "")) < _cut:
+            continue
+        cd = str(p.get("code", "")).zfill(6); px = p.get("px") or 0
+        if not px:
+            continue
+        opens = _cache.get(cd)
+        if opens is None:
+            opens = _daily_opens(token, key, secret, cd); _cache[cd] = opens
+        _pdate = str(p.get("date", "")).replace("-", "")
+        _nxt = next((d for d in sorted(opens.keys()) if d > _pdate), None)
+        if _nxt and opens.get(_nxt):
+            gaps.append((opens[_nxt] / px - 1) * 100)
+    n = len(gaps)
+    if n < min_n:
+        return {"n": n, "up_pct": None, "flat_pct": None, "down_pct": None, "avg": None,
+                "text": f"대체종배 과거 실적 표본 부족({n}<{min_n}) — 며칠 더 쌓이면 표시됩니다."}
+    up = sum(1 for g in gaps if g > _NXT_PREM_GAP_FLAT_BAND)
+    down = sum(1 for g in gaps if g < -_NXT_PREM_GAP_FLAT_BAND)
+    flat = n - up - down
+    avg = sum(gaps) / n
+    _up_pct, _flat_pct, _down_pct = round(up / n * 100), round(flat / n * 100), round(down / n * 100)
+    return {"n": n, "up_pct": _up_pct, "flat_pct": _flat_pct, "down_pct": _down_pct, "avg": round(avg, 2),
+            "text": (f"📊 대체종배 신호 과거 실적(n={n}, 익일 시가 갭 기준 — 종목 개별 예측 아님): "
+                     f"갭상승 {_up_pct}% · 보합 {_flat_pct}% · 갭하락 {_down_pct}% · 평균 {avg:+.1f}%")}
+
+
 def _recent_brief_codes(now_kst, days=2):
     """[V24.7] 최근 브리핑(선행 테마) 종목 — 종배 재설계용 우선 유니버스.
     데이터상 브리핑(55%·+1.1%)이 종배픽(36%·-3.3%)보다 압도적. 종배도 이 종목풀에서 뽑는다.

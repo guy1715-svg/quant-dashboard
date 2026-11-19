@@ -928,6 +928,17 @@ def render_dolpanty():
             st.markdown("##### 🏆 오늘의 추천 픽")
             st.caption("점수(거래량비율+재료등급 종합) 내림차순 — 매수 추천이 아니라 1차 후보 압축용입니다. "
                        "진입은 개별 검토 후 결정하세요.")
+            # [사용자 요청] "내일 갭상승/갭하락 확률 같은 예측 시나리오가 있으면 좋겠다" — 종목별로
+            # 다른 예측을 만들 근거는 없어서(매번 같은 신호 유형으로 판단되는 것뿐), "이 종목의
+            # 내일 예측"이 아니라 "이 신호 유형 전체의 과거 실제 결과"(익일 시가 갭 실측, 장세
+            # 판독기가 쓰는 것과 동일 계산)를 표 위에 한 줄로 보여줌.
+            if tok:
+                try:
+                    _gs = mw._nxt_prem_gap_stats(tok, key, sec, datetime.utcnow() + timedelta(hours=9),
+                                                 picks=all_picks)
+                    st.caption(_gs["text"])
+                except Exception:
+                    pass
             # [V26.25] 사용자 피드백 — 카드 10장을 한 화면에 늘어놓으니 "너무 정신사나움". 표
             # 한 장으로 정리(카드형 레이아웃 폐기).
             _top_picks = sorted(_live_candidates, key=lambda r: r.get("score", 0), reverse=True)
