@@ -176,6 +176,21 @@ def _render_pick_chart(token, key, secret, code, name):
     _vol_avg20 = df["거래량"].iloc[-21:-1].mean() if len(df) > 21 else None
     _vol_x = (_last["거래량"] / _vol_avg20) if _vol_avg20 else None
     _ma20_disp = (_last["종가"] / _last["MA20"] - 1) * 100 if pd.notna(_last.get("MA20")) else None
+    # [사용자 요청] "상승/하락 기준을 배우고 싶다" — macro_watcher.py의 _big_trend_tag(종배 등
+    # 기존 신호에서 이미 쓰는 '정배열/역배열' 큰추세 필터)와 동일한 기준(종가>5일선>20일선)을
+    # 재사용 — 새 기준을 지어내지 않고, 이 차트가 이미 들고 있는 MA5·MA20 값으로 판정만 추가.
+    # "내일 오른다/내린다" 단정이 아니라 "지금 이 모양이 상승·하락 추세일 때 자주 보이는 배열"
+    # 이라는 기술적 해석임을 명시.
+    _ma5v, _ma20v, _close = _last.get("MA5"), _last.get("MA20"), _last["종가"]
+    if pd.notna(_ma5v) and pd.notna(_ma20v):
+        if _close > _ma5v > _ma20v:
+            _trend_read = "📈 정배열(종가>5일선>20일선) — 상승 추세일 때 흔히 보이는 배열"
+        elif _close < _ma5v < _ma20v:
+            _trend_read = "📉 역배열(종가<5일선<20일선) — 하락 추세일 때 흔히 보이는 배열"
+        else:
+            _trend_read = "➖ 배열 혼조 — 추세 전환 구간이거나 방향성이 뚜렷하지 않음"
+        st.info(f"{_trend_read} (보장된 예측이 아니라 기술적 패턴 해석입니다 — 뉴스·수급 등 "
+                f"다른 변수가 더 크게 작용할 수 있습니다)")
     _facts = [f"종가 {int(_last['종가']):,}원"]
     if pd.notna(_last.get("RSI")):
         _facts.append(f"RSI {_last['RSI']:.0f}")
